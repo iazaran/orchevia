@@ -1,0 +1,23 @@
+[package]
+name = "orchevia-core"
+version = "0.1.0"
+edition = "2021"
+description = "Orchevia core domain logic: workflow model, persistence, process execution, tool discovery (Tauri-free, fully testable)."
+license = "Apache-2.0"
+
+[lib]
+name = "orchevia_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+thiserror = "1"
+shell-escape = "0.1"
+tokio = { version = "1", features = ["process", "time", "sync", "rt", "macros", "io-util"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# Build outputs
+dist/
+dist-ssr/
+src-tauri/target/
+crates/*/target/
+target/
+
+# Tauri
+*.AppImage
+*.deb
+*.dmg
+*.msi
+*.nsis.zip
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Test / coverage
+coverage/
+*.lcov
+
+# SQLite local data (dev artifacts)
+*.db
+*.db-journal
+*.sqlite
+
+# Tauri generated code (recreated on every build)
+src-tauri/gen/
