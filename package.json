@@ -1,0 +1,57 @@
+{
+  "name": "orchevia",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orchevia — fast, local-first visual workflow orchestrator for developer AI agents and local CLI tools.",
+  "type": "module",
+  "packageManager": "pnpm@10.0.0",
+  "onlyBuiltDependencies": [
+    "esbuild"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "version:check": "node scripts/check-version.mjs",
+    "check": "pnpm version:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@xyflow/react": "^12.3.6",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/cli": "^2.2.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^9.18.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.14.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.0",
+    "vite": "^6.0.7",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+src-tauri/target
+crates/*/target
+implementation-plan
+pnpm-lock.yaml
+src-tauri/gen

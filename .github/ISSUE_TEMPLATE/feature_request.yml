@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest an idea for Orchevia
+title: '[feature]: '
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Who hits it, and in which workflow?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it behave? Which node types / screens are involved?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Likely milestone (see ROADMAP.md)
+      options:
+        - Not sure
+        - Agent profiles / AI CLIs
+        - Workflow engine
+        - GitHub / Jira / MCP
+        - Scheduling / review loops
+        - Generation / memory / templates
+        - Hardening / polish

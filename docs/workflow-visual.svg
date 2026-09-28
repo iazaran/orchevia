@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" role="img" aria-labelledby="wv-title wv-desc">
+  <title id="wv-title">Example Orchevia workflow</title>
+  <desc id="wv-desc">A five-node workflow graph: Start leads to Implement with Claude, then a Human Approval gate, then Review with Codex, then End.</desc>
+  <rect x="0" y="0" width="880" height="300" rx="16" fill="#10141b"/>
+  <rect x="0" y="0" width="880" height="300" rx="16" fill="none" stroke="#263042" stroke-width="1.5"/>
+  <g font-family="Inter, system-ui, sans-serif" text-anchor="middle">
+    <g>
+      <rect x="24" y="110" width="130" height="80" rx="12" fill="#161c26" stroke="#6ea8fe" stroke-width="2"/>
+      <text x="89" y="142" fill="#8b96a9" font-size="11" letter-spacing="1.5">START</text>
+      <text x="89" y="164" fill="#f2f5f9" font-size="15" font-weight="600">Start</text>
+    </g>
+    <g>
+      <rect x="196" y="110" width="150" height="80" rx="12" fill="#161c26" stroke="#4c8dff" stroke-width="2"/>
+      <text x="271" y="142" fill="#8b96a9" font-size="11" letter-spacing="1.5">AI AGENT</text>
+      <text x="271" y="164" fill="#f2f5f9" font-size="15" font-weight="600">Implement · Claude</text>
+    </g>
+    <g>
+      <rect x="388" y="110" width="150" height="80" rx="12" fill="#161c26" stroke="#fbbf24" stroke-width="2"/>
+      <text x="463" y="142" fill="#8b96a9" font-size="11" letter-spacing="1.5">APPROVAL</text>
+      <text x="463" y="164" fill="#f2f5f9" font-size="15" font-weight="600">Human review</text>
+    </g>
+    <g>
+      <rect x="580" y="110" width="150" height="80" rx="12" fill="#161c26" stroke="#a78bfa" stroke-width="2"/>
+      <text x="655" y="142" fill="#8b96a9" font-size="11" letter-spacing="1.5">AI AGENT</text>
+      <text x="655" y="164" fill="#f2f5f9" font-size="15" font-weight="600">Review · Codex</text>
+    </g>
+    <g>
+      <rect x="762" y="110" width="94" height="80" rx="12" fill="#161c26" stroke="#34d399" stroke-width="2"/>
+      <text x="809" y="142" fill="#8b96a9" font-size="11" letter-spacing="1.5">END</text>
+      <text x="809" y="164" fill="#f2f5f9" font-size="15" font-weight="600">End</text>
+    </g>
+    <g stroke="#3b4763" stroke-width="2" fill="none">
+      <line x1="154" y1="150" x2="196" y2="150"/>
+      <line x1="346" y1="150" x2="388" y2="150"/>
+      <line x1="538" y1="150" x2="580" y2="150"/>
+      <line x1="730" y1="150" x2="762" y2="150"/>
+    </g>
+    <g fill="#3b4763">
+      <polygon points="196,144 188,150 196,156"/>
+      <polygon points="388,144 380,150 388,156"/>
+      <polygon points="580,144 572,150 580,156"/>
+      <polygon points="762,144 754,150 762,156"/>
+    </g>
+    <text x="440" y="248" fill="#8b96a9" font-size="13">Explicit run · human approval gate · full history · cancellable</text>
+  </g>
+</svg>
