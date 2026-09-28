@@ -6,7 +6,7 @@ Node 22+, pnpm 10+, Rust stable. Linux needs Tauri system libraries:
 
 ```bash
 sudo apt update
-sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+sudo apt install libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev patchelf \
   libsoup-3.0-dev libjavascriptcoregtk-4.1-dev build-essential curl wget file \
   libssl-dev libgtk-3-dev libayatana-appindicator3-dev
 ```
