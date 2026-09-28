@@ -48,6 +48,8 @@ First public beta. Installers will be published when the `v0.1.0` tag is pushed.
   panicking; run controls preserve cancellation during resumed execution.
 - Test tooling is updated to the patched Vitest release; CI uses Node.js 22
   and a compatible Ubuntu indicator dependency set.
+- Frontend development ignores native build output, preventing unrelated page
+  reloads while Rust checks or installer builds run.
 - Workflow generation preserves supported native operations and flags missing
   setup or unsupported actions rather than silently substituting them.
 - Generator setup guidance matches the Jira MCP Cloud variables `JIRA_URL`,
