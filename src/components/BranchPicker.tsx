@@ -24,26 +24,27 @@ export function BranchPicker({
   action?: ReactNode;
 }): React.JSX.Element {
   const datalistId = useId();
-  const [branches, setBranches] = useState<string[]>([]);
+  const dir = repoDir.trim();
+  const [branchResult, setBranchResult] = useState<{
+    dir: string;
+    branches: string[];
+  } | null>(null);
+  const branches = branchResult?.dir === dir ? branchResult.branches : [];
   useEffect(() => {
-    const dir = repoDir.trim();
-    if (dir === '') {
-      setBranches([]);
-      return;
-    }
+    if (dir === '') return;
     let alive = true;
     void getBackend()
       .gitBranches(dir)
       .then((b) => {
-        if (alive) setBranches(b.branches);
+        if (alive) setBranchResult({ dir, branches: b.branches });
       })
       .catch(() => {
-        if (alive) setBranches([]);
+        if (alive) setBranchResult({ dir, branches: [] });
       });
     return () => {
       alive = false;
     };
-  }, [repoDir]);
+  }, [dir]);
   return (
     <div className="field" style={{ marginBottom: 0 }}>
       <div

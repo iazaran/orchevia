@@ -542,25 +542,44 @@ function ProfileEditor({
   onSave: (p: AgentProfile) => void;
 }): React.JSX.Element {
   const [form, setForm] = useState<AgentProfile>(initial);
-  const [availableSkills, setAvailableSkills] = useState<AgentSkillInfo[]>([]);
-  const [skillsLoading, setSkillsLoading] = useState(false);
-  const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [skillsResult, setSkillsResult] = useState<{
+    adapter: AdapterKind;
+    directory: string | undefined;
+    skills: AgentSkillInfo[];
+    error: string | null;
+  } | null>(null);
   const [manualSkill, setManualSkill] = useState('');
   const skillDirectory = form.workingDirMode === 'profile' ? form.workingDir : undefined;
+  const currentSkills =
+    skillsResult?.adapter === form.adapter && skillsResult.directory === skillDirectory
+      ? skillsResult
+      : null;
+  const availableSkills = currentSkills?.skills ?? [];
+  const skillsLoading = currentSkills === null;
+  const skillsError = currentSkills?.error ?? null;
   useEffect(() => {
     let active = true;
-    setSkillsLoading(true);
-    setSkillsError(null);
     void getBackend()
       .listAgentSkills(form.adapter, skillDirectory)
       .then((skills) => {
-        if (active) setAvailableSkills(skills);
+        if (active) {
+          setSkillsResult({
+            adapter: form.adapter,
+            directory: skillDirectory,
+            skills,
+            error: null,
+          });
+        }
       })
       .catch((error: unknown) => {
-        if (active) setSkillsError(errorMessage(error));
-      })
-      .finally(() => {
-        if (active) setSkillsLoading(false);
+        if (active) {
+          setSkillsResult({
+            adapter: form.adapter,
+            directory: skillDirectory,
+            skills: [],
+            error: errorMessage(error),
+          });
+        }
       });
     return () => {
       active = false;

@@ -54,6 +54,10 @@ function workflowName(
   return workflows.find((w) => w.id === workflowId)?.name ?? workflowId;
 }
 
+function oneHourFromNow(): string {
+  return new Date(Date.now() + 3600000).toISOString();
+}
+
 /**
  * Background scheduler poll interval. The setting existed (backend validates
  * 30–3600 s and the loop re-reads it live) but had no UI — this wires it up.
@@ -735,7 +739,7 @@ function KindEditor({
     setTab(next);
     switch (next) {
       case 'oneTime':
-        onChange({ kind: 'oneTime', at: new Date(Date.now() + 3600000).toISOString() });
+        onChange({ kind: 'oneTime', at: oneHourFromNow() });
         break;
       case 'interval':
         onChange({ kind: 'interval', everySecs: 3600 });
