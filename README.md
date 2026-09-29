@@ -128,7 +128,7 @@ not a guarantee that every requested integration operation is supported.
 
 ## Current limits
 
-- **Public beta:** version 0.1.0 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** version 0.1.1 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.
