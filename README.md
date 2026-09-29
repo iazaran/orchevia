@@ -4,10 +4,9 @@
 
 [![CI](https://github.com/iazaran/orchevia/actions/workflows/ci.yml/badge.svg)](https://github.com/iazaran/orchevia/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
-[![Release](https://img.shields.io/github/v/release/iazaran/orchevia)](https://github.com/iazaran/orchevia/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-[Project page](https://iazaran.github.io/orchevia/) · [Downloads](https://github.com/iazaran/orchevia/releases) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
+[Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
 
 Orchevia is a **local-first** desktop app for visual developer workflows. You describe
 a task — _"implement this ticket with Claude, review with Codex, open a draft PR"_ — inspect
@@ -25,21 +24,9 @@ branch → draft PR, nightly review sweeps) without sending code to an Orchevia 
 
 ## Run it locally
 
-Orchevia is in pre-release development. The repository currently has no public
-release. Once the first version tag is published, installers will be available at
-[the latest release](https://github.com/iazaran/orchevia/releases/latest):
-
-| System              | Download after the first release                                                                                                                                                                         |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon | [Orchevia-macos-arm64.dmg](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-arm64.dmg)                                                                                        |
-| macOS Intel         | [Orchevia-macos-x86_64.dmg](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-x86_64.dmg)                                                                                      |
-| Linux x86_64        | [AppImage](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.deb) |
-
-The [project page](https://iazaran.github.io/orchevia/) detects macOS/Linux and
-shows direct downloads only when the release assets exist. macOS builds are currently
-unsigned. Every release includes `SHA256SUMS` for download verification.
-
-To build from source now:
+Public installers are not available yet. The repository and its release assets
+are currently private, so public release badges and download links cannot resolve.
+Contributors with repository access can build from source:
 
 ```bash
 git clone https://github.com/iazaran/orchevia.git
@@ -48,15 +35,15 @@ pnpm install
 pnpm tauri dev
 ```
 
-You need Node.js 22+, pnpm 10+, Rust stable, and the platform dependencies listed in
+You need Node.js 24+, pnpm 10+, Rust stable, and the platform dependencies listed in
 [the development guide](./docs/development.md). `pnpm dev` opens a browser demo backed
 by localStorage; it does **not** run real CLI processes. The desktop app does.
 
-[PR CI](./.github/workflows/ci.yml) runs formatting, lint, type checking,
-frontend/core tests, and Linux/macOS installer builds when a PR opens or changes.
-The [release workflow](./.github/workflows/release.yml) packages Linux
-`.deb`/`.AppImage` and unsigned Apple Silicon/Intel macOS `.dmg` builds from a
-`v*.*.*` tag.
+PRs run the checks and installer builds described in the
+[development guide](./docs/development.md#ci-githubworkflowsciyml). PR artifacts
+are for review; they are not public releases. A version tag triggers the
+[release workflow](./.github/workflows/release.yml), which must finish successfully
+before installers and checksums can be published. macOS builds are unsigned.
 Optional tools (`git`, `gh`, `claude`, `codex`) are detected locally; install and
 authenticate the ones your workflows need.
 
@@ -107,7 +94,7 @@ Start → Implement (Claude) → Human Approval → Review (Codex) → End
 
 How it fits together: [docs/architecture.md](./docs/architecture.md) ·
 [workflow schema](./docs/workflow-schema.md) · [security model](./docs/security.md) ·
-[project page source](./docs/index.html).
+[site source](./docs/index.html).
 
 ## How generation works
 

@@ -6,9 +6,21 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Updated Rust, frontend, and GitHub Actions dependencies, retaining a TypeScript
+  version supported by the current lint toolchain.
+- Clarified public download and GitHub Pages availability in the README and site.
+
+### Fixed
+
+- Adapted component state handling to the newer React Hooks lint rules.
+- Kept the Vite build's esbuild minifier available after the Vite upgrade.
+
 ## [0.1.0] - 2026-09-28
 
-First public beta. Installers will be published when the `v0.1.0` tag is pushed.
+First beta tag. Public installers depend on a successful release workflow and
+repository release access.
 
 ### Added
 
