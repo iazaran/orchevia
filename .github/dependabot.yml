@@ -7,6 +7,10 @@ updates:
     groups:
       frontend:
         patterns: ['*']
+    ignore:
+      # typescript-eslint does not support the TypeScript 7 compiler API yet.
+      - dependency-name: typescript
+        versions: ['7.x']
     open-pull-requests-limit: 5
   - package-ecosystem: cargo
     directory: /

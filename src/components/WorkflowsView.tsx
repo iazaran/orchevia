@@ -80,7 +80,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [showSamples, setShowSamples] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [validationHidden, setValidationHidden] = useState(false);
+  const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [showInputs, setShowInputs] = useState(false);
   const [expandedInputs, setExpandedInputs] = useState<Record<string, boolean>>({});
@@ -122,10 +122,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [commitPrBranch, setCommitPrBranch] = useState('');
   const [commitPrError, setCommitPrError] = useState<string | null>(null);
   useEffect(() => {
-    if (!generating) {
-      setGenElapsed(0);
-      return;
-    }
+    if (!generating) return;
     const started = Date.now();
     const timer = setInterval(() => {
       setGenElapsed(Math.round((Date.now() - started) / 1000));
@@ -137,9 +134,8 @@ export function WorkflowsView(): React.JSX.Element {
   const refreshProfiles = useAppStore((s) => s.refreshProfiles);
   const activeId = active?.id;
   const validationKey = validation.map((i) => i.code + (i.nodeId ?? '')).join('|');
-  useEffect(() => {
-    setValidationHidden(false);
-  }, [activeId, validationKey]);
+  const validationIdentity = JSON.stringify([activeId, validationKey]);
+  const validationHidden = dismissedValidation === validationIdentity;
 
   const { inputs: declaredInputs, problems: inputProblems } =
     parseInputDeclarations(goalInputs);
@@ -365,6 +361,7 @@ export function WorkflowsView(): React.JSX.Element {
     const repoDir = genRepoDir.trim();
     const branch = genBranch.trim();
     if (repairFeedback === null) setRepairRound(0);
+    setGenElapsed(0);
     setGenerating(true);
     setRunMessage(null);
     setGenError(null);
@@ -427,6 +424,7 @@ export function WorkflowsView(): React.JSX.Element {
         setRunMessage(mapped);
       } finally {
         setGenerating(false);
+        setGenElapsed(0);
       }
     })();
   };
@@ -1433,7 +1431,7 @@ export function WorkflowsView(): React.JSX.Element {
               label="Dismiss validation messages"
               title="Dismiss (reappears when validation changes)"
               onClose={() => {
-                setValidationHidden(true);
+                setDismissedValidation(validationIdentity);
               }}
             >
               Dismiss ✕

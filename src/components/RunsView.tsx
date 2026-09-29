@@ -89,6 +89,7 @@ export function RunsView(): React.JSX.Element {
   const pending = useRef(new Set<string>());
   const [pendingRuns, setPendingRuns] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [now, setNow] = useState(0);
   const workflows = useAppStore((s) => s.workflows);
 
   const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
@@ -121,6 +122,7 @@ export function RunsView(): React.JSX.Element {
   useEffect(() => {
     if (!runs.some((r) => r.status === 'running' || r.status === 'paused')) return;
     const timer = setInterval(() => {
+      setNow(Date.now());
       void refreshRuns();
       if (activeRunId !== null) void selectRun(activeRunId);
     }, 1500);
@@ -156,28 +158,31 @@ export function RunsView(): React.JSX.Element {
   };
 
   const [note, setNote] = useState('');
-  const [expandedOutputs, setExpandedOutputs] = useState<Record<string, boolean>>({});
+  const [expandedOutputState, setExpandedOutputState] = useState<{
+    runId: string | null;
+    values: Record<string, boolean>;
+  }>({ runId: null, values: {} });
+  const expandedOutputs =
+    expandedOutputState.runId === activeRunId ? expandedOutputState.values : {};
   const [reportOpen, setReportOpen] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
   const setView = useAppStore((s) => s.setView);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
-  const [findings, setFindings] = useState<GroupedFinding[]>([]);
+  const [findingsState, setFindingsState] = useState<{
+    runId: string;
+    findings: GroupedFinding[];
+  } | null>(null);
+  const findings = findingsState?.runId === activeRunId ? findingsState.findings : [];
 
-  // Collapse choices reset only when switching runs — never on live updates.
   useEffect(() => {
-    setExpandedOutputs({});
-  }, [activeRunId]);
-
-  useEffect(() => {
-    if (activeRunId === null) {
-      setFindings([]);
-      return;
-    }
+    if (activeRunId === null) return;
     void getBackend()
       .getRunFindings(activeRunId)
-      .then(setFindings)
+      .then((next) => {
+        setFindingsState({ runId: activeRunId, findings: next });
+      })
       .catch(() => {
-        setFindings([]);
+        setFindingsState({ runId: activeRunId, findings: [] });
       });
   }, [activeRunId, runResults]);
 
@@ -200,7 +205,7 @@ export function RunsView(): React.JSX.Element {
     workflows.find((w) => w.id === workflowId)?.name ?? workflowId;
 
   const elapsedSince = (iso: string): string => {
-    const ms = Date.now() - new Date(iso).getTime();
+    const ms = now - new Date(iso).getTime();
     if (!Number.isFinite(ms) || ms < 0) return '';
     const s = Math.floor(ms / 1000);
     if (s < 60) return `${String(s)}s`;
@@ -459,7 +464,7 @@ export function RunsView(): React.JSX.Element {
                       next[`${String(r.id)}:out`] = open;
                       next[`${String(r.id)}:err`] = open;
                     }
-                    setExpandedOutputs(next);
+                    setExpandedOutputState({ runId: activeRunId, values: next });
                   };
                   const copyReport = (): void => {
                     try {
@@ -663,10 +668,13 @@ export function RunsView(): React.JSX.Element {
                   const isLast = index === results.length - 1;
                   const toggleOutput = (stream: string): void => {
                     const key = `${String(r.id)}:${stream}`;
-                    setExpandedOutputs((prev) => ({
-                      ...prev,
-                      [key]: !(prev[key] ?? isLast),
-                    }));
+                    setExpandedOutputState((prev) => {
+                      const values = prev.runId === activeRunId ? prev.values : {};
+                      return {
+                        runId: activeRunId,
+                        values: { ...values, [key]: !(values[key] ?? isLast) },
+                      };
+                    });
                   };
                   return (
                     <div key={r.id} className="run-step">

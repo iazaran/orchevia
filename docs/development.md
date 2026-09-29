@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Node 22+, pnpm 10+, Rust stable. Linux needs Tauri system libraries:
+Node 24+, pnpm 10+, Rust stable. Linux needs Tauri system libraries:
 
 ```bash
 sudo apt update
@@ -56,8 +56,8 @@ matrix (Ubuntu + macOS) + docs validation. Bundles live under the workspace
 
 ## Releases (`.github/workflows/release.yml`)
 
-After merging the reviewed PR, push a tag `v0.1.0` → validate job → per-OS builds → combine artifacts and
-checksums (`SHA256SUMS`) on Ubuntu → GitHub Release with generated notes. Keep `package.json`, `src-tauri/tauri.conf.json`,
+For a future version, push a matching `v*.*.*` tag → validate job → per-OS builds → combine artifacts and
+checksums (`SHA256SUMS`) on Ubuntu → GitHub Release with generated notes. A tag by itself does not make installers available; the release workflow must complete. Keep `package.json`, `src-tauri/tauri.conf.json`,
 `src-tauri/Cargo.toml`, and `crates/core/Cargo.toml` versions in sync; move `CHANGELOG.md` entries out of
 `Unreleased` when tagging. `pnpm version:check` checks those versions and the changelog;
 release CI also rejects a tag that differs from the application version.
@@ -65,13 +65,17 @@ release CI also rejects a tag that differs from the application version.
 ## GitHub Pages (`.github/workflows/pages.yml`)
 
 `docs/` is the static site. PRs validate `index.html`; pushes to `main` deploy via the
-official Pages actions. First-time setup requires enabling Pages in repo settings
-(Source: GitHub Actions) — a one-time manual step (see definition-of-done report).
+official Pages actions. In Settings → Pages, select **GitHub Actions** as the source.
+GitHub Free does not publish Pages from a private repository; a plan with private
+repository Pages support or a public repository is required. A Pages deployment
+must succeed before the URL resolves. A public Pages site does not make a private
+repository or its release API public.
 
 ## Dependency updates
 
 Dependabot (`.github/dependabot.yml`): weekly, grouped, max 5 open PRs per ecosystem
-(npm, cargo, actions). Security tooling is advisory, not blocking, to avoid flaky red CI
+(npm, cargo, actions). TypeScript 7 is deferred until `typescript-eslint` supports
+its compiler API. Security tooling is advisory, not blocking, to avoid flaky red CI
 from transient scanners.
 
 ## Generation and release checks
@@ -85,9 +89,7 @@ shell-required environment variables. Orchevia's Jira MCP setup uses
 contains `JIRA_BASE_URL` or `JIRA_EMAIL`, inspect and replace that raw Command
 with the configured MCP tool before running.
 
-PR CI runs the frontend and core checks and builds Linux, Apple Silicon macOS,
-and Intel macOS installers. A `v*.*.*` tag triggers the release workflow,
-which stages `Orchevia-linux-x86_64.deb`, `Orchevia-linux-x86_64.AppImage`,
+The release workflow stages `Orchevia-linux-x86_64.deb`, `Orchevia-linux-x86_64.AppImage`,
 `Orchevia-macos-arm64.dmg`, `Orchevia-macos-x86_64.dmg`, and `SHA256SUMS`.
-The project page exposes direct downloads only after GitHub publishes the
-assets. Check the version in `src-tauri/tauri.conf.json` before tagging.
+The project page exposes direct downloads only when the release assets are
+publicly accessible. Check the version in `src-tauri/tauri.conf.json` before tagging.

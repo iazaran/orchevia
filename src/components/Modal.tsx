@@ -30,7 +30,9 @@ export function Modal({
 }): React.JSX.Element {
   const backdrop = useRef<HTMLDivElement>(null);
   const close = useRef({ onClose, closeDisabled });
-  close.current = { onClose, closeDisabled };
+  useEffect(() => {
+    close.current = { onClose, closeDisabled };
+  }, [onClose, closeDisabled]);
   useEffect(() => {
     const dialog = backdrop.current;
     if (dialog === null) return;

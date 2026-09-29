@@ -1,6 +1,6 @@
 [package]
 name = "orchevia"
-version = "0.1.0"
+version = "0.1.1"
 description = "Orchevia — local-first visual workflow orchestrator for developer AI agents and CLI tools."
 authors = ["Orchevia Contributors"]
 license = "Apache-2.0"
