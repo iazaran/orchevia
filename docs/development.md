@@ -78,6 +78,12 @@ Dependabot (`.github/dependabot.yml`): weekly, grouped, max 5 open PRs per ecosy
 its compiler API. Security tooling is advisory, not blocking, to avoid flaky red CI
 from transient scanners.
 
+Update the Rust `tauri` crate and npm `@tauri-apps/api` together: their major and
+minor versions must match. Dependabot groups npm and Cargo separately, so combine
+paired Tauri upgrades before running installer builds. Update `@tauri-apps/cli`
+and the related Cargo lockfile in the same change, then run the checks above and
+`pnpm tauri build` to verify the desktop build.
+
 ## Generation and release checks
 
 The desktop generator reads configured Agent Profile mappings and probes enabled

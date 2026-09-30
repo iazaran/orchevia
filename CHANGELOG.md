@@ -6,6 +6,13 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-30
+
+### Changed
+
+- Updated the Rust and frontend Tauri packages together to 2.12, along with
+  tauri-build, thiserror, TypeScript 6, esbuild, and Node.js types.
+
 ## [0.1.1] - 2026-09-29
 
 ### Changed
@@ -81,6 +88,7 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/iazaran/orchevia/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/iazaran/orchevia/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/iazaran/orchevia/releases/tag/v0.1.0
