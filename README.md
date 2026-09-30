@@ -6,7 +6,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-[Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
+[Download installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.2) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
 
 Orchevia is a **local-first** desktop app for visual developer workflows. You describe
 a task — _"implement this ticket with Claude, review with Codex, open a draft PR"_ — inspect
@@ -22,11 +22,28 @@ branch → draft PR, nightly review sweeps) without sending code to an Orchevia 
 
 ![Example Orchevia workflow: Start → Implement with Claude → Human Approval → Review with Codex → End](./docs/workflow-visual.svg)
 
-## Run it locally
+## Install
 
-Public installers are not available yet. The repository and its release assets
-are currently private, so public release badges and download links cannot resolve.
-Contributors with repository access can build from source:
+Installers are available in [v0.1.2](https://github.com/iazaran/orchevia/releases/tag/v0.1.2).
+The repository and release files are **private for now**: sign in to GitHub with an
+account that has repository access. The repository and downloads will be public soon.
+
+| Platform            | Installer                                                                                                                                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS Apple Silicon | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-macos-arm64.dmg)                                                                                                            |
+| macOS Intel         | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-macos-x86_64.dmg)                                                                                                           |
+| Linux x86_64        | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-linux-x86_64.deb) |
+
+Verify downloads against [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.2/SHA256SUMS).
+macOS installers are unsigned and not notarized; on first launch, right-click the
+app and choose **Open**. See the release notes for the quarantine-removal command.
+Version 0.1.3 is being prepared; these links stay on the published v0.1.2 files
+until its release workflow finishes. Future downloads appear under
+[the latest release](https://github.com/iazaran/orchevia/releases/latest).
+
+### Build from source
+
+Contributors with repository access can also build from source:
 
 ```bash
 git clone https://github.com/iazaran/orchevia.git
@@ -39,11 +56,6 @@ You need Node.js 24+, pnpm 10+, Rust stable, and the platform dependencies liste
 [the development guide](./docs/development.md). `pnpm dev` opens a browser demo backed
 by localStorage; it does **not** run real CLI processes. The desktop app does.
 
-PRs run the checks and installer builds described in the
-[development guide](./docs/development.md#ci-githubworkflowsciyml). PR artifacts
-are for review; they are not public releases. A version tag triggers the
-[release workflow](./.github/workflows/release.yml), which must finish successfully
-before installers and checksums can be published. macOS builds are unsigned.
 Optional tools (`git`, `gh`, `claude`, `codex`) are detected locally; install and
 authenticate the ones your workflows need.
 
@@ -128,7 +140,7 @@ not a guarantee that every requested integration operation is supported.
 
 ## Current limits
 
-- **Beta:** version 0.1.2 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** version 0.1.3 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.
