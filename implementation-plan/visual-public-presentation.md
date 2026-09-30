@@ -1,5 +1,20 @@
 # Visual and public presentation pass
 
+## 2026-09-30 private beta follow-up
+
+- Confirmed v0.1.2 publishes Linux AppImage/.deb and Apple Silicon/Intel Mac
+  installers with checksums. README links to these files require repository
+  access while the repository remains private.
+- Preparing v0.1.3 pairs the Rust/frontend dialog-plugin 2.8.0 updates. The
+  README retains working v0.1.2 links until newer installers are published.
+- The public project page announces that repository access and downloads will
+  be public soon. Removed release API polling and unavailable download controls;
+  retained source instructions explicitly for contributors with access.
+- Public launch still needs the user's visibility change and a follow-up to
+  restore public download links. Existing Pages publication remains unchanged.
+
+## Original presentation pass
+
 - Reused the existing sidebar, React Flow canvas, node accent metadata, and static
   `docs/index.html` structure.
 - Moved the sidebar collapse control into the brand header, retained the saved

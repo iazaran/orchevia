@@ -69,9 +69,6 @@
       * {
         box-sizing: border-box;
       }
-      [hidden] {
-        display: none !important;
-      }
       body {
         margin: 0;
         font-family:
@@ -305,23 +302,6 @@
           font-size: 13px;
         }
       }
-      .download-links {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-      .download-links .btn {
-        padding: 8px 12px;
-        font-size: 13px;
-      }
-      .download-grid.mac-first #mac-downloads {
-        order: -1;
-        border-color: var(--accent);
-      }
-      .download-grid.linux-first #linux-downloads {
-        order: -1;
-        border-color: var(--accent);
-      }
       @media (prefers-reduced-motion: reduce) {
         * {
           animation: none !important;
@@ -363,10 +343,8 @@
             <strong>Your CLI accounts. Your machine. No telemetry.</strong>
           </p>
           <div class="cta">
-            <a class="btn primary" id="hero-download" href="#install"
-              >Build from source</a
-            >
-            <a class="btn" href="https://github.com/iazaran/orchevia">View on GitHub</a>
+            <a class="btn primary" href="#install">Installation</a>
+            <a class="btn" href="#features">Explore workflows</a>
           </div>
         </div>
 
@@ -515,53 +493,19 @@
         <section class="block" id="install" aria-labelledby="install-h">
           <h2 id="install-h">Installation</h2>
           <p>
-            Orchevia is in beta. Public installers appear here when a GitHub Release with
-            assets is available. Until then, contributors with repository access can build
-            from source. Workflows execute with your user permissions; review generated or
-            imported commands before running.
-          </p>
-          <p id="release-status" role="status">Checking for public installers…</p>
-          <div class="grid download-grid" id="download-grid" hidden>
-            <div class="card" id="mac-downloads">
-              <h3>macOS</h3>
-              <p>
-                Choose the chip in your Mac: Apple Silicon or Intel. Current builds are
-                unsigned.
-              </p>
-              <div class="download-links">
-                <a class="btn" data-asset="Orchevia-macos-arm64.dmg" hidden
-                  >Apple Silicon .dmg</a
-                >
-                <a class="btn" data-asset="Orchevia-macos-x86_64.dmg" hidden
-                  >Intel .dmg</a
-                >
-              </div>
-            </div>
-            <div class="card" id="linux-downloads">
-              <h3>Linux x86_64</h3>
-              <p>
-                AppImage works on many distributions; Debian/Ubuntu users can use the
-                .deb.
-              </p>
-              <div class="download-links">
-                <a class="btn" data-asset="Orchevia-linux-x86_64.AppImage" hidden
-                  >Download AppImage</a
-                >
-                <a class="btn" data-asset="Orchevia-linux-x86_64.deb" hidden
-                  >Download .deb</a
-                >
-              </div>
-            </div>
-          </div>
-          <p id="latest-release" hidden>
-            <a href="https://github.com/iazaran/orchevia/releases/latest"
-              >View the latest release</a
-            >
-            and its SHA256 checksums.
+            Orchevia is in beta. The repository and release downloads are private for now
+            and will be public soon. Public installer links will be added here when access
+            opens.
           </p>
           <p>
-            Build from source with Node.js 24+, pnpm 10+, Rust stable, and the platform
-            dependencies in the development guide.
+            Available platforms are macOS Apple Silicon/Intel and Linux x86_64. macOS
+            builds are unsigned and not notarized. Workflows execute with your user
+            permissions; review generated or imported commands before running.
+          </p>
+          <h3>For contributors with repository access</h3>
+          <p>
+            Contributors with repository access can build from source with Node.js 24+,
+            pnpm 10+, Rust stable, and the platform dependencies in the development guide.
           </p>
           <pre
             class="install-code"
@@ -621,8 +565,8 @@ pnpm tauri dev</code></pre>
         <section class="block" id="contribute" aria-labelledby="contribute-h">
           <h2 id="contribute-h">Contribute</h2>
           <p style="color: var(--muted)">
-            Apache-2.0 source with a contributor guide and repeatable checks. When the
-            repository opens publicly, you can clone it, run
+            The repository will be public soon, with Apache-2.0 source, a contributor
+            guide, and repeatable checks. Once access opens, you can clone it, run
             <code>pnpm tauri dev</code>, and propose changes.
           </p>
           <div class="cta" style="justify-content: flex-start">
@@ -642,55 +586,5 @@ pnpm tauri dev</code></pre>
         </nav>
       </footer>
     </div>
-    <script>
-      (() => {
-        const releaseStatus = document.getElementById('release-status');
-        const grid = document.getElementById('download-grid');
-        const hero = document.getElementById('hero-download');
-        const latestRelease = document.getElementById('latest-release');
-        const platform = String(
-          navigator.userAgentData?.platform || navigator.platform || navigator.userAgent,
-        ).toLowerCase();
-        const mac = platform.includes('mac');
-        const linux = platform.includes('linux');
-        if (mac) grid.classList.add('mac-first');
-        if (linux) grid.classList.add('linux-first');
-        fetch('https://api.github.com/repos/iazaran/orchevia/releases/latest', {
-          headers: { Accept: 'application/vnd.github+json' },
-          signal: AbortSignal.timeout(8000),
-        })
-          .then((response) => {
-            if (!response.ok) throw new Error('No public release');
-            return response.json();
-          })
-          .then((release) => {
-            const assets = new Map(
-              release.assets.map((asset) => [asset.name, asset.browser_download_url]),
-            );
-            let available = 0;
-            document.querySelectorAll('[data-asset]').forEach((link) => {
-              const url = assets.get(link.dataset.asset);
-              if (url) {
-                link.href = url;
-                link.hidden = false;
-                available += 1;
-              }
-            });
-            if (available === 0) throw new Error('No installers in latest release');
-            grid.hidden = false;
-            latestRelease.hidden = false;
-            releaseStatus.textContent = `${release.tag_name} installers are ready. Choose the package for your system.`;
-            if (mac) hero.textContent = 'Choose a macOS download';
-            if (linux) {
-              hero.textContent = 'Download for Linux';
-              hero.href = assets.get('Orchevia-linux-x86_64.AppImage') || '#install';
-            }
-          })
-          .catch(() => {
-            releaseStatus.textContent =
-              'Public installers are not available. Contributors with repository access can build from source below.';
-          });
-      })();
-    </script>
   </body>
 </html>

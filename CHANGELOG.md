@@ -6,6 +6,20 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-30
+
+### Changed
+
+- Updated the Rust and frontend dialog plugins together to 2.8.0, including
+  the Rust plugin and filesystem dependencies.
+- Added authenticated installer links to the README and clarified that the
+  repository and downloads will be public soon on the project page.
+
+### Fixed
+
+- Removed public release polling and unavailable download controls from the
+  project page while the repository remains private.
+
 ## [0.1.2] - 2026-09-30
 
 ### Changed
@@ -88,7 +102,8 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/iazaran/orchevia/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/iazaran/orchevia/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/iazaran/orchevia/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/iazaran/orchevia/releases/tag/v0.1.0
