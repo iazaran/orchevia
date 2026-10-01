@@ -75,11 +75,14 @@ Main was current at `d945d923c5e893882aee28763d719e376cf6ba3d`; PR #15 was merge
   attempt 2 as hidden DMG script failure after compilation. Inspect matching Tauri
   2.12 source: script stdout/stderr is debug-only and CI already skips Finder styling.
   Enable verbose logs/system diagnostics; do not claim an unverified bundling fix.
-- v0.1.3 Latest has no assets. v0.1.2 has all four installers and checksums, verified
-  against GitHub asset digest metadata. Keep these private-access links in README;
-  preserve public-soon guidance without downloads on the public page.
-- Keep version 0.1.3. A new version/tag is a maintainer decision after merge;
-  an old-tag rerun cannot pick up new workflow diagnostics. No release reruns here.
+- Prepare 0.1.4 as the confirmed next release, with matching manifests, workspace
+  Cargo lock entries, and dated changelog. The frontend lock has no app version;
+  verify it with a frozen installation.
+- The latest published release has no assets. README lists only planned 0.1.4
+  installers/checksums as pending, with no older installer links. Preserve
+  public-soon guidance without downloads on the public page.
+- The maintainer creates v0.1.4 after merge and passing checks. An old-tag rerun
+  cannot pick up new workflow diagnostics. No release reruns here.
 
 Validation covers change classification including native JSON, PR merge-base,
 multi-commit pushes, renames/deletions, initial pushes, and malformed refs; version
@@ -94,3 +97,8 @@ Final local results: 103 UI tests, 13 delivery tests, 250 core tests, and 2 desk
 command tests passed. All required lint/format/type/compile checks, frozen offline
 pnpm install, version/tag consistency, actionlint, and pnpm build passed. The
 frontend build retains its existing large-chunk advisory; no bundle rule was weakened.
+
+The 0.1.4 follow-up reran all AGENTS.md checks, pnpm build, and frozen lockfile
+validation successfully. The initial core run hit `Text file busy` while spawning
+`mcp::tests::lists_tools_from_fixture_server`; that unchanged fixture passed both
+in isolation and in the full 250-test rerun. No test or production rule was weakened.

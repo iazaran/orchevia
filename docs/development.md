@@ -110,15 +110,17 @@ appears only at debug level. Packaging failures also print macOS version, Xcode,
 architecture, disk space, and mounted disk images. No automatic packaging retry or
 Finder workaround is applied without evidence of the underlying error.
 
-### Verified availability (2026-10-01)
+### Version 0.1.4 availability
 
-The repository is private. v0.1.3 is marked Latest but has **zero release assets**;
-its Linux and arm64 build artifacts in Actions are not published release downloads.
-v0.1.2 has all four installers and `SHA256SUMS`; the published checksum file matches
-the asset SHA-256 metadata. See [README installation](../README.md#install) for
-versioned links requiring GitHub repository access. `latest/download` links would
-select the empty v0.1.3 release, so they are not used. Downloadable does not mean
-runtime-tested on every platform.
+Version 0.1.4 is prepared for release after this PR merges. Its four installers and
+`SHA256SUMS` are pending publication. The README lists only planned 0.1.4 files;
+older installer links have been removed. Add authenticated versioned download links
+only after the new release completes and every file is verified. Stable
+`latest/download` links may be used only when those exact URLs resolve correctly.
+
+The repository remains private. The latest published release was assetless when
+checked on 2026-10-01; neither a tag nor an Actions artifact is an installable release
+download. A public Pages deployment does not grant access to private assets.
 
 The Intel v0.1.3 [release run](https://github.com/iazaran/orchevia/actions/runs/36755474756)
 failed in two different places:
@@ -132,14 +134,13 @@ failed in two different places:
 
 ### Maintainer handoff
 
-Merge this PR after checks pass. No version is bumped for this workflow-only change;
-all manifests and workspace lock entries remain 0.1.3. To use these diagnostics in a
-new release, prepare a new version (0.1.4 is a candidate) in a reviewed change,
-update `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
-`crates/core/Cargo.toml`, and workspace entries in `Cargo.lock`, refresh lockfiles
-as needed, and date the matching `CHANGELOG.md` entry. `pnpm version:check vX.Y.Z`
-checks manifests, Cargo lock entries, changelog, and tag agreement; frozen pnpm
-installation checks the frontend lockfile.
+Merge this PR after checks pass, then create the matching `v0.1.4` tag/release.
+`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
+`crates/core/Cargo.toml`, workspace entries in `Cargo.lock`, and the dated changelog
+entry are aligned to 0.1.4. `pnpm-lock.yaml` has no application-version field and
+requires no change for this version bump; frozen installation verifies it remains
+consistent. `pnpm version:check v0.1.4` checks manifests, Cargo lock entries,
+changelog, and tag agreement.
 
 The maintainer creates the matching new tag/release. Do not move or recreate an
 existing tag: rerunning v0.1.3 uses its original workflow and will not gain these

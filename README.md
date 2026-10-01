@@ -22,24 +22,22 @@ branch → draft PR, nightly review sweeps) without sending code to an Orchevia 
 
 ## Install
 
-The newest verified installer set is [v0.1.2](https://github.com/iazaran/orchevia/releases/tag/v0.1.2) (checked 2026-10-01).
-[v0.1.3](https://github.com/iazaran/orchevia/releases/tag/v0.1.3) is marked Latest but has **no installer assets**.
-Its release build failed on Intel macOS; all v0.1.3 downloads and checksums remain pending.
-The links below intentionally point to the published v0.1.2 files. A tag or release page alone does not prove files exist.
+**v0.1.4 is being prepared for release. Its installers and checksums are pending.**
+Download links for v0.1.4 will be added after all release assets are published and
+verified. A tag or release page alone does not prove files exist.
+
 The repository and release files are **private for now**: sign in to GitHub with an
 account that has repository access. The repository and downloads will be public soon.
 
-| Platform                    | Installer                                                                                                                                                                                                |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-macos-arm64.dmg)                                                                                                            |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-macos-x86_64.dmg)                                                                                                           |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.2/Orchevia-linux-x86_64.deb) |
+| Platform                    | Planned v0.1.4 files (pending)                                 |
+| --------------------------- | -------------------------------------------------------------- |
+| macOS Apple Silicon (arm64) | `Orchevia-macos-arm64.dmg`                                     |
+| macOS Intel (x86_64)        | `Orchevia-macos-x86_64.dmg`                                    |
+| Linux x86_64                | `Orchevia-linux-x86_64.AppImage` · `Orchevia-linux-x86_64.deb` |
+| Checksums                   | `SHA256SUMS`                                                   |
 
-Verify downloads against [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.2/SHA256SUMS).
-macOS installers are unsigned and not notarized; on first launch, right-click the
-app and choose **Open**. See the release notes for the quarantine-removal command.
-Download the installer you need and `SHA256SUMS` into the same directory, keep the
-published filenames, then verify the file you downloaded:
+Once published, download your installer and `SHA256SUMS` into the same directory,
+keep the published filenames, then verify the file you downloaded:
 
 ```bash
 # Linux
@@ -48,10 +46,12 @@ sha256sum -c SHA256SUMS --ignore-missing
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
-Require an `OK` result for your installer. Stable `latest/download` links are not
-used while GitHub's latest release has no files. Contributors can inspect
-[CI checks](https://github.com/iazaran/orchevia/actions/workflows/ci.yml) and the
-[release workflow](https://github.com/iazaran/orchevia/actions/workflows/release.yml)
+Require an `OK` result for your installer. macOS installers are unsigned and not
+notarized; on first launch, right-click the app and choose **Open**. See the release
+notes for the quarantine-removal command.
+
+Contributors can inspect [CI checks](https://github.com/iazaran/orchevia/actions/workflows/ci.yml)
+and the [release workflow](https://github.com/iazaran/orchevia/actions/workflows/release.yml)
 while signed in; private workflow badges do not load reliably for readers.
 
 ### Build from source
@@ -153,7 +153,7 @@ not a guarantee that every requested integration operation is supported.
 
 ## Current limits
 
-- **Beta:** version 0.1.3 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** version 0.1.4 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.

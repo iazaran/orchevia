@@ -34,15 +34,17 @@ describe('public documentation before launch', () => {
     expect(page.documentElement.innerHTML).not.toContain('api.github.com');
   });
 
-  it('distinguishes the empty latest release from the version with installers', () => {
-    expect(readme).toMatch(/v0\.1\.3.*no installer assets/i);
-    expect(readme).toMatch(/newest verified installer set.*v0\.1\.2/i);
+  it('documents only the upcoming version and keeps unpublished downloads pending', () => {
+    expect(readme).toMatch(/v0\.1\.4.*being prepared/i);
+    expect(readme).toMatch(/installers and checksums are.*pending/i);
     expect(readme).not.toContain('/releases/latest/download/');
-    expect(readme).not.toContain('/releases/download/v0.1.3/');
+    expect(readme).not.toContain('/releases/download/');
+    expect(readme).not.toContain('v0.1.2');
+    expect(readme).not.toContain('v0.1.3');
     expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
   });
 
-  it('documents all published architectures with matching versioned checksums', () => {
+  it('lists the planned architectures and checksum instructions without old links', () => {
     for (const asset of [
       'Orchevia-macos-arm64.dmg',
       'Orchevia-macos-x86_64.dmg',
@@ -50,7 +52,7 @@ describe('public documentation before launch', () => {
       'Orchevia-linux-x86_64.deb',
       'SHA256SUMS',
     ]) {
-      expect(readme).toContain(`/releases/download/v0.1.2/${asset}`);
+      expect(readme).toContain(asset);
     }
     expect(readme).toMatch(/account that has repository access/i);
     expect(readme).toContain('sha256sum -c SHA256SUMS --ignore-missing');
