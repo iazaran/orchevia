@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { classifyChanges } from './ci-changes.mjs';
 
-const none = { frontend: false, rust: false, desktop: false, site: false };
+const none = {
+  frontend: false,
+  rust: false,
+  desktop: false,
+  site: false,
+  workflows: false,
+};
 
 test('documentation edits avoid compilers but site edits request deployment', () => {
   assert.deepEqual(classifyChanges(['README.md', 'docs/development.md']), none);
@@ -34,14 +40,13 @@ test('shared contracts, locks, and delivery scripts validate both stacks', () =>
     'pnpm-lock.yaml',
     '.cargo/config.toml',
     'scripts/check-version.mjs',
-    '.github/workflows/ci.yml',
-    '.github/workflows/release.yml',
   ]) {
     assert.deepEqual(classifyChanges([path]), {
       ...none,
       frontend: true,
       rust: true,
       desktop: true,
+      workflows: true,
     });
   }
 });
@@ -50,8 +55,22 @@ test('Pages workflow changes validate the site; dependency scheduling avoids com
   assert.deepEqual(classifyChanges(['.github/workflows/pages.yml']), {
     ...none,
     site: true,
+    workflows: true,
   });
   assert.deepEqual(classifyChanges(['.github/dependabot.yml']), none);
+});
+
+test('known workflow edits request linting without rebuilding unchanged application code', () => {
+  for (const path of ['.github/workflows/ci.yml', '.github/workflows/release.yml']) {
+    assert.deepEqual(classifyChanges([path]), { ...none, workflows: true });
+  }
+  assert.deepEqual(classifyChanges(['.github/workflows/new.yml']), {
+    ...none,
+    frontend: true,
+    rust: true,
+    desktop: true,
+    workflows: true,
+  });
 });
 
 test('unknown inputs fail safe and changed sets combine their requirements', () => {
@@ -60,11 +79,12 @@ test('unknown inputs fail safe and changed sets combine their requirements', () 
     frontend: true,
     rust: true,
     desktop: true,
+    workflows: true,
   });
   assert.deepEqual(classifyChanges([]), none);
   assert.deepEqual(
     classifyChanges(['src/App.tsx', 'crates/core/src/lib.rs', 'docs/index.html']),
-    { frontend: true, rust: true, desktop: true, site: true },
+    { ...none, frontend: true, rust: true, desktop: true, site: true },
   );
 });
 

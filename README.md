@@ -22,18 +22,18 @@ branch → draft PR, nightly review sweeps) without sending code to an Orchevia 
 
 ## Install
 
-Install v0.1.4 using the platform downloads below. See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.4).
+Install v0.1.5 using the platform downloads below. See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.5).
 
 The repository and release files are **private for now**: sign in to GitHub with an
 account that has repository access. The repository and downloads will be public soon.
 
 | Platform                    | Installer                                                                                                                                                                                                |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-macos-arm64.dmg)                                                                                                            |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-macos-x86_64.dmg)                                                                                                           |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-linux-x86_64.deb) |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-macos-arm64.dmg)                                                                                                            |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-macos-x86_64.dmg)                                                                                                           |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.4/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.5/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -150,7 +150,7 @@ not a guarantee that every requested integration operation is supported.
 
 ## Current limits
 
-- **Beta:** version 0.1.4 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** version 0.1.5 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.

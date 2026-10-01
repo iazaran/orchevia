@@ -52,8 +52,10 @@ On every PR and `main` push, the frontend check always runs version consistency,
 repository formatting, delivery-script tests, and public-documentation tests.
 Changed frontend inputs also run lint, typecheck, all UI tests, and a production
 build. Native inputs run core fmt/clippy/tests and Linux desktop compilation and
-command tests. Shared manifests, locks, workflow/build scripts, and unfamiliar
-inputs run both stacks. Pure prose changes avoid compilers; formatting still runs.
+command tests. Shared manifests, locks, build scripts, and unfamiliar inputs run
+both stacks. Edits to the three existing workflows run actionlint and the delivery
+regressions without compiling unchanged application code; new workflows fail safe
+and run both stacks as well. Pure prose changes avoid compilers; formatting still runs.
 
 `scripts/ci-changes.mjs` compares the PR head with its merge base, or the entire
 before/after range on a main push. Deleted and renamed inputs remain visible.
@@ -68,17 +70,32 @@ production `custom-protocol` feature, which requires `dist/`. When native checks
 apply, the frontend job builds it once and shares a one-day `ci-frontend` artifact
 with the read-only desktop job in the same run. That artifact is never consumed by
 release jobs; tag builds produce their own frontend from the tag source.
-All three real platform packages are
-built on release tags. A UI-only change runs frontend validation; a core or desktop
+Desktop CI uses `cargo test -p orchevia --locked --all-targets`: it compiles the
+entire shell with production default features and runs its tests in one profile.
+A preceding `cargo check` would compile dependencies again as metadata only.
+All three real platform packages are built on release tags. A UI-only change runs
+frontend validation; a core or desktop
 change also compiles/tests the Linux shell. macOS compilation and packaging are
 verified at release time, so platform-specific failures can first appear there.
 
 pnpm caches its store by lockfile. Rust caches the actual workspace `target/`
 (no redundant `src-tauri/target`), with separate core-check, desktop-check, and
-release-build keys. Main writes CI Rust caches; PRs restore them. Release validation
-can restore the main core cache, and tag builds retain dependency caches even when
-packaging or upload fails. Toolchain/lock changes and GitHub cache scope can still
+release-build keys. Main and PRs save successful CI dependency caches. GitHub isolates
+PR writes in their merge-ref scope, so later updates of that PR can restore them,
+while main and release tags cannot. Release validation can restore the trusted main
+core cache. Tag builds retain dependencies even when packaging or upload fails,
+but caches from one tag cannot be restored by another tag. A new release can still
+compile its release-profile dependencies from scratch. Toolchain/lock changes also
 cause misses. Compiled workspace crates and installers are not a release reuse path.
+
+Linux CI and release jobs share `scripts/install-linux-deps.sh`. The hosted runner's
+mirror list normally prefers Azure, which returned packages very slowly in the
+[v0.1.4 release run](https://github.com/iazaran/orchevia/actions/runs/36889916059):
+APT fetched 78.3 MB in 20:42 at 63.1 KB/s, making setup take 21:12. The script removes
+that mirror only when Ubuntu's archive fallback is present. Signed source definitions,
+security indexes, and the full packaging/media dependency set stay intact. Connection
+timeouts and three retries bound stalled requests; timing output distinguishes index
+refresh from installation. No host dependency installation is skipped on cache hits.
 
 The previous PR → main → tag sequence built three platforms at each stage (nine
 installer builds); now only the three tag builds remain, alongside cheaper Linux
@@ -88,6 +105,15 @@ including setup/cache work). The net saving is lower because Linux checks still
 cost time; cache warmth and runner billing rates vary. No fixed percentage of
 account minutes is promised. Shorter artifact retention saves storage, not build
 minutes. Concurrency cancels obsolete PR/main runs.
+
+The v0.1.4 main and Actions-only dependency PR each spent about 6–7 minutes in the
+desktop job. Avoiding native jobs for existing-workflow-only edits eliminates that
+job plus the core job, with a small workflow-lint cost. Applicable native jobs drop
+the separate check pass (2:15–2:22 in those cold runs), while retaining compilation
+and tests. Mirror selection targets the observed 20-minute download stall; actual
+savings depend on archive throughput. Linux release packaging itself took 9:20 and
+still runs, as do both real macOS builds. Measure new timings after merge/tag rather
+than promising a fixed release duration.
 
 ## Releases (`.github/workflows/release.yml`)
 
@@ -110,16 +136,21 @@ appears only at debug level. Packaging failures also print macOS version, Xcode,
 architecture, disk space, and mounted disk images. No automatic packaging retry or
 Finder workaround is applied without evidence of the underlying error.
 
-### Version 0.1.4 downloads
+### Version 0.1.5 downloads
 
 The [README installation section](../README.md#install) links directly to the
-versioned v0.1.4 Linux, Apple Silicon, and Intel installers and `SHA256SUMS`.
+versioned v0.1.5 Linux, Apple Silicon, and Intel installers and `SHA256SUMS`.
 Keep installation links scoped to the current version. Use the checksum commands
 there to verify each downloaded file.
 
 The repository and release files are private: readers need a GitHub account with
 repository access. A public Pages deployment does not grant access to private
 assets; the project page retains the public-soon notice.
+
+The previous v0.1.4 workflow completed on all three platforms and published four
+nonempty installers plus `SHA256SUMS`; the downloaded checksum file matched the
+four GitHub asset SHA-256 digests. README links are updated together with application
+manifests for each new release. Publication still requires a successful tag build.
 
 The Intel v0.1.3 [release run](https://github.com/iazaran/orchevia/actions/runs/36755474756)
 failed in two different places:
@@ -133,13 +164,18 @@ failed in two different places:
 
 ### Maintainer handoff
 
-Merge this PR after checks pass, then create the matching `v0.1.4` tag/release.
+Merge this PR after checks pass, then create the matching `v0.1.5` tag/release.
 `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
 `crates/core/Cargo.toml`, workspace entries in `Cargo.lock`, and the dated changelog
-entry are aligned to 0.1.4. `pnpm-lock.yaml` has no application-version field and
+entry are aligned to 0.1.5. `pnpm-lock.yaml` has no application-version field and
 requires no change for this version bump; frozen installation verifies it remains
-consistent. `pnpm version:check v0.1.4` checks manifests, Cargo lock entries,
+consistent. `pnpm version:check v0.1.5` checks manifests, Cargo lock entries,
 changelog, and tag agreement.
+
+This PR includes the four Actions upgrades from Dependabot #17 (`setup-node` v7,
+`download-artifact` v8, `configure-pages` v6, and `deploy-pages` v5). Keep #17 open
+until this PR merges; Dependabot can then detect the equivalent updates. Artifact
+downloads retain v8's default digest-mismatch error behavior.
 
 The maintainer creates the matching new tag/release. Do not move or recreate an
 existing tag: rerunning v0.1.3 uses its original workflow and will not gain these

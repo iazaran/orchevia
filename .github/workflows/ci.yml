@@ -21,12 +21,13 @@ jobs:
       frontend: ${{ steps.paths.outputs.frontend }}
       rust: ${{ steps.paths.outputs.rust }}
       desktop: ${{ steps.paths.outputs.desktop }}
+      workflows: ${{ steps.paths.outputs.workflows }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - id: paths
@@ -41,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -49,6 +50,11 @@ jobs:
       - run: pnpm version:check
       - run: pnpm format:check
       - run: pnpm test:delivery
+      - name: Lint workflow changes
+        if: needs.changes.outputs.workflows == 'true'
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
       - name: Check public documentation
         run: pnpm exec vitest run src/test/public-docs.test.ts
       - if: needs.changes.outputs.frontend == 'true'
@@ -85,13 +91,13 @@ jobs:
         with:
           workspaces: . -> target
           shared-key: core-checks
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # PR writes stay in their merge-ref scope; main/tags cannot restore them.
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p orchevia-core --locked --all-targets -- -D warnings
       - run: cargo test -p orchevia-core --locked
 
   desktop:
-    name: Desktop Linux (check · tests)
+    name: Desktop Linux (compile · tests)
     needs: [changes, frontend]
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
@@ -100,7 +106,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Restore frontend from this CI run only
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ci-frontend
           path: dist
@@ -109,16 +115,12 @@ jobs:
         with:
           workspaces: . -> target
           shared-key: desktop-checks
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Save new dependencies for subsequent updates of the same PR too.
       - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
-            librsvg2-dev patchelf libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev build-essential curl wget file \
-            libssl-dev libgtk-3-dev libayatana-appindicator3-dev
-      - run: cargo check -p orchevia --locked
-      - run: cargo test -p orchevia --locked
+        run: bash scripts/install-linux-deps.sh
+      # Tests compile every target with production default features, including dist/.
+      # A preceding cargo check duplicates dependency compilation in another profile.
+      - run: cargo test -p orchevia --locked --all-targets
 
   result:
     name: CI result
