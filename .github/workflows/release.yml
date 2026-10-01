@@ -8,12 +8,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     name: Validate before release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
@@ -25,13 +31,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Check tag and application versions
         run: pnpm version:check "$GITHUB_REF_NAME"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          shared-key: core-checks
+      - run: pnpm test:delivery
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: cargo fmt --all -- --check
-      - run: cargo clippy -p orchevia-core --all-targets -- -D warnings
-      - run: cargo test -p orchevia-core
+      - run: cargo clippy -p orchevia-core --locked --all-targets -- -D warnings
+      - run: cargo test -p orchevia-core --locked
 
   build:
     name: Build release (${{ matrix.os }})
@@ -39,10 +50,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel]
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            bundles: deb,appimage
+          - os: macos-15
+            arch: arm64
+            bundles: dmg
+          - os: macos-15-intel
+            arch: x86_64
+            bundles: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
@@ -51,9 +73,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            . -> target
-            src-tauri -> target
+          workspaces: . -> target
+          shared-key: release-build
+          # A packaging/upload failure should not force dependencies to compile again.
+          cache-on-failure: true
       - name: Install Linux deps
         if: runner.os == 'Linux'
         run: |
@@ -63,7 +86,35 @@ jobs:
             libjavascriptcoregtk-4.1-dev build-essential curl wget file \
             libssl-dev libgtk-3-dev libayatana-appindicator3-dev
       - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri build
+      - name: Verify runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$(uname -m)" = "$EXPECTED_ARCH"
+      - name: Build and package (capture bundler stdout and stderr)
+        id: package
+        shell: bash
+        env:
+          RELEASE_BUNDLES: ${{ matrix.bundles }}
+        run: pnpm tauri build --ci --verbose --bundles "$RELEASE_BUNDLES" -- --locked 2>&1 | tee build.log
+      - name: macOS packaging diagnostics
+        if: failure() && runner.os == 'macOS' && steps.package.outcome == 'failure'
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          df -h
+          hdiutil info
+          find target/release/bundle -maxdepth 3 -type f -print
+      - name: Retain packaging failure evidence
+        if: failure() && steps.package.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaging-diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            build.log
+            target/release/bundle/dmg/bundle_dmg.sh
+          retention-days: 7
+          if-no-files-found: error
       - name: Stage artifacts
         run: |
           mkdir -p release-artifacts
@@ -79,11 +130,27 @@ jobs:
             cp "$dmg" "release-artifacts/Orchevia-macos-$(uname -m).dmg"
           fi
           ls -la release-artifacts
-      - uses: actions/upload-artifact@v7
+      - name: Upload release installers
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.os }}
           path: release-artifacts/
-          retention-days: 30
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+      # Retry only the upload once on transient network failures; never rebuild here.
+      - name: Retry installer upload once
+        if: steps.upload.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.os }}
+          path: release-artifacts/
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
 
   publish:
     name: Publish GitHub Release
@@ -93,6 +160,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No run-id/repository override: only artifacts built by this trusted tag run.
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -101,6 +171,11 @@ jobs:
       - name: Checksums
         run: |
           cd release-artifacts
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 4
+          for file in Orchevia-linux-x86_64.deb Orchevia-linux-x86_64.AppImage \
+            Orchevia-macos-arm64.dmg Orchevia-macos-x86_64.dmg; do
+            test -s "$file"
+          done
           find . -maxdepth 1 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \) -print0 \
             | sort -z | xargs -0 -r sha256sum > SHA256SUMS
           test -s SHA256SUMS

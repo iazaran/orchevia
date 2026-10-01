@@ -1,5 +1,6 @@
 name: Pages
 
+# Validate every PR; gate deployment at job level instead of filtering checks.
 on:
   push:
     branches: [main]
@@ -17,14 +18,34 @@ jobs:
   validate:
     name: Validate docs site
     runs-on: ubuntu-latest
+    outputs:
+      site: ${{ steps.paths.outputs.site }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: paths
+        if: github.event_name != 'workflow_dispatch'
+        run: node scripts/ci-changes.mjs
       - name: Validate docs/index.html
         run: |
           test -f docs/index.html
           grep -qi "orchevia" docs/index.html
-          python3 -c "import html.parser; p=html.parser.HTMLParser(); p.feed(open('docs/index.html').read())"
-          echo "docs OK"
+          python3 - <<'PY'
+          import html.parser
+          from pathlib import Path
+          content = Path('docs/index.html').read_text()
+          html.parser.HTMLParser().feed(content)
+          assert 'public soon' in content.lower()
+          assert 'private' in content.lower()
+          assert '/releases/download/' not in content
+          assert 'api.github.com' not in content
+          print('docs OK')
+          PY
 
   deploy:
     name: Deploy to GitHub Pages
@@ -32,8 +53,10 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    # PRs validate but never deploy over production.
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      (needs.validate.outputs.site == 'true' || github.event_name == 'workflow_dispatch')
     needs: [validate]
     runs-on: ubuntu-latest
     environment:
@@ -41,6 +64,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v5
         with:
