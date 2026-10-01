@@ -3,13 +3,25 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export function classifyChanges(paths) {
-  const changes = { frontend: false, rust: false, desktop: false, site: false };
+  const changes = {
+    frontend: false,
+    rust: false,
+    desktop: false,
+    site: false,
+    workflows: false,
+  };
   for (const path of paths) {
     if (
       path === '.github/workflows/pages.yml' ||
       (path.startsWith('docs/') && !path.endsWith('.md'))
     ) {
       changes.site = true;
+      if (path === '.github/workflows/pages.yml') changes.workflows = true;
+    } else if (
+      ['.github/workflows/ci.yml', '.github/workflows/release.yml'].includes(path)
+    ) {
+      // Lint workflows and exercise delivery scripts without recompiling unchanged source.
+      changes.workflows = true;
     } else if (path.startsWith('crates/') || path.startsWith('src-tauri/')) {
       changes.rust = changes.desktop = true;
     } else if (
@@ -32,8 +44,9 @@ export function classifyChanges(paths) {
     ) {
       // Formatting still runs on every PR; prose alone needs no compiler.
     } else {
-      // Locks, workflows, build inputs, and unfamiliar files fail safe.
+      // Locks, build inputs, new workflows, and unfamiliar files fail safe.
       changes.frontend = changes.rust = changes.desktop = true;
+      changes.workflows = true;
     }
   }
   return changes;
