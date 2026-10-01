@@ -89,7 +89,9 @@ Rules of thumb:
 1. Fork, branch from `main` (`feature/<name>`).
 2. Run all required checks in [AGENTS.md](./AGENTS.md) before pushing.
 3. Fill in the PR template: what/why, testing, screenshots for UX changes, breaking changes.
-4. CI must be green: frontend checks, Rust fmt/clippy/tests, smoke build, installer artifacts.
+4. CI must be green: formatting/version/docs checks and applicable frontend,
+   Rust fmt/clippy/tests, and Linux desktop checks. Installer packages are built
+   for Linux, Apple Silicon, and Intel on release tags.
 
 ## Code of Conduct
 

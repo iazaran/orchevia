@@ -56,3 +56,41 @@ keyboard handling, a safe Start-to-End mock run, and unavailable-release guidanc
 The independent review also reproduced consecutive-gate stale approval and fixed
 it with result-ID tokens checked inside the existing transaction. Real provider
 workflows and skill loading are not covered by the browser smoke check.
+
+## CI and release follow-up (2026-10-01)
+
+Scope: reduce Actions usage, diagnose the two v0.1.3 Intel failures independently,
+and document verified downloads without changing visibility, tags, or Pages settings.
+Main was current at `d945d923c5e893882aee28763d719e376cf6ba3d`; PR #15 was merged,
+#13/#14 closed, and no new dependency PRs were open.
+
+- Replace PR/main bundle matrices with gated core/Linux desktop checks; retain Linux,
+  Apple Silicon, and Intel tag packages. Keep unconditional formatting/version/docs
+  checks and a failing aggregate for applicable failed/cancelled jobs.
+- Share core-check caches with release validation, use the real root Cargo target,
+  retain build dependencies on failure, and retry uploads once without a rebuild.
+- Keep Pages validation on every PR; deploy only site changes on main. Group Actions
+  dependency updates and limit grouped version PRs without disabling security updates.
+- Diagnose attempt 1 as completed Intel DMG plus `ENOTFOUND` at artifact creation;
+  attempt 2 as hidden DMG script failure after compilation. Inspect matching Tauri
+  2.12 source: script stdout/stderr is debug-only and CI already skips Finder styling.
+  Enable verbose logs/system diagnostics; do not claim an unverified bundling fix.
+- v0.1.3 Latest has no assets. v0.1.2 has all four installers and checksums, verified
+  against GitHub asset digest metadata. Keep these private-access links in README;
+  preserve public-soon guidance without downloads on the public page.
+- Keep version 0.1.3. A new version/tag is a maintainer decision after merge;
+  an old-tag rerun cannot pick up new workflow diagnostics. No release reruns here.
+
+Validation covers change classification including native JSON, PR merge-base,
+multi-commit pushes, renames/deletions, initial pushes, and malformed refs; version
+and Cargo lock drift; public-page privacy and README availability; actionlint; all
+AGENTS.md checks plus desktop command tests and the frontend production build.
+A clean source fixture caught the desktop default `custom-protocol` requirement
+for `dist/`. CI now builds frontend output once and shares it only within that
+read-only CI run; tag builds never use that PR/main artifact. Runtime packaging
+on macOS remains pending a maintainer-approved new tag build.
+
+Final local results: 103 UI tests, 13 delivery tests, 250 core tests, and 2 desktop
+command tests passed. All required lint/format/type/compile checks, frozen offline
+pnpm install, version/tag consistency, actionlint, and pnpm build passed. The
+frontend build retains its existing large-chunk advisory; no bundle rule was weakened.
