@@ -102,3 +102,52 @@ The 0.1.4 follow-up reran all AGENTS.md checks, pnpm build, and frozen lockfile
 validation successfully. The initial core run hit `Text file busy` while spawning
 `mcp::tests::lists_tools_from_fixture_server`; that unchanged fixture passed both
 in isolation and in the full 250-test rerun. No test or production rule was weakened.
+
+## Actions optimization and 0.1.5 (2026-10-01)
+
+Main was fast-forwarded to merged PR #16 (`2e9a01e`); work continues on
+`optimize-actions-and-dependencies`. Dependabot #17 contains only four compatible
+Actions upgrades, included here and left open until merge.
+
+The v0.1.4 release run `36889916059` completed successfully. Both macOS DMGs and
+Linux packages are published; all four nonempty installer asset digests agree with
+the downloaded `SHA256SUMS`. Linux setup took 21:12 because Azure's APT mirror
+downloaded 78.3 MB in 20:42 (63.1 KB/s). Packaging then took 9:20. This is distinct
+from the previous Intel bundler/upload failures, which did not recur in v0.1.4.
+
+- Share a tested Linux setup script between CI and release. Remove Azure's slow
+  mirror only with Ubuntu's archive fallback present, preserve signed/security
+  sources and media dependencies, and log update/install timings with bounded retries.
+- Replace the redundant desktop `cargo check` pass with one all-target test build.
+  Production default features and the frontend artifact remain required.
+- Lint edits to existing workflows instead of compiling unchanged application code;
+  new workflows, shared build scripts, manifests, and unknown inputs remain conservative.
+  Keep aggregate checks and all frontend/core tests for their applicable changes.
+- Allow isolated PR cache writes so repeated PR updates can reuse changed dependencies.
+  Main/tag jobs cannot consume those PR caches. Different release tags still cannot
+  reuse one another's release-profile caches; no extra cache-warming builds are added.
+- Prepare 0.1.5 manifests/lock entries/changelog and direct current-version download
+  links. Preserve private-repository access guidance and the public-soon page notice.
+
+Estimated savings: existing-workflow-only PR/main edits avoid roughly 6–7 minutes
+of desktop work plus the core job, minus workflow linting overhead. Native CI avoids
+the observed 2:15–2:22 check pass. Mirror throughput remains variable; the 20-minute
+stall is a measured optimization target, not a guaranteed reduction. All three
+platform release builds and their validation/publication gates remain.
+
+Validate all AGENTS.md commands, production frontend build, all-target desktop tests,
+delivery regressions, actionlint/ShellCheck, frozen dependency installation, and
+version/tag consistency before a single push. The maintainer merges, then creates
+v0.1.5 and verifies its four installers/checksums. No manual build/rerun or tag here.
+
+Local results: all AGENTS.md commands, frozen offline pnpm installation,
+`pnpm build`, `pnpm version:check v0.1.5`, and the exact CI all-target desktop test
+command passed (103 UI tests, 15 delivery tests, 250 core tests, 2 desktop tests).
+The same pinned actionlint container used in CI passed workflow linting and
+ShellCheck for the Linux setup script. Isolated source fixtures confirmed that the
+all-target desktop test build rejects a type error inside production `main` and
+missing `dist/`; removing the separate check does not bypass either compile gate.
+Self-review preserved all three release platforms, publication/checksum gates,
+private page guidance, and artifact digest enforcement. The existing frontend
+large-chunk advisory remains. Actual mirror timings and Pages deployment will be
+verified in the maintainer's post-merge/tag runs.

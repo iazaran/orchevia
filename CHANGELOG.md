@@ -6,6 +6,23 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-01
+
+### Changed
+
+- Validate existing workflow edits with actionlint and delivery tests without
+  rebuilding unchanged frontend or native code; unfamiliar inputs still run both stacks.
+- Compile and test all Linux desktop targets once with production default features,
+  and save isolated PR dependency caches for later updates of the same PR.
+- Include the grouped Actions upgrades for Node setup, artifact downloads, and Pages.
+- Align application versions and current installer/checksum links to 0.1.5.
+
+### Fixed
+
+- Avoid the slow Azure APT mirror observed during the 0.1.4 Linux release, while
+  retaining signed Ubuntu sources, security updates, and packaging/media dependencies.
+- Add APT timing output and bounded connection retries to diagnose future setup delays.
+
 ## [0.1.4] - 2026-10-01
 
 ### Changed
