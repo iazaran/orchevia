@@ -545,8 +545,10 @@ pnpm tauri dev</code></pre>
             >. Run <code>pnpm check</code>, <code>cargo test -p orchevia-core</code>,
             <code>cargo clippy -p orchevia-core --all-targets -- -D warnings</code>,
             <code>cargo fmt --check</code>, and <code>cargo check -p orchevia</code>
-            before opening a PR. GitHub Actions also builds installers on PRs and
-            publishes downloads from version tags.
+            before opening a PR. GitHub Actions validates applicable frontend, Rust, and
+            Linux desktop changes on PRs. Version tags build Linux, Apple Silicon, and
+            Intel installers; downloads require a successful release and repository
+            access.
           </p>
         </section>
 

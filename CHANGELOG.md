@@ -6,6 +6,24 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-01
+
+### Changed
+
+- Gate frontend and native CI by changed inputs, replace routine installer matrices
+  with Linux desktop checks, and keep all three release architectures on tag builds.
+- Deploy Pages only for site changes, group Actions dependency updates, and improve
+  Rust cache scopes while preserving required-check conclusions and security updates.
+- Prepare version 0.1.4 with direct versioned installer and checksum links; remove
+  older download links and the private CI badge.
+
+### Fixed
+
+- Capture verbose packaging diagnostics, retain dependency caches on release-build
+  failure, and retry a failed installer upload once without recompiling.
+- Require all four installers before publication and validate workspace Cargo lock
+  versions against application manifests.
+
 ## [0.1.3] - 2026-09-30
 
 ### Changed
@@ -102,7 +120,8 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/iazaran/orchevia/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/iazaran/orchevia/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/iazaran/orchevia/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/iazaran/orchevia/compare/v0.1.0...v0.1.1

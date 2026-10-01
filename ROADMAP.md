@@ -15,7 +15,7 @@ follows review and merge of the initial application.
 | Reuse           | Built-in templates, user templates, import/export, local preferences and generation history                       |
 | Automation      | Local schedules, GitHub watchers, inbox, trust settings, optional background mode                                 |
 | Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                     |
-| Delivery        | PR tests and installer artifacts, tag-driven Linux/macOS releases, checksums, project page                        |
+| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, private-beta project page                 |
 
 ## Current priorities
 

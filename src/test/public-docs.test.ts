@@ -5,6 +5,9 @@ const page = new DOMParser().parseFromString(
   readFileSync('docs/index.html', 'utf8'),
   'text/html',
 );
+const readme = readFileSync('README.md', 'utf8');
+const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
+  .version;
 
 describe('public documentation before launch', () => {
   it('announces upcoming public access without offering private downloads', () => {
@@ -26,5 +29,38 @@ describe('public documentation before launch', () => {
     expect(page.querySelector('#install')?.textContent).toMatch(
       /contributors with repository access can build/i,
     );
+  });
+
+  it('keeps private download links and API polling out of the entire public page', () => {
+    expect(page.querySelector('a[href*="/releases/"]')).toBeNull();
+    expect(page.documentElement.innerHTML).not.toContain('api.github.com');
+  });
+
+  it('uses current-version installation guidance without temporary release status', () => {
+    expect(readme).toContain(`Install v${version}`);
+    expect(readme).not.toMatch(/pending|being prepared|planned.*files|processing/i);
+    expect(readme).not.toContain('/releases/latest/download/');
+    const linkedVersions = Array.from(
+      readme.matchAll(/\/releases\/download\/v([^/]+)\//g),
+      (match) => match[1],
+    );
+    expect(linkedVersions).toHaveLength(5);
+    expect(linkedVersions.every((linkedVersion) => linkedVersion === version)).toBe(true);
+    expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
+  });
+
+  it('links each architecture and checksums directly to the current version', () => {
+    for (const asset of [
+      'Orchevia-macos-arm64.dmg',
+      'Orchevia-macos-x86_64.dmg',
+      'Orchevia-linux-x86_64.AppImage',
+      'Orchevia-linux-x86_64.deb',
+      'SHA256SUMS',
+    ]) {
+      expect(readme).toContain(`/releases/download/v${version}/${asset}`);
+    }
+    expect(readme).toMatch(/account that has repository access/i);
+    expect(readme).toContain('sha256sum -c SHA256SUMS --ignore-missing');
+    expect(readme).toContain('shasum -a 256 -c SHA256SUMS --ignore-missing');
   });
 });

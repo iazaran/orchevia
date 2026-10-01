@@ -9,6 +9,11 @@ const versions = {
     read('crates/core/Cargo.toml'),
   )?.[1],
 };
+const lockedPackages = read('Cargo.lock').split('[[package]]');
+for (const name of ['orchevia', 'orchevia-core']) {
+  const locked = lockedPackages.find((entry) => entry.includes(`\nname = "${name}"\n`));
+  versions[`Cargo.lock (${name})`] = /^version = "([^"]+)"/m.exec(locked ?? '')?.[1];
+}
 for (const [path, value] of Object.entries(versions)) {
   if (value !== version)
     throw new Error(`${path}: ${String(value)} must match ${version}`);
