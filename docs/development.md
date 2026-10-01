@@ -110,17 +110,16 @@ appears only at debug level. Packaging failures also print macOS version, Xcode,
 architecture, disk space, and mounted disk images. No automatic packaging retry or
 Finder workaround is applied without evidence of the underlying error.
 
-### Version 0.1.4 availability
+### Version 0.1.4 downloads
 
-Version 0.1.4 is prepared for release after this PR merges. Its four installers and
-`SHA256SUMS` are pending publication. The README lists only planned 0.1.4 files;
-older installer links have been removed. Add authenticated versioned download links
-only after the new release completes and every file is verified. Stable
-`latest/download` links may be used only when those exact URLs resolve correctly.
+The [README installation section](../README.md#install) links directly to the
+versioned v0.1.4 Linux, Apple Silicon, and Intel installers and `SHA256SUMS`.
+Keep installation links scoped to the current version. Use the checksum commands
+there to verify each downloaded file.
 
-The repository remains private. The latest published release was assetless when
-checked on 2026-10-01; neither a tag nor an Actions artifact is an installable release
-download. A public Pages deployment does not grant access to private assets.
+The repository and release files are private: readers need a GitHub account with
+repository access. A public Pages deployment does not grant access to private
+assets; the project page retains the public-soon notice.
 
 The Intel v0.1.3 [release run](https://github.com/iazaran/orchevia/actions/runs/36755474756)
 failed in two different places:
@@ -149,10 +148,10 @@ If approved, rerun only failed jobs rather than the whole matrix; successful tag
 artifacts can be used by the dependent publish job while retained. An old upload
 failure cannot recover an unuploaded DMG from a runner that has already exited.
 
-After a release completes, verify all four nonempty installers and checksums,
-update the README to that version, and only adopt latest-download links when those
-exact URLs work for authorized readers. Do not claim files are downloadable before
-publication. No release build is manually dispatched by this change.
+For each release, verify all four nonempty installers and checksums and check
+that the README's versioned URLs match the published asset names. Only adopt
+latest-download links when those exact URLs work for authorized readers.
+No release build is manually dispatched by this change.
 
 ## GitHub Pages (`.github/workflows/pages.yml`)
 

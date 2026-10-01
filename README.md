@@ -4,7 +4,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
 
-[Installation and availability](#install) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
+[Download installers](#install) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
 
 Orchevia is a **local-first** desktop app for visual developer workflows. You describe
 a task — _"implement this ticket with Claude, review with Codex, open a draft PR"_ — inspect
@@ -22,22 +22,19 @@ branch → draft PR, nightly review sweeps) without sending code to an Orchevia 
 
 ## Install
 
-**v0.1.4 is being prepared for release. Its installers and checksums are pending.**
-Download links for v0.1.4 will be added after all release assets are published and
-verified. A tag or release page alone does not prove files exist.
+Install v0.1.4 using the platform downloads below. See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.4).
 
 The repository and release files are **private for now**: sign in to GitHub with an
 account that has repository access. The repository and downloads will be public soon.
 
-| Platform                    | Planned v0.1.4 files (pending)                                 |
-| --------------------------- | -------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | `Orchevia-macos-arm64.dmg`                                     |
-| macOS Intel (x86_64)        | `Orchevia-macos-x86_64.dmg`                                    |
-| Linux x86_64                | `Orchevia-linux-x86_64.AppImage` · `Orchevia-linux-x86_64.deb` |
-| Checksums                   | `SHA256SUMS`                                                   |
+| Platform                    | Installer                                                                                                                                                                                                |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-macos-arm64.dmg)                                                                                                            |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-macos-x86_64.dmg)                                                                                                           |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.4/Orchevia-linux-x86_64.deb) |
 
-Once published, download your installer and `SHA256SUMS` into the same directory,
-keep the published filenames, then verify the file you downloaded:
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.4/SHA256SUMS)
+into the same directory, keep the published filenames, then verify your download:
 
 ```bash
 # Linux

@@ -14,8 +14,8 @@ All notable changes are recorded here, following
   with Linux desktop checks, and keep all three release architectures on tag builds.
 - Deploy Pages only for site changes, group Actions dependency updates, and improve
   Rust cache scopes while preserving required-check conclusions and security updates.
-- Prepare version 0.1.4 and document its pending installers without older download
-  links; remove the private CI badge and provide platform-specific checksum commands.
+- Prepare version 0.1.4 with direct versioned installer and checksum links; remove
+  older download links and the private CI badge.
 
 ### Fixed
 

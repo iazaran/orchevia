@@ -78,9 +78,9 @@ Main was current at `d945d923c5e893882aee28763d719e376cf6ba3d`; PR #15 was merge
 - Prepare 0.1.4 as the confirmed next release, with matching manifests, workspace
   Cargo lock entries, and dated changelog. The frontend lock has no app version;
   verify it with a frozen installation.
-- The latest published release has no assets. README lists only planned 0.1.4
-  installers/checksums as pending, with no older installer links. Preserve
-  public-soon guidance without downloads on the public page.
+- README links directly to the v0.1.4 installers and checksums, with no older
+  installer links or temporary build-status wording. Preserve public-soon
+  guidance without downloads on the public page.
 - The maintainer creates v0.1.4 after merge and passing checks. An old-tag rerun
   cannot pick up new workflow diagnostics. No release reruns here.
 
@@ -90,8 +90,8 @@ and Cargo lock drift; public-page privacy and README availability; actionlint; a
 AGENTS.md checks plus desktop command tests and the frontend production build.
 A clean source fixture caught the desktop default `custom-protocol` requirement
 for `dist/`. CI now builds frontend output once and shares it only within that
-read-only CI run; tag builds never use that PR/main artifact. Runtime packaging
-on macOS remains pending a maintainer-approved new tag build.
+read-only CI run; tag builds never use that PR/main artifact. Verify runtime
+packaging on macOS in the maintainer-approved new tag build.
 
 Final local results: 103 UI tests, 13 delivery tests, 250 core tests, and 2 desktop
 command tests passed. All required lint/format/type/compile checks, frozen offline

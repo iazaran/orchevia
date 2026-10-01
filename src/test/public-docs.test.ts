@@ -6,6 +6,8 @@ const page = new DOMParser().parseFromString(
   'text/html',
 );
 const readme = readFileSync('README.md', 'utf8');
+const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
+  .version;
 
 describe('public documentation before launch', () => {
   it('announces upcoming public access without offering private downloads', () => {
@@ -34,17 +36,20 @@ describe('public documentation before launch', () => {
     expect(page.documentElement.innerHTML).not.toContain('api.github.com');
   });
 
-  it('documents only the upcoming version and keeps unpublished downloads pending', () => {
-    expect(readme).toMatch(/v0\.1\.4.*being prepared/i);
-    expect(readme).toMatch(/installers and checksums are.*pending/i);
+  it('uses current-version installation guidance without temporary release status', () => {
+    expect(readme).toContain(`Install v${version}`);
+    expect(readme).not.toMatch(/pending|being prepared|planned.*files|processing/i);
     expect(readme).not.toContain('/releases/latest/download/');
-    expect(readme).not.toContain('/releases/download/');
-    expect(readme).not.toContain('v0.1.2');
-    expect(readme).not.toContain('v0.1.3');
+    const linkedVersions = Array.from(
+      readme.matchAll(/\/releases\/download\/v([^/]+)\//g),
+      (match) => match[1],
+    );
+    expect(linkedVersions).toHaveLength(5);
+    expect(linkedVersions.every((linkedVersion) => linkedVersion === version)).toBe(true);
     expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
   });
 
-  it('lists the planned architectures and checksum instructions without old links', () => {
+  it('links each architecture and checksums directly to the current version', () => {
     for (const asset of [
       'Orchevia-macos-arm64.dmg',
       'Orchevia-macos-x86_64.dmg',
@@ -52,7 +57,7 @@ describe('public documentation before launch', () => {
       'Orchevia-linux-x86_64.deb',
       'SHA256SUMS',
     ]) {
-      expect(readme).toContain(asset);
+      expect(readme).toContain(`/releases/download/v${version}/${asset}`);
     }
     expect(readme).toMatch(/account that has repository access/i);
     expect(readme).toContain('sha256sum -c SHA256SUMS --ignore-missing');
