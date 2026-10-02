@@ -126,3 +126,36 @@ Errors block execution; warnings don't. Current rules:
 optional with defaults). Rules: never silently drop unknown executable
 semantics; reject unknown node types at validation; keep migrations covered by
 serialization round-trip tests.
+
+## Simple workflow documents
+
+The JSON editor defaults to a developer document with `version: 1`, `name`,
+`nodes` (`key`, `type`, `label`, `config`), `edges` (`from`, `to`, optional
+`label`), and optional `inputs`/`defaults`. Canvas positions and machine IDs
+stay in the runtime definition. Unchanged keys preserve existing IDs and
+positions; update edges and `node.<key>` references when renaming a key.
+Agent selections use `role` and optional exact `profileName`. Duplicate or
+missing profile names require setup. Advanced JSON retains the complete schema-v6
+definition; legacy workflow and template files remain importable. Template
+exports use the simple document while preserving template metadata.
+
+Arrange defaults to top-to-bottom dependency ranks. Use its direction control
+for left-to-right graphs. Bounded cycles stay grouped, parallel branches get
+separate lanes, and measured node sizes determine spacing. Arrangement changes
+positions only, and existing manual positions stay until you click Arrange.
+
+Built-in templates use a required `testCommand` input for project validation.
+Supply the repository's real test command at run time. Each Command argument
+uses the same variable renderer as prompts; interpolation preserves the argument
+as one value, and missing variables fail before launching the process. Executables
+remain literal. Use the renderer's escape syntax for literal template tokens.
+
+For graphs over twelve nodes, Arrange opens the first dependency steps at a
+readable zoom instead of shrinking the complete chain into tiny labels. Pan or
+use the minimap to follow later steps; Fit View remains available for an overview.
+
+Simple and Advanced imports reject malformed typed values before saving. Legacy
+`gitHub` imports normalize to `github` in both backends. Reference conversion
+preserves placeholder whitespace and escaped tokens; only declared `inputRefs`
+and condition left-hand variables receive bare-reference remapping. Condition
+right-hand operands and ordinary MCP argument values remain literals.

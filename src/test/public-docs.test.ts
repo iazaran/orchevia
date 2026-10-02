@@ -8,6 +8,8 @@ const page = new DOMParser().parseFromString(
 const readme = readFileSync('README.md', 'utf8');
 const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
   .version;
+// Source versions advance on feature branches before release assets are published.
+const publishedInstallerVersion = '0.1.5';
 
 describe('public documentation before launch', () => {
   it('announces upcoming public access without offering private downloads', () => {
@@ -36,8 +38,9 @@ describe('public documentation before launch', () => {
     expect(page.documentElement.innerHTML).not.toContain('api.github.com');
   });
 
-  it('uses current-version installation guidance without temporary release status', () => {
-    expect(readme).toContain(`Install v${version}`);
+  it('keeps published installation guidance separate from the source version', () => {
+    expect(readme).toContain(`Install v${publishedInstallerVersion}`);
+    expect(readme).toContain(`source version ${version}`);
     expect(readme).not.toMatch(/pending|being prepared|planned.*files|processing/i);
     expect(readme).not.toContain('/releases/latest/download/');
     const linkedVersions = Array.from(
@@ -45,11 +48,15 @@ describe('public documentation before launch', () => {
       (match) => match[1],
     );
     expect(linkedVersions).toHaveLength(5);
-    expect(linkedVersions.every((linkedVersion) => linkedVersion === version)).toBe(true);
+    expect(
+      linkedVersions.every(
+        (linkedVersion) => linkedVersion === publishedInstallerVersion,
+      ),
+    ).toBe(true);
     expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
   });
 
-  it('links each architecture and checksums directly to the current version', () => {
+  it('links each architecture and checksums directly to the published installer version', () => {
     for (const asset of [
       'Orchevia-macos-arm64.dmg',
       'Orchevia-macos-x86_64.dmg',
@@ -57,7 +64,9 @@ describe('public documentation before launch', () => {
       'Orchevia-linux-x86_64.deb',
       'SHA256SUMS',
     ]) {
-      expect(readme).toContain(`/releases/download/v${version}/${asset}`);
+      expect(readme).toContain(
+        `/releases/download/v${publishedInstallerVersion}/${asset}`,
+      );
     }
     expect(readme).toMatch(/account that has repository access/i);
     expect(readme).toContain('sha256sum -c SHA256SUMS --ignore-missing');

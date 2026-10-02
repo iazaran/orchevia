@@ -41,6 +41,34 @@ pub struct RunStarted {
     pub run_id: String,
 }
 
+#[tauri::command]
+pub fn encode_workflow_document(
+    state: State<AppState>,
+    workflow: Workflow,
+) -> Result<orchevia_core::workflow_document::DocumentSession, String> {
+    orchevia_core::workflow_document::export_document(
+        &workflow,
+        &state.db.list_agent_profiles().map_err(|e| e.to_string())?,
+    )
+}
+#[tauri::command]
+pub fn decode_workflow_document(
+    state: State<AppState>,
+    json: String,
+    base: Option<Workflow>,
+    node_ids: Option<std::collections::HashMap<String, String>>,
+) -> Result<Workflow, String> {
+    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+    orchevia_core::workflow_document::import_document(
+        &json,
+        base.as_ref(),
+        &node_ids.unwrap_or_default(),
+        &profiles,
+        &default_role_map(&state),
+        &format!("wf-{}", Uuid::new_v4().simple()),
+    )
+}
+
 // -- Workflows ---------------------------------------------------------------
 
 #[tauri::command]
@@ -709,6 +737,21 @@ pub fn list_runs(state: State<AppState>, limit: Option<i64>) -> Result<Vec<Store
 }
 
 #[tauri::command]
+pub fn get_run(state: State<AppState>, run_id: String) -> Result<Option<StoredRun>, String> {
+    state.db.get_run(&run_id).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub fn get_run_workflow(
+    state: State<AppState>,
+    run_id: String,
+) -> Result<Option<Workflow>, String> {
+    state
+        .db
+        .get_run_workflow(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_run_results(
     state: State<AppState>,
     run_id: String,
@@ -883,29 +926,16 @@ pub fn test_agent_profile(
 // -- Generation, templates, memory (Milestone 6) -------------------------------
 
 /// Role → profile map from configured profiles, completed by accepted
-/// role preferences (explicit profile roles win; first profile per role).
+/// role preferences (accepted existing profile choices precede first-role fallback).
 fn default_role_map(state: &State<AppState>) -> std::collections::HashMap<String, String> {
     role_map_for_db(&state.db)
 }
 
 fn role_map_for_db(db: &SqliteDb) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let mut configured_ids = std::collections::HashSet::new();
-    if let Ok(profiles) = db.list_agent_profiles() {
-        for profile in profiles {
-            configured_ids.insert(profile.id.clone());
-            if let Some(role) = profile.role.as_deref() {
-                if !role.trim().is_empty() {
-                    map.entry(role.to_string()).or_insert(profile.id.clone());
-                }
-            }
-        }
-    }
-    if let Ok(prefs) = db.list_preferences() {
-        map = orchevia_core::memory::apply_to_roles(&prefs, map);
-    }
-    map.retain(|_, profile_id| configured_ids.contains(profile_id));
-    map
+    orchevia_core::memory::resolve_role_defaults(
+        &db.list_agent_profiles().unwrap_or_default(),
+        &db.list_preferences().unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -961,26 +991,8 @@ pub fn save_workflow_as_template(
         .get_workflow(&workflow_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown workflow '{workflow_id}'."))?;
-    // Convert concrete profile refs back to role refs where the profile has
-    // a role, so templates stay portable across machines.
-    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
-    let mut definition = stored.definition.clone();
-    for node in definition
-        .nodes
-        .iter_mut()
-        .filter(|n| n.kind == orchevia_core::workflow::NodeKind::Agent)
-    {
-        if let Some(profile_id) = node.config.agent_profile_id.clone() {
-            if let Some(role) = profiles
-                .iter()
-                .find(|p| p.id == profile_id)
-                .and_then(|p| p.role.clone())
-            {
-                node.config.agent_profile_id = None;
-                node.config.agent_role = Some(role);
-            }
-        }
-    }
+    // Keep exact reviewer choices locally. Portable export resolves IDs to names.
+    let definition = stored.definition.clone();
     let template = orchevia_core::templates::Template {
         id: format!("user-{}", uuid::Uuid::new_v4().simple()),
         version: orchevia_core::templates::TEMPLATE_SCHEMA_VERSION,
@@ -1011,7 +1023,10 @@ pub fn export_template(
     builtin: bool,
 ) -> Result<String, String> {
     let template = find_template(&state, &id, builtin)?;
-    orchevia_core::templates::export_template(&template)
+    orchevia_core::templates::export_developer_template(
+        &template,
+        &state.db.list_agent_profiles().map_err(|e| e.to_string())?,
+    )
 }
 
 #[tauri::command]
@@ -1019,7 +1034,10 @@ pub fn import_template(
     state: State<AppState>,
     json: String,
 ) -> Result<orchevia_core::templates::Template, String> {
-    let mut template = orchevia_core::templates::import_template(&json)?;
+    let mut template = orchevia_core::templates::import_developer_template(
+        &json,
+        &state.db.list_agent_profiles().map_err(|e| e.to_string())?,
+    )?;
     // Namespace imported ids to avoid collisions.
     template.id = format!("user-{}", uuid::Uuid::new_v4().simple());
     state
@@ -1171,24 +1189,15 @@ pub async fn generate_workflow(
             .take(120)
             .collect::<String>()
     };
-    let mut profile_context = roles
-        .iter()
-        .map(|role| {
-            let mapped = role_map
-                .get(role)
-                .and_then(|id| profiles.iter().find(|profile| &profile.id == id));
-            match mapped {
-                Some(profile) => format!(
-                    "- {role}: {} ({}, model {})",
-                    prompt_label(&profile.name),
-                    profile.adapter.as_str(),
-                    prompt_label(profile.model.as_deref().unwrap_or("CLI default"))
-                ),
-                None => format!("- {role}: no profile configured"),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let memory_scope = repo
+        .as_ref()
+        .map(|context| orchevia_core::memory::project_scope(&context.dir))
+        .transpose()?;
+    let preferences = state.db.list_preferences().map_err(|e| e.to_string())?;
+    let memory_context =
+        orchevia_core::memory::project_context(&preferences, memory_scope.as_deref());
+    let mut profile_context =
+        orchevia_core::generation::build_profile_context(&profiles, &role_map, &memory_context);
     // Probe configured MCP servers before drafting. Their actual tool names and
     // required argument keys prevent the generator from inventing Jira REST
     // credentials or an MCP method that the installed server does not expose.
@@ -1287,8 +1296,13 @@ pub async fn generate_workflow(
         repo_dir: Some(r.dir),
         branch: r.branch,
     });
-    match orchevia_core::generation::compile_proposal(&proposal, &role_map, &workflow_id, defaults)
-    {
+    match orchevia_core::generation::compile_proposal_with_profiles(
+        &proposal,
+        &role_map,
+        &workflow_id,
+        defaults,
+        &profiles,
+    ) {
         Ok(preview) => {
             let _ = state.db.record_generation(
                 &generation_id,
@@ -1382,6 +1396,46 @@ pub fn list_generations(
 }
 
 #[tauri::command]
+pub fn get_project_memory_context(
+    state: State<AppState>,
+    repo_dir: Option<String>,
+) -> Result<orchevia_core::memory::ProjectMemoryContext, String> {
+    let scope = repo_dir
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| orchevia_core::memory::project_scope(&d))
+        .transpose()?;
+    let preferences = state.db.list_preferences().map_err(|e| e.to_string())?;
+    Ok(orchevia_core::memory::project_context(
+        &preferences,
+        scope.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub fn save_project_preference(
+    state: State<AppState>,
+    repo_dir: String,
+    field: String,
+    value: serde_json::Value,
+    note: String,
+) -> Result<orchevia_core::memory::Preference, String> {
+    let scope = orchevia_core::memory::project_scope(&repo_dir)?;
+    let preference = orchevia_core::memory::Preference {
+        key: orchevia_core::memory::project_key(&scope, &field)?,
+        scope,
+        value,
+        source: "manual".into(),
+        enabled: true,
+        note,
+    };
+    state
+        .db
+        .upsert_preference(&preference)
+        .map_err(|e| e.to_string())?;
+    Ok(preference)
+}
+
+#[tauri::command]
 pub fn list_preferences(
     state: State<AppState>,
 ) -> Result<Vec<orchevia_core::memory::Preference>, String> {
@@ -1393,21 +1447,8 @@ pub fn save_preference(
     state: State<AppState>,
     preference: orchevia_core::memory::Preference,
 ) -> Result<orchevia_core::memory::Preference, String> {
-    if preference.key.trim().is_empty() || preference.key.len() > 120 {
-        return Err("Preference key invalid.".to_string());
-    }
-    let flat = serde_json::to_string(&preference.value)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    for marker in ["api-key", "bearer", "password"] {
-        if flat.contains(marker) {
-            return Err("Preference looks credential-like; refused.".to_string());
-        }
-    }
-    let mut stored = preference;
-    if stored.source != "suggested" {
-        stored.source = "manual".to_string();
-    }
+    orchevia_core::memory::validate_preference(&preference)?;
+    let stored = preference;
     state
         .db
         .upsert_preference(&stored)
@@ -1434,13 +1475,10 @@ pub fn export_memory(state: State<AppState>) -> Result<String, String> {
 #[tauri::command]
 pub fn import_memory(state: State<AppState>, json: String) -> Result<usize, String> {
     let prefs = orchevia_core::memory::import_preferences(&json)?;
-    for pref in &prefs {
-        state
-            .db
-            .upsert_preference(pref)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(prefs.len())
+    state
+        .db
+        .import_preferences(&prefs)
+        .map_err(|e| e.to_string())
 }
 
 /// Record observed edits; returns fresh suggestions (if learning is on).
@@ -1453,12 +1491,12 @@ pub fn observe_edits(
     if !orchevia_core::memory::learning_enabled(&prefs) {
         return Ok(Vec::new());
     }
+    for observation in observations.iter().take(20) {
+        orchevia_core::memory::validate_observation(observation)?;
+    }
     let mut suggestions = Vec::new();
     for observation in observations.iter().take(20) {
-        let counter_key = format!(
-            "{}|{}|{}",
-            observation.scope, observation.field, observation.to
-        );
+        let counter_key = orchevia_core::memory::observation_counter_key(observation);
         let key = orchevia_core::memory::preference_key(&observation.scope, &observation.field);
         if prefs.iter().any(|p| p.key == key)
             || suggestions
@@ -1479,8 +1517,9 @@ pub fn observe_edits(
                 source: "suggested".to_string(),
                 enabled: true,
                 note: format!(
-                    "Suggested after {count} consistent edits ({} → {}).",
-                    observation.from, observation.to
+                    "Suggested after {count} saved edits to {}. Previous value: {}.",
+                    observation.field,
+                    observation.from.chars().take(80).collect::<String>()
                 ),
             };
             state

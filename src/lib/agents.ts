@@ -25,7 +25,7 @@ export const EFFORT_LEVELS: AgentEffort[] = ['low', 'medium', 'high', 'xhigh'];
  */
 export const MODEL_PRESETS: Record<AdapterKind, string[]> = {
   claude: ['opus', 'sonnet', 'haiku', 'fable', 'claude-opus-5-5', 'claude-fable-5-1'],
-  codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5-mini', 'gpt-6-astra'],
+  codex: ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5-mini', 'gpt-6-astra'],
   custom: [],
 };
 
@@ -124,6 +124,37 @@ export function createDefaultProfile(adapter: AdapterKind): AgentProfile {
           ? 'deepReview'
           : undefined,
   };
+}
+
+/** User-editable recommendations; existing adapter/role choices are never replaced. */
+export function recommendedProfiles(existing: AgentProfile[]): AgentProfile[] {
+  const recommendations: {
+    adapter: AdapterKind;
+    role: string;
+    label: string;
+    model: string;
+  }[] = [
+    { adapter: 'claude', role: 'implementation', label: 'Implementation', model: 'opus' },
+    { adapter: 'claude', role: 'fastReview', label: 'Fast review', model: 'opus' },
+    { adapter: 'claude', role: 'planning', label: 'Planning', model: 'fable' },
+    {
+      adapter: 'claude',
+      role: 'workflowGenerator',
+      label: 'Workflow generator',
+      model: 'fable',
+    },
+    { adapter: 'claude', role: 'deepReview', label: 'Deep review', model: 'fable' },
+    { adapter: 'codex', role: 'deepReview', label: 'Deep review', model: 'gpt-6.1-sol' },
+  ];
+  return recommendations
+    .filter((r) => !existing.some((p) => p.adapter === r.adapter && p.role === r.role))
+    .map((r) => ({
+      ...createDefaultProfile(r.adapter),
+      name: `${ADAPTER_LABELS[r.adapter]} — ${r.label}`,
+      role: r.role,
+      model: r.model,
+      effort: 'high',
+    }));
 }
 
 /** Mirror of the Rust profile validation. Returns error strings. */

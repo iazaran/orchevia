@@ -7,6 +7,7 @@ import {
   resolveGeneratorProfile,
   summarizeGenerationExplanation,
   type GenerationPreview,
+  type ProjectMemoryContext,
 } from '../lib/generation';
 import {
   createAgentDemoWorkflow,
@@ -14,7 +15,7 @@ import {
   createEmptyWorkflow,
   createReviewLoopDemoWorkflow,
   createReviewWorkflow,
-  parseWorkflowJson,
+  type Workflow,
   type StoredWorkflow,
 } from '../lib/workflow';
 import { selectActiveWorkflow, useAppStore } from '../store';
@@ -75,10 +76,20 @@ export function WorkflowsView(): React.JSX.Element {
   const setValidation = useAppStore((s) => s.setValidation);
   const profiles = useAppStore((s) => s.profiles);
   const overlayRunId = useAppStore((s) => s.overlayRunId);
+  const overlayWorkflow = useAppStore((s) => s.overlayWorkflow);
+  const selectedNodeId = useAppStore((s) => s.selectedNodeId);
+  const refreshRunOverlay = useAppStore((s) => s.refreshRunOverlay);
   const overlayResults = useAppStore((s) => s.overlayResults);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
   const [showSamples, setShowSamples] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (overlayRunId === null) return;
+    const timer = setInterval(() => {
+      void refreshRunOverlay().catch((err: unknown) => setRunMessage(errorMessage(err)));
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [overlayRunId, refreshRunOverlay]);
   const [starting, setStarting] = useState(false);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
@@ -91,6 +102,10 @@ export function WorkflowsView(): React.JSX.Element {
   const [genBranch, setGenBranch] = useState('');
   const [detectingGenBranch, setDetectingGenBranch] = useState(false);
   const [genRepoMsg, setGenRepoMsg] = useState<string | null>(null);
+  const [memoryContext, setMemoryContext] = useState<ProjectMemoryContext | null>(null);
+  const [memoryDirectory, setMemoryDirectory] = useState<string | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [generatorAdapter, setGeneratorAdapter] = useState<AdapterKind>('claude');
   const [advancedProfileId, setAdvancedProfileId] = useState('');
@@ -103,6 +118,38 @@ export function WorkflowsView(): React.JSX.Element {
   const [genElapsed, setGenElapsed] = useState(0);
   const [lastGenError, setLastGenError] = useState<string | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!showGenerator) return;
+    let cancelled = false;
+    // Debounce typed repository paths and discard stale responses.
+    const timer = setTimeout(() => {
+      setMemoryLoading(true);
+      setMemoryError(null);
+      setMemoryContext(null);
+      void getBackend()
+        .getProjectMemoryContext(genRepoDir.trim() || undefined)
+        .then((context) => {
+          if (!cancelled) {
+            setMemoryContext(context);
+            setMemoryDirectory(genRepoDir.trim());
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setMemoryError(errorMessage(error));
+            setMemoryDirectory(genRepoDir.trim());
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setMemoryLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [showGenerator, genRepoDir]);
 
   const closeGenerator = (): void => {
     if (generating) return;
@@ -206,22 +253,51 @@ export function WorkflowsView(): React.JSX.Element {
 
   const openJsonEditor = (): void => {
     if (active === null) return;
-    setJsonText(JSON.stringify(active.definition, null, 2));
+    setJsonBase(active.definition);
     setJsonError(null);
     setJsonModal(true);
+    setJsonBusy(true);
+    void getBackend()
+      .encodeWorkflowDocument(active.definition)
+      .then((session) => {
+        setJsonText(session.json);
+        setJsonIds(session.nodeIds);
+        setJsonMode('simple');
+      })
+      .catch((err: unknown) => {
+        setJsonMode('raw');
+        setJsonText(JSON.stringify(active.definition, null, 2));
+        setJsonError(errorMessage(err));
+      })
+      .finally(() => setJsonBusy(false));
   };
-
+  const switchJsonMode = (mode: 'simple' | 'raw'): void => {
+    setJsonBusy(true);
+    void getBackend()
+      .decodeWorkflowDocument(jsonText, jsonBase ?? undefined, jsonIds)
+      .then(async (wf) => {
+        setJsonBase(wf);
+        if (mode === 'raw') setJsonText(JSON.stringify(wf, null, 2));
+        else {
+          const session = await getBackend().encodeWorkflowDocument(wf);
+          setJsonText(session.json);
+          setJsonIds(session.nodeIds);
+        }
+        setJsonMode(mode);
+        setJsonError(null);
+      })
+      .catch((err: unknown) => setJsonError(errorMessage(err)))
+      .finally(() => setJsonBusy(false));
+  };
   const saveJsonEditor = (): void => {
-    let parsed: StoredWorkflow['definition'];
-    try {
-      parsed = parseWorkflowJson(jsonText);
-    } catch (err) {
-      setJsonError(errorMessage(err));
-      return;
-    }
     void (async () => {
       try {
         const backend = getBackend();
+        const parsed = await backend.decodeWorkflowDocument(
+          jsonText,
+          jsonBase ?? undefined,
+          jsonIds,
+        );
         const issues = await backend.validateWorkflow(parsed);
         const blocking = issues.filter((issue) => issue.severity === 'error');
         if (blocking.length > 0) {
@@ -232,7 +308,11 @@ export function WorkflowsView(): React.JSX.Element {
           });
           if (!ok) return;
         }
-        const stored = await backend.saveWorkflow(parsed);
+        const stored = await saveActiveWorkflow(parsed);
+        if (!stored)
+          throw new Error(
+            'Workflow is no longer editable. Close JSON and select a saved workflow.',
+          );
         await refreshWorkflows();
         selectWorkflow(stored.id);
         setValidation(issues);
@@ -537,6 +617,10 @@ export function WorkflowsView(): React.JSX.Element {
   };
 
   const [templateModal, setTemplateModal] = useState(false);
+  const [jsonMode, setJsonMode] = useState<'simple' | 'raw'>('simple');
+  const [jsonBase, setJsonBase] = useState<Workflow | null>(null);
+  const [jsonIds, setJsonIds] = useState<Record<string, string>>({});
+  const [jsonBusy, setJsonBusy] = useState(false);
   const [jsonModal, setJsonModal] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
@@ -577,7 +661,11 @@ export function WorkflowsView(): React.JSX.Element {
         <span className="topbar-sub">
           Design, then run — execution is always explicit.
         </span>
-        <div className="topbar-actions">
+        <fieldset
+          className="topbar-actions"
+          style={{ border: 0, margin: 0, padding: 0 }}
+          disabled={overlayRunId !== null}
+        >
           <button className="btn" onClick={createWorkflow}>
             + New
           </button>
@@ -632,7 +720,7 @@ export function WorkflowsView(): React.JSX.Element {
           >
             Delete
           </button>
-        </div>
+        </fieldset>
       </div>
       {runMessage !== null && (
         <div style={{ padding: '12px 20px 0' }}>
@@ -735,14 +823,15 @@ export function WorkflowsView(): React.JSX.Element {
       {overlayRunId !== null && (
         <div style={{ padding: '12px 20px 0' }}>
           <Notice>
-            Showing run {overlayRunId} on canvas ({overlayResults.length} results).{' '}
+            Read-only snapshot of run {overlayRunId} on canvas ({overlayResults.length}{' '}
+            results).{' '}
             <button
               className="btn btn-ghost"
               onClick={() => {
                 void showRunOverlay(null);
               }}
             >
-              Clear overlay
+              Edit saved workflow
             </button>
           </Notice>
         </div>
@@ -804,6 +893,19 @@ export function WorkflowsView(): React.JSX.Element {
                   placeholder={knownFolders[0] ?? '/path/to/repo'}
                   onChange={setGenRepoDir}
                 />
+                <details>
+                  <summary className="field-hint">Included project memory</summary>
+                  {memoryLoading || memoryDirectory !== genRepoDir.trim() ? (
+                    <p className="field-hint">Loading project memory…</p>
+                  ) : memoryError ? (
+                    <Notice variant="warn">{memoryError}</Notice>
+                  ) : (
+                    <pre className="log-block" style={{ maxHeight: 220 }}>
+                      {memoryContext?.text ||
+                        'No applicable accepted memory. Explicit goal instructions take precedence.'}
+                    </pre>
+                  )}
+                </details>
                 <div className="field" style={{ marginBottom: 0 }}>
                   <BranchPicker
                     id="gen-branch"
@@ -1085,13 +1187,15 @@ export function WorkflowsView(): React.JSX.Element {
                   </summary>
                   <ol className="preview-steps">
                     {preview.workflow.nodes.map((n) => {
-                      const detail = describeGeneratedStep(n);
+                      const detail = describeGeneratedStep(n, profiles);
                       return (
                         <li key={n.id}>
                           <span className="status-pill status-paused">{n.type}</span>{' '}
                           {n.label ?? n.id}
                           {detail !== '' && (
-                            <span className="preview-step-detail">{detail}</span>
+                            <span className="preview-step-detail" title={detail}>
+                              {detail}
+                            </span>
                           )}
                         </li>
                       );
@@ -1288,7 +1392,9 @@ export function WorkflowsView(): React.JSX.Element {
             </button>
           ))}
         </div>
-        {active !== null ? (
+        {overlayWorkflow !== null ? (
+          <WorkflowCanvas key={overlayRunId} workflow={overlayWorkflow} readOnly />
+        ) : active !== null ? (
           <WorkflowCanvas key={active.id} workflow={active.definition} />
         ) : (
           <div className="canvas-wrap">
@@ -1298,7 +1404,51 @@ export function WorkflowsView(): React.JSX.Element {
             </div>
           </div>
         )}
-        <NodeInspector />
+        {overlayWorkflow !== null ? (
+          <aside className="inspector">
+            <h2>Run node</h2>
+            <p className="field-hint">
+              Saved configuration and output; this view is read-only.
+            </p>
+            {selectedNodeId === null ? (
+              <p>Select a node to inspect its result.</p>
+            ) : (
+              <>
+                <h3>
+                  {overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)?.label ??
+                    selectedNodeId}
+                </h3>
+                <details>
+                  <summary>Configuration</summary>
+                  <pre className="log-block" style={{ maxHeight: 240, overflow: 'auto' }}>
+                    {JSON.stringify(
+                      overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)?.config,
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </details>
+                {overlayResults
+                  .filter((r) => r.nodeId === selectedNodeId)
+                  .map((r) => (
+                    <details key={r.id} open>
+                      <summary>{r.status}</summary>
+                      <pre
+                        className="log-block"
+                        style={{ maxHeight: 300, overflow: 'auto' }}
+                      >
+                        {r.stdout}
+                        {r.stderr}
+                        {r.error}
+                      </pre>
+                    </details>
+                  ))}
+              </>
+            )}
+          </aside>
+        ) : (
+          <NodeInspector />
+        )}
       </div>
       {jsonModal && active !== null && (
         <Modal
@@ -1315,9 +1465,28 @@ export function WorkflowsView(): React.JSX.Element {
           <div>
             <h3 style={{ marginTop: 0 }}>Edit “{active.name}” as JSON</h3>
             <p className="field-hint">
-              Raw definition ({String(jsonText.length)} characters). Shape-checked on
-              save; semantic validation runs too — errors ask before saving.
+              {jsonMode === 'simple'
+                ? 'Simple document: readable keys, configuration and connections.'
+                : 'Advanced runtime definition, including IDs and positions.'}{' '}
+              Shape-checked on save; semantic validation runs too — errors ask before
+              saving.
             </p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button
+                className="btn"
+                disabled={jsonBusy || jsonMode === 'simple'}
+                onClick={() => switchJsonMode('simple')}
+              >
+                Simple JSON
+              </button>
+              <button
+                className="btn"
+                disabled={jsonBusy || jsonMode === 'raw'}
+                onClick={() => switchJsonMode('raw')}
+              >
+                Advanced JSON
+              </button>
+            </div>
             <div className="field">
               <label className="field-label" htmlFor="wf-json">
                 Workflow JSON
@@ -1340,7 +1509,11 @@ export function WorkflowsView(): React.JSX.Element {
               </Notice>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-primary" onClick={saveJsonEditor}>
+              <button
+                className="btn btn-primary"
+                disabled={jsonBusy}
+                onClick={saveJsonEditor}
+              >
                 Save JSON
               </button>
               <button

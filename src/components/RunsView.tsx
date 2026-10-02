@@ -1,3 +1,5 @@
+import { successfulCommand } from '../lib/memory';
+import type { Workflow } from '../lib/workflow';
 import { useEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import type { GroupedFinding } from '../lib/scheduler';
@@ -88,6 +90,13 @@ export function RunsView(): React.JSX.Element {
   const refreshRuns = useAppStore((s) => s.refreshRuns);
   const pending = useRef(new Set<string>());
   const [pendingRuns, setPendingRuns] = useState<string[]>([]);
+  const [snapshot, setSnapshot] = useState<{
+    runId: string;
+    workflow: Workflow | null;
+  } | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryMessage, setMemoryMessage] = useState<string | null>(null);
+  const [memoryFields, setMemoryFields] = useState<Record<string, string>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [now, setNow] = useState(0);
   const workflows = useAppStore((s) => s.workflows);
@@ -99,11 +108,11 @@ export function RunsView(): React.JSX.Element {
     workflows.find((w) => w.id === activeRun?.workflowId)?.name ??
     activeRun?.workflowId ??
     '';
-  const activeWorkflow = workflows.find((w) => w.id === activeRun?.workflowId) ?? null;
+  const runWorkflow = snapshot?.runId === activeRunId ? snapshot.workflow : null;
   const profiles = useAppStore((s) => s.profiles);
 
   const profileForNode = (nodeId: string): string | null => {
-    const node = activeWorkflow?.definition.nodes.find((n) => n.id === nodeId);
+    const node = runWorkflow?.nodes.find((n) => n.id === nodeId);
     if (node?.type !== 'agent') return null;
     const profileId = node.config.agentProfileId ?? '';
     const profile = profiles.find((p) => p.id === profileId);
@@ -113,9 +122,63 @@ export function RunsView(): React.JSX.Element {
   };
 
   const nodeFor = (nodeId: string): { label: string; type: string } | null => {
-    const node = activeWorkflow?.definition.nodes.find((n) => n.id === nodeId);
+    const node = runWorkflow?.nodes.find((n) => n.id === nodeId);
     if (node === undefined) return null;
     return { label: node.label ?? nodeId, type: node.type };
+  };
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    let cancelled = false;
+    void getBackend()
+      .getRunWorkflow(activeRunId)
+      .then((workflow) => {
+        if (!cancelled) setSnapshot({ runId: activeRunId, workflow });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setActionError(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRunId]);
+  const promoteCommand = (runId: string, nodeId: string): void => {
+    setMemoryBusy(true);
+    setMemoryMessage(null);
+    const field = memoryFields[nodeId] ?? 'testCommand';
+    void (async () => {
+      const backend = getBackend();
+      const [run, workflow, recorded] = await Promise.all([
+        backend.getRun(runId),
+        backend.getRunWorkflow(runId),
+        backend.getRunResults(runId),
+      ]);
+      if (!workflow || run?.status !== 'succeeded')
+        throw new Error('Only commands from a successful run can be promoted.');
+      const result = [...recorded].reverse().find((r) => r.nodeId === nodeId);
+      const node = workflow.nodes.find((n) => n.id === nodeId);
+      const repoDir = workflow.defaults?.repoDir || node?.config.workingDir;
+      if (!repoDir)
+        throw new Error(
+          'Set a repository directory in this run workflow before saving project knowledge.',
+        );
+      const command = successfulCommand(
+        workflow,
+        nodeId,
+        result?.status ?? '',
+        run.inputs ?? {},
+      );
+      await backend.saveProjectPreference(
+        repoDir,
+        field,
+        command,
+        `Verified by successful run ${runId}, Command ${nodeId}. Saved explicitly by the user.`,
+      );
+      await useAppStore.getState().refreshLibrary();
+      setMemoryMessage('Saved verified command to the project playbook.');
+    })()
+      .catch((error: unknown) => setActionError(errorMessage(error)))
+      .finally(() => setMemoryBusy(false));
   };
 
   // Poll while a run is active so progress/output appears live.
@@ -166,7 +229,6 @@ export function RunsView(): React.JSX.Element {
     expandedOutputState.runId === activeRunId ? expandedOutputState.values : {};
   const [reportOpen, setReportOpen] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
-  const setView = useAppStore((s) => s.setView);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
   const [findingsState, setFindingsState] = useState<{
     runId: string;
@@ -286,6 +348,9 @@ export function RunsView(): React.JSX.Element {
         </div>
       </div>
       <div className="view">
+        {memoryMessage && (
+          <Notice onDismiss={() => setMemoryMessage(null)}>{memoryMessage}</Notice>
+        )}
         {actionError !== null && (
           <Notice
             variant="error"
@@ -377,8 +442,8 @@ export function RunsView(): React.JSX.Element {
                 <p className="field-hint">
                   {activeRun.id} · started {formatTime(activeRun.startedAt)}
                 </p>
-                {(activeRun.status === 'running' || activeRun.status === 'paused') && (
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  {(activeRun.status === 'running' || activeRun.status === 'paused') && (
                     <button
                       className="btn"
                       disabled={
@@ -390,42 +455,42 @@ export function RunsView(): React.JSX.Element {
                     >
                       Cancel run
                     </button>
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        void showRunOverlay(activeRun.id).then(() => {
-                          setView('workflows');
-                        });
-                      }}
-                    >
-                      Show on canvas
-                    </button>
-                    {activeRun.status === 'paused' && (
-                      <>
-                        <button
-                          className="btn btn-primary"
-                          disabled={
-                            pendingApproval === undefined ||
-                            pendingRuns.includes(`decision:${activeRun.id}`)
-                          }
-                          onClick={() => void approve(activeRun.id, true)}
-                        >
-                          Approve & continue
-                        </button>
-                        <button
-                          className="btn btn-danger"
-                          disabled={
-                            pendingApproval === undefined ||
-                            pendingRuns.includes(`decision:${activeRun.id}`)
-                          }
-                          onClick={() => void approve(activeRun.id, false)}
-                        >
-                          Reject
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
+                  )}
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      void showRunOverlay(activeRun.id).catch((err: unknown) =>
+                        setActionError(errorMessage(err)),
+                      );
+                    }}
+                  >
+                    Show on canvas
+                  </button>
+                  {activeRun.status === 'paused' && (
+                    <>
+                      <button
+                        className="btn btn-primary"
+                        disabled={
+                          pendingApproval === undefined ||
+                          pendingRuns.includes(`decision:${activeRun.id}`)
+                        }
+                        onClick={() => void approve(activeRun.id, true)}
+                      >
+                        Approve & continue
+                      </button>
+                      <button
+                        className="btn btn-danger"
+                        disabled={
+                          pendingApproval === undefined ||
+                          pendingRuns.includes(`decision:${activeRun.id}`)
+                        }
+                        onClick={() => void approve(activeRun.id, false)}
+                      >
+                        Reject
+                      </button>
+                    </>
+                  )}
+                </div>
                 {activeRun.status === 'paused' && (
                   <div className="field" style={{ maxWidth: 560 }}>
                     <label className="field-label" htmlFor="approve-note">
@@ -686,6 +751,38 @@ export function RunsView(): React.JSX.Element {
                           {r.status}
                         </span>
                         <strong>{node?.label ?? r.nodeId}</strong>
+                        {activeRun.status === 'succeeded' &&
+                          node?.type === 'command' &&
+                          r.status === 'succeeded' &&
+                          [...results]
+                            .reverse()
+                            .find((result) => result.nodeId === r.nodeId)?.id ===
+                            r.id && (
+                            <>
+                              <select
+                                className="select"
+                                aria-label={'Playbook field for ' + r.nodeId}
+                                value={memoryFields[r.nodeId] ?? 'testCommand'}
+                                onChange={(e) =>
+                                  setMemoryFields({
+                                    ...memoryFields,
+                                    [r.nodeId]: e.target.value,
+                                  })
+                                }
+                              >
+                                <option value="testCommand">Test command</option>
+                                <option value="lintCommand">Lint command</option>
+                                <option value="buildCommand">Build command</option>
+                              </select>
+                              <button
+                                className="btn btn-ghost"
+                                disabled={memoryBusy}
+                                onClick={() => promoteCommand(activeRun.id, r.nodeId)}
+                              >
+                                Save command to playbook
+                              </button>
+                            </>
+                          )}
                         {node !== null && (
                           <span className="status-pill status-cancelled">
                             {node.type}

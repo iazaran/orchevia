@@ -11,7 +11,6 @@ import { errorMessage } from '../lib/errors';
 export function TemplatesView(): React.JSX.Element {
   const builtinTemplates = useAppStore((s) => s.builtinTemplates);
   const userTemplates = useAppStore((s) => s.userTemplates);
-  const profiles = useAppStore((s) => s.profiles);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
   const refreshWorkflows = useAppStore((s) => s.refreshWorkflows);
   const selectWorkflow = useAppStore((s) => s.selectWorkflow);
@@ -32,19 +31,9 @@ export function TemplatesView(): React.JSX.Element {
     void refreshLibrary();
   };
 
-  const roleMap = (): Record<string, string> => {
-    const map: Record<string, string> = {};
-    for (const p of profiles) {
-      if (p.role !== undefined && p.role !== '' && map[p.role] === undefined) {
-        map[p.role] = p.id;
-      }
-    }
-    return map;
-  };
-
   const instantiate = (template: WorkflowTemplate, builtin: boolean): void => {
     void getBackend()
-      .instantiateTemplate(template.id, builtin, roleMap())
+      .instantiateTemplate(template.id, builtin)
       .then((preview) => {
         if (preview.setupNeeded.length > 0) {
           setSetupNeeded({ name: template.name, items: preview.setupNeeded });
@@ -129,6 +118,13 @@ export function TemplatesView(): React.JSX.Element {
       </div>
       <p className="field-hint">{template.description}</p>
       <div className="tool-version">{template.workflow.nodes.length} nodes</div>
+      {template.workflow.inputs?.some((i) => i.name === 'testCommand' && i.required) ===
+        true && (
+        <p className="field-hint">
+          Supply your project test command when running this workflow. Empty commands
+          cannot run.
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'nowrap' }}>
         <button
           className="btn btn-primary"

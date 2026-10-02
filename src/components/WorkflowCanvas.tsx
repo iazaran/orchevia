@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Background,
   Controls,
@@ -143,7 +143,21 @@ const ADDABLE: NodeKind[] = [
   'approval',
 ];
 
-export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.Element {
+export function WorkflowCanvas({
+  workflow,
+  readOnly = false,
+}: {
+  workflow: Workflow;
+  readOnly?: boolean;
+}): React.JSX.Element {
+  const [layoutDirection, setLayoutDirection] = useState<'vertical' | 'horizontal'>(
+    'vertical',
+  );
+  const [appliedDirection, setAppliedDirection] = useState<'vertical' | 'horizontal'>(
+    'vertical',
+  );
+  const needsFit = useRef(false);
+  const fitFrame = useRef<number | null>(null);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectNode = useAppStore((s) => s.selectNode);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
@@ -189,26 +203,37 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
     toFlowEdges(workflow, selectedEdgeId),
   );
 
-  // Refresh node details when the workflow definition changes elsewhere
-  // (e.g. inspector edits), preserving canvas positions.
+  const previousDefinition = useRef(workflow.nodes);
+
+  // Reconcile external JSON/inspector edits while retaining transient drag positions.
   useEffect(() => {
-    setNodes((current) =>
-      current.map((n) => {
-        const def = workflow.nodes.find((w) => w.id === n.id);
-        if (def === undefined) return n;
+    const prior = previousDefinition.current;
+    previousDefinition.current = workflow.nodes;
+    setNodes((current) => {
+      const known = new Map(current.map((n) => [n.id, n]));
+      return workflow.nodes.map((def) => {
+        const existing = known.get(def.id);
+        const oldDefinition = prior.find((n) => n.id === def.id);
+        const moved =
+          oldDefinition?.position.x !== def.position.x ||
+          oldDefinition.position.y !== def.position.y;
         return {
-          ...n,
+          ...existing,
+          id: def.id,
+          type: 'orchevia',
+          position: moved ? def.position : (existing?.position ?? def.position),
           data: {
+            direction: appliedDirection,
             label: def.label ?? NODE_KIND_META[def.type].label,
             kind: def.type,
             detail: nodeDetail(def),
-            selected: n.id === selectedNodeId,
+            selected: def.id === selectedNodeId,
             runStatus: overlay[def.id],
             issueSeverity: issues[def.id],
           },
         };
-      }),
-    );
+      });
+    });
     setEdges(toFlowEdges(workflow, selectedEdgeId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -218,6 +243,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
     selectedEdgeId,
     overlayResults,
     validation,
+    appliedDirection,
   ]);
 
   const revalidate = useCallback(
@@ -232,6 +258,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
 
   const onConnect = useCallback(
     (connection: Connection) => {
+      if (readOnly) return;
       const source = connection.source;
       const target = connection.target;
       if (source === '' || target === '') return;
@@ -271,7 +298,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
       updateActiveWorkflow(updated);
       revalidate(updated);
     },
-    [workflow, updateActiveWorkflow, setEdges, revalidate],
+    [workflow, updateActiveWorkflow, setEdges, revalidate, readOnly],
   );
 
   const defaultAgentProfile = useCallback((): string | null => {
@@ -368,11 +395,22 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
   );
 
   const arrangeNodes = useCallback(() => {
-    const positions = arrangeWorkflowPositions(workflow.nodes, workflow.edges);
+    const positions = arrangeWorkflowPositions(workflow.nodes, workflow.edges, {
+      direction: layoutDirection,
+      sizes: Object.fromEntries(
+        nodes.map((n) => [
+          n.id,
+          { width: n.measured?.width ?? 240, height: n.measured?.height ?? 100 },
+        ]),
+      ),
+    });
+    needsFit.current = true;
+    setAppliedDirection(layoutDirection);
     setNodes((current) =>
       current.map((n) => ({
         ...n,
         position: positions[n.id] ?? n.position,
+        data: { ...n.data, direction: layoutDirection },
       })),
     );
     updateActiveWorkflow({
@@ -383,8 +421,42 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
       })),
     });
     // Positions don't affect validation, but re-fit so the result is visible.
-    void flowInstance.current?.fitView({ padding: 0.15, maxZoom: 1, duration: 200 });
-  }, [workflow, setNodes, updateActiveWorkflow]);
+  }, [workflow, nodes, layoutDirection, setNodes, updateActiveWorkflow]);
+  useEffect(() => {
+    if (!needsFit.current) return;
+    if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
+    fitFrame.current = requestAnimationFrame(() => {
+      fitFrame.current = null;
+      void flowInstance.current
+        ?.fitView({
+          padding: 0.15,
+          maxZoom: 1,
+          duration: 200,
+          ...(nodes.length > 12
+            ? {
+                minZoom: 0.65,
+                nodes: [...nodes]
+                  .sort((a, b) =>
+                    appliedDirection === 'vertical'
+                      ? a.position.y - b.position.y || a.position.x - b.position.x
+                      : a.position.x - b.position.x || a.position.y - b.position.y,
+                  )
+                  .slice(0, 6)
+                  .map((n) => ({ id: n.id })),
+              }
+            : {}),
+        })
+        .then((fitted) => {
+          if (fitted) needsFit.current = false;
+        });
+    });
+  }, [nodes, appliedDirection]);
+  useEffect(
+    () => () => {
+      if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
+    },
+    [],
+  );
 
   const duplicateSelected = useCallback(() => {
     const def = workflow.nodes.find((n) => n.id === selectedNodeId);
@@ -419,7 +491,13 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
 
   return (
     <div className="canvas-wrap" ref={wrapRef}>
-      <div className="canvas-toolbar" role="toolbar" aria-label="Add nodes">
+      <fieldset
+        disabled={readOnly}
+        className="canvas-toolbar"
+        style={{ border: 0, margin: 0 }}
+        role="toolbar"
+        aria-label="Add nodes"
+      >
         {ADDABLE.map((kind) => (
           <button key={kind} className="tool-chip" onClick={() => void addNode(kind)}>
             + {NODE_KIND_META[kind].label}
@@ -433,6 +511,20 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
         >
           ⧉ Duplicate
         </button>
+        <select
+          aria-label="Arrange direction"
+          className="select"
+          style={{ width: 'auto' }}
+          value={layoutDirection}
+          onChange={(e) =>
+            setLayoutDirection(
+              e.target.value === 'horizontal' ? 'horizontal' : 'vertical',
+            )
+          }
+        >
+          <option value="vertical">Top to bottom</option>
+          <option value="horizontal">Left to right</option>
+        </select>
         <button
           className="tool-chip"
           onClick={arrangeNodes}
@@ -442,18 +534,29 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           ⤢ Arrange
         </button>
         <span className="field-hint" style={{ alignSelf: 'center' }}>
+          {nodes.length > 12 && (
+            <>Large graph: pan or use the minimap to follow later steps. </>
+          )}
           Drag from the bottom dot to connect · condition branches auto-label true/false ·
           click an edge to relabel · Del removes selection
         </span>
-      </div>
+      </fieldset>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onInit={(instance) => {
           flowInstance.current = instance;
         }}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
+        onNodesChange={(changes) =>
+          onNodesChange(
+            readOnly
+              ? changes.filter((c) => c.type === 'dimensions' || c.type === 'select')
+              : changes,
+          )
+        }
+        onEdgesChange={(changes) =>
+          onEdgesChange(readOnly ? changes.filter((c) => c.type === 'select') : changes)
+        }
         onConnect={onConnect}
         onNodeClick={(_, node) => {
           selectNode(node.id);
@@ -465,6 +568,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           selectNode(null);
         }}
         onNodesDelete={(deleted) => {
+          if (readOnly) return;
           const ids = new Set(deleted.map((d) => d.id));
           const updated: Workflow = {
             ...workflow,
@@ -476,6 +580,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           if (selectedNodeId !== null && ids.has(selectedNodeId)) selectNode(null);
         }}
         onEdgesDelete={(deleted) => {
+          if (readOnly) return;
           const ids = new Set(deleted.map((d) => d.id));
           const updated: Workflow = {
             ...workflow,
@@ -485,6 +590,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           revalidate(updated);
         }}
         onNodeDragStop={(_, node) => {
+          if (readOnly) return;
           updateActiveWorkflow({
             ...workflow,
             nodes: workflow.nodes.map((n) =>
@@ -495,7 +601,10 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           });
         }}
         nodeTypes={nodeTypes}
-        deleteKeyCode={['Backspace', 'Delete']}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        edgesReconnectable={!readOnly}
+        deleteKeyCode={readOnly ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ interactionWidth: 32 }}
         connectionRadius={32}
         fitView={workflow.nodes.length <= 10}

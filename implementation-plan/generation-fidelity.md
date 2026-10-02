@@ -78,3 +78,28 @@ The upstream `sooperset/mcp-atlassian` configuration documents `JIRA_URL`,
 configuration. The Environment guide now says so. The generator prompt no
 longer demonstrates a fabricated `searchJiraIssuesUsingJql` tool; it requires
 names from the server's discovered tool list.
+
+## v0.1.6: native boundaries, exact profiles, and project context
+
+The general and repository sections share a native-first policy: supported
+Git/GitHub/Ticket/MCP operations, Condition decisions and Approval gates retain
+explicit steps. Concrete unsupported operations and project tests use Command;
+reasoning, implementation and review use Agent. Engine retries handle transient
+failures; unsupported polling requires a bounded, explained fallback. Explicit
+CLI-only requests and other user restrictions remain authoritative.
+
+Generation receives every configured profile's exact name, adapter, role, model
+and effort, plus named default role choices and enabled manual/accepted memory
+for the selected repository. Memory is quoted data and bounded; repository
+inspection must verify remembered commands. A proposal's profileName resolves
+uniquely before role fallback, so Claude and Codex reviewers sharing a role stay
+separate. Ambiguous/missing names produce actionable setup errors.
+
+Compiler notes distinguish supported native candidates from unsupported
+fallbacks (including Git push), and call out AI CLI profile bypasses. Preview
+lists resolved reviewer names/models and Command arguments. Acceptance opens a
+workflow for editing and does not execute it.
+
+Deterministic prompt/compiler/preview tests cover these guarantees. No live
+local model generation was used as evidence of optimal choices; model responses
+still require preview and repository verification.

@@ -1,4 +1,8 @@
-import { useState } from 'react';
+import { PROJECT_FIELDS } from '../lib/memory';
+import { DirPicker } from './DirPicker';
+import { Modal } from './Modal';
+import { readLocal } from '../lib/storage';
+import { useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import { isPendingSuggestion, type Preference } from '../lib/generation';
 import { formatTime } from '../lib/time';
@@ -9,6 +13,23 @@ import { errorMessage } from '../lib/errors';
 import { MarkdownText } from './Markdown';
 
 export function MemoryView(): React.JSX.Element {
+  const profiles = useAppStore((s) => s.profiles);
+  const userTemplates = useAppStore((s) => s.userTemplates);
+  const workflows = useAppStore((s) => s.workflows);
+  const activeWorkflowId = useAppStore((s) => s.activeWorkflowId);
+  const playbookRequest = useRef(0);
+  const [repoDir, setRepoDir] = useState(
+    () =>
+      workflows.find((w) => w.id === activeWorkflowId)?.definition.defaults?.repoDir ??
+      readLocal('orchevia.genRepo.v1') ??
+      '',
+  );
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<Preference | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [editNote, setEditNote] = useState('');
   const preferences = useAppStore((s) => s.preferences);
   const generations = useAppStore((s) => s.generations);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
@@ -120,6 +141,73 @@ export function MemoryView(): React.JSX.Element {
       });
   };
 
+  const loadPlaybook = (): void => {
+    const request = ++playbookRequest.current;
+    setBusy(true);
+    setMessage(null);
+    void getBackend()
+      .getProjectMemoryContext(repoDir)
+      .then(async (context) => {
+        const all = await getBackend().listPreferences();
+        if (request !== playbookRequest.current) return;
+        setFields(
+          Object.fromEntries(
+            all
+              .filter((p) => p.scope === context.scope && typeof p.value === 'string')
+              .map((p) => [p.key.split('.').at(-1) ?? '', String(p.value)]),
+          ),
+        );
+        setMessage(
+          context.preferences.length
+            ? 'Loaded project playbook.'
+            : 'No enabled project playbook yet. Save your project knowledge below.',
+        );
+      })
+      .catch(
+        (e: unknown) =>
+          request === playbookRequest.current && setMessage(errorMessage(e)),
+      )
+      .finally(() => request === playbookRequest.current && setBusy(false));
+  };
+  const saveField = (field: string): void => {
+    setBusy(true);
+    setMessage(null);
+    void getBackend()
+      .saveProjectPreference(
+        repoDir,
+        field,
+        fields[field] ?? '',
+        note || 'Saved explicitly in Memory.',
+      )
+      .then(async () => {
+        await refreshLibrary();
+        setMessage(`Saved ${FIELD_LABELS[field] ?? field}.`);
+      })
+      .catch((e: unknown) => setMessage(errorMessage(e)))
+      .finally(() => setBusy(false));
+  };
+  const editPreference = (): void => {
+    if (!editing) return;
+    let value: Preference['value'];
+    try {
+      value =
+        typeof editing.value === 'string'
+          ? editValue
+          : (JSON.parse(editValue) as Preference['value']);
+    } catch {
+      setMessage('Enter valid JSON for this scalar preference.');
+      return;
+    }
+    void getBackend()
+      .savePreference({ ...editing, value, note: editNote, source: 'manual' })
+      .then(async () => {
+        setEditing(null);
+        await refreshLibrary();
+        setMessage('Preference updated.');
+      })
+      .catch((e: unknown) => setMessage(errorMessage(e)));
+  };
+
   const learning = preferences.find((p) => p.key === 'learning.enabled');
   const learningOn = learning === undefined ? true : learning.value !== false;
 
@@ -180,6 +268,154 @@ export function MemoryView(): React.JSX.Element {
           Learning suggestions enabled
         </label>
 
+        <h2 style={{ fontSize: 14 }}>Project playbook</h2>
+        <p className="field-hint">
+          Save commands and conventions you trust. Generator context includes enabled
+          accepted or manual knowledge for this repository. Reusable graphs live in
+          Templates.
+        </p>
+        <div style={{ maxWidth: 760, marginBottom: 20 }}>
+          <DirPicker
+            id="playbook-repo"
+            label="Playbook repository"
+            value={repoDir}
+            onChange={(v) => {
+              ++playbookRequest.current;
+              setBusy(false);
+              setRepoDir(v);
+              setFields({});
+              setNote('');
+            }}
+          />
+          <button
+            className="btn"
+            disabled={busy || !repoDir.trim()}
+            onClick={loadPlaybook}
+          >
+            {busy ? 'Working…' : 'Load playbook'}
+          </button>
+          <div className="field">
+            <label className="field-label" htmlFor="playbook-evidence">
+              Evidence note
+            </label>
+            <input
+              id="playbook-evidence"
+              className="input"
+              value={note}
+              maxLength={4000}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Where this knowledge came from"
+            />
+          </div>
+          {PROJECT_FIELDS.map((field) => (
+            <div className="field" key={field}>
+              <label className="field-label" htmlFor={'playbook-' + field}>
+                {FIELD_LABELS[field]}
+              </label>
+              {field === 'templateId' ? (
+                <select
+                  id={'playbook-' + field}
+                  className="select"
+                  value={fields[field] ?? ''}
+                  onChange={(e) => setFields({ ...fields, [field]: e.target.value })}
+                >
+                  <option value="">Choose a saved template</option>
+                  {userTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                  {fields[field] &&
+                    !userTemplates.some((t) => t.id === fields[field]) && (
+                      <option value={fields[field]}>
+                        Missing template: {fields[field]}
+                      </option>
+                    )}
+                </select>
+              ) : field === 'fastReviewProfile' || field === 'deepReviewProfile' ? (
+                <select
+                  id={'playbook-' + field}
+                  className="select"
+                  value={fields[field] ?? ''}
+                  onChange={(e) => setFields({ ...fields, [field]: e.target.value })}
+                >
+                  <option value="">Choose an exact profile name</option>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.name}>
+                      {p.name} ({p.adapter})
+                    </option>
+                  ))}
+                  {fields[field] && !profiles.some((p) => p.name === fields[field]) && (
+                    <option value={fields[field]}>
+                      Missing profile: {fields[field]}
+                    </option>
+                  )}
+                </select>
+              ) : (
+                <textarea
+                  id={'playbook-' + field}
+                  className="textarea"
+                  rows={field === 'conventions' ? 3 : 2}
+                  maxLength={4000}
+                  value={fields[field] ?? ''}
+                  onChange={(e) => setFields({ ...fields, [field]: e.target.value })}
+                />
+              )}
+              <button
+                className="btn"
+                disabled={busy || !repoDir.trim() || !fields[field]?.trim()}
+                onClick={() => saveField(field)}
+              >
+                Save {FIELD_LABELS[field]}
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="field" style={{ maxWidth: 760 }}>
+          <label className="field-label" htmlFor="default-deep-reviewer">
+            Default deep reviewer
+          </label>
+          <select
+            id="default-deep-reviewer"
+            className="select"
+            value={String(
+              preferences.find(
+                (p) =>
+                  p.key === 'role.deepReview.profile' &&
+                  p.enabled &&
+                  ['manual', 'accepted'].includes(p.source),
+              )?.value ?? '',
+            )}
+            onChange={(e) => {
+              const value = e.target.value;
+              if (!value) {
+                remove('role.deepReview.profile');
+                return;
+              }
+              void getBackend()
+                .savePreference({
+                  key: 'role.deepReview.profile',
+                  scope: '*',
+                  value,
+                  source: 'manual',
+                  enabled: true,
+                  note: 'Explicit default selected in Memory.',
+                })
+                .then(() => refreshLibrary())
+                .catch((err: unknown) => setMessage(errorMessage(err)));
+            }}
+          >
+            <option value="">First configured profile with the role</option>
+            {profiles
+              .filter((p) => p.role === 'deepReview')
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.adapter})
+                </option>
+              ))}
+          </select>
+        </div>
+
         <h2 style={{ fontSize: 14 }}>Suggestions ({suggestions.length})</h2>
         {suggestions.length === 0 && (
           <p className="field-hint">
@@ -215,6 +451,18 @@ export function MemoryView(): React.JSX.Element {
                 {p.note !== '' ? ` · ${p.note}` : ''}
               </div>
             </span>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setEditing(p);
+                setEditValue(
+                  typeof p.value === 'string' ? p.value : JSON.stringify(p.value),
+                );
+                setEditNote(p.note);
+              }}
+            >
+              Edit
+            </button>
             <button className="btn btn-ghost" onClick={() => toggleEnabled(p)}>
               {p.enabled ? 'Disable' : 'Enable'}
             </button>
@@ -281,6 +529,43 @@ export function MemoryView(): React.JSX.Element {
           </details>
         ))}
       </div>
+      {editing && (
+        <Modal
+          label="Edit preference"
+          onClose={() => setEditing(null)}
+          onBackdrop={() => setEditing(null)}
+        >
+          <div className="modal-panel">
+            <h3>Edit preference</h3>
+            <p className="field-hint">
+              {editing.key} · {editing.scope}
+            </p>
+            <label className="field-label" htmlFor="memory-edit-value">
+              Value
+            </label>
+            <textarea
+              id="memory-edit-value"
+              className="textarea"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              maxLength={4000}
+            />
+            <label className="field-label" htmlFor="memory-edit-note">
+              Evidence
+            </label>
+            <textarea
+              id="memory-edit-note"
+              className="textarea"
+              value={editNote}
+              onChange={(e) => setEditNote(e.target.value)}
+              maxLength={4000}
+            />
+            <button className="btn btn-primary" onClick={editPreference}>
+              Save preference
+            </button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
@@ -309,3 +594,13 @@ function formatProposalJson(json: string): string {
     return json;
   }
 }
+
+const FIELD_LABELS: Record<string, string> = {
+  testCommand: 'Test command',
+  lintCommand: 'Lint command',
+  buildCommand: 'Build command',
+  conventions: 'Repository conventions',
+  fastReviewProfile: 'Preferred fast reviewer',
+  deepReviewProfile: 'Preferred deep reviewer',
+  templateId: 'Reusable workflow template',
+};

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { getBackend } from '../lib/backend';
-import { ADAPTER_LABELS, createDefaultProfile, type AdapterKind } from '../lib/agents';
+import { recommendedProfiles } from '../lib/agents';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 import { Modal } from './Modal';
@@ -101,37 +101,17 @@ export function OnboardingWizard({
   const seedProfiles = (): void => {
     setBusy(true);
     setMessage(null);
-    // Roles that templates, samples, and the generator expect. Preferred
-    // adapter first, installed fallback second, preferred anyway last (a
-    // profile for a missing CLI shows an unavailable state, never an error).
-    const wanted: { role: string; label: string; preferred: AdapterKind }[] = [
-      { role: 'planning', label: 'Planning', preferred: 'claude' },
-      { role: 'implementation', label: 'Implementation', preferred: 'claude' },
-      { role: 'fastReview', label: 'Fast review', preferred: 'claude' },
-      { role: 'deepReview', label: 'Deep review', preferred: 'codex' },
-      { role: 'workflowGenerator', label: 'Workflow generator', preferred: 'claude' },
-    ];
-    const missing = wanted.filter((w) => !profiles.some((p) => p.role === w.role));
+    const missing = recommendedProfiles(profiles);
     void (async () => {
       try {
         for (const item of missing) {
-          const other: AdapterKind = item.preferred === 'claude' ? 'codex' : 'claude';
-          const adapter = installed(item.preferred)
-            ? item.preferred
-            : installed(other)
-              ? other
-              : item.preferred;
-          await getBackend().saveAgentProfile({
-            ...createDefaultProfile(adapter),
-            name: `${ADAPTER_LABELS[adapter]} — ${item.label}`,
-            role: item.role,
-          });
+          await getBackend().saveAgentProfile(item);
         }
         await refreshAll();
         setMessage(
           missing.length === 0
             ? 'All recommended roles already have a profile.'
-            : `Created ${missing.map((m) => m.label).join(', ')}. Tune model/effort in Agents anytime.`,
+            : `Created ${missing.map((m) => m.name).join(', ')}. Tune model/effort in Agents anytime.`,
         );
       } catch (err) {
         setMessage(errorMessage(err));
@@ -277,13 +257,7 @@ export function OnboardingWizard({
               })}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              {[
-                'planning',
-                'implementation',
-                'fastReview',
-                'deepReview',
-                'workflowGenerator',
-              ].every((role) => profiles.some((p) => p.role === role)) ? (
+              {recommendedProfiles(profiles).length === 0 ? (
                 <p className="field-hint" style={{ marginBottom: 0 }}>
                   ✓ All recommended roles are covered — nothing left to create.
                 </p>
@@ -298,11 +272,11 @@ export function OnboardingWizard({
               )}
             </div>
             <p className="field-hint" style={{ marginTop: 8 }}>
-              One click creates the missing roles on your installed CLIs (missing CLIs
-              show as unavailable, never break). In Agents you can set models and effort
-              (low/medium/high/xhigh) per profile. Using another coding CLI (aichat, sgpt,
-              mods, …)? Add it manually in Agents → New profile → Custom CLI with the full
-              binary path.
+              One click creates missing Claude and Codex recommendations with configured
+              models (missing CLIs show as unavailable, never break). In Agents you can
+              set models and effort (low/medium/high/xhigh) per profile. Using another
+              coding CLI (aichat, sgpt, mods, …)? Add it manually in Agents → New profile
+              → Custom CLI with the full binary path.
             </p>
           </>
         )}

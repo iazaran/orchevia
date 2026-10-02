@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { Notice } from './Notice';
+import { errorMessage } from '../lib/errors';
 import { getBackend } from '../lib/backend';
 import { formatDate, formatTime } from '../lib/time';
 import { useAppStore } from '../store';
@@ -6,14 +9,30 @@ export function InboxView(): React.JSX.Element {
   const notifications = useAppStore((s) => s.notifications);
   const refreshNotifications = useAppStore((s) => s.refreshNotifications);
   const setView = useAppStore((s) => s.setView);
-  const selectRun = useAppStore((s) => s.selectRun);
+  const openRun = useAppStore((s) => s.openRunOnCanvas);
+  const [showRead, setShowRead] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const visible = notifications.filter((n) => showRead || !n.read);
+  const act = async (action: () => Promise<unknown>): Promise<void> => {
+    if (pending) return;
+    setPending(true);
+    setMessage(null);
+    try {
+      await action();
+      await refreshNotifications();
+    } catch (err) {
+      setMessage(errorMessage(err));
+      if (useAppStore.getState().view !== 'inbox')
+        useAppStore.getState().setError(errorMessage(err));
+    } finally {
+      setPending(false);
+    }
+  };
   const unread = notifications.filter((n) => !n.read).length;
 
   const markAllRead = (): void => {
-    void getBackend()
-      .markAllNotificationsRead()
-      .then(() => refreshNotifications())
-      .catch(() => {});
+    void act(() => getBackend().markAllNotificationsRead());
   };
 
   return (
@@ -24,7 +43,18 @@ export function InboxView(): React.JSX.Element {
           {unread} unread · approvals, failures, findings, feedback.
         </span>
         <div className="topbar-actions">
-          <button className="btn" onClick={markAllRead}>
+          <button
+            className="btn"
+            aria-pressed={showRead}
+            onClick={() => setShowRead(!showRead)}
+          >
+            {showRead ? 'Show unread' : 'Show read history'}
+          </button>
+          <button
+            className="btn"
+            disabled={pending || unread === 0}
+            onClick={markAllRead}
+          >
             Mark all read
           </button>
           <button
@@ -38,7 +68,8 @@ export function InboxView(): React.JSX.Element {
         </div>
       </div>
       <div className="view">
-        {notifications.length === 0 && (
+        {message !== null && <Notice variant="error">{message}</Notice>}
+        {visible.length === 0 && (
           <div className="empty-state">
             <h2>All caught up</h2>
             <p>
@@ -47,7 +78,7 @@ export function InboxView(): React.JSX.Element {
             </p>
           </div>
         )}
-        {notifications.slice(0, 100).map((n) => (
+        {visible.slice(0, 100).map((n) => (
           <div key={n.id} className="run-row" style={{ opacity: n.read ? 0.65 : 1 }}>
             <span className={`status-pill ${notificationPill(n.kind)}`}>{n.kind}</span>
             <span style={{ minWidth: 0 }}>
@@ -60,9 +91,13 @@ export function InboxView(): React.JSX.Element {
             {n.runId !== undefined && n.runId !== '' && (
               <button
                 className="btn"
+                disabled={pending}
                 onClick={() => {
-                  void selectRun(n.runId as string).then(() => {
-                    setView('runs');
+                  const runId = n.runId;
+                  if (runId === undefined) return;
+                  void act(async () => {
+                    if (await openRun(runId))
+                      await getBackend().markNotificationRead(n.id);
                   });
                 }}
               >
@@ -72,11 +107,9 @@ export function InboxView(): React.JSX.Element {
             {!n.read && (
               <button
                 className="btn btn-ghost"
+                disabled={pending}
                 onClick={() => {
-                  void getBackend()
-                    .markNotificationRead(n.id)
-                    .then(() => refreshNotifications())
-                    .catch(() => {});
+                  void act(() => getBackend().markNotificationRead(n.id));
                 }}
               >
                 Mark read

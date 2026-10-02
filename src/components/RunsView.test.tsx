@@ -5,8 +5,35 @@ import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
 import { RunsView } from './RunsView';
 
+const originalShowRunOverlay = useAppStore.getState().showRunOverlay;
+
 afterEach(() => {
+  useAppStore.setState({ showRunOverlay: originalShowRunOverlay });
   vi.restoreAllMocks();
+});
+
+it('opens finished runs on the canvas through exact snapshot navigation', async () => {
+  __setMockBackendForTests();
+  const showRunOverlay = vi.fn().mockResolvedValue(undefined);
+  useAppStore.setState({
+    runs: [
+      {
+        id: 'finished-run',
+        workflowId: 'wf',
+        status: 'succeeded',
+        startedAt: new Date().toISOString(),
+      },
+    ],
+    activeRunId: 'finished-run',
+    runResults: { 'finished-run': [] },
+    workflows: [],
+    profiles: [],
+    showRunOverlay,
+  });
+  render(<RunsView />);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Show on canvas' }));
+  expect(showRunOverlay).toHaveBeenCalledWith('finished-run');
+  expect(screen.queryByRole('button', { name: 'Cancel run' })).toBeNull();
 });
 
 it('disables duplicate decisions and displays approval failures', async () => {
@@ -62,4 +89,57 @@ it('disables duplicate decisions and displays approval failures', async () => {
   expect(cancel).toHaveBeenCalledTimes(1);
   rejectRequest(new Error('Run is no longer paused.'));
   expect(await screen.findByRole('alert')).toHaveTextContent('Run is no longer paused.');
+});
+
+it('promotes the successful snapshot command with run evidence only', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  workflow.defaults = { repoDir: '/project' };
+  workflow.nodes.push({
+    id: 'verified-command',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 0 },
+    config: { executable: 'sh', args: ['-c', 'make test'] },
+  });
+  const run = {
+    id: 'verified-run',
+    workflowId: workflow.id,
+    status: 'succeeded' as const,
+    startedAt: new Date().toISOString(),
+    inputs: {},
+  };
+  const result = {
+    id: 1,
+    runId: run.id,
+    nodeId: 'verified-command',
+    status: 'succeeded',
+    stdout: 'private log',
+    stderr: '',
+    startedAt: run.startedAt,
+  };
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([result]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [result] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const user = userEvent.setup();
+  await user.click(
+    await screen.findByRole('button', { name: 'Save command to playbook' }),
+  );
+  expect(await screen.findByText(/Saved verified command/)).toBeInTheDocument();
+  const context = await backend.getProjectMemoryContext('/project');
+  expect(context.text).toContain('make test');
+  expect(context.text).toContain('verified-run');
+  expect(context.text).not.toContain('private log');
+  act(() => useAppStore.setState({ runs: [{ ...run, status: 'failed' }] }));
+  expect(screen.queryByRole('button', { name: 'Save command to playbook' })).toBeNull();
 });

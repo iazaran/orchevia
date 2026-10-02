@@ -125,3 +125,14 @@ checks: required inputs supplied, referenced Agent Profiles exist with CLIs on
 `PATH`, condition/prompt variable references resolve, true+false branches
 present, label placement, cycle guards and bounds, retry/timeout bounds, input
 name validity and uniqueness. See `workflow-schema.md` for the code list.
+
+## Inbox and run graphs
+
+Inbox shows unread notifications by default. Mark read removes an item from
+that view; Show read history makes it accessible again. Open run retrieves that
+specific run directly, including runs beyond the recent list, and opens its
+saved graph and results. A successful navigation marks the item read; errors
+remain visible and leave it unread. Show on canvas in Runs uses the same path.
+Run graphs are read-only snapshots and refresh their outputs while displayed.
+Use Edit saved workflow to return to the editable definition. Historical runs
+created before snapshots use the saved definition as their existing fallback.

@@ -31,3 +31,5 @@ pub use workflow::{
     Edge, Node, NodeConfig, NodeKind, Position, ValidationIssue, ValidationSeverity, Workflow,
     CURRENT_SCHEMA_VERSION,
 };
+
+pub mod workflow_document;

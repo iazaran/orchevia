@@ -1,3 +1,4 @@
+import { commandEdits } from './lib/memory';
 import { create } from 'zustand';
 import { getBackend } from './lib/backend';
 import type { AdapterInfo, AgentProfile } from './lib/agents';
@@ -50,6 +51,7 @@ interface AppState {
   generations: StoredGeneration[];
   selectedEdgeId: string | null;
   overlayRunId: string | null;
+  overlayWorkflow: Workflow | null;
   overlayResults: StoredNodeResult[];
   loading: boolean;
   error: string | null;
@@ -67,14 +69,17 @@ interface AppState {
   selectWorkflow: (id: string | null) => void;
   selectNode: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
+  openRunOnCanvas: (runId: string) => Promise<boolean>;
+  refreshRunOverlay: () => Promise<void>;
   showRunOverlay: (runId: string | null) => Promise<void>;
   updateActiveWorkflow: (workflow: Workflow) => void;
-  saveActiveWorkflow: () => Promise<void>;
+  saveActiveWorkflow: (definition?: Workflow) => Promise<StoredWorkflow | undefined>;
   setValidation: (issues: ValidationIssue[]) => void;
   selectRun: (id: string | null) => Promise<void>;
   setError: (message: string | null) => void;
 }
 
+let navigationSequence = 0;
 export const useAppStore = create<AppState>()((set, get) => ({
   view: 'workflows',
   workflows: [],
@@ -101,11 +106,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   generations: [],
   selectedEdgeId: null,
   overlayRunId: null,
+  overlayWorkflow: null,
   overlayResults: [],
   loading: false,
   error: null,
 
   setView: (view) => {
+    navigationSequence++;
     set({ view });
   },
 
@@ -230,7 +237,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   selectWorkflow: (id) => {
+    navigationSequence++;
     set({
+      overlayRunId: null,
+      overlayWorkflow: null,
+      overlayResults: [],
       activeWorkflowId: id,
       selectedNodeId: null,
       selectedEdgeId: null,
@@ -246,17 +257,48 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ selectedEdgeId: id, selectedNodeId: null });
   },
 
+  openRunOnCanvas: async (runId) => {
+    const request = ++navigationSequence;
+    const backend = getBackend();
+    const [run, workflow, results] = await Promise.all([
+      backend.getRun(runId),
+      backend.getRunWorkflow(runId),
+      backend.getRunResults(runId),
+    ]);
+    if (run === null || workflow === null)
+      throw new Error(`Unknown run '${runId}' or its saved workflow is unavailable.`);
+    if (request !== navigationSequence) return false;
+    set({
+      view: 'workflows',
+      activeRunId: runId,
+      activeWorkflowId: run.workflowId,
+      overlayRunId: runId,
+      overlayWorkflow: workflow,
+      overlayResults: results,
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      validation: [],
+      runs: [run, ...get().runs.filter((r) => r.id !== run.id)],
+    });
+    return true;
+  },
+  refreshRunOverlay: async () => {
+    const { overlayRunId } = get();
+    if (overlayRunId === null) return;
+    const results = await getBackend().getRunResults(overlayRunId);
+    if (get().overlayRunId === overlayRunId) set({ overlayResults: results });
+  },
   showRunOverlay: async (runId) => {
     if (runId === null) {
-      set({ overlayRunId: null, overlayResults: [] });
+      navigationSequence++;
+      set({ overlayRunId: null, overlayWorkflow: null, overlayResults: [] });
       return;
     }
-    const backend = getBackend();
-    const results = await backend.getRunResults(runId);
-    set({ overlayRunId: runId, overlayResults: results });
+    await get().openRunOnCanvas(runId);
   },
 
   updateActiveWorkflow: (workflow) => {
+    if (get().overlayRunId !== null) return;
     const { workflows, activeWorkflowId } = get();
     set({
       workflows: workflows.map((w) =>
@@ -267,19 +309,40 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  saveActiveWorkflow: async () => {
+  saveActiveWorkflow: async (definition) => {
+    if (get().overlayRunId !== null) return;
     const { workflows, activeWorkflowId } = get();
     const active = workflows.find((w) => w.id === activeWorkflowId);
     if (active === undefined) return;
     const backend = getBackend();
+    const workflow = definition ?? active.definition;
+    const previous = await backend.getWorkflow(workflow.id);
+    const before = previous ? structuredClone(previous.definition) : null;
     const [stored, validation] = await Promise.all([
-      backend.saveWorkflow(active.definition),
-      backend.validateWorkflow(active.definition),
+      backend.saveWorkflow(workflow),
+      backend.validateWorkflow(workflow),
     ]);
     set({
       workflows: get().workflows.map((w) => (w.id === stored.id ? stored : w)),
       validation,
     });
+    if (before && stored.definition.defaults?.repoDir?.trim()) {
+      try {
+        const context = await backend.getProjectMemoryContext(
+          stored.definition.defaults.repoDir,
+        );
+        const observations = commandEdits(before, stored.definition, context.scope);
+        if (observations.length) {
+          await backend.observeEdits(observations);
+          await get().refreshLibrary();
+        }
+      } catch (error: unknown) {
+        set({
+          error: 'Workflow saved. Memory observation failed: ' + errorMessage(error),
+        });
+      }
+    }
+    return stored;
   },
 
   setValidation: (validation) => {

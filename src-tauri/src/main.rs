@@ -180,6 +180,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::encode_workflow_document,
+            commands::decode_workflow_document,
             commands::list_workflows,
             commands::get_workflow,
             commands::save_workflow,
@@ -190,6 +192,8 @@ fn main() {
             commands::approve_run,
             commands::cancel_run,
             commands::list_runs,
+            commands::get_run,
+            commands::get_run_workflow,
             commands::get_run_results,
             commands::delete_run,
             commands::clear_finished_runs,
@@ -242,6 +246,8 @@ fn main() {
             commands::generate_workflow,
             commands::mark_generation_status,
             commands::list_generations,
+            commands::get_project_memory_context,
+            commands::save_project_preference,
             commands::list_preferences,
             commands::save_preference,
             commands::delete_preference,

@@ -6,6 +6,39 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-03
+
+### Added
+
+- Simple workflow JSON with readable keys, full configuration, portable template
+  exports, and an Advanced view preserving existing raw JSON compatibility.
+- Editable repository playbooks for commands, conventions, reviewers and reusable
+  templates; evidence-backed suggestions and explicit successful-run promotion.
+- Recommended Claude/Codex profiles matching the tested model and effort choices,
+  including separate exact selections for reviewers sharing the same role.
+
+### Changed
+
+- Arrange graphs vertically by default with dependency ranks, branch lanes,
+  bounded loop groups, measured node sizes and an explicit horizontal option.
+- Make all nine built-in templates language neutral; project tests use a required
+  command input. Browser preview supports persisted templates and memory.
+- Prefer supported native workflow operations in generation, preserve explicit
+  CLI restrictions, include accepted project knowledge and all profile choices,
+  and explain unsupported Command fallbacks and AI profile bypasses.
+
+### Fixed
+
+- Open the exact immutable run graph from Inbox or Runs, with read-only result
+  inspection and guarded navigation; read notifications leave the unread view.
+- Remap spaced references when cloning templates while preserving MCP and condition
+  literals, reject malformed editor values, preserve Command argument boundaries
+  during interpolation, and reject effective blank required inputs before execution.
+- Keep cancelled run navigation unread and preserve working directories and JSON
+  edit observations in project-memory suggestions.
+- Synchronize canvas nodes after external JSON edits and preserve existing
+  reviewer selections ahead of role defaults.
+
 ## [0.1.5] - 2026-10-01
 
 ### Changed

@@ -133,7 +133,7 @@ describe('describeGeneratedStep', () => {
         position: { x: 0, y: 0 },
         config: { executable: 'cargo', args: ['test'] },
       }),
-    ).toBe('CLI: cargo');
+    ).toBe('CLI: cargo test');
   });
 });
 
@@ -146,4 +146,42 @@ describe('summarizeGenerationExplanation', () => {
     );
     expect(summarizeGenerationExplanation('Simple plan.')).toBe('Simple plan.');
   });
+});
+
+it('describes each resolved exact reviewer and project command in preview', () => {
+  const profiles = [
+    {
+      id: 'claude',
+      name: 'Claude deep review',
+      adapter: 'claude' as const,
+      model: 'fable',
+    },
+    {
+      id: 'codex',
+      name: 'Codex deep review',
+      adapter: 'codex' as const,
+      model: 'gpt-6.1-sol',
+    },
+  ];
+  for (const profile of profiles) {
+    const description = describeGeneratedStep(
+      {
+        id: profile.id,
+        type: 'agent',
+        position: { x: 0, y: 0 },
+        config: { agentProfileId: profile.id, prompt: 'Review' },
+      },
+      profiles,
+    );
+    expect(description).toContain(profile.name);
+    expect(description).toContain(profile.model);
+  }
+  expect(
+    describeGeneratedStep({
+      id: 'tests',
+      type: 'command',
+      position: { x: 0, y: 0 },
+      config: { executable: 'sh', args: ['-c', '{{input.testCommand}}'] },
+    }),
+  ).toContain('{{input.testCommand}}');
 });

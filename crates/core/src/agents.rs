@@ -227,6 +227,20 @@ impl AgentRole {
     }
 }
 
+/// Explicit names are portable, but must identify exactly one configured profile.
+pub fn resolve_profile_name(name: &str, profiles: &[AgentProfile]) -> Result<String, String> {
+    let mut matches = profiles.iter().filter(|p| p.name == name.trim());
+    let profile = matches
+        .next()
+        .ok_or_else(|| format!("No Agent Profile named '{name}'. Configure it in Agents."))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "Agent Profile name '{name}' is ambiguous. Rename duplicate profiles."
+        ));
+    }
+    Ok(profile.id.clone())
+}
+
 /// How the working directory for an agent run is chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
