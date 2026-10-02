@@ -1,6 +1,69 @@
 import { expect, it } from 'vitest';
 import { createEmptyWorkflow } from './workflow';
 import { encodeDocument, decodeDocument } from './workflow-document';
+import { remapConfigReferences } from './workflow-document';
+
+it('keeps condition right operands literal as required by the runtime evaluator', () => {
+  const condition = {
+    logic: 'and' as const,
+    clauses: [
+      { left: 'node.old.output', op: 'equals' as const, right: 'node.old.output' },
+      {
+        left: 'node.old.output',
+        op: 'equals' as const,
+        right: '{{ node.missing.output }}',
+      },
+    ],
+  };
+  const mapped = remapConfigReferences({ condition }, { old: 'fresh' });
+  expect(mapped.condition?.clauses.map((c) => c.left)).toEqual([
+    'node.fresh.output',
+    'node.fresh.output',
+  ]);
+  expect(mapped.condition?.clauses.map((c) => c.right)).toEqual(
+    condition.clauses.map((c) => c.right),
+  );
+});
+
+it('remaps spaced references and overlapping IDs while preserving escapes and literals', () => {
+  const config = {
+    prompt:
+      '{{ node.old.output }} {{node.old-long.output}} \\{{ node.old.output }} {{not-a-reference}}',
+    condition: {
+      logic: 'and' as const,
+      clauses: [{ left: 'node.old.output', op: 'equals' as const, right: 'literal' }],
+    },
+  };
+  const mapped = remapConfigReferences(config, { old: 'fresh', 'old-long': 'longer' });
+  expect(mapped.prompt).toBe(
+    '{{ node.fresh.output }} {{node.longer.output}} \\{{ node.old.output }} {{not-a-reference}}',
+  );
+  expect(mapped.condition?.clauses[0]?.left).toBe('node.fresh.output');
+  expect(() =>
+    remapConfigReferences({ prompt: '{{ node.missing.output }}' }, { old: 'fresh' }),
+  ).toThrow('Unknown node reference');
+});
+
+it('preserves MCP keys resembling typed workflow fields on export and clone', () => {
+  const config = {
+    mcpArgs: {
+      left: 'node.old.output',
+      right: 'literal',
+      inputRefs: 'literal',
+      templated: '{{node.old.output}}',
+    },
+    inputRefs: ['old'],
+  };
+  expect(remapConfigReferences(config, { old: 'fresh' })).toEqual({
+    ...config,
+    inputRefs: ['fresh'],
+    mcpArgs: { ...config.mcpArgs, templated: '{{node.fresh.output}}' },
+  });
+  const wf = createEmptyWorkflow('MCP');
+  wf.nodes[1]!.config = { mcpArgs: { inputRefs: 'literal', left: 'node.old.output' } };
+  const session = encodeDocument(wf, []);
+  expect(decodeDocument(session.json, [], {}, wf, session.nodeIds)).toEqual(wf);
+});
 it('round trips opaque IDs, positions, references and literal text', () => {
   const wf = createEmptyWorkflow('Round trip');
   const start = wf.nodes[0]!;
@@ -54,6 +117,69 @@ it('rejects duplicate keys, malformed config and dangling references', () => {
 it('imports legacy JSON without changing its definition', () => {
   const wf = createEmptyWorkflow('Old');
   expect(decodeDocument(JSON.stringify(wf), [], {})).toEqual(wf);
+});
+
+it('rejects malformed typed config, operations, inputs, defaults and graph labels', () => {
+  const base = {
+    version: 1,
+    name: 'Shape',
+    nodes: [{ key: 'a', type: 'command', config: {} }],
+    edges: [],
+  };
+  const malformed = [
+    ...[
+      { args: 42 },
+      { executable: 42 },
+      { args: [42] },
+      { retry: { maxAttempts: '3' } },
+      { condition: { logic: 'and', clauses: [{ left: 1, op: 'equals', right: '' }] } },
+      { gitOp: { op: 'checkout', name: 42 } },
+      { githubOp: { op: 'prFiles', number: '2' } },
+      { mcpArgs: { query: 42 } },
+      { timeoutSecs: -1 },
+    ].map((config) => ({ ...base, nodes: [{ key: 'a', type: 'command', config }] })),
+    { ...base, nodes: [{ key: 'a', type: 'command', label: 2, config: {} }] },
+    { ...base, nodes: [{ key: 'a', type: 'agent', profileName: 2, config: {} }] },
+    { ...base, defaults: { repoDir: 2 } },
+    { ...base, inputs: [{ name: 'testCommand', required: 'yes' }] },
+    { ...base, inputs: {} },
+    {
+      ...base,
+      nodes: [
+        {
+          key: 'a',
+          type: 'condition',
+          config: { condition: { logic: ['and'], clauses: [] } },
+        },
+      ],
+    },
+    { ...base, edges: [{ from: 'a', to: 'a', label: 2 }] },
+  ];
+  for (const doc of malformed)
+    expect(() => decodeDocument(JSON.stringify(doc), [], {})).toThrow();
+  const raw = createEmptyWorkflow('Bad raw');
+  for (const fields of [{ config: null }, { position: null }, { type: ['start'] }]) {
+    expect(() =>
+      decodeDocument(
+        JSON.stringify({ ...raw, nodes: [{ ...raw.nodes[0], ...fields }] }),
+        [],
+        {},
+      ),
+    ).toThrow();
+  }
+});
+
+it('normalizes legacy GitHub spelling for developer and raw imports', () => {
+  const doc = {
+    version: 1,
+    name: 'Alias',
+    nodes: [{ key: 'a', type: 'gitHub', config: { githubOp: { op: 'prStatus' } } }],
+    edges: [],
+  };
+  expect(decodeDocument(JSON.stringify(doc), [], {}).nodes[0]?.type).toBe('github');
+  const raw = createEmptyWorkflow('Raw alias');
+  const json = JSON.stringify(raw).replace('"type":"start"', '"type":"gitHub"');
+  expect(decodeDocument(json, [], {}).nodes[0]?.type).toBe('github');
 });
 
 it('resolves exact reviewers and preserves all configurable fields', () => {

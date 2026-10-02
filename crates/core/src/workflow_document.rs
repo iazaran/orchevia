@@ -108,13 +108,9 @@ fn reference(text: &str, map: &HashMap<String, String>) -> Result<String, String
     }
     Ok(text.into())
 }
-fn rewrite(value: &mut Value, map: &HashMap<String, String>, bare: bool) -> Result<(), String> {
+fn rewrite(value: &mut Value, map: &HashMap<String, String>) -> Result<(), String> {
     match value {
         Value::String(s) => {
-            if bare && s.starts_with("node.") {
-                *s = reference(s, map)?;
-                return Ok(());
-            }
             let mut out = String::new();
             let mut start = 0;
             while let Some(offset) = s[start..].find("{{") {
@@ -133,7 +129,14 @@ fn rewrite(value: &mut Value, map: &HashMap<String, String>, bare: bool) -> Resu
                 let end = at + 2 + end;
                 let token = &s[at + 2..end];
                 out.push_str("{{");
-                out.push_str(&reference(token, map)?);
+                let trimmed = token.trim();
+                let leading = token.len() - token.trim_start().len();
+                let trailing = token.trim_end().len();
+                out.push_str(&token[..leading]);
+                out.push_str(&reference(trimmed, map)?);
+                if !trimmed.is_empty() {
+                    out.push_str(&token[trailing..]);
+                }
                 out.push_str("}}");
                 start = end + 2;
             }
@@ -142,30 +145,57 @@ fn rewrite(value: &mut Value, map: &HashMap<String, String>, bare: bool) -> Resu
         }
         Value::Array(values) => {
             for item in values {
-                rewrite(item, map, bare)?;
+                rewrite(item, map)?;
             }
         }
         Value::Object(values) => {
-            for (key, item) in values {
-                if key == "inputRefs" {
-                    if let Some(refs) = item.as_array_mut() {
-                        for r in refs {
-                            if let Some(id) = r.as_str() {
-                                let target = map
-                                    .get(id)
-                                    .ok_or_else(|| format!("Unknown inputRefs node '{id}'."))?
-                                    .clone();
-                                *r = Value::String(target);
-                            }
-                        }
-                    }
-                } else {
-                    rewrite(item, map, key == "left" || key == "right")?;
-                }
+            for item in values.values_mut() {
+                rewrite(item, map)?;
             }
         }
         _ => {}
     };
+    Ok(())
+}
+fn rewrite_config(value: &mut Value, map: &HashMap<String, String>) -> Result<(), String> {
+    let object = value
+        .as_object_mut()
+        .ok_or("Node config must be an object.")?;
+    let mut refs = object.remove("inputRefs");
+    let mut condition = object.remove("condition");
+    rewrite(value, map)?;
+    if let Some(refs) = refs.as_mut() {
+        for item in refs.as_array_mut().ok_or("inputRefs must be an array.")? {
+            let id = item.as_str().ok_or("inputRefs entries must be strings.")?;
+            let mapped = map
+                .get(id)
+                .ok_or_else(|| format!("Unknown inputRefs node '{id}'."))?
+                .clone();
+            *item = Value::String(mapped);
+        }
+    }
+    if let Some(clauses) = condition
+        .as_mut()
+        .and_then(|c| c.get_mut("clauses"))
+        .and_then(Value::as_array_mut)
+    {
+        for clause in clauses {
+            // Runtime conditions look up the left side; their right side is a literal.
+            if let Some(Value::String(text)) = clause.get_mut("left") {
+                if text.starts_with("node.") {
+                    *text = reference(text, map)?;
+                }
+            }
+        }
+    }
+    if let Some(object) = value.as_object_mut() {
+        if let Some(refs) = refs {
+            object.insert("inputRefs".into(), refs);
+        }
+        if let Some(condition) = condition {
+            object.insert("condition".into(), condition);
+        }
+    }
     Ok(())
 }
 pub fn remap_config_references(
@@ -173,7 +203,7 @@ pub fn remap_config_references(
     map: &HashMap<String, String>,
 ) -> Result<(), String> {
     let mut value = serde_json::to_value(&*config).map_err(|e| e.to_string())?;
-    rewrite(&mut value, map, false)?;
+    rewrite_config(&mut value, map)?;
     *config = serde_json::from_value(value).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -210,7 +240,7 @@ pub fn export_document(
                 object.remove("extendOnOutput");
             }
         }
-        rewrite(&mut config, &aliases, false)?;
+        rewrite_config(&mut config, &aliases)?;
         let profile = match node.config.agent_profile_id.as_ref() {
             Some(id) => Some(profiles.iter().find(|p| &p.id == id).ok_or_else(|| {
                 format!(
@@ -315,7 +345,7 @@ pub fn import_document(
                 return Err(format!("Unknown config field '{key}'."));
             }
         }
-        rewrite(&mut config, &ids, false)?;
+        rewrite_config(&mut config, &ids)?;
         let mut config: NodeConfig =
             serde_json::from_value(config).map_err(|e| format!("Invalid node config: {e}"))?;
         if n.kind != NodeKind::Agent && (n.role.is_some() || n.profile_name.is_some()) {
@@ -453,6 +483,124 @@ mod tests {
         .unwrap();
         assert_eq!(decoded, wf);
     }
+    #[test]
+    fn condition_right_operands_remain_runtime_literals() {
+        let mut config: NodeConfig = serde_json::from_value(json!({"condition":{"logic":"and","clauses":[{"left":"node.old.output","op":"equals","right":"node.old.output"},{"left":"node.old.output","op":"equals","right":"{{ node.missing.output }}"}]}})).unwrap();
+        remap_config_references(
+            &mut config,
+            &HashMap::from([("old".into(), "fresh".into())]),
+        )
+        .unwrap();
+        let clauses = config.condition.unwrap().clauses;
+        assert_eq!(clauses[0].left, "node.fresh.output");
+        assert_eq!(clauses[0].right, "node.old.output");
+        assert_eq!(clauses[1].right, "{{ node.missing.output }}");
+    }
+
+    #[test]
+    fn spaced_and_overlapping_references_preserve_escapes_and_literals() {
+        let mut config: NodeConfig = serde_json::from_value(json!({"prompt":"{{ node.old.output }} {{node.old-long.output}} \\{{ node.old.output }} {{not-a-reference}}", "condition":{"logic":"and","clauses":[{"left":"node.old.output","op":"equals","right":"literal"}]}})).unwrap();
+        let map = HashMap::from([
+            ("old".into(), "fresh".into()),
+            ("old-long".into(), "longer".into()),
+        ]);
+        remap_config_references(&mut config, &map).unwrap();
+        assert_eq!(config.prompt.as_deref(), Some("{{ node.fresh.output }} {{node.longer.output}} \\{{ node.old.output }} {{not-a-reference}}"));
+        assert_eq!(
+            config.condition.as_ref().unwrap().clauses[0].left,
+            "node.fresh.output"
+        );
+        config.prompt = Some("{{ node.missing.output }}".into());
+        assert!(remap_config_references(&mut config, &map).is_err());
+    }
+
+    #[test]
+    fn mcp_argument_keys_are_opaque_to_typed_reference_remapping() {
+        let mut config: NodeConfig = serde_json::from_value(json!({"mcpArgs":{"left":"node.old.output","right":"literal","inputRefs":"literal","templated":"{{node.old.output}}"},"inputRefs":["old"]})).unwrap();
+        remap_config_references(
+            &mut config,
+            &HashMap::from([("old".into(), "fresh".into())]),
+        )
+        .unwrap();
+        assert_eq!(config.input_refs, vec!["fresh"]);
+        let args = config.mcp_args.unwrap();
+        assert_eq!(args["left"], "node.old.output");
+        assert_eq!(args["inputRefs"], "literal");
+        assert_eq!(args["templated"], "{{node.fresh.output}}");
+    }
+
+    #[test]
+    fn native_shape_contract_rejects_malformed_values_and_normalizes_legacy_kinds() {
+        for config in [
+            json!({"args":42}),
+            json!({"args":[42]}),
+            json!({"executable":42}),
+            json!({"retry":{"maxAttempts":"3"}}),
+            json!({"timeoutSecs":-1}),
+            json!({"condition":{"logic":["and"],"clauses":[]}}),
+            json!({"condition":{"logic":"and","clauses":[{"left":1,"op":"equals","right":""}]}}),
+            json!({"gitOp":{"op":"checkout","name":42}}),
+            json!({"githubOp":{"op":"prFiles","number":"2"}}),
+            json!({"mcpArgs":{"query":42}}),
+        ] {
+            let text = json!({"version":1,"name":"Shape","nodes":[{"key":"a","type":"command","config":config}],"edges":[]}).to_string();
+            assert!(
+                import_document(&text, None, &HashMap::new(), &[], &HashMap::new(), "wf").is_err()
+            );
+        }
+        for extra in [
+            json!({"inputs":[{"name":"testCommand","required":"yes"}]}),
+            json!({"defaults":{"repoDir":2}}),
+            json!({"edges":[{"from":"a","to":"a","label":2}]}),
+        ] {
+            let mut doc = json!({"version":1,"name":"Shape","nodes":[{"key":"a","type":"start","config":{}}],"edges":[]});
+            doc.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            assert!(import_document(
+                &doc.to_string(),
+                None,
+                &HashMap::new(),
+                &[],
+                &HashMap::new(),
+                "wf"
+            )
+            .is_err());
+        }
+        let doc = json!({"version":1,"name":"Alias","nodes":[{"key":"a","type":"gitHub","config":{}}],"edges":[]});
+        assert_eq!(
+            import_document(
+                &doc.to_string(),
+                None,
+                &HashMap::new(),
+                &[],
+                &HashMap::new(),
+                "wf"
+            )
+            .unwrap()
+            .nodes[0]
+                .kind,
+            NodeKind::GitHub
+        );
+        let raw = serde_json::to_value(crate::workflow::sample_workflow()).unwrap();
+        let mut raw = raw;
+        raw["nodes"][0]["type"] = json!("gitHub");
+        assert_eq!(
+            import_document(
+                &raw.to_string(),
+                None,
+                &HashMap::new(),
+                &[],
+                &HashMap::new(),
+                "wf"
+            )
+            .unwrap()
+            .nodes[0]
+                .kind,
+            NodeKind::GitHub
+        );
+    }
+
     #[test]
     fn developer_github_kind_matches_typescript() {
         let mut wf = crate::workflow::sample_workflow();

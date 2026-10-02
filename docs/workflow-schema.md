@@ -153,3 +153,9 @@ remain literal. Use the renderer's escape syntax for literal template tokens.
 For graphs over twelve nodes, Arrange opens the first dependency steps at a
 readable zoom instead of shrinking the complete chain into tiny labels. Pan or
 use the minimap to follow later steps; Fit View remains available for an overview.
+
+Simple and Advanced imports reject malformed typed values before saving. Legacy
+`gitHub` imports normalize to `github` in both backends. Reference conversion
+preserves placeholder whitespace and escaped tokens; only declared `inputRefs`
+and condition left-hand variables receive bare-reference remapping. Condition
+right-hand operands and ordinary MCP argument values remain literals.

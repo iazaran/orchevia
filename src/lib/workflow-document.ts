@@ -50,6 +50,183 @@ const configKeys = [
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
+function objectShape(value: unknown, field: string): Record<string, unknown> {
+  if (!isObject(value)) throw new Error(`Invalid ${field}: expected an object.`);
+  return value;
+}
+function stringField(
+  value: Record<string, unknown>,
+  field: string,
+  required = false,
+): void {
+  if (!required && value[field] === null) Reflect.deleteProperty(value, field);
+  if (value[field] === undefined && !required) return;
+  if (typeof value[field] !== 'string')
+    throw new Error(`Invalid ${field}: expected a string.`);
+}
+function boolField(value: Record<string, unknown>, field: string): void {
+  if (value[field] !== undefined && typeof value[field] !== 'boolean')
+    throw new Error(`Invalid ${field}: expected a boolean.`);
+}
+function uintField(
+  value: Record<string, unknown>,
+  field: string,
+  required = false,
+  max = Number.MAX_SAFE_INTEGER,
+): void {
+  if (!required && value[field] === null) Reflect.deleteProperty(value, field);
+  const n = value[field];
+  if (n === undefined && !required) return;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0 || n > max)
+    throw new Error(`Invalid ${field}: expected an unsigned integer.`);
+}
+function stringsField(value: Record<string, unknown>, field: string): void {
+  if (value[field] === undefined) return;
+  const items = value[field];
+  if (!Array.isArray(items) || items.some((v: unknown) => typeof v !== 'string'))
+    throw new Error(`Invalid ${field}: expected strings[].`);
+}
+function configShape(value: unknown, raw = false): void {
+  const config = objectShape(value, 'config');
+  for (const key of Object.keys(config))
+    if (![...configKeys, ...(raw ? ['agentProfileId', 'agentRole'] : [])].includes(key))
+      throw new Error(`Unknown config field '${key}'.`);
+  for (const key of [
+    'executable',
+    'workingDir',
+    'message',
+    'prompt',
+    'ticketKey',
+    'mcpServerId',
+    'mcpTool',
+    'agentProfileId',
+    'agentRole',
+  ])
+    stringField(config, key);
+  stringsField(config, 'args');
+  stringsField(config, 'inputRefs');
+  uintField(config, 'timeoutSecs');
+  uintField(config, 'maxVisits', false, 4294967295);
+  boolField(config, 'extendOnOutput');
+  for (const key of ['retry', 'condition', 'gitOp', 'githubOp', 'mcpArgs'])
+    if (config[key] === null) Reflect.deleteProperty(config, key);
+  if (config.retry !== undefined) {
+    const retry = objectShape(config.retry, 'retry');
+    uintField(retry, 'maxAttempts', true, 4294967295);
+    if (retry.delayMs === null)
+      throw new Error('Invalid delayMs: expected an unsigned integer.');
+    uintField(retry, 'delayMs');
+    boolField(retry, 'backoff');
+  }
+  if (config.condition !== undefined) {
+    const condition = objectShape(config.condition, 'condition');
+    stringField(condition, 'logic', true);
+    if (!['and', 'or'].includes(String(condition.logic)))
+      throw new Error('Invalid condition logic.');
+    if (condition.clauses === undefined) condition.clauses = [];
+    if (!Array.isArray(condition.clauses)) throw new Error('Invalid condition clauses.');
+    for (const value of condition.clauses as unknown[]) {
+      const clause = objectShape(value, 'clause');
+      stringField(clause, 'left', true);
+      stringField(clause, 'right', true);
+      stringField(clause, 'op', true);
+      const aliases: Record<string, string> = {
+        not_equals: 'notEquals',
+        not_contains: 'notContains',
+        greater_or_equal: 'greaterOrEqual',
+        less_or_equal: 'lessOrEqual',
+      };
+      const op = String(clause.op);
+      clause.op = Object.hasOwn(aliases, op) ? aliases[op] : op;
+      if (
+        ![
+          'equals',
+          'notEquals',
+          'contains',
+          'notContains',
+          'greater',
+          'less',
+          'greaterOrEqual',
+          'lessOrEqual',
+        ].includes(String(clause.op))
+      )
+        throw new Error('Invalid condition operator.');
+    }
+  }
+  if (config.gitOp !== undefined) {
+    const op = objectShape(config.gitOp, 'gitOp');
+    stringField(op, 'op', true);
+    if (
+      ![
+        'status',
+        'diffSummary',
+        'branchCreate',
+        'checkout',
+        'stage',
+        'commit',
+        'worktreeAdd',
+        'worktreeRemove',
+        'worktreeList',
+        'remotes',
+      ].includes(String(op.op))
+    )
+      throw new Error('Invalid Git operation.');
+    if (op.op === 'branchCreate' || op.op === 'checkout') stringField(op, 'name', true);
+    if (op.op === 'commit') stringField(op, 'message', true);
+    if (op.op === 'worktreeAdd' || op.op === 'worktreeRemove')
+      stringField(op, 'path', true);
+    stringField(op, 'branch');
+    boolField(op, 'allowDirty');
+    stringsField(op, 'paths');
+  }
+  if (config.githubOp !== undefined) {
+    const op = objectShape(config.githubOp, 'githubOp');
+    stringField(op, 'op', true);
+    if (
+      ![
+        'prStatus',
+        'listPrs',
+        'prDetails',
+        'prFiles',
+        'prChecks',
+        'createPr',
+        'postComment',
+      ].includes(String(op.op))
+    )
+      throw new Error('Invalid GitHub operation.');
+    if (['prDetails', 'prFiles', 'prChecks', 'postComment'].includes(String(op.op)))
+      uintField(op, 'number', true);
+    if (op.op === 'createPr')
+      for (const key of ['title', 'base', 'head']) stringField(op, key, true);
+    stringField(op, 'state');
+    if (op.body === null) throw new Error('Invalid body: expected a string.');
+    stringField(op, 'body', op.op === 'postComment');
+    boolField(op, 'draft');
+  }
+  if (config.mcpArgs !== undefined)
+    for (const arg of Object.values(objectShape(config.mcpArgs, 'mcpArgs')))
+      if (typeof arg !== 'string')
+        throw new Error('Invalid MCP argument: expected a string.');
+}
+function workflowFieldsShape(value: Record<string, unknown>): void {
+  if (value.defaults === null) delete value.defaults;
+  if (value.defaults !== undefined) {
+    const defaults = objectShape(value.defaults, 'defaults');
+    stringField(defaults, 'repoDir');
+    stringField(defaults, 'branch');
+  }
+  if (value.inputs !== undefined) {
+    if (!Array.isArray(value.inputs))
+      throw new Error('Invalid inputs: expected an array.');
+    for (const input of value.inputs as unknown[]) {
+      const item = objectShape(input, 'input');
+      stringField(item, 'name', true);
+      stringField(item, 'label');
+      stringField(item, 'default');
+      boolField(item, 'required');
+    }
+  }
+}
 function reference(text: string, map: Record<string, string>): string {
   if (!text.startsWith('node.')) return text;
   const rest = text.slice(5);
@@ -62,31 +239,20 @@ function reference(text: string, map: Record<string, string>): string {
     );
   return `node.${map[key] ?? ''}${rest.slice(key.length)}`;
 }
-function rewrite(value: unknown, map: Record<string, string>, bare = false): unknown {
+function rewrite(value: unknown, map: Record<string, string>): unknown {
   if (typeof value === 'string') {
-    if (bare && value.startsWith('node.')) return reference(value, map);
-    return value.replace(
-      /(?<!\\)\{\{([^{}]+)\}\}/g,
-      (_, token: string) => `{{${reference(token, map)}}}`,
-    );
+    return value.replace(/(?<!\\)\{\{([^{}]+)\}\}/g, (_, token: string) => {
+      const trimmed = token.trim();
+      if (!trimmed) return `{{${token}}}`;
+      const leading = token.slice(0, token.length - token.trimStart().length);
+      const trailing = token.slice(token.trimEnd().length);
+      return `{{${leading}${reference(trimmed, map)}${trailing}}}`;
+    });
   }
-  if (Array.isArray(value)) return value.map((v: unknown) => rewrite(v, map, bare));
-  if (value !== null && typeof value === 'object')
+  if (Array.isArray(value)) return value.map((v: unknown) => rewrite(v, map));
+  if (isObject(value))
     return Object.fromEntries(
-      Object.entries(value).map(([key, v]: [string, unknown]) => {
-        if (key === 'inputRefs') {
-          if (!Array.isArray(v)) throw new Error('inputRefs must be an array.');
-          return [
-            key,
-            v.map((id: unknown) => {
-              if (typeof id !== 'string' || !Object.hasOwn(map, id))
-                throw new Error(`Unknown inputRefs node '${String(id)}'.`);
-              return map[id];
-            }),
-          ];
-        }
-        return [key, rewrite(v, map, key === 'left' || key === 'right')];
-      }),
+      Object.entries(value).map(([key, v]) => [key, rewrite(v, map)]),
     );
   return value;
 }
@@ -94,7 +260,24 @@ export function remapConfigReferences(
   config: NodeConfig,
   map: Record<string, string>,
 ): NodeConfig {
-  return rewrite(config, map) as NodeConfig;
+  const { inputRefs, condition, ...ordinary } = config;
+  const mapped = rewrite(ordinary, map) as NodeConfig;
+  if (inputRefs !== undefined) {
+    if (!Array.isArray(inputRefs)) throw new Error('inputRefs must be an array.');
+    mapped.inputRefs = inputRefs.map((id: unknown) => {
+      if (typeof id !== 'string' || !Object.hasOwn(map, id))
+        throw new Error(`Unknown inputRefs node '${String(id)}'.`);
+      return map[id] ?? '';
+    });
+  }
+  if (condition !== undefined) {
+    mapped.condition = structuredClone(condition);
+    // Runtime conditions resolve only the left side; right operands are literals.
+    for (const clause of mapped.condition.clauses) {
+      if (clause.left.startsWith('node.')) clause.left = reference(clause.left, map);
+    }
+  }
+  return mapped;
 }
 function resolveName(name: string, profiles: AgentProfile[]): string {
   const matches = profiles.filter((p) => p.name === name.trim());
@@ -148,7 +331,7 @@ export function encodeDocument(
       ...(node.label === undefined ? {} : { label: node.label }),
       ...(role === undefined ? {} : { role }),
       ...(profile === undefined ? {} : { profileName: profile.name }),
-      config: rewrite(config, aliases) as DeveloperNode['config'],
+      config: remapConfigReferences(config, aliases),
     };
   });
   const doc: DeveloperWorkflow = {
@@ -180,7 +363,55 @@ export function decodeDocument(
   const value: unknown = JSON.parse(json);
   if (value === null || typeof value !== 'object')
     throw new Error('Workflow must be an object.');
-  if ('schemaVersion' in value) return parseWorkflowJson(json);
+  if ('schemaVersion' in value) {
+    const raw = parseWorkflowJson(json);
+    workflowFieldsShape(objectShape(raw, 'workflow'));
+    uintField(objectShape(raw, 'workflow'), 'schemaVersion', true, 4294967295);
+    for (const node of raw.nodes) {
+      const shape = objectShape(node, 'node');
+      stringField(shape, 'id', true);
+      stringField(shape, 'label');
+      stringField(shape, 'type', true);
+      if (shape.type === 'gitHub') shape.type = 'github';
+      if (
+        ![
+          'start',
+          'end',
+          'command',
+          'agent',
+          'approval',
+          'condition',
+          'git',
+          'github',
+          'ticket',
+          'mcp',
+        ].includes(String(shape.type))
+      )
+        throw new Error('Unknown node type.');
+      configShape(shape.config === undefined ? {} : shape.config, true);
+      if (shape.config === undefined) shape.config = {};
+      const position = objectShape(
+        shape.position === undefined ? { x: 0, y: 0 } : shape.position,
+        'position',
+      );
+      if (
+        typeof position.x !== 'number' ||
+        typeof position.y !== 'number' ||
+        !Number.isFinite(position.x) ||
+        !Number.isFinite(position.y)
+      )
+        throw new Error('Invalid position.');
+      if (shape.position === undefined) shape.position = position;
+    }
+    for (const edge of raw.edges) {
+      const shape = objectShape(edge, 'edge');
+      stringField(shape, 'id', true);
+      stringField(shape, 'source', true);
+      stringField(shape, 'target', true);
+      stringField(shape, 'label');
+    }
+    return raw;
+  }
   const doc = value as Omit<DeveloperWorkflow, 'version'> & { version: number };
   if (
     doc.version !== 1 ||
@@ -210,6 +441,7 @@ export function decodeDocument(
     unique.add(id);
     ids[node.key] = id;
   }
+  workflowFieldsShape(objectShape(doc, 'workflow'));
   let added = 0;
   const maxY =
     base === undefined ? -100 : Math.max(0, ...base.nodes.map((n) => n.position.y));
@@ -236,7 +468,12 @@ export function decodeDocument(
     if (!isObject(n.config)) throw new Error('Node config must be an object.');
     for (const key of Object.keys(n.config))
       if (!configKeys.includes(key)) throw new Error(`Unknown config field '${key}'.`);
-    const config = rewrite(n.config, ids) as NodeConfig;
+    const shape = objectShape(n, 'node');
+    stringField(shape, 'label');
+    stringField(shape, 'role');
+    stringField(shape, 'profileName');
+    configShape(n.config);
+    const config = remapConfigReferences(n.config, ids);
     if (n.type !== 'agent' && (n.role !== undefined || n.profileName !== undefined))
       throw new Error('Profile/role selection is only valid on Agent nodes.');
     if (n.profileName !== undefined)
@@ -260,7 +497,7 @@ export function decodeDocument(
     const old = base?.nodes.find((n) => n.id === id);
     return {
       id,
-      type: n.type,
+      type: shape.type === 'gitHub' ? 'github' : n.type,
       position:
         old === undefined ? { x: 80, y: maxY + ++added * 180 } : { ...old.position },
       config,
@@ -272,6 +509,10 @@ export function decodeDocument(
     for (const key of Object.keys(e))
       if (!['from', 'to', 'label'].includes(key))
         throw new Error(`Unknown edge field '${key}'.`);
+    const shape = objectShape(e, 'edge');
+    stringField(shape, 'from', true);
+    stringField(shape, 'to', true);
+    stringField(shape, 'label');
     const source = ids[e.from];
     const target = ids[e.to];
     if (source === undefined || target === undefined)
