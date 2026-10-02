@@ -961,9 +961,14 @@ Good luck!"#;
         let profile: crate::agents::AgentProfile = serde_json::from_value(serde_json::json!({"id":"claude-review","name":"Claude deep", "adapter":"claude", "role":"deepReview"})).unwrap();
         let mut proposal = parse_proposal(PROPOSAL).unwrap();
         proposal.nodes[1].config.profile_name = Some("Claude deep".into());
-        let preview =
-            compile_proposal_with_profiles(&proposal, &role_map(), "wf", None, &[profile.clone()])
-                .unwrap();
+        let preview = compile_proposal_with_profiles(
+            &proposal,
+            &role_map(),
+            "wf",
+            None,
+            std::slice::from_ref(&profile),
+        )
+        .unwrap();
         assert_eq!(
             preview.workflow.nodes[1].config.agent_profile_id.as_deref(),
             Some("claude-review")

@@ -441,7 +441,7 @@ mod tests {
                 label: Some("Repeated label".into()),
             });
         }
-        let exported = export_document(&wf, &[profile.clone()]).unwrap();
+        let exported = export_document(&wf, std::slice::from_ref(&profile)).unwrap();
         let decoded = import_document(
             &exported.json,
             Some(&wf),
