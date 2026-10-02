@@ -149,3 +149,7 @@ Supply the repository's real test command at run time. Each Command argument
 uses the same variable renderer as prompts; interpolation preserves the argument
 as one value, and missing variables fail before launching the process. Executables
 remain literal. Use the renderer's escape syntax for literal template tokens.
+
+For graphs over twelve nodes, Arrange opens the first dependency steps at a
+readable zoom instead of shrinking the complete chain into tiny labels. Pan or
+use the minimap to follow later steps; Fit View remains available for an overview.

@@ -157,6 +157,7 @@ export function WorkflowCanvas({
     'vertical',
   );
   const needsFit = useRef(false);
+  const fitFrame = useRef<number | null>(null);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectNode = useAppStore((s) => s.selectNode);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
@@ -202,27 +203,37 @@ export function WorkflowCanvas({
     toFlowEdges(workflow, selectedEdgeId),
   );
 
-  // Refresh node details when the workflow definition changes elsewhere
-  // (e.g. inspector edits), preserving canvas positions.
+  const previousDefinition = useRef(workflow.nodes);
+
+  // Reconcile external JSON/inspector edits while retaining transient drag positions.
   useEffect(() => {
-    setNodes((current) =>
-      current.map((n) => {
-        const def = workflow.nodes.find((w) => w.id === n.id);
-        if (def === undefined) return n;
+    const prior = previousDefinition.current;
+    previousDefinition.current = workflow.nodes;
+    setNodes((current) => {
+      const known = new Map(current.map((n) => [n.id, n]));
+      return workflow.nodes.map((def) => {
+        const existing = known.get(def.id);
+        const oldDefinition = prior.find((n) => n.id === def.id);
+        const moved =
+          oldDefinition?.position.x !== def.position.x ||
+          oldDefinition.position.y !== def.position.y;
         return {
-          ...n,
+          ...existing,
+          id: def.id,
+          type: 'orchevia',
+          position: moved ? def.position : (existing?.position ?? def.position),
           data: {
             direction: appliedDirection,
             label: def.label ?? NODE_KIND_META[def.type].label,
             kind: def.type,
             detail: nodeDetail(def),
-            selected: n.id === selectedNodeId,
+            selected: def.id === selectedNodeId,
             runStatus: overlay[def.id],
             issueSeverity: issues[def.id],
           },
         };
-      }),
-    );
+      });
+    });
     setEdges(toFlowEdges(workflow, selectedEdgeId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -413,12 +424,39 @@ export function WorkflowCanvas({
   }, [workflow, nodes, layoutDirection, setNodes, updateActiveWorkflow]);
   useEffect(() => {
     if (!needsFit.current) return;
-    needsFit.current = false;
-    const id = requestAnimationFrame(() => {
-      void flowInstance.current?.fitView({ padding: 0.15, maxZoom: 1, duration: 200 });
+    if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
+    fitFrame.current = requestAnimationFrame(() => {
+      fitFrame.current = null;
+      void flowInstance.current
+        ?.fitView({
+          padding: 0.15,
+          maxZoom: 1,
+          duration: 200,
+          ...(nodes.length > 12
+            ? {
+                minZoom: 0.65,
+                nodes: [...nodes]
+                  .sort((a, b) =>
+                    appliedDirection === 'vertical'
+                      ? a.position.y - b.position.y || a.position.x - b.position.x
+                      : a.position.x - b.position.x || a.position.y - b.position.y,
+                  )
+                  .slice(0, 6)
+                  .map((n) => ({ id: n.id })),
+              }
+            : {}),
+        })
+        .then((fitted) => {
+          if (fitted) needsFit.current = false;
+        });
     });
-    return () => cancelAnimationFrame(id);
-  }, [nodes]);
+  }, [nodes, appliedDirection]);
+  useEffect(
+    () => () => {
+      if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
+    },
+    [],
+  );
 
   const duplicateSelected = useCallback(() => {
     const def = workflow.nodes.find((n) => n.id === selectedNodeId);
@@ -496,6 +534,9 @@ export function WorkflowCanvas({
           ⤢ Arrange
         </button>
         <span className="field-hint" style={{ alignSelf: 'center' }}>
+          {nodes.length > 12 && (
+            <>Large graph: pan or use the minimap to follow later steps. </>
+          )}
           Drag from the bottom dot to connect · condition branches auto-label true/false ·
           click an edge to relabel · Del removes selection
         </span>
