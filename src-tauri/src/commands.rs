@@ -41,6 +41,34 @@ pub struct RunStarted {
     pub run_id: String,
 }
 
+#[tauri::command]
+pub fn encode_workflow_document(
+    state: State<AppState>,
+    workflow: Workflow,
+) -> Result<orchevia_core::workflow_document::DocumentSession, String> {
+    orchevia_core::workflow_document::export_document(
+        &workflow,
+        &state.db.list_agent_profiles().map_err(|e| e.to_string())?,
+    )
+}
+#[tauri::command]
+pub fn decode_workflow_document(
+    state: State<AppState>,
+    json: String,
+    base: Option<Workflow>,
+    node_ids: Option<std::collections::HashMap<String, String>>,
+) -> Result<Workflow, String> {
+    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+    orchevia_core::workflow_document::import_document(
+        &json,
+        base.as_ref(),
+        &node_ids.unwrap_or_default(),
+        &profiles,
+        &default_role_map(&state),
+        &format!("wf-{}", Uuid::new_v4().simple()),
+    )
+}
+
 // -- Workflows ---------------------------------------------------------------
 
 #[tauri::command]
@@ -961,26 +989,8 @@ pub fn save_workflow_as_template(
         .get_workflow(&workflow_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown workflow '{workflow_id}'."))?;
-    // Convert concrete profile refs back to role refs where the profile has
-    // a role, so templates stay portable across machines.
-    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
-    let mut definition = stored.definition.clone();
-    for node in definition
-        .nodes
-        .iter_mut()
-        .filter(|n| n.kind == orchevia_core::workflow::NodeKind::Agent)
-    {
-        if let Some(profile_id) = node.config.agent_profile_id.clone() {
-            if let Some(role) = profiles
-                .iter()
-                .find(|p| p.id == profile_id)
-                .and_then(|p| p.role.clone())
-            {
-                node.config.agent_profile_id = None;
-                node.config.agent_role = Some(role);
-            }
-        }
-    }
+    // Keep exact reviewer choices locally. Portable export resolves IDs to names.
+    let definition = stored.definition.clone();
     let template = orchevia_core::templates::Template {
         id: format!("user-{}", uuid::Uuid::new_v4().simple()),
         version: orchevia_core::templates::TEMPLATE_SCHEMA_VERSION,
@@ -1011,7 +1021,10 @@ pub fn export_template(
     builtin: bool,
 ) -> Result<String, String> {
     let template = find_template(&state, &id, builtin)?;
-    orchevia_core::templates::export_template(&template)
+    orchevia_core::templates::export_developer_template(
+        &template,
+        &state.db.list_agent_profiles().map_err(|e| e.to_string())?,
+    )
 }
 
 #[tauri::command]
@@ -1019,7 +1032,10 @@ pub fn import_template(
     state: State<AppState>,
     json: String,
 ) -> Result<orchevia_core::templates::Template, String> {
-    let mut template = orchevia_core::templates::import_template(&json)?;
+    let mut template = orchevia_core::templates::import_developer_template(
+        &json,
+        &state.db.list_agent_profiles().map_err(|e| e.to_string())?,
+    )?;
     // Namespace imported ids to avoid collisions.
     template.id = format!("user-{}", uuid::Uuid::new_v4().simple());
     state

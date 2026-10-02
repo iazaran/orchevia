@@ -126,3 +126,15 @@ Errors block execution; warnings don't. Current rules:
 optional with defaults). Rules: never silently drop unknown executable
 semantics; reject unknown node types at validation; keep migrations covered by
 serialization round-trip tests.
+
+## Simple workflow documents
+
+The JSON editor defaults to a developer document with `version: 1`, `name`,
+`nodes` (`key`, `type`, `label`, `config`), `edges` (`from`, `to`, optional
+`label`), and optional `inputs`/`defaults`. Canvas positions and machine IDs
+stay in the runtime definition. Unchanged keys preserve existing IDs and
+positions; update edges and `node.<key>` references when renaming a key.
+Agent selections use `role` and optional exact `profileName`. Duplicate or
+missing profile names require setup. Advanced JSON retains the complete schema-v6
+definition; legacy workflow and template files remain importable. Template
+exports use the simple document while preserving template metadata.

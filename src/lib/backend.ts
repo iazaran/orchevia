@@ -1,3 +1,8 @@
+import {
+  encodeDocument,
+  decodeDocument,
+  type DocumentSession,
+} from './workflow-document';
 /**
  * Backend abstraction.
  *
@@ -47,6 +52,12 @@ import type {
 import { createSampleWorkflow, validateWorkflowLocal } from './workflow';
 
 export interface Backend {
+  encodeWorkflowDocument(workflow: Workflow): Promise<DocumentSession>;
+  decodeWorkflowDocument(
+    json: string,
+    base?: Workflow,
+    nodeIds?: Record<string, string>,
+  ): Promise<Workflow>;
   listWorkflows(): Promise<StoredWorkflow[]>;
   getWorkflow(id: string): Promise<StoredWorkflow | null>;
   saveWorkflow(workflow: Workflow): Promise<StoredWorkflow>;
@@ -163,6 +174,16 @@ class TauriBackend implements Backend {
     return invoke<T>(cmd, args);
   }
 
+  encodeWorkflowDocument(workflow: Workflow): Promise<DocumentSession> {
+    return this.invoke('encode_workflow_document', { workflow });
+  }
+  decodeWorkflowDocument(
+    json: string,
+    base?: Workflow,
+    nodeIds?: Record<string, string>,
+  ): Promise<Workflow> {
+    return this.invoke('decode_workflow_document', { json, base, nodeIds });
+  }
   listWorkflows(): Promise<StoredWorkflow[]> {
     return this.invoke('list_workflows');
   }
@@ -444,6 +465,22 @@ class MockBackend implements Backend {
     }
   }
 
+  async encodeWorkflowDocument(workflow: Workflow): Promise<DocumentSession> {
+    return encodeDocument(workflow, [...this.profiles.values()]);
+  }
+  async decodeWorkflowDocument(
+    json: string,
+    base?: Workflow,
+    nodeIds?: Record<string, string>,
+  ): Promise<Workflow> {
+    return decodeDocument(
+      json,
+      [...this.profiles.values()],
+      await this.roleMapDefault(),
+      base,
+      nodeIds,
+    );
+  }
   private storageKey(): string {
     return 'orchevia.mock-backend.v1';
   }

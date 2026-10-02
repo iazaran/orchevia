@@ -169,6 +169,45 @@ pub fn import_template(json: &str) -> Result<Template, String> {
     Ok(template)
 }
 
+/// Human-editable template envelope; runtime definitions remain accepted on import.
+pub fn export_developer_template(
+    template: &Template,
+    profiles: &[crate::agents::AgentProfile],
+) -> Result<String, String> {
+    let errors = template.validate();
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    let session = crate::workflow_document::export_document(&template.workflow, profiles)?;
+    let mut value = serde_json::to_value(template).map_err(|e| e.to_string())?;
+    value["workflow"] = serde_json::from_str(&session.json).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+pub fn import_developer_template(
+    json: &str,
+    profiles: &[crate::agents::AgentProfile],
+) -> Result<Template, String> {
+    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if value
+        .get("workflow")
+        .and_then(|w| w.get("schemaVersion"))
+        .is_some()
+    {
+        return import_template(json);
+    }
+    let workflow = value.get("workflow").ok_or("Template needs a workflow.")?;
+    let workflow = crate::workflow_document::import_document(
+        &workflow.to_string(),
+        None,
+        &HashMap::new(),
+        profiles,
+        &HashMap::new(),
+        "template-workflow",
+    )?;
+    value["workflow"] = serde_json::to_value(workflow).map_err(|e| e.to_string())?;
+    import_template(&value.to_string())
+}
+
 // -- Built-ins ---------------------------------------------------------------
 
 fn node(id: &str, kind: NodeKind, y: f64, label: &str, config: NodeConfig) -> Node {
@@ -1007,6 +1046,24 @@ mod tests {
             .iter()
             .map(|r| ((*r).to_string(), format!("p-{r}")))
             .collect()
+    }
+
+    #[test]
+    fn simple_template_exports_preserve_operations_and_accept_legacy_files() {
+        for template in builtin_templates() {
+            let json = export_developer_template(&template, &[]).unwrap();
+            assert!(!json.contains("position"));
+            let imported = import_developer_template(&json, &[]).unwrap();
+            assert_eq!(imported.name, template.name);
+            assert_eq!(imported.workflow.nodes.len(), template.workflow.nodes.len());
+            for (a, b) in imported.workflow.nodes.iter().zip(&template.workflow.nodes) {
+                assert_eq!(a.config, b.config);
+            }
+            assert_eq!(
+                import_developer_template(&export_template(&template).unwrap(), &[]).unwrap(),
+                template
+            );
+        }
     }
 
     #[test]

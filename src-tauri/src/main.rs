@@ -180,6 +180,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::encode_workflow_document,
+            commands::decode_workflow_document,
             commands::list_workflows,
             commands::get_workflow,
             commands::save_workflow,

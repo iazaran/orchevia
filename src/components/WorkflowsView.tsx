@@ -14,7 +14,7 @@ import {
   createEmptyWorkflow,
   createReviewLoopDemoWorkflow,
   createReviewWorkflow,
-  parseWorkflowJson,
+  type Workflow,
   type StoredWorkflow,
 } from '../lib/workflow';
 import { selectActiveWorkflow, useAppStore } from '../store';
@@ -206,22 +206,51 @@ export function WorkflowsView(): React.JSX.Element {
 
   const openJsonEditor = (): void => {
     if (active === null) return;
-    setJsonText(JSON.stringify(active.definition, null, 2));
+    setJsonBase(active.definition);
     setJsonError(null);
     setJsonModal(true);
+    setJsonBusy(true);
+    void getBackend()
+      .encodeWorkflowDocument(active.definition)
+      .then((session) => {
+        setJsonText(session.json);
+        setJsonIds(session.nodeIds);
+        setJsonMode('simple');
+      })
+      .catch((err: unknown) => {
+        setJsonMode('raw');
+        setJsonText(JSON.stringify(active.definition, null, 2));
+        setJsonError(errorMessage(err));
+      })
+      .finally(() => setJsonBusy(false));
   };
-
+  const switchJsonMode = (mode: 'simple' | 'raw'): void => {
+    setJsonBusy(true);
+    void getBackend()
+      .decodeWorkflowDocument(jsonText, jsonBase ?? undefined, jsonIds)
+      .then(async (wf) => {
+        setJsonBase(wf);
+        if (mode === 'raw') setJsonText(JSON.stringify(wf, null, 2));
+        else {
+          const session = await getBackend().encodeWorkflowDocument(wf);
+          setJsonText(session.json);
+          setJsonIds(session.nodeIds);
+        }
+        setJsonMode(mode);
+        setJsonError(null);
+      })
+      .catch((err: unknown) => setJsonError(errorMessage(err)))
+      .finally(() => setJsonBusy(false));
+  };
   const saveJsonEditor = (): void => {
-    let parsed: StoredWorkflow['definition'];
-    try {
-      parsed = parseWorkflowJson(jsonText);
-    } catch (err) {
-      setJsonError(errorMessage(err));
-      return;
-    }
     void (async () => {
       try {
         const backend = getBackend();
+        const parsed = await backend.decodeWorkflowDocument(
+          jsonText,
+          jsonBase ?? undefined,
+          jsonIds,
+        );
         const issues = await backend.validateWorkflow(parsed);
         const blocking = issues.filter((issue) => issue.severity === 'error');
         if (blocking.length > 0) {
@@ -537,6 +566,10 @@ export function WorkflowsView(): React.JSX.Element {
   };
 
   const [templateModal, setTemplateModal] = useState(false);
+  const [jsonMode, setJsonMode] = useState<'simple' | 'raw'>('simple');
+  const [jsonBase, setJsonBase] = useState<Workflow | null>(null);
+  const [jsonIds, setJsonIds] = useState<Record<string, string>>({});
+  const [jsonBusy, setJsonBusy] = useState(false);
   const [jsonModal, setJsonModal] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
@@ -1315,9 +1348,28 @@ export function WorkflowsView(): React.JSX.Element {
           <div>
             <h3 style={{ marginTop: 0 }}>Edit “{active.name}” as JSON</h3>
             <p className="field-hint">
-              Raw definition ({String(jsonText.length)} characters). Shape-checked on
-              save; semantic validation runs too — errors ask before saving.
+              {jsonMode === 'simple'
+                ? 'Simple document: readable keys, configuration and connections.'
+                : 'Advanced runtime definition, including IDs and positions.'}{' '}
+              Shape-checked on save; semantic validation runs too — errors ask before
+              saving.
             </p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button
+                className="btn"
+                disabled={jsonBusy || jsonMode === 'simple'}
+                onClick={() => switchJsonMode('simple')}
+              >
+                Simple JSON
+              </button>
+              <button
+                className="btn"
+                disabled={jsonBusy || jsonMode === 'raw'}
+                onClick={() => switchJsonMode('raw')}
+              >
+                Advanced JSON
+              </button>
+            </div>
             <div className="field">
               <label className="field-label" htmlFor="wf-json">
                 Workflow JSON
@@ -1340,7 +1392,11 @@ export function WorkflowsView(): React.JSX.Element {
               </Notice>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-primary" onClick={saveJsonEditor}>
+              <button
+                className="btn btn-primary"
+                disabled={jsonBusy}
+                onClick={saveJsonEditor}
+              >
                 Save JSON
               </button>
               <button

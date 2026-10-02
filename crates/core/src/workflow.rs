@@ -86,7 +86,7 @@ pub enum NodeKind {
     Git,
     /// Canonical JSON is `gitHub` (camelCase); `github` is accepted for the
     /// TypeScript frontend and older payloads.
-    #[serde(alias = "github")]
+    #[serde(rename = "github", alias = "gitHub")]
     GitHub,
     Ticket,
     Mcp,
