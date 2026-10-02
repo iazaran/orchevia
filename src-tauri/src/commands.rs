@@ -926,29 +926,16 @@ pub fn test_agent_profile(
 // -- Generation, templates, memory (Milestone 6) -------------------------------
 
 /// Role → profile map from configured profiles, completed by accepted
-/// role preferences (explicit profile roles win; first profile per role).
+/// role preferences (accepted existing profile choices precede first-role fallback).
 fn default_role_map(state: &State<AppState>) -> std::collections::HashMap<String, String> {
     role_map_for_db(&state.db)
 }
 
 fn role_map_for_db(db: &SqliteDb) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let mut configured_ids = std::collections::HashSet::new();
-    if let Ok(profiles) = db.list_agent_profiles() {
-        for profile in profiles {
-            configured_ids.insert(profile.id.clone());
-            if let Some(role) = profile.role.as_deref() {
-                if !role.trim().is_empty() {
-                    map.entry(role.to_string()).or_insert(profile.id.clone());
-                }
-            }
-        }
-    }
-    if let Ok(prefs) = db.list_preferences() {
-        map = orchevia_core::memory::apply_to_roles(&prefs, map);
-    }
-    map.retain(|_, profile_id| configured_ids.contains(profile_id));
-    map
+    orchevia_core::memory::resolve_role_defaults(
+        &db.list_agent_profiles().unwrap_or_default(),
+        &db.list_preferences().unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -1413,6 +1400,46 @@ pub fn list_generations(
 }
 
 #[tauri::command]
+pub fn get_project_memory_context(
+    state: State<AppState>,
+    repo_dir: Option<String>,
+) -> Result<orchevia_core::memory::ProjectMemoryContext, String> {
+    let scope = repo_dir
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| orchevia_core::memory::project_scope(&d))
+        .transpose()?;
+    let preferences = state.db.list_preferences().map_err(|e| e.to_string())?;
+    Ok(orchevia_core::memory::project_context(
+        &preferences,
+        scope.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub fn save_project_preference(
+    state: State<AppState>,
+    repo_dir: String,
+    field: String,
+    value: serde_json::Value,
+    note: String,
+) -> Result<orchevia_core::memory::Preference, String> {
+    let scope = orchevia_core::memory::project_scope(&repo_dir)?;
+    let preference = orchevia_core::memory::Preference {
+        key: orchevia_core::memory::project_key(&scope, &field)?,
+        scope,
+        value,
+        source: "manual".into(),
+        enabled: true,
+        note,
+    };
+    state
+        .db
+        .upsert_preference(&preference)
+        .map_err(|e| e.to_string())?;
+    Ok(preference)
+}
+
+#[tauri::command]
 pub fn list_preferences(
     state: State<AppState>,
 ) -> Result<Vec<orchevia_core::memory::Preference>, String> {
@@ -1424,21 +1451,8 @@ pub fn save_preference(
     state: State<AppState>,
     preference: orchevia_core::memory::Preference,
 ) -> Result<orchevia_core::memory::Preference, String> {
-    if preference.key.trim().is_empty() || preference.key.len() > 120 {
-        return Err("Preference key invalid.".to_string());
-    }
-    let flat = serde_json::to_string(&preference.value)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    for marker in ["api-key", "bearer", "password"] {
-        if flat.contains(marker) {
-            return Err("Preference looks credential-like; refused.".to_string());
-        }
-    }
-    let mut stored = preference;
-    if stored.source != "suggested" {
-        stored.source = "manual".to_string();
-    }
+    orchevia_core::memory::validate_preference(&preference)?;
+    let stored = preference;
     state
         .db
         .upsert_preference(&stored)
@@ -1465,13 +1479,10 @@ pub fn export_memory(state: State<AppState>) -> Result<String, String> {
 #[tauri::command]
 pub fn import_memory(state: State<AppState>, json: String) -> Result<usize, String> {
     let prefs = orchevia_core::memory::import_preferences(&json)?;
-    for pref in &prefs {
-        state
-            .db
-            .upsert_preference(pref)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(prefs.len())
+    state
+        .db
+        .import_preferences(&prefs)
+        .map_err(|e| e.to_string())
 }
 
 /// Record observed edits; returns fresh suggestions (if learning is on).
@@ -1484,12 +1495,12 @@ pub fn observe_edits(
     if !orchevia_core::memory::learning_enabled(&prefs) {
         return Ok(Vec::new());
     }
+    for observation in observations.iter().take(20) {
+        orchevia_core::memory::validate_observation(observation)?;
+    }
     let mut suggestions = Vec::new();
     for observation in observations.iter().take(20) {
-        let counter_key = format!(
-            "{}|{}|{}",
-            observation.scope, observation.field, observation.to
-        );
+        let counter_key = orchevia_core::memory::observation_counter_key(observation);
         let key = orchevia_core::memory::preference_key(&observation.scope, &observation.field);
         if prefs.iter().any(|p| p.key == key)
             || suggestions
@@ -1510,8 +1521,9 @@ pub fn observe_edits(
                 source: "suggested".to_string(),
                 enabled: true,
                 note: format!(
-                    "Suggested after {count} consistent edits ({} → {}).",
-                    observation.from, observation.to
+                    "Suggested after {count} saved edits to {}. Previous value: {}.",
+                    observation.field,
+                    observation.from.chars().take(80).collect::<String>()
                 ),
             };
             state

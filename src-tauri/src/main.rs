@@ -246,6 +246,8 @@ fn main() {
             commands::generate_workflow,
             commands::mark_generation_status,
             commands::list_generations,
+            commands::get_project_memory_context,
+            commands::save_project_preference,
             commands::list_preferences,
             commands::save_preference,
             commands::delete_preference,

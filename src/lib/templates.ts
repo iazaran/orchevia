@@ -26,7 +26,11 @@ export function instantiateTemplateLocal(
   const workflow = structuredClone(template.workflow);
   const missing = new Set<string>();
   for (const node of workflow.nodes) {
-    if (node.type !== 'agent' || node.config.agentProfileId) continue;
+    if (node.type !== 'agent') continue;
+    if (node.config.agentProfileId?.trim()) {
+      delete node.config.agentRole;
+      continue;
+    }
     const role = node.config.agentRole;
     if (!role || !Object.hasOwn(roleMap, role) || !roleMap[role]) {
       missing.add(role ?? 'unknown');

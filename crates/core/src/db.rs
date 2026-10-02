@@ -1367,27 +1367,50 @@ impl SqliteDb {
     // -- Memory, generations, user templates (Milestone 6) ---------------------
 
     pub fn upsert_preference(&self, pref: &crate::memory::Preference) -> DbResult<()> {
-        let conn = self
+        self.import_preferences(std::slice::from_ref(pref))
+            .map(|_| ())
+    }
+
+    pub fn import_preferences(&self, preferences: &[crate::memory::Preference]) -> DbResult<usize> {
+        if preferences.len() > 200 {
+            return Err(DbError::Io("Too many preferences (max 200).".into()));
+        }
+        let mut keys = std::collections::HashSet::new();
+        for pref in preferences {
+            crate::memory::validate_preference(pref).map_err(DbError::Io)?;
+            if !keys.insert(&pref.key) {
+                return Err(DbError::Io("Duplicate preference key in import.".into()));
+            }
+        }
+        let mut conn = self
             .conn
             .lock()
-            .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
-        conn.execute(
-            "INSERT INTO preferences (key, scope, value, source, enabled, note, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(key) DO UPDATE SET scope = excluded.scope, value = excluded.value,
-               source = excluded.source, enabled = excluded.enabled, note = excluded.note,
-               updated_at = excluded.updated_at",
-            params![
-                pref.key,
-                pref.scope,
-                serde_json::to_string(&pref.value)?,
-                pref.source,
-                i64::from(pref.enabled),
-                pref.note,
-                Utc::now().to_rfc3339()
-            ],
-        )?;
-        Ok(())
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let transaction = conn.transaction()?;
+        for pref in preferences {
+            let prior: Option<String> = transaction
+                .query_row(
+                    "SELECT scope FROM preferences WHERE key = ?1",
+                    params![pref.key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if prior.as_ref().is_some_and(|scope| {
+                scope != &pref.scope
+                    && (scope.starts_with("repo:") || pref.scope.starts_with("repo:"))
+            }) {
+                return Err(DbError::Io(
+                    "Project preference key collision; nothing imported.".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO preferences (key, scope, value, source, enabled, note, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(key) DO UPDATE SET scope = excluded.scope, value = excluded.value, source = excluded.source, enabled = excluded.enabled, note = excluded.note, updated_at = excluded.updated_at",
+                params![pref.key, pref.scope, serde_json::to_string(&pref.value)?, pref.source, i64::from(pref.enabled), pref.note, Utc::now().to_rfc3339()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(preferences.len())
     }
 
     pub fn list_preferences(&self) -> DbResult<Vec<crate::memory::Preference>> {
@@ -1655,6 +1678,43 @@ mod tests {
                 label: None,
             }],
         }
+    }
+
+    #[test]
+    fn preference_import_is_atomic_and_project_collisions_are_refused() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let p = crate::memory::Preference {
+            key: "example".into(),
+            scope: "*".into(),
+            value: serde_json::json!("safe"),
+            source: "manual".into(),
+            enabled: true,
+            note: String::new(),
+        };
+        let bad = crate::memory::Preference {
+            key: "second".into(),
+            value: serde_json::json!("bearer value"),
+            ..p.clone()
+        };
+        assert!(db.import_preferences(&[p.clone(), bad]).is_err());
+        assert!(db.list_preferences().unwrap().is_empty());
+        db.import_preferences(&[p]).unwrap();
+        let scope = "repo:/project-a";
+        let a = crate::memory::Preference {
+            key: crate::memory::project_key(scope, "testCommand").unwrap(),
+            scope: scope.into(),
+            value: serde_json::json!("make test"),
+            source: "manual".into(),
+            enabled: true,
+            note: String::new(),
+        };
+        db.upsert_preference(&a).unwrap();
+        let b = crate::memory::Preference {
+            scope: "repo:/project-b".into(),
+            ..a.clone()
+        };
+        assert!(db.upsert_preference(&b).is_err());
+        assert_eq!(db.list_preferences().unwrap().len(), 2);
     }
 
     #[test]

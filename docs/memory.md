@@ -30,20 +30,21 @@ with servers bound — add them explicitly after preview.
 
 Proposals and templates reference logical roles (`planning`,
 `implementation`, `fastReview`, `deepReview`, `workflowGenerator`), resolved
-from your profiles (first profile per role) plus accepted role preferences
-(explicit profile roles win). Unmapped roles block acceptance with a message
+from accepted global role preferences referencing existing profiles, then the
+first configured profile per role. An explicit node profile or exact unique
+`profileName` takes precedence over this fallback. Unmapped roles block acceptance with a message
 naming the role — never silently.
 
 ## Templates
 
-Eight built-ins: Implement Ticket, Review Pull Request, Investigate Bug,
+Nine built-ins: Implement Ticket, Review Pull Request, Investigate Bug,
 Refactor, Dependency Upgrade, Run Multi-Agent Review, Create Draft PR, Watch
-Review Feedback. Versioned (`v1` schema) and cloneable:
+Review Feedback, and Ticket to PR. Versioned (`v1` schema) and cloneable:
 
 - **Use** instantiates with your role map (fresh ids), reporting setup steps
   (repo dirs, server picks) instead of failing.
-- **Save as template** converts a workflow back to roles where profiles have
-  roles (portable across machines).
+- **Save as template** keeps exact choices locally. Portable export uses roles
+  and exact unique profile names; configure the corresponding profiles on import.
 - **Import/export** is validated JSON; credential-like content is refused on
   both paths. Templates carry no secrets by construction.
 
@@ -57,7 +58,7 @@ fix-loop on P0/P1, max review cycles, prefer worktrees, learning toggle.
 - **Suggest:** pending items appear in Memory with their evidence note.
 - **You decide:** accept, reject (never re-asked until reset), edit, disable
   per item, or reset everything.
-- **Scope:** global (`*`) or per workflow type; explicit maps beat preferences.
+- **Scope:** global (`*`) and repository playbooks (`repo:<canonical directory>`).
 - **Export/import:** portable JSON with a credential scan on import.
 - **Retention:** generation history keeps the last 100 (setting
   `history.generations`, 10–1000).
@@ -71,3 +72,38 @@ The Templates library includes nine language-neutral starters in desktop and
 browser preview. Test steps require your project's `testCommand`; blank values
 cannot run. Clone a starter and edit it with Simple JSON, or save a configured
 workflow as a user template. Portable export retains explicit reviewer names.
+
+## Project playbooks
+
+Open Memory, choose the repository, and Load playbook to edit saved knowledge.
+Save test/lint/build commands, repository conventions, exact reviewer names,
+or a user-template reference with an evidence note. Existing preference controls
+let you edit, disable, delete, export, import, or reset records. Select the global
+default deep reviewer explicitly when several profiles share the role.
+
+Repository keys use FNV-1a64 namespacing with the canonical directory retained
+as scope. Collisions are refused; imports validate every record and commit as one
+transaction. Values are scalar, project fields are strings; key/scope/value/note
+limits are 120/600/4000/4000 characters. Credential-like values or evidence are
+refused consistently by manual saves, imports and observations.
+
+Saved changes to Command nodes labeled test, lint, or build count as concrete
+edit observations for that repository. Three matching targets suggest a record;
+no automatic acceptance occurs. Rejected keys stay quiet until reset. Changing
+repository defaults does not carry edit observations into a new project. Profile
+role changes follow the existing global observation flow.
+
+Runs exposes Save command to playbook only for a successful Command in a
+successful run. It fetches that run's snapshot and latest result again, retains
+argument quoting and working directory, and records the run ID as evidence.
+Process output is never copied. Commands with unresolved node-output variables
+cannot be promoted. Save a useful graph as a user template, then link it from the
+playbook's Reusable workflow template field.
+
+Generator → Included project memory previews enabled manual/accepted global
+and selected-repository records (bounded to 16000 characters). Suggestions,
+rejections, disabled values and other repositories are excluded. Explicit goal
+instructions win; commands require repository verification and ordinary preview
+and Run approval. Browser preview persists templates, preferences and observation
+counts using guarded storage. Browser paths normalize syntactically; desktop
+paths resolve filesystem aliases through canonicalization.

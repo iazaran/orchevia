@@ -98,6 +98,12 @@ export interface Preference {
   note: string;
 }
 
+export interface ProjectMemoryContext {
+  scope: string;
+  preferences: Preference[];
+  text: string;
+}
+
 export interface EditObservation {
   scope: string;
   field: string;

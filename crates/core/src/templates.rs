@@ -1091,6 +1091,17 @@ mod tests {
     }
 
     #[test]
+    fn explicit_profile_survives_template_role_defaults() {
+        let mut t = builtin_templates().remove(0);
+        t.workflow.nodes[1].config.agent_profile_id = Some("explicit-reviewer".into());
+        let cloned = instantiate(&t, &roles(), true).unwrap();
+        assert_eq!(
+            cloned.workflow.nodes[1].config.agent_profile_id.as_deref(),
+            Some("explicit-reviewer")
+        );
+    }
+
+    #[test]
     fn instantiated_references_follow_new_ids() {
         let mut t = builtin_templates().remove(0);
         t.workflow.nodes[1].config.prompt = Some("Read {{node.start.output}}".into());

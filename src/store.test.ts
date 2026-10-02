@@ -73,3 +73,36 @@ it('prevents edits and saves of snapshot definitions and ignores stale refreshes
   await refresh;
   expect(useAppStore.getState().overlayRunId).toBeNull();
 });
+
+it('observes only concrete command changes after successful saves', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Observed');
+  wf.defaults = { repoDir: '/project' };
+  wf.nodes.push({
+    id: 'test',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 0 },
+    config: { executable: 'sh', args: ['-c', 'make old'] },
+  });
+  const stored = await backend.saveWorkflow(wf);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: wf.id,
+    overlayRunId: null,
+  });
+  const updated = structuredClone(wf);
+  const n = updated.nodes.find((n) => n.id === 'test');
+  if (!n) throw new Error('fixture');
+  n.config.args = ['-c', 'make test'];
+  const observe = vi.spyOn(backend, 'observeEdits');
+  useAppStore.getState().updateActiveWorkflow(updated);
+  await useAppStore.getState().saveActiveWorkflow();
+  expect(observe).toHaveBeenCalledWith([
+    { scope: 'repo:/project', field: 'testCommand', from: 'make old', to: 'make test' },
+  ]);
+  observe.mockClear();
+  await useAppStore.getState().saveActiveWorkflow();
+  expect(observe).not.toHaveBeenCalled();
+});

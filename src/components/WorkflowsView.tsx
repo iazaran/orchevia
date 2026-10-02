@@ -7,6 +7,7 @@ import {
   resolveGeneratorProfile,
   summarizeGenerationExplanation,
   type GenerationPreview,
+  type ProjectMemoryContext,
 } from '../lib/generation';
 import {
   createAgentDemoWorkflow,
@@ -101,6 +102,10 @@ export function WorkflowsView(): React.JSX.Element {
   const [genBranch, setGenBranch] = useState('');
   const [detectingGenBranch, setDetectingGenBranch] = useState(false);
   const [genRepoMsg, setGenRepoMsg] = useState<string | null>(null);
+  const [memoryContext, setMemoryContext] = useState<ProjectMemoryContext | null>(null);
+  const [memoryDirectory, setMemoryDirectory] = useState<string | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [generatorAdapter, setGeneratorAdapter] = useState<AdapterKind>('claude');
   const [advancedProfileId, setAdvancedProfileId] = useState('');
@@ -113,6 +118,38 @@ export function WorkflowsView(): React.JSX.Element {
   const [genElapsed, setGenElapsed] = useState(0);
   const [lastGenError, setLastGenError] = useState<string | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!showGenerator) return;
+    let cancelled = false;
+    // Debounce typed repository paths and discard stale responses.
+    const timer = setTimeout(() => {
+      setMemoryLoading(true);
+      setMemoryError(null);
+      setMemoryContext(null);
+      void getBackend()
+        .getProjectMemoryContext(genRepoDir.trim() || undefined)
+        .then((context) => {
+          if (!cancelled) {
+            setMemoryContext(context);
+            setMemoryDirectory(genRepoDir.trim());
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setMemoryError(errorMessage(error));
+            setMemoryDirectory(genRepoDir.trim());
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setMemoryLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [showGenerator, genRepoDir]);
 
   const closeGenerator = (): void => {
     if (generating) return;
@@ -852,6 +889,19 @@ export function WorkflowsView(): React.JSX.Element {
                   placeholder={knownFolders[0] ?? '/path/to/repo'}
                   onChange={setGenRepoDir}
                 />
+                <details>
+                  <summary className="field-hint">Included project memory</summary>
+                  {memoryLoading || memoryDirectory !== genRepoDir.trim() ? (
+                    <p className="field-hint">Loading project memory…</p>
+                  ) : memoryError ? (
+                    <Notice variant="warn">{memoryError}</Notice>
+                  ) : (
+                    <pre className="log-block" style={{ maxHeight: 220 }}>
+                      {memoryContext?.text ||
+                        'No applicable accepted memory. Explicit goal instructions take precedence.'}
+                    </pre>
+                  )}
+                </details>
                 <div className="field" style={{ marginBottom: 0 }}>
                   <BranchPicker
                     id="gen-branch"

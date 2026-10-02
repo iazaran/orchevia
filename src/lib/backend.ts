@@ -1,4 +1,12 @@
 import {
+  projectScope,
+  projectKey,
+  projectContext,
+  validatePreference,
+  validateObservation,
+  observeEdit,
+} from './memory';
+import {
   builtinTemplates,
   instantiateTemplateLocal,
   validateTemplate,
@@ -35,6 +43,7 @@ import type {
   GenerationPreview,
   InstantiationPreview,
   Preference,
+  ProjectMemoryContext,
   StoredGeneration,
   WorkflowTemplate,
 } from './generation';
@@ -160,6 +169,13 @@ export interface Backend {
   ): Promise<GenerationPreview>;
   markGenerationStatus(id: string, status: string): Promise<void>;
   listGenerations(limit?: number): Promise<StoredGeneration[]>;
+  getProjectMemoryContext(repoDir?: string): Promise<ProjectMemoryContext>;
+  saveProjectPreference(
+    repoDir: string,
+    field: string,
+    value: Preference['value'],
+    note: string,
+  ): Promise<Preference>;
   listPreferences(): Promise<Preference[]>;
   savePreference(preference: Preference): Promise<Preference>;
   deletePreference(key: string): Promise<boolean>;
@@ -424,6 +440,17 @@ class TauriBackend implements Backend {
   listGenerations(limit = 50): Promise<StoredGeneration[]> {
     return this.invoke('list_generations', { limit });
   }
+  getProjectMemoryContext(repoDir?: string): Promise<ProjectMemoryContext> {
+    return this.invoke('get_project_memory_context', { repoDir: repoDir ?? null });
+  }
+  saveProjectPreference(
+    repoDir: string,
+    field: string,
+    value: Preference['value'],
+    note: string,
+  ): Promise<Preference> {
+    return this.invoke('save_project_preference', { repoDir, field, value, note });
+  }
   listPreferences(): Promise<Preference[]> {
     return this.invoke('list_preferences');
   }
@@ -452,6 +479,8 @@ class TauriBackend implements Backend {
  * simulates command execution deterministically (no processes spawned).
  */
 class MockBackend implements Backend {
+  private preferences = new Map<string, Preference>();
+  private observations = new Map<string, number>();
   private userTemplates = new Map<string, WorkflowTemplate>();
   private workflows = new Map<string, StoredWorkflow>();
   private runs: StoredRun[] = [];
@@ -509,7 +538,14 @@ class MockBackend implements Backend {
         profiles?: AgentProfile[];
         mcpServers?: McpServerConfig[];
         templates?: WorkflowTemplate[];
+        preferences?: Preference[];
+        observations?: [string, number][];
       };
+      for (const p of data.preferences ?? []) {
+        validatePreference(p);
+        this.preferences.set(p.key, p);
+      }
+      this.observations = new Map(data.observations ?? []);
       for (const t of data.templates ?? []) this.userTemplates.set(t.id, t);
       for (const w of data.workflows) this.workflows.set(w.id, w);
       for (const p of data.profiles ?? []) this.profiles.set(p.id, p);
@@ -524,6 +560,8 @@ class MockBackend implements Backend {
       writeLocal(
         this.storageKey(),
         JSON.stringify({
+          preferences: [...this.preferences.values()],
+          observations: [...this.observations.entries()],
           templates: [...this.userTemplates.values()],
           workflows: [...this.workflows.values()],
           profiles: [...this.profiles.values()],
@@ -1123,6 +1161,21 @@ class MockBackend implements Backend {
     const roles: Record<string, string> = {};
     for (const p of this.profiles.values())
       if (p.role && !Object.hasOwn(roles, p.role)) roles[p.role] = p.id;
+    for (const p of this.preferences.values()) {
+      if (
+        !p.enabled ||
+        p.scope !== '*' ||
+        !['manual', 'accepted'].includes(p.source) ||
+        typeof p.value !== 'string' ||
+        !this.profiles.has(p.value)
+      )
+        continue;
+      const role =
+        /^role\.(planning|implementation|fastReview|deepReview|workflowGenerator)\.profile$/.exec(
+          p.key,
+        )?.[1];
+      if (role) roles[role] = p.value;
+    }
     return roles;
   }
   async listTemplates(): Promise<{
@@ -1210,30 +1263,104 @@ class MockBackend implements Backend {
     return [];
   }
 
+  async getProjectMemoryContext(repoDir?: string): Promise<ProjectMemoryContext> {
+    return projectContext(
+      [...this.preferences.values()],
+      repoDir?.trim() ? projectScope(repoDir) : undefined,
+    );
+  }
+  async saveProjectPreference(
+    repoDir: string,
+    field: string,
+    value: Preference['value'],
+    note: string,
+  ): Promise<Preference> {
+    const scope = projectScope(repoDir);
+    return this.savePreference({
+      key: projectKey(scope, field),
+      scope,
+      value,
+      source: 'manual',
+      enabled: true,
+      note,
+    });
+  }
   async listPreferences(): Promise<Preference[]> {
-    return [];
+    return structuredClone(
+      [...this.preferences.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    );
   }
-
+  private checkPreference(preference: Preference): void {
+    validatePreference(preference);
+    const previous = this.preferences.get(preference.key);
+    if (
+      previous &&
+      previous.scope !== preference.scope &&
+      (previous.scope.startsWith('repo:') || preference.scope.startsWith('repo:'))
+    )
+      throw new Error('Project preference key collision; nothing imported.');
+  }
   async savePreference(preference: Preference): Promise<Preference> {
-    return preference;
+    this.checkPreference(preference);
+    this.preferences.set(preference.key, structuredClone(preference));
+    this.persist();
+    return structuredClone(preference);
   }
-
-  async deletePreference(): Promise<boolean> {
-    return false;
+  async deletePreference(key: string): Promise<boolean> {
+    const deleted = this.preferences.delete(key);
+    this.persist();
+    return deleted;
   }
-
-  async resetMemory(): Promise<void> {}
-
+  async resetMemory(): Promise<void> {
+    this.preferences.clear();
+    this.observations.clear();
+    this.persist();
+  }
   async exportMemory(): Promise<string> {
-    return '[]';
+    return JSON.stringify(await this.listPreferences(), null, 2);
   }
-
-  async importMemory(): Promise<number> {
-    return 0;
+  async importMemory(json: string): Promise<number> {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed) || parsed.length > 200)
+      throw new Error('Invalid preferences JSON (max 200).');
+    const preferences = parsed.map((p: unknown) => {
+      if (p === null || typeof p !== 'object' || Array.isArray(p))
+        throw new Error('Preference must be an object.');
+      return {
+        scope: '*',
+        source: 'accepted',
+        enabled: true,
+        note: '',
+        ...p,
+      } as Preference;
+    });
+    const keys = new Set<string>();
+    for (const p of preferences) {
+      this.checkPreference(p);
+      if (keys.has(p.key)) throw new Error('Duplicate preference key in import.');
+      keys.add(p.key);
+    }
+    for (const p of preferences) this.preferences.set(p.key, structuredClone(p));
+    this.persist();
+    return preferences.length;
   }
-
-  async observeEdits(): Promise<Preference[]> {
-    return [];
+  async observeEdits(observations: EditObservation[]): Promise<Preference[]> {
+    const limited = observations.slice(0, 20);
+    for (const o of limited) validateObservation(o);
+    const fresh: Preference[] = [];
+    for (const o of limited) {
+      const suggestion = observeEdit(
+        this.observations,
+        [...this.preferences.values()],
+        o,
+      );
+      if (suggestion) {
+        await this.savePreference(suggestion);
+        fresh.push(suggestion);
+      }
+    }
+    this.persist();
+    return fresh;
   }
 }
 

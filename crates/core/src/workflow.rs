@@ -523,6 +523,15 @@ pub fn resolve_agent_roles(
         .iter_mut()
         .filter(|n| n.kind == NodeKind::Agent)
     {
+        if node
+            .config
+            .agent_profile_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+        {
+            node.config.agent_role = None;
+            continue;
+        }
         if let Some(role) = node.config.agent_role.clone() {
             match role_map.get(&role) {
                 Some(profile_id) => {

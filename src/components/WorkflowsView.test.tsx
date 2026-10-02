@@ -32,3 +32,36 @@ it('opens simple JSON and preserves the definition through advanced conversion',
   );
   expect((await backend.getWorkflow(wf.id))?.definition).toEqual(wf);
 });
+
+it('shows only applicable accepted project memory before generation', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference(
+    '/project',
+    'testCommand',
+    'make current',
+    'User instructions',
+  );
+  await backend.saveProjectPreference(
+    '/other',
+    'testCommand',
+    'make other',
+    'Other repo',
+  );
+  const wf = createEmptyWorkflow('Context');
+  const stored = await backend.saveWorkflow(wf);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: wf.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+  });
+  render(<WorkflowsView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: /Generate/ }));
+  await user.type(screen.getByLabelText('Repository directory'), '/project');
+  await waitFor(() => expect(screen.getByText(/make current/)).toBeInTheDocument());
+  expect(screen.queryByText(/make other/)).toBeNull();
+});

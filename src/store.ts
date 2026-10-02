@@ -1,3 +1,4 @@
+import { commandEdits } from './lib/memory';
 import { create } from 'zustand';
 import { getBackend } from './lib/backend';
 import type { AdapterInfo, AgentProfile } from './lib/agents';
@@ -313,6 +314,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const active = workflows.find((w) => w.id === activeWorkflowId);
     if (active === undefined) return;
     const backend = getBackend();
+    const previous = await backend.getWorkflow(active.definition.id);
+    const before = previous ? structuredClone(previous.definition) : null;
     const [stored, validation] = await Promise.all([
       backend.saveWorkflow(active.definition),
       backend.validateWorkflow(active.definition),
@@ -321,6 +324,22 @@ export const useAppStore = create<AppState>()((set, get) => ({
       workflows: get().workflows.map((w) => (w.id === stored.id ? stored : w)),
       validation,
     });
+    if (before && stored.definition.defaults?.repoDir?.trim()) {
+      try {
+        const context = await backend.getProjectMemoryContext(
+          stored.definition.defaults.repoDir,
+        );
+        const observations = commandEdits(before, stored.definition, context.scope);
+        if (observations.length) {
+          await backend.observeEdits(observations);
+          await get().refreshLibrary();
+        }
+      } catch (error: unknown) {
+        set({
+          error: 'Workflow saved. Memory observation failed: ' + errorMessage(error),
+        });
+      }
+    }
   },
 
   setValidation: (validation) => {
