@@ -1,0 +1,1423 @@
+[
+  {
+    "id": "implement-ticket",
+    "version": 1,
+    "name": "Implement Ticket",
+    "description": "Plan → approve → implement → test → review → draft PR.",
+    "category": "feature",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-implement-ticket",
+      "name": "Implement Ticket",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "plan",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "planning",
+            "prompt": "Read the repository instructions first. Plan {{workflow.name}}: {{ticket.key}} {{ticket.title}}. List files and risks.",
+            "extendOnOutput": false
+          },
+          "label": "Plan"
+        },
+        {
+          "id": "gate",
+          "type": "approval",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "message": "Review the plan.",
+            "extendOnOutput": false
+          },
+          "label": "Approve plan"
+        },
+        {
+          "id": "impl",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Implement the approved plan with tests.",
+            "extendOnOutput": false
+          },
+          "label": "Implement"
+        },
+        {
+          "id": "tests",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Project tests"
+        },
+        {
+          "id": "review",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 600.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "deepReview",
+            "prompt": "Read the repository instructions first. Review for P0/P1; tag severities.",
+            "extendOnOutput": false
+          },
+          "label": "Review"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 720.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "plan"
+        },
+        {
+          "id": "e1",
+          "source": "plan",
+          "target": "gate"
+        },
+        {
+          "id": "e2",
+          "source": "gate",
+          "target": "impl"
+        },
+        {
+          "id": "e3",
+          "source": "impl",
+          "target": "tests"
+        },
+        {
+          "id": "e4",
+          "source": "tests",
+          "target": "review"
+        },
+        {
+          "id": "e5",
+          "source": "review",
+          "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "testCommand",
+          "label": "Project test command (required)",
+          "required": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "review-pr",
+    "version": 1,
+    "name": "Review Pull Request",
+    "description": "Load PR → parallel Claude/Codex reviews → actionable? → note or checked.",
+    "category": "review",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-review-pr",
+      "name": "Review Pull Request",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "files",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "githubOp": {
+              "op": "prFiles",
+              "number": 0
+            }
+          },
+          "label": "Changed files"
+        },
+        {
+          "id": "revA",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Fast review with ```finding blocks.",
+            "extendOnOutput": false
+          },
+          "label": "Claude Review"
+        },
+        {
+          "id": "revB",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "deepReview",
+            "prompt": "Read the repository instructions first. Deep review with ```finding blocks.",
+            "extendOnOutput": false
+          },
+          "label": "Codex Review"
+        },
+        {
+          "id": "cond",
+          "type": "condition",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "condition": {
+              "logic": "or",
+              "clauses": [
+                {
+                  "left": "node.revA.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
+                  "left": "node.revB.severity",
+                  "op": "contains",
+                  "right": "P1"
+                }
+              ]
+            }
+          },
+          "label": "Actionable?"
+        },
+        {
+          "id": "note",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "githubOp": {
+              "op": "postComment",
+              "number": 0,
+              "body": "Automated review found P0/P1 items.\n\n<sub>posted by Orchevia</sub>"
+            }
+          },
+          "label": "Post note"
+        },
+        {
+          "id": "checked",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "executable": "echo",
+            "args": ["no actionable findings"],
+            "extendOnOutput": false
+          },
+          "label": "Mark checked"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 600.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "files"
+        },
+        {
+          "id": "e1",
+          "source": "files",
+          "target": "revA"
+        },
+        {
+          "id": "e2",
+          "source": "files",
+          "target": "revB"
+        },
+        {
+          "id": "e3",
+          "source": "revA",
+          "target": "cond"
+        },
+        {
+          "id": "e4",
+          "source": "revB",
+          "target": "cond"
+        },
+        {
+          "id": "e5",
+          "source": "cond",
+          "target": "note",
+          "label": "true"
+        },
+        {
+          "id": "e6",
+          "source": "cond",
+          "target": "checked",
+          "label": "false"
+        },
+        {
+          "id": "e7",
+          "source": "note",
+          "target": "end"
+        },
+        {
+          "id": "e8",
+          "source": "checked",
+          "target": "end"
+        }
+      ]
+    }
+  },
+  {
+    "id": "investigate-bug",
+    "version": 1,
+    "name": "Investigate Bug",
+    "description": "Reproduce → hypothesize → verify with tests.",
+    "category": "bugfix",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-investigate-bug",
+      "name": "Investigate Bug",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "repro",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Reproduce the bug with a failing test first.",
+            "extendOnOutput": false
+          },
+          "label": "Reproduce"
+        },
+        {
+          "id": "gate",
+          "type": "approval",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Confirm repro"
+        },
+        {
+          "id": "fix",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Fix the root cause; keep the regression test green.",
+            "extendOnOutput": false
+          },
+          "label": "Fix + verify"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "repro"
+        },
+        {
+          "id": "e1",
+          "source": "repro",
+          "target": "gate"
+        },
+        {
+          "id": "e2",
+          "source": "gate",
+          "target": "fix"
+        },
+        {
+          "id": "e3",
+          "source": "fix",
+          "target": "end"
+        }
+      ]
+    }
+  },
+  {
+    "id": "refactor",
+    "version": 1,
+    "name": "Refactor",
+    "description": "Scoped refactor with test gates before and after.",
+    "category": "refactor",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-refactor",
+      "name": "Refactor",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "base",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Project tests"
+        },
+        {
+          "id": "ref",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Refactor {{workflow.name}} without behavior change.",
+            "extendOnOutput": false
+          },
+          "label": "Refactor"
+        },
+        {
+          "id": "verify",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Project tests"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "base"
+        },
+        {
+          "id": "e1",
+          "source": "base",
+          "target": "ref"
+        },
+        {
+          "id": "e2",
+          "source": "ref",
+          "target": "verify"
+        },
+        {
+          "id": "e3",
+          "source": "verify",
+          "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "testCommand",
+          "label": "Project test command (required)",
+          "required": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "dependency-upgrade",
+    "version": 1,
+    "name": "Dependency Upgrade",
+    "description": "Upgrade one dependency, run tests, review the diff.",
+    "category": "maintenance",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-dependency-upgrade",
+      "name": "Dependency Upgrade",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "up",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Upgrade {{input.dependency}}; keep the lockfile consistent.",
+            "extendOnOutput": false
+          },
+          "label": "Upgrade"
+        },
+        {
+          "id": "tests",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Project tests"
+        },
+        {
+          "id": "rev",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Review the upgrade diff for breaking changes.",
+            "extendOnOutput": false
+          },
+          "label": "Review diff"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "up"
+        },
+        {
+          "id": "e1",
+          "source": "up",
+          "target": "tests"
+        },
+        {
+          "id": "e2",
+          "source": "tests",
+          "target": "rev"
+        },
+        {
+          "id": "e3",
+          "source": "rev",
+          "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "testCommand",
+          "label": "Project test command (required)",
+          "required": true
+        },
+        {
+          "name": "dependency",
+          "label": "Dependency",
+          "required": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "multi-agent-review",
+    "version": 1,
+    "name": "Run Multi-Agent Review",
+    "description": "Parallel Claude + Codex reviews joined, then a severity gate.",
+    "category": "review",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-multi-agent-review",
+      "name": "Run Multi-Agent Review",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "revA",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Fast review with ```finding blocks.",
+            "extendOnOutput": false
+          },
+          "label": "Claude Review"
+        },
+        {
+          "id": "revB",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "deepReview",
+            "prompt": "Read the repository instructions first. Deep review with ```finding blocks.",
+            "extendOnOutput": false
+          },
+          "label": "Codex Review"
+        },
+        {
+          "id": "join",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "executable": "echo",
+            "args": ["reviews complete"],
+            "extendOnOutput": false
+          },
+          "label": "Combine"
+        },
+        {
+          "id": "cond",
+          "type": "condition",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "condition": {
+              "logic": "or",
+              "clauses": [
+                {
+                  "left": "node.revA.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
+                  "left": "node.revB.severity",
+                  "op": "contains",
+                  "right": "P1"
+                }
+              ]
+            }
+          },
+          "label": "Actionable?"
+        },
+        {
+          "id": "yes",
+          "type": "approval",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Triage P0/P1"
+        },
+        {
+          "id": "no",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "executable": "echo",
+            "args": ["clean"],
+            "extendOnOutput": false
+          },
+          "label": "Done"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 600.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "revA"
+        },
+        {
+          "id": "e1",
+          "source": "start",
+          "target": "revB"
+        },
+        {
+          "id": "e2",
+          "source": "revA",
+          "target": "join"
+        },
+        {
+          "id": "e3",
+          "source": "revB",
+          "target": "join"
+        },
+        {
+          "id": "e4",
+          "source": "join",
+          "target": "cond"
+        },
+        {
+          "id": "e5",
+          "source": "cond",
+          "target": "yes",
+          "label": "true"
+        },
+        {
+          "id": "e6",
+          "source": "cond",
+          "target": "no",
+          "label": "false"
+        },
+        {
+          "id": "e7",
+          "source": "yes",
+          "target": "end"
+        },
+        {
+          "id": "e8",
+          "source": "no",
+          "target": "end"
+        }
+      ]
+    }
+  },
+  {
+    "id": "create-draft-pr",
+    "version": 1,
+    "name": "Create Draft PR",
+    "description": "Final test + review, then an explicit draft PR.",
+    "category": "feature",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-create-draft-pr",
+      "name": "Create Draft PR",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "tests",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Project tests"
+        },
+        {
+          "id": "rev",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Final pass with ```finding blocks.",
+            "extendOnOutput": false
+          },
+          "label": "Final review"
+        },
+        {
+          "id": "pr",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "githubOp": {
+              "op": "createPr",
+              "title": "{{workflow.name}}",
+              "body": "Automated draft.",
+              "base": "main",
+              "head": "{{input.branch}}",
+              "draft": true
+            }
+          },
+          "label": "Draft PR"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "tests"
+        },
+        {
+          "id": "e1",
+          "source": "tests",
+          "target": "rev"
+        },
+        {
+          "id": "e2",
+          "source": "rev",
+          "target": "pr"
+        },
+        {
+          "id": "e3",
+          "source": "pr",
+          "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "testCommand",
+          "label": "Project test command (required)",
+          "required": true
+        },
+        {
+          "name": "branch",
+          "label": "Head branch",
+          "required": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "watch-feedback",
+    "version": 1,
+    "name": "Watch Review Feedback",
+    "description": "Poll PR feedback; fix + re-test while actionable (bounded).",
+    "category": "review",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-watch-feedback",
+      "name": "Watch Review Feedback",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "fix",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Address the latest review feedback with tests.",
+            "extendOnOutput": false,
+            "maxVisits": 3
+          },
+          "label": "Address feedback"
+        },
+        {
+          "id": "tests",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false,
+            "maxVisits": 3
+          },
+          "label": "Project tests"
+        },
+        {
+          "id": "rev",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Re-review with ```finding blocks.",
+            "extendOnOutput": false,
+            "maxVisits": 3
+          },
+          "label": "Re-review"
+        },
+        {
+          "id": "cond",
+          "type": "condition",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "maxVisits": 3,
+            "condition": {
+              "logic": "and",
+              "clauses": [
+                {
+                  "left": "node.rev.severity",
+                  "op": "contains",
+                  "right": "P1"
+                }
+              ]
+            }
+          },
+          "label": "Still actionable?"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 600.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "fix"
+        },
+        {
+          "id": "e1",
+          "source": "fix",
+          "target": "tests"
+        },
+        {
+          "id": "e2",
+          "source": "tests",
+          "target": "rev"
+        },
+        {
+          "id": "e3",
+          "source": "rev",
+          "target": "cond"
+        },
+        {
+          "id": "e4",
+          "source": "cond",
+          "target": "fix",
+          "label": "true"
+        },
+        {
+          "id": "e5",
+          "source": "cond",
+          "target": "end",
+          "label": "false"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "testCommand",
+          "label": "Project test command (required)",
+          "required": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "ticket-to-pr",
+    "version": 1,
+    "name": "Ticket to Draft PR",
+    "description": "Ticket → branch → implement → Claude/Codex reviews → fix loop → human review → draft PR.",
+    "category": "feature",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-ticket-to-pr",
+      "name": "Ticket to Draft PR",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "ticket",
+          "type": "ticket",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "ticketKey": "{{input.ticket}}"
+          },
+          "label": "Load ticket"
+        },
+        {
+          "id": "branch",
+          "type": "git",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "gitOp": {
+              "op": "branchCreate",
+              "name": "{{input.branch}}"
+            }
+          },
+          "label": "Create branch"
+        },
+        {
+          "id": "impl",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Implement {{ticket.key}}: {{ticket.title}}. Keep commits small with short messages; run the project's tests before finishing.",
+            "extendOnOutput": false
+          },
+          "label": "Implement"
+        },
+        {
+          "id": "rev_fast",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Fast review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.",
+            "extendOnOutput": false,
+            "maxVisits": 2
+          },
+          "label": "Claude Review"
+        },
+        {
+          "id": "rev_deep",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 600.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "deepReview",
+            "prompt": "Deep review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Do not re-run tests that already passed.",
+            "extendOnOutput": false,
+            "maxVisits": 2
+          },
+          "label": "Codex Review"
+        },
+        {
+          "id": "cond",
+          "type": "condition",
+          "position": {
+            "x": 80.0,
+            "y": 720.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "maxVisits": 2,
+            "condition": {
+              "logic": "or",
+              "clauses": [
+                {
+                  "left": "node.rev_fast.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
+                  "left": "node.rev_deep.severity",
+                  "op": "contains",
+                  "right": "P1"
+                }
+              ]
+            }
+          },
+          "label": "P0/P1 found?"
+        },
+        {
+          "id": "fix",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 840.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Address the P0/P1 findings above with tests; keep commits small.",
+            "extendOnOutput": false,
+            "maxVisits": 2
+          },
+          "label": "Fix findings"
+        },
+        {
+          "id": "approve",
+          "type": "approval",
+          "position": {
+            "x": 80.0,
+            "y": 960.0
+          },
+          "config": {
+            "args": [],
+            "message": "A human reviews the implementation and findings before the draft PR is opened.",
+            "extendOnOutput": false
+          },
+          "label": "Human review"
+        },
+        {
+          "id": "pr",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 1080.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "githubOp": {
+              "op": "createPr",
+              "title": "{{input.branch}}",
+              "body": "Draft for {{ticket.key}}: {{ticket.title}}.",
+              "base": "main",
+              "head": "{{input.branch}}",
+              "draft": true
+            }
+          },
+          "label": "Draft PR"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 1200.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "ticket"
+        },
+        {
+          "id": "e1",
+          "source": "ticket",
+          "target": "branch"
+        },
+        {
+          "id": "e2",
+          "source": "branch",
+          "target": "impl"
+        },
+        {
+          "id": "e3",
+          "source": "impl",
+          "target": "rev_fast"
+        },
+        {
+          "id": "e4",
+          "source": "impl",
+          "target": "rev_deep"
+        },
+        {
+          "id": "e5",
+          "source": "rev_fast",
+          "target": "cond"
+        },
+        {
+          "id": "e6",
+          "source": "rev_deep",
+          "target": "cond"
+        },
+        {
+          "id": "e7",
+          "source": "cond",
+          "target": "fix",
+          "label": "true"
+        },
+        {
+          "id": "e8",
+          "source": "cond",
+          "target": "approve",
+          "label": "false"
+        },
+        {
+          "id": "e9",
+          "source": "fix",
+          "target": "rev_fast"
+        },
+        {
+          "id": "e10",
+          "source": "approve",
+          "target": "pr"
+        },
+        {
+          "id": "e11",
+          "source": "pr",
+          "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "ticket",
+          "label": "Ticket key (e.g. DEV-1234)",
+          "required": true
+        },
+        {
+          "name": "branch",
+          "label": "Branch name",
+          "required": true
+        }
+      ]
+    }
+  }
+]

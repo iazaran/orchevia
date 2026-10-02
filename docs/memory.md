@@ -66,3 +66,8 @@ No vectors, no hidden profile, no telemetry: open Memory and read exactly what
 Orchevia believes. Data lives in SQLite (`preferences`, `observation_counts`,
 `generations`, `user_templates`); export from Memory; profile references stay
 local (re-map by name after moving machines).
+
+The Templates library includes nine language-neutral starters in desktop and
+browser preview. Test steps require your project's `testCommand`; blank values
+cannot run. Clone a starter and edit it with Simple JSON, or save a configured
+workflow as a user template. Portable export retains explicit reviewer names.

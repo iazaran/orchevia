@@ -129,6 +129,13 @@ export function TemplatesView(): React.JSX.Element {
       </div>
       <p className="field-hint">{template.description}</p>
       <div className="tool-version">{template.workflow.nodes.length} nodes</div>
+      {template.workflow.inputs?.some((i) => i.name === 'testCommand' && i.required) ===
+        true && (
+        <p className="field-hint">
+          Supply your project test command when running this workflow. Empty commands
+          cannot run.
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'nowrap' }}>
         <button
           className="btn btn-primary"

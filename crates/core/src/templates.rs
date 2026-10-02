@@ -92,7 +92,7 @@ pub fn instantiate(
         ));
     }
     if new_ids {
-        remap_ids(&mut workflow);
+        remap_ids(&mut workflow)?;
     }
     let issues = validate_workflow(&workflow);
     let mut blocking: Vec<String> = Vec::new();
@@ -128,12 +128,15 @@ pub struct Instantiated {
     pub setup_needed: Vec<String>,
 }
 
-fn remap_ids(workflow: &mut Workflow) {
+fn remap_ids(workflow: &mut Workflow) -> Result<(), String> {
     let mut id_map: HashMap<String, String> = HashMap::new();
     for node in workflow.nodes.iter_mut() {
         let fresh = format!("{}-inst", node.id);
         id_map.insert(node.id.clone(), fresh.clone());
         node.id = fresh;
+    }
+    for node in &mut workflow.nodes {
+        crate::workflow_document::remap_config_references(&mut node.config, &id_map)?;
     }
     workflow.id = format!("{}-inst", workflow.id);
     for edge in workflow.edges.iter_mut() {
@@ -145,6 +148,7 @@ fn remap_ids(workflow: &mut Workflow) {
         }
         edge.id = format!("{}-inst", edge.id);
     }
+    Ok(())
 }
 
 /// Export portable JSON (no secrets by construction; validated on import).
@@ -237,7 +241,21 @@ fn agent_role(id: &str, y: f64, label: &str, role: &str, prompt: &str) -> Node {
         label,
         NodeConfig {
             agent_role: Some(role.to_string()),
-            prompt: Some(prompt.to_string()),
+            prompt: Some(format!("Read the repository instructions first. {prompt}")),
+            ..NodeConfig::default()
+        },
+    )
+}
+
+fn test_command(id: &str, y: f64) -> Node {
+    node(
+        id,
+        NodeKind::Command,
+        y,
+        "Project tests",
+        NodeConfig {
+            executable: Some("sh".into()),
+            args: vec!["-c".into(), "{{input.testCommand}}".into()],
             ..NodeConfig::default()
         },
     )
@@ -251,6 +269,19 @@ fn template(
     nodes: Vec<Node>,
     edges: Vec<Edge>,
 ) -> Template {
+    let inputs = if nodes
+        .iter()
+        .any(|n| n.config.args.iter().any(|a| a == "{{input.testCommand}}"))
+    {
+        vec![crate::workflow::WorkflowInput {
+            name: "testCommand".into(),
+            label: Some("Project test command (required)".into()),
+            default: None,
+            required: true,
+        }]
+    } else {
+        Vec::new()
+    };
     Template {
         id: id.to_string(),
         version: TEMPLATE_SCHEMA_VERSION,
@@ -261,7 +292,7 @@ fn template(
             schema_version: CURRENT_SCHEMA_VERSION,
             id: format!("tpl-{id}"),
             name: name.to_string(),
-            inputs: Vec::new(),
+            inputs,
             defaults: None,
             nodes,
             edges,
@@ -322,17 +353,7 @@ fn implement_ticket() -> Template {
                 "implementation",
                 "Implement the approved plan with tests.",
             ),
-            node(
-                "tests",
-                NodeKind::Command,
-                480.0,
-                "Tests",
-                NodeConfig {
-                    executable: Some("cargo".into()),
-                    args: vec!["test".into()],
-                    ..NodeConfig::default()
-                },
-            ),
+            test_command("tests", 480.0),
             agent_role(
                 "review",
                 600.0,
@@ -517,17 +538,7 @@ fn refactor() -> Template {
                 "Start",
                 NodeConfig::default(),
             ),
-            node(
-                "base",
-                NodeKind::Command,
-                120.0,
-                "Baseline tests",
-                NodeConfig {
-                    executable: Some("cargo".into()),
-                    args: vec!["test".into()],
-                    ..NodeConfig::default()
-                },
-            ),
+            test_command("base", 120.0),
             agent_role(
                 "ref",
                 240.0,
@@ -535,17 +546,7 @@ fn refactor() -> Template {
                 "implementation",
                 "Refactor {{workflow.name}} without behavior change.",
             ),
-            node(
-                "verify",
-                NodeKind::Command,
-                360.0,
-                "Verify tests",
-                NodeConfig {
-                    executable: Some("cargo".into()),
-                    args: vec!["test".into()],
-                    ..NodeConfig::default()
-                },
-            ),
+            test_command("verify", 360.0),
             node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
         ],
         vec![
@@ -578,17 +579,7 @@ fn dependency_upgrade() -> Template {
                 "implementation",
                 "Upgrade {{input.dependency}}; keep the lockfile consistent.",
             ),
-            node(
-                "tests",
-                NodeKind::Command,
-                240.0,
-                "Tests",
-                NodeConfig {
-                    executable: Some("cargo".into()),
-                    args: vec!["test".into()],
-                    ..NodeConfig::default()
-                },
-            ),
+            test_command("tests", 240.0),
             agent_role(
                 "rev",
                 360.0,
@@ -728,17 +719,7 @@ fn create_draft_pr() -> Template {
                 "Start",
                 NodeConfig::default(),
             ),
-            node(
-                "tests",
-                NodeKind::Command,
-                120.0,
-                "Tests",
-                NodeConfig {
-                    executable: Some("cargo".into()),
-                    args: vec!["test".into()],
-                    ..NodeConfig::default()
-                },
-            ),
+            test_command("tests", 120.0),
             agent_role(
                 "rev",
                 240.0,
@@ -813,15 +794,8 @@ fn watch_feedback() -> Template {
                 label: Some("Address feedback".into()),
             },
             Node {
-                id: "tests".into(),
-                kind: NodeKind::Command,
-                position: Position { x: 80.0, y: 240.0 },
-                config: visits(NodeConfig {
-                    executable: Some("cargo".into()),
-                    args: vec!["test".into()],
-                    ..NodeConfig::default()
-                }),
-                label: Some("Tests".into()),
+                config: visits(test_command("tests", 240.0).config),
+                ..test_command("tests", 240.0)
             },
             Node {
                 id: "rev".into(),
@@ -1064,6 +1038,72 @@ mod tests {
                 template
             );
         }
+    }
+
+    #[test]
+    fn browser_template_fixture_matches_core() {
+        let mirrored: Vec<Template> =
+            serde_json::from_str(include_str!("../../../src/lib/builtin-templates.json")).unwrap();
+        assert_eq!(mirrored, builtin_templates());
+    }
+
+    #[test]
+    fn builtin_test_steps_use_required_command_input() {
+        for template in builtin_templates() {
+            let tests: Vec<_> = template
+                .workflow
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.kind == NodeKind::Command
+                        && node
+                            .label
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains("test")
+                })
+                .collect();
+            if tests.is_empty() {
+                continue;
+            }
+            assert_eq!(
+                template
+                    .workflow
+                    .inputs
+                    .iter()
+                    .filter(|i| i.name == "testCommand")
+                    .count(),
+                1
+            );
+            let input = template
+                .workflow
+                .inputs
+                .iter()
+                .find(|i| i.name == "testCommand")
+                .unwrap();
+            assert!(input.required && input.default.is_none());
+            for node in tests {
+                assert_eq!(node.config.executable.as_deref(), Some("sh"));
+                assert_eq!(node.config.args, vec!["-c", "{{input.testCommand}}"]);
+            }
+        }
+    }
+
+    #[test]
+    fn instantiated_references_follow_new_ids() {
+        let mut t = builtin_templates().remove(0);
+        t.workflow.nodes[1].config.prompt = Some("Read {{node.start.output}}".into());
+        t.workflow.nodes[1].config.input_refs = vec!["start".into()];
+        let cloned = instantiate(&t, &roles(), true).unwrap();
+        assert_eq!(
+            cloned.workflow.nodes[1].config.prompt.as_deref(),
+            Some("Read {{node.start-inst.output}}")
+        );
+        assert_eq!(
+            cloned.workflow.nodes[1].config.input_refs,
+            vec!["start-inst"]
+        );
     }
 
     #[test]

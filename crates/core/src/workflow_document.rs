@@ -168,6 +168,16 @@ fn rewrite(value: &mut Value, map: &HashMap<String, String>, bare: bool) -> Resu
     };
     Ok(())
 }
+pub fn remap_config_references(
+    config: &mut NodeConfig,
+    map: &HashMap<String, String>,
+) -> Result<(), String> {
+    let mut value = serde_json::to_value(&*config).map_err(|e| e.to_string())?;
+    rewrite(&mut value, map, false)?;
+    *config = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn export_document(
     workflow: &Workflow,
     profiles: &[AgentProfile],

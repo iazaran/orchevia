@@ -1,4 +1,10 @@
 import {
+  builtinTemplates,
+  instantiateTemplateLocal,
+  validateTemplate,
+} from './templates';
+import { readLocal, writeLocal } from './storage';
+import {
   encodeDocument,
   decodeDocument,
   type DocumentSession,
@@ -446,6 +452,7 @@ class TauriBackend implements Backend {
  * simulates command execution deterministically (no processes spawned).
  */
 class MockBackend implements Backend {
+  private userTemplates = new Map<string, WorkflowTemplate>();
   private workflows = new Map<string, StoredWorkflow>();
   private runs: StoredRun[] = [];
   private results = new Map<string, StoredNodeResult[]>();
@@ -495,13 +502,15 @@ class MockBackend implements Backend {
 
   private load(): void {
     try {
-      const raw = localStorage.getItem(this.storageKey());
+      const raw = readLocal(this.storageKey());
       if (raw === null) return;
       const data = JSON.parse(raw) as {
         workflows: StoredWorkflow[];
         profiles?: AgentProfile[];
         mcpServers?: McpServerConfig[];
+        templates?: WorkflowTemplate[];
       };
+      for (const t of data.templates ?? []) this.userTemplates.set(t.id, t);
       for (const w of data.workflows) this.workflows.set(w.id, w);
       for (const p of data.profiles ?? []) this.profiles.set(p.id, p);
       for (const s of data.mcpServers ?? []) this.mcpServers.set(s.id, s);
@@ -512,9 +521,10 @@ class MockBackend implements Backend {
 
   private persist(): void {
     try {
-      localStorage.setItem(
+      writeLocal(
         this.storageKey(),
         JSON.stringify({
+          templates: [...this.userTemplates.values()],
           workflows: [...this.workflows.values()],
           profiles: [...this.profiles.values()],
           mcpServers: [...this.mcpServers.values()],
@@ -595,6 +605,11 @@ class MockBackend implements Backend {
   ): Promise<{ runId: string }> {
     const wf = this.workflows.get(workflowId);
     if (wf === undefined) throw new Error(`Unknown workflow '${workflowId}'.`);
+    const effectiveInputs = { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) };
+    for (const input of wf.definition.inputs ?? []) {
+      if (input.required && !(effectiveInputs[input.name] ?? '').trim())
+        throw new Error(`Workflow input '${input.name}' is required.`);
+    }
     const runId = `run-mock-${String(this.counter++)}`;
     const run: StoredRun = {
       id: runId,
@@ -1105,38 +1120,84 @@ class MockBackend implements Backend {
   }
 
   async roleMapDefault(): Promise<Record<string, string>> {
-    return {};
+    const roles: Record<string, string> = {};
+    for (const p of this.profiles.values())
+      if (p.role && !Object.hasOwn(roles, p.role)) roles[p.role] = p.id;
+    return roles;
   }
-
   async listTemplates(): Promise<{
     builtin: WorkflowTemplate[];
     user: WorkflowTemplate[];
   }> {
-    return { builtin: [], user: [] };
+    return {
+      builtin: builtinTemplates(),
+      user: structuredClone([...this.userTemplates.values()]),
+    };
   }
-
-  async saveUserTemplate(): Promise<WorkflowTemplate> {
-    this.automationUnsupported();
+  async saveUserTemplate(template: WorkflowTemplate): Promise<WorkflowTemplate> {
+    validateTemplate(template);
+    this.userTemplates.set(template.id, structuredClone(template));
+    this.persist();
+    return structuredClone(template);
   }
-
-  async saveWorkflowAsTemplate(): Promise<WorkflowTemplate> {
-    this.automationUnsupported();
+  async saveWorkflowAsTemplate(
+    workflowId: string,
+    name: string,
+    category?: string,
+  ): Promise<WorkflowTemplate> {
+    const stored = this.workflows.get(workflowId);
+    if (!stored) throw new Error(`Unknown workflow '${workflowId}'.`);
+    return this.saveUserTemplate({
+      id: 'user-' + crypto.randomUUID(),
+      version: 1,
+      name,
+      category: category ?? 'general',
+      description: `Saved from workflow '${stored.name}'.`,
+      workflow: structuredClone(stored.definition),
+    });
   }
-
-  async deleteUserTemplate(): Promise<boolean> {
-    this.automationUnsupported();
+  async deleteUserTemplate(id: string): Promise<boolean> {
+    const deleted = this.userTemplates.delete(id);
+    this.persist();
+    return deleted;
   }
-
-  async exportTemplate(): Promise<string> {
-    this.automationUnsupported();
+  private findTemplate(id: string, builtin: boolean): WorkflowTemplate {
+    const t = builtin
+      ? builtinTemplates().find((t) => t.id === id)
+      : this.userTemplates.get(id);
+    if (!t) throw new Error(`Unknown template '${id}'.`);
+    return t;
   }
-
-  async importTemplate(): Promise<WorkflowTemplate> {
-    this.automationUnsupported();
+  async exportTemplate(id: string, builtin: boolean): Promise<string> {
+    const t = this.findTemplate(id, builtin);
+    validateTemplate(t);
+    return JSON.stringify(
+      {
+        ...t,
+        workflow: JSON.parse(
+          (await this.encodeWorkflowDocument(t.workflow)).json,
+        ) as unknown,
+      },
+      null,
+      2,
+    );
   }
-
-  async instantiateTemplate(): Promise<InstantiationPreview> {
-    this.automationUnsupported();
+  async importTemplate(json: string): Promise<WorkflowTemplate> {
+    const parsed = JSON.parse(json) as WorkflowTemplate;
+    const workflow = await this.decodeWorkflowDocument(JSON.stringify(parsed.workflow));
+    const template = { ...parsed, workflow, id: 'user-' + crypto.randomUUID() };
+    if (!workflow.nodes.length) throw new Error('Template workflow has no nodes.');
+    return this.saveUserTemplate(template);
+  }
+  async instantiateTemplate(
+    id: string,
+    builtin: boolean,
+    roleMap?: Record<string, string>,
+  ): Promise<InstantiationPreview> {
+    return instantiateTemplateLocal(
+      this.findTemplate(id, builtin),
+      roleMap ?? (await this.roleMapDefault()),
+    );
   }
 
   async generateWorkflow(): Promise<GenerationPreview> {

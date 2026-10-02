@@ -297,10 +297,10 @@ impl Engine {
         // Required inputs without defaults must be supplied.
         for input in &workflow.inputs {
             if input.required
-                && input.default.as_deref().unwrap_or("").is_empty()
+                && input.default.as_deref().unwrap_or("").trim().is_empty()
                 && inputs
                     .get(&input.name)
-                    .map(|s| s.is_empty())
+                    .map(|s| s.trim().is_empty())
                     .unwrap_or(true)
             {
                 issues.push(crate::workflow::ValidationIssue {
@@ -1069,6 +1069,42 @@ async fn execute_node_task(
         NodeKind::Mcp => execute_mcp_task(&db, &task, &node_id, &flag).await,
         NodeKind::Command => {
             let exe = task.node.config.executable.clone().unwrap_or_default();
+            let vars = match build_vars(
+                &db,
+                &task.workflow_id,
+                &task.workflow_name,
+                &task.run_id,
+                &task.inputs,
+            ) {
+                Ok(vars) => vars,
+                Err(error) => {
+                    let error = error.to_string();
+                    let _ = db.record_node_result(NewNodeResult::simple(
+                        &task.run_id,
+                        &node_id,
+                        "failed",
+                        None,
+                        Some(&error),
+                    ));
+                    return TaskOutcome::Failed;
+                }
+            };
+            let mut args = Vec::new();
+            for argument in &task.node.config.args {
+                let (rendered, missing) = render_prompt(argument, &vars);
+                if !missing.is_empty() {
+                    let error = format!("Missing command variables: {}.", missing.join(", "));
+                    let _ = db.record_node_result(NewNodeResult::simple(
+                        &task.run_id,
+                        &node_id,
+                        "failed",
+                        None,
+                        Some(&error),
+                    ));
+                    return TaskOutcome::Failed;
+                }
+                args.push(rendered);
+            }
             let timeout = task
                 .node
                 .config
@@ -1085,7 +1121,7 @@ async fn execute_node_task(
                 run_id: &task.run_id,
                 node_id: &node_id,
                 executable: &exe,
-                args: &task.node.config.args,
+                args: &args,
                 working_dir,
                 timeout: Duration::from_secs(timeout),
                 retry,
@@ -3903,6 +3939,49 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("Loop limit"));
+    }
+
+    #[tokio::test]
+    async fn template_test_command_preserves_compound_shell_argument() {
+        let template = crate::templates::builtin_templates().remove(0);
+        let tests = template
+            .workflow
+            .nodes
+            .iter()
+            .find(|n| n.id == "tests")
+            .unwrap()
+            .clone();
+        let mut wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "test-command".into(),
+            name: "Tests".into(),
+            defaults: None,
+            inputs: template.workflow.inputs,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                tests,
+                simple_node("end", NodeKind::End, 200.0),
+            ],
+            edges: vec![
+                edge("e1", "start", "tests", None),
+                edge("e2", "tests", "end", None),
+            ],
+        };
+        wf.inputs.retain(|i| i.name == "testCommand");
+        let (db, engine) = harness();
+        db.upsert_workflow(&wf).unwrap();
+        let empty = HashMap::from([("testCommand".into(), "  ".into())]);
+        assert!(engine.start_run(&wf, "blank", &empty).is_err());
+        let inputs = HashMap::from([(
+            "testCommand".into(),
+            "printf '%s' 'one two'; printf '%s' ' three'".into(),
+        )]);
+        engine.start_run(&wf, "compound", &inputs).unwrap();
+        engine.execute(wf, "compound".into()).await;
+        let results = db.list_node_results("compound").unwrap();
+        let result = results.iter().find(|r| r.node_id == "tests").unwrap();
+        assert_eq!(result.status, "succeeded", "{result:?}");
+        assert_eq!(result.stdout, "one two three");
     }
 
     #[test]

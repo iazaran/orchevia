@@ -372,3 +372,15 @@ describe('custom model registry (mock)', () => {
     expect(await backend.listCustomModels('claude')).toEqual([]);
   });
 });
+
+it('mock rejects blank required project commands before creating a run', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Required command');
+  workflow.inputs = [{ name: 'testCommand', required: true }];
+  await backend.saveWorkflow(workflow);
+  await expect(backend.runWorkflow(workflow.id, { testCommand: '  ' })).rejects.toThrow(
+    /required/,
+  );
+  expect(await backend.listRuns()).toEqual([]);
+});

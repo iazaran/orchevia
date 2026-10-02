@@ -90,6 +90,12 @@ function rewrite(value: unknown, map: Record<string, string>, bare = false): unk
     );
   return value;
 }
+export function remapConfigReferences(
+  config: NodeConfig,
+  map: Record<string, string>,
+): NodeConfig {
+  return rewrite(config, map) as NodeConfig;
+}
 function resolveName(name: string, profiles: AgentProfile[]): string {
   const matches = profiles.filter((p) => p.name === name.trim());
   if (matches.length !== 1)

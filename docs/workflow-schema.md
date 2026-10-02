@@ -143,3 +143,9 @@ Arrange defaults to top-to-bottom dependency ranks. Use its direction control
 for left-to-right graphs. Bounded cycles stay grouped, parallel branches get
 separate lanes, and measured node sizes determine spacing. Arrangement changes
 positions only, and existing manual positions stay until you click Arrange.
+
+Built-in templates use a required `testCommand` input for project validation.
+Supply the repository's real test command at run time. Each Command argument
+uses the same variable renderer as prompts; interpolation preserves the argument
+as one value, and missing variables fail before launching the process. Executables
+remain literal. Use the renderer's escape syntax for literal template tokens.
