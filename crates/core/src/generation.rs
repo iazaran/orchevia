@@ -86,6 +86,8 @@ pub struct ProposalNodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<ConditionConfig>,
@@ -223,6 +225,16 @@ pub fn compile_proposal(
     workflow_id: &str,
     defaults: Option<crate::workflow::WorkflowDefaults>,
 ) -> Result<CompiledPreview, String> {
+    compile_proposal_with_profiles(proposal, role_map, workflow_id, defaults, &[])
+}
+
+pub fn compile_proposal_with_profiles(
+    proposal: &GenerationProposal,
+    role_map: &HashMap<String, String>,
+    workflow_id: &str,
+    defaults: Option<crate::workflow::WorkflowDefaults>,
+    profiles: &[crate::agents::AgentProfile],
+) -> Result<CompiledPreview, String> {
     if proposal.name.trim().is_empty() {
         return Err("Proposal needs a workflow name.".to_string());
     }
@@ -274,7 +286,14 @@ pub fn compile_proposal(
             pn.label.clone()
         };
         let mut repairs: Vec<String> = Vec::new();
-        let (kind, config) = compile_node_config(&kind, &pn.config, &label, &mut repairs)?;
+        let (kind, mut config) = compile_node_config(&kind, &pn.config, &label, &mut repairs)?;
+        if let Some(name) = pn.config.profile_name.as_deref() {
+            if kind != NodeKind::Agent {
+                return Err("profileName is only valid on Agent nodes.".into());
+            }
+            config.agent_profile_id = Some(crate::agents::resolve_profile_name(name, profiles)?);
+            config.agent_role = None;
+        }
         all_repairs.extend(repairs);
         nodes.push(Node {
             id: pn.key.clone(),
@@ -889,6 +908,29 @@ mod tests {
 "edges":[{"from":"start","to":"plan"},{"from":"plan","to":"gate"},{"from":"gate","to":"impl"},{"from":"impl","to":"end"}]}
 ```
 Good luck!"#;
+
+    #[test]
+    fn named_profiles_resolve_uniquely_in_proposals() {
+        let profile: crate::agents::AgentProfile = serde_json::from_value(serde_json::json!({"id":"claude-review","name":"Claude deep", "adapter":"claude", "role":"deepReview"})).unwrap();
+        let mut proposal = parse_proposal(PROPOSAL).unwrap();
+        proposal.nodes[1].config.profile_name = Some("Claude deep".into());
+        let preview =
+            compile_proposal_with_profiles(&proposal, &role_map(), "wf", None, &[profile.clone()])
+                .unwrap();
+        assert_eq!(
+            preview.workflow.nodes[1].config.agent_profile_id.as_deref(),
+            Some("claude-review")
+        );
+        assert!(compile_proposal_with_profiles(&proposal, &role_map(), "wf", None, &[]).is_err());
+        assert!(compile_proposal_with_profiles(
+            &proposal,
+            &role_map(),
+            "wf",
+            None,
+            &[profile.clone(), profile]
+        )
+        .is_err());
+    }
 
     #[test]
     fn extracts_and_parses_fenced_proposal() {

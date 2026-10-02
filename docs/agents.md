@@ -86,3 +86,13 @@ Invoking a profile runs a third-party CLI that **may send your prompt and reposi
 content to its own provider** according to that tool's behavior. Orchevia cannot make
 Claude/Codex offline and does not claim to. The Agents UI and node inspector surface
 this before every run; approval gates let you review plans before implementation runs.
+
+## Recommended setup
+
+The wizard creates missing recommendations per adapter and role without replacing
+your profiles: Claude Opus for implementation and fast review, Claude Fable for
+planning, workflow generation, and deep review, plus Codex gpt-6.1-sol for deep
+review. Recommendations use high effort, a 3600-second timeout, the workflow
+node directory, and CLI-selected skills. Missing CLIs remain unavailable.
+Generated steps may select an exact `profileName` in addition to their role;
+missing or duplicate profile names are reported rather than substituted.

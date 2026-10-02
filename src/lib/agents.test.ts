@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createDefaultProfile,
+  recommendedProfiles,
   effectiveExecutable,
   MODEL_PRESETS,
   referencedVariables,
@@ -137,5 +138,40 @@ describe('prompt composition', () => {
     }
     expect(MODEL_PRESETS.claude.length).toBeGreaterThan(0);
     expect(MODEL_PRESETS.codex.length).toBeGreaterThan(0);
+  });
+});
+
+describe('recommendations', () => {
+  it('matches the six configured models and preserves custom profiles', () => {
+    const profiles = recommendedProfiles([]);
+    expect(profiles.map((p) => p.model)).toEqual([
+      'opus',
+      'opus',
+      'fable',
+      'fable',
+      'fable',
+      'gpt-6.1-sol',
+    ]);
+    expect(profiles.filter((p) => p.role === 'deepReview')).toHaveLength(2);
+    expect(
+      profiles.every(
+        (p) =>
+          p.effort === 'high' &&
+          p.defaultTimeoutSecs === 3600 &&
+          p.workingDirMode === 'node' &&
+          p.skills?.length === 0,
+      ),
+    ).toBe(true);
+    expect(recommendedProfiles(profiles)).toEqual([]);
+    const custom = {
+      ...createDefaultProfile('claude'),
+      role: 'planning',
+      model: 'custom',
+    };
+    expect(recommendedProfiles([custom]).some((p) => p.role === 'planning')).toBe(false);
+    expect(custom.model).toBe('custom');
+    expect(
+      recommendedProfiles([profiles[4]!]).filter((p) => p.role === 'deepReview'),
+    ).toHaveLength(1);
   });
 });
