@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Background,
   Controls,
@@ -144,6 +144,13 @@ const ADDABLE: NodeKind[] = [
 ];
 
 export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.Element {
+  const [layoutDirection, setLayoutDirection] = useState<'vertical' | 'horizontal'>(
+    'vertical',
+  );
+  const [appliedDirection, setAppliedDirection] = useState<'vertical' | 'horizontal'>(
+    'vertical',
+  );
+  const needsFit = useRef(false);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectNode = useAppStore((s) => s.selectNode);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
@@ -199,6 +206,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
         return {
           ...n,
           data: {
+            direction: appliedDirection,
             label: def.label ?? NODE_KIND_META[def.type].label,
             kind: def.type,
             detail: nodeDetail(def),
@@ -218,6 +226,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
     selectedEdgeId,
     overlayResults,
     validation,
+    appliedDirection,
   ]);
 
   const revalidate = useCallback(
@@ -368,11 +377,22 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
   );
 
   const arrangeNodes = useCallback(() => {
-    const positions = arrangeWorkflowPositions(workflow.nodes, workflow.edges);
+    const positions = arrangeWorkflowPositions(workflow.nodes, workflow.edges, {
+      direction: layoutDirection,
+      sizes: Object.fromEntries(
+        nodes.map((n) => [
+          n.id,
+          { width: n.measured?.width ?? 240, height: n.measured?.height ?? 100 },
+        ]),
+      ),
+    });
+    needsFit.current = true;
+    setAppliedDirection(layoutDirection);
     setNodes((current) =>
       current.map((n) => ({
         ...n,
         position: positions[n.id] ?? n.position,
+        data: { ...n.data, direction: layoutDirection },
       })),
     );
     updateActiveWorkflow({
@@ -383,8 +403,15 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
       })),
     });
     // Positions don't affect validation, but re-fit so the result is visible.
-    void flowInstance.current?.fitView({ padding: 0.15, maxZoom: 1, duration: 200 });
-  }, [workflow, setNodes, updateActiveWorkflow]);
+  }, [workflow, nodes, layoutDirection, setNodes, updateActiveWorkflow]);
+  useEffect(() => {
+    if (!needsFit.current) return;
+    needsFit.current = false;
+    const id = requestAnimationFrame(() => {
+      void flowInstance.current?.fitView({ padding: 0.15, maxZoom: 1, duration: 200 });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [nodes]);
 
   const duplicateSelected = useCallback(() => {
     const def = workflow.nodes.find((n) => n.id === selectedNodeId);
@@ -433,6 +460,20 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
         >
           ⧉ Duplicate
         </button>
+        <select
+          aria-label="Arrange direction"
+          className="select"
+          style={{ width: 'auto' }}
+          value={layoutDirection}
+          onChange={(e) =>
+            setLayoutDirection(
+              e.target.value === 'horizontal' ? 'horizontal' : 'vertical',
+            )
+          }
+        >
+          <option value="vertical">Top to bottom</option>
+          <option value="horizontal">Left to right</option>
+        </select>
         <button
           className="tool-chip"
           onClick={arrangeNodes}

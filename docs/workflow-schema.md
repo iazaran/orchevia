@@ -138,3 +138,8 @@ Agent selections use `role` and optional exact `profileName`. Duplicate or
 missing profile names require setup. Advanced JSON retains the complete schema-v6
 definition; legacy workflow and template files remain importable. Template
 exports use the simple document while preserving template metadata.
+
+Arrange defaults to top-to-bottom dependency ranks. Use its direction control
+for left-to-right graphs. Bounded cycles stay grouped, parallel branches get
+separate lanes, and measured node sizes determine spacing. Arrangement changes
+positions only, and existing manual positions stay until you click Arrange.

@@ -207,114 +207,124 @@ export function newId(prefix: string): string {
  * both are blank the whole `defaults` block is removed (kept absent rather
  * than empty, matching the Rust `skip_serializing_if` contract).
  */
-/**
- * Human-like auto-arrange: layered columns following the connections, ordered
- * within each column to reduce edge crossings (barycenter sweeps), with tall
- * columns wrapped into a compact grid so wide graphs stay readable. Cycles
- * and unreachable nodes fall back to definition order so nothing overlaps and
- * nothing is lost. Pure (no React Flow dependency) so it is unit-tested.
- */
+export interface LayoutOptions {
+  direction?: 'vertical' | 'horizontal';
+  sizes?: Record<string, { width: number; height: number }>;
+}
+/** Rank strongly connected components; keep loops together and branch lanes stable. */
 export function arrangeWorkflowPositions(
   nodes: Pick<WorkflowNode, 'id'>[],
   edges: Pick<WorkflowEdge, 'source' | 'target'>[],
-): Record<string, { x: number; y: number }> {
-  const X_GAP = 280;
-  const Y_GAP = 150;
-  const X0 = 80;
-  const Y0 = 60;
-  const MAX_ROWS = 5;
+  options: LayoutOptions = {},
+): Record<string, Position> {
+  const horizontal = options.direction === 'horizontal';
   const ids = new Set(nodes.map((n) => n.id));
-  const predecessors = new Map<string, string[]>();
-  const successors = new Map<string, string[]>();
-  const incoming = new Map<string, number>();
+  const outgoing = new Map<string, string[]>();
+  const reverse = new Map<string, string[]>();
   for (const n of nodes) {
-    predecessors.set(n.id, []);
-    successors.set(n.id, []);
-    incoming.set(n.id, 0);
+    outgoing.set(n.id, []);
+    reverse.set(n.id, []);
   }
+  for (const e of edges)
+    if (ids.has(e.source) && ids.has(e.target)) {
+      outgoing.get(e.source)?.push(e.target);
+      reverse.get(e.target)?.push(e.source);
+    }
+  const visited = new Set<string>();
+  const finish: string[] = [];
+  const visit = (id: string): void => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    for (const next of outgoing.get(id) ?? []) visit(next);
+    finish.push(id);
+  };
+  for (const n of nodes) visit(n.id);
+  const groups: string[][] = [];
+  const groupOf = new Map<string, number>();
+  const collect = (id: string, index: number): void => {
+    if (groupOf.has(id)) return;
+    groupOf.set(id, index);
+    groups[index]?.push(id);
+    for (const prev of reverse.get(id) ?? []) collect(prev, index);
+  };
+  for (const id of finish.reverse())
+    if (!groupOf.has(id)) {
+      groups.push([]);
+      collect(id, groups.length - 1);
+    }
+  const order = new Map(nodes.map((n, i) => [n.id, i]));
+  for (const group of groups)
+    group.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+  const next = groups.map(() => new Set<number>());
+  const prev = groups.map(() => new Set<number>());
   for (const e of edges) {
-    if (!ids.has(e.source) || !ids.has(e.target)) continue;
-    predecessors.get(e.target)?.push(e.source);
-    successors.get(e.source)?.push(e.target);
-    incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1);
+    const a = groupOf.get(e.source);
+    const b = groupOf.get(e.target);
+    if (a !== undefined && b !== undefined && a !== b) {
+      next[a]?.add(b);
+      prev[b]?.add(a);
+    }
   }
-  // Longest-path layering over the DAG part; nodes on cycles keep layer 0
-  // unless reached, then take part normally.
-  const order = new Map(nodes.map((n, i) => [n.id, i] as const));
-  const layer = new Map<string, number>();
-  const queue: string[] = nodes
-    .filter((n) => (incoming.get(n.id) ?? 0) === 0)
-    .map((n) => n.id);
-  const indeg = new Map(incoming);
+  const rank = groups.map(() => 0);
+  const degree = prev.map((p) => p.size);
+  const queue = groups.map((_, i) => i).filter((i) => degree[i] === 0);
   while (queue.length > 0) {
-    queue.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
-    const current = queue.shift() as string;
-    const nextLayer = (layer.get(current) ?? 0) + 1;
-    for (const target of successors.get(current) ?? []) {
-      if (nextLayer > (layer.get(target) ?? -1)) layer.set(target, nextLayer);
-      indeg.set(target, (indeg.get(target) ?? 1) - 1);
-      if ((indeg.get(target) ?? 0) <= 0 && !queue.includes(target)) {
-        queue.push(target);
+    const current = queue.shift();
+    if (current === undefined) break;
+    for (const to of next[current] ?? []) {
+      rank[to] = Math.max(rank[to] ?? 0, (rank[current] ?? 0) + 1);
+      degree[to] = (degree[to] ?? 1) - 1;
+      if (degree[to] === 0) queue.push(to);
+    }
+  }
+  const dimension = (id: string): { major: number; cross: number } => {
+    const size = options.sizes?.[id];
+    const width = Math.max(240, size?.width ?? 240);
+    const height = Math.max(100, size?.height ?? 100);
+    return horizontal ? { major: width, cross: height } : { major: height, cross: width };
+  };
+  const bounds = groups.map((group) => ({
+    major: group.reduce((sum, id) => sum + dimension(id).major + 80, 0) - 80,
+    cross:
+      Math.max(0, ...group.map((id) => dimension(id).cross)) +
+      (group.length > 1 ? 80 : 0),
+  }));
+  const crossCenter = new Map<number, number>();
+  const positions: Record<string, Position> = {};
+  let majorCursor = 60;
+  for (let r = 0; r <= Math.max(-1, ...rank); r++) {
+    const groupIds = groups.map((_, i) => i).filter((i) => rank[i] === r);
+    const desired = (g: number): number => {
+      const parents = [...(prev[g] ?? [])];
+      return parents.length === 0
+        ? 0
+        : parents.reduce((sum, p) => sum + (crossCenter.get(p) ?? 0), 0) / parents.length;
+    };
+    groupIds.sort(
+      (a, b) =>
+        desired(a) - desired(b) ||
+        (order.get(groups[a]?.[0] ?? '') ?? 0) - (order.get(groups[b]?.[0] ?? '') ?? 0),
+    );
+    let crossCursor = 80;
+    let layerMajor = 0;
+    // Wrap broad disconnected layers after five lanes; depth reserves their full bounds.
+    const maxMajor = Math.max(0, ...groupIds.map((g) => bounds[g]?.major ?? 0)) + 100;
+    for (const [index, g] of groupIds.entries()) {
+      const bound = bounds[g];
+      if (bound === undefined) continue;
+      const block = Math.floor(index / 5);
+      if (index % 5 === 0) crossCursor = 80;
+      const cross = Math.max(crossCursor, desired(g) - bound.cross / 2);
+      crossCenter.set(g, cross + bound.cross / 2);
+      crossCursor = cross + bound.cross + 100;
+      let cursor = majorCursor + block * maxMajor;
+      for (const id of groups[g] ?? []) {
+        positions[id] = horizontal ? { x: cursor, y: cross } : { x: cross, y: cursor };
+        cursor += dimension(id).major + 80;
       }
+      layerMajor = Math.max(layerMajor, block * maxMajor + bound.major);
     }
-  }
-  // Columns in layer order; unreached nodes share layer 0 in definition order.
-  const layers = new Map<number, string[]>();
-  nodes.forEach((n, i) => {
-    const l = layer.get(n.id) ?? 0;
-    void i;
-    const list = layers.get(l) ?? [];
-    list.push(n.id);
-    layers.set(l, list);
-  });
-  for (const list of layers.values()) {
-    list.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
-  }
-  const sortedLayers = [...layers.keys()].sort((a, b) => a - b);
-  // Barycenter sweeps: order each column by neighbor positions to untangle
-  // edges. Two rounds (forward + backward) is plenty for our graph sizes.
-  const positionIn = (list: string[], id: string): number => list.indexOf(id);
-  for (let round = 0; round < 2; round += 1) {
-    for (const l of sortedLayers) {
-      const list = layers.get(l) ?? [];
-      const prev = layers.get(l - 1) ?? [];
-      if (prev.length === 0) continue;
-      list.sort((a, b) => {
-        const mean = (id: string): number => {
-          const preds = (predecessors.get(id) ?? []).filter((p) => prev.includes(p));
-          if (preds.length === 0) return order.get(id) ?? 0;
-          return preds.reduce((s, p) => s + positionIn(prev, p), 0) / preds.length;
-        };
-        return mean(a) - mean(b) || (order.get(a) ?? 0) - (order.get(b) ?? 0);
-      });
-    }
-    for (let i = sortedLayers.length - 1; i >= 0; i -= 1) {
-      const l = sortedLayers[i] as number;
-      const list = layers.get(l) ?? [];
-      const next = layers.get(l + 1) ?? [];
-      if (next.length === 0) continue;
-      list.sort((a, b) => {
-        const mean = (id: string): number => {
-          const succs = (successors.get(id) ?? []).filter((s) => next.includes(s));
-          if (succs.length === 0) return order.get(id) ?? 0;
-          return succs.reduce((s, q) => s + positionIn(next, q), 0) / succs.length;
-        };
-        return mean(a) - mean(b) || (order.get(a) ?? 0) - (order.get(b) ?? 0);
-      });
-    }
-  }
-  // Emit coordinates, wrapping tall columns into a compact grid.
-  const positions: Record<string, { x: number; y: number }> = {};
-  let xCursor = X0;
-  for (const l of sortedLayers) {
-    const list = layers.get(l) ?? [];
-    for (let c = 0; c < list.length; c += MAX_ROWS) {
-      const chunk = list.slice(c, c + MAX_ROWS);
-      chunk.forEach((id, i) => {
-        positions[id] = { x: xCursor + (c / MAX_ROWS) * X_GAP, y: Y0 + i * Y_GAP };
-      });
-    }
-    xCursor += Math.max(1, Math.ceil(list.length / MAX_ROWS)) * X_GAP;
+    majorCursor += layerMajor + 100;
   }
   return positions;
 }

@@ -317,6 +317,7 @@ describe('auto arrange', () => {
         { source: 'b', target: 'd' },
         { source: 'c', target: 'd' },
       ],
+      { direction: 'horizontal' },
     );
     expect(positions['a']?.x).toBeLessThan(positions['b']?.x ?? 0);
     expect(positions['b']?.x).toBe(positions['c']?.x);
@@ -326,7 +327,7 @@ describe('auto arrange', () => {
 
   it('wraps tall columns into a compact grid', () => {
     const nodes = Array.from({ length: 7 }, (_, i) => ({ id: `n${String(i)}` }));
-    const positions = arrangeWorkflowPositions(nodes, []);
+    const positions = arrangeWorkflowPositions(nodes, [], { direction: 'horizontal' });
     const xs = new Set(Object.values(positions).map((p) => p.x));
     // 7 unconnected nodes: 5 in the first column, 2 wrapped into a second.
     expect(xs.size).toBe(2);
@@ -367,5 +368,45 @@ describe('auto arrange', () => {
     expect(values).toHaveLength(3);
     const keys = values.map((p) => `${String(p.x)},${String(p.y)}`);
     expect(new Set(keys).size).toBe(3);
+  });
+});
+
+describe('dependency layout', () => {
+  it('arranges a long chain vertically and permits horizontal layout', () => {
+    const nodes = Array.from({ length: 26 }, (_, i) => ({ id: `n${String(i)}` }));
+    const edges = nodes
+      .slice(1)
+      .map((n, i) => ({ source: nodes[i]?.id ?? '', target: n.id }));
+    const vertical = arrangeWorkflowPositions(nodes, edges);
+    expect(vertical['n25']?.y).toBeGreaterThan(vertical['n0']?.y ?? 0);
+    expect(vertical['n25']?.x).toBe(vertical['n0']?.x);
+    const horizontal = arrangeWorkflowPositions(nodes, edges, {
+      direction: 'horizontal',
+    });
+    expect(horizontal['n25']?.x).toBeGreaterThan(horizontal['n0']?.x ?? 0);
+    expect(horizontal['n25']?.y).toBe(horizontal['n0']?.y);
+  });
+  it('separates large cyclic components, branches and islands deterministically', () => {
+    const nodes = ['start', 'a', 'b', 'merge', 'island'].map((id) => ({ id }));
+    const edges = [
+      { source: 'start', target: 'a' },
+      { source: 'start', target: 'b' },
+      { source: 'a', target: 'b' },
+      { source: 'b', target: 'a' },
+      { source: 'b', target: 'merge' },
+      { source: 'missing', target: 'merge' },
+    ];
+    const sizes = Object.fromEntries(
+      nodes.map((n) => [n.id, { width: 400, height: 300 }]),
+    );
+    const positions = arrangeWorkflowPositions(nodes, edges, { sizes });
+    expect(arrangeWorkflowPositions(nodes, edges, { sizes })).toEqual(positions);
+    for (const [i, a] of nodes.entries())
+      for (const b of nodes.slice(i + 1)) {
+        const pa = positions[a.id]!;
+        const pb = positions[b.id]!;
+        expect(Math.abs(pa.x - pb.x) >= 400 || Math.abs(pa.y - pb.y) >= 300).toBe(true);
+      }
+    expect(positions['merge']?.y).toBeGreaterThan(positions['b']?.y ?? 0);
   });
 });

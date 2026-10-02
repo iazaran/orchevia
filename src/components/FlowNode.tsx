@@ -3,6 +3,7 @@ import { Handle, Position as FlowPosition, type NodeProps } from '@xyflow/react'
 import { NODE_KIND_META, type NodeKind } from '../lib/workflow';
 
 export interface CanvasNodeData extends Record<string, unknown> {
+  direction?: 'vertical' | 'horizontal';
   label: string;
   kind: NodeKind;
   detail?: string | undefined;
@@ -34,7 +35,10 @@ function FlowNode({ data }: NodeProps): React.JSX.Element {
       className={`orchevia-node${node.selected ? ' selected' : ''}${node.runStatus !== undefined ? ` run-${node.runStatus}` : ''}${node.issueSeverity !== undefined ? ` issue-${node.issueSeverity}` : ''}`}
       style={{ ['--node-accent' as string]: meta.accent }}
     >
-      <Handle type="target" position={FlowPosition.Top} />
+      <Handle
+        type="target"
+        position={node.direction === 'horizontal' ? FlowPosition.Left : FlowPosition.Top}
+      />
       <div className="orchevia-node-kind">
         <span className="node-kind-icon" aria-hidden="true">
           {KIND_ICONS[node.kind]}
@@ -50,7 +54,12 @@ function FlowNode({ data }: NodeProps): React.JSX.Element {
           {node.detail}
         </div>
       )}
-      <Handle type="source" position={FlowPosition.Bottom} />
+      <Handle
+        type="source"
+        position={
+          node.direction === 'horizontal' ? FlowPosition.Right : FlowPosition.Bottom
+        }
+      />
     </div>
   );
 }
