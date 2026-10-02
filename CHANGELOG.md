@@ -31,8 +31,11 @@ All notable changes are recorded here, following
 
 - Open the exact immutable run graph from Inbox or Runs, with read-only result
   inspection and guarded navigation; read notifications leave the unread view.
-- Remap references when cloning templates, preserve Command argument boundaries
-  during interpolation, and reject blank required inputs before execution.
+- Remap spaced references when cloning templates while preserving MCP and condition
+  literals, reject malformed editor values, preserve Command argument boundaries
+  during interpolation, and reject effective blank required inputs before execution.
+- Keep cancelled run navigation unread and preserve working directories and JSON
+  edit observations in project-memory suggestions.
 - Synchronize canvas nodes after external JSON edits and preserve existing
   reviewer selections ahead of role defaults.
 

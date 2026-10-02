@@ -39,3 +39,14 @@ Browser QA at 1920 × 1080 used the local mock backend: a 26-node JSON graph, ve
 
 - Allocate unique IDs for every template instantiation using existing helpers. Cost if wrong: clone identity changes; repeat-use and reference tests cover it.
 - Pin installer documentation tests to verified published v0.1.5 while checking source v0.1.6 separately. Cost if wrong: advance the installer test pin when release assets are verified.
+
+## Independent review fixes
+
+The fresh reviewer identified seven Important findings and one Minor. The JSON-save learning gap was regraded Important because JSON editing is a primary approved workflow. All eight enter one fix pass, with regressions observed failing before implementation: effective required-command overrides; whitespace and opaque MCP references; malformed browser shapes; legacy kind normalization; cancelled same-run navigation; working-directory observations; and JSON-save observations. Native shape tests pin browser/core expectations. A further runtime-contract test preserves condition right operands as literals.
+
+- Keep Windows canonical-path handling outside this release because Windows is unsupported. Cost if wrong: a future Windows port needs extended-path normalization before playbooks work.
+- Preserve condition right operands as literals, following the existing evaluator rather than the review suggestion to rewrite both sides. Cost if wrong: future right-side variable support requires an explicit converter update.
+
+After the fix pass all gates passed: 150 frontend tests, 15 delivery tests and 276 core tests, Clippy with warnings denied, Rust formatting, desktop compilation, production build, version parity and whitespace checks. An initial core pass hit a temporary gh fixture Text file busy failure; its focused tests and the complete rerun passed without rule changes.
+
+No deferred minor findings remain. Live AI/native GUI and packaging limits remain as stated above.
