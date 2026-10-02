@@ -383,4 +383,10 @@ it('mock rejects blank required project commands before creating a run', async (
     /required/,
   );
   expect(await backend.listRuns()).toEqual([]);
+  workflow.inputs[0]!.default = 'printf REAL_TEST';
+  await backend.saveWorkflow(workflow);
+  await expect(backend.runWorkflow(workflow.id, { testCommand: '  ' })).rejects.toThrow(
+    /required/,
+  );
+  expect(await backend.listRuns()).toEqual([]);
 });

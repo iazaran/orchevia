@@ -293,12 +293,20 @@ impl Engine {
         run_id: &str,
         inputs: &HashMap<String, String>,
     ) -> Result<(), EngineError> {
+        // Merge defaults under caller-supplied values.
+        let mut merged: HashMap<String, String> = workflow
+            .inputs
+            .iter()
+            .filter_map(|i| i.default.clone().map(|d| (i.name.clone(), d)))
+            .collect();
+        for (key, value) in inputs {
+            merged.insert(key.clone(), value.clone());
+        }
         let mut issues = validate_workflow(workflow);
-        // Required inputs without defaults must be supplied.
+        // Required inputs validate the effective value after caller overrides.
         for input in &workflow.inputs {
             if input.required
-                && input.default.as_deref().unwrap_or("").trim().is_empty()
-                && inputs
+                && merged
                     .get(&input.name)
                     .map(|s| s.trim().is_empty())
                     .unwrap_or(true)
@@ -425,15 +433,6 @@ impl Engine {
                 .map(|i| i.message)
                 .collect();
             return Err(EngineError::Validation(msgs.join("; ")));
-        }
-        // Merge defaults under caller-supplied values.
-        let mut merged: HashMap<String, String> = workflow
-            .inputs
-            .iter()
-            .filter_map(|i| i.default.clone().map(|d| (i.name.clone(), d)))
-            .collect();
-        for (key, value) in inputs {
-            merged.insert(key.clone(), value.clone());
         }
         self.db
             .create_run_with_workflow(run_id, workflow, &merged)?;
@@ -3982,6 +3981,42 @@ mod tests {
         let result = results.iter().find(|r| r.node_id == "tests").unwrap();
         assert_eq!(result.status, "succeeded", "{result:?}");
         assert_eq!(result.stdout, "one two three");
+    }
+
+    #[test]
+    fn required_command_validates_effective_override_before_persisting() {
+        let (db, engine) = harness();
+        let mut wf = vertical_slice();
+        wf.inputs.push(WorkflowInput {
+            name: "testCommand".into(),
+            label: None,
+            default: Some("printf REAL_TEST".into()),
+            required: true,
+        });
+        db.upsert_workflow(&wf).unwrap();
+        for (i, value) in ["", "  "].iter().enumerate() {
+            let id = format!("blank-override-{i}");
+            assert!(engine
+                .start_run(
+                    &wf,
+                    &id,
+                    &HashMap::from([("testCommand".into(), value.to_string())])
+                )
+                .is_err());
+            assert!(db.get_run(&id).unwrap().is_none());
+        }
+        engine
+            .start_run(&wf, "default-command", &empty_inputs())
+            .unwrap();
+        assert_eq!(
+            db.get_run("default-command")
+                .unwrap()
+                .unwrap()
+                .inputs
+                .get("testCommand")
+                .map(String::as_str),
+            Some("printf REAL_TEST")
+        );
     }
 
     #[test]
