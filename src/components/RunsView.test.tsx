@@ -5,8 +5,35 @@ import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
 import { RunsView } from './RunsView';
 
+const originalShowRunOverlay = useAppStore.getState().showRunOverlay;
+
 afterEach(() => {
+  useAppStore.setState({ showRunOverlay: originalShowRunOverlay });
   vi.restoreAllMocks();
+});
+
+it('opens finished runs on the canvas through exact snapshot navigation', async () => {
+  __setMockBackendForTests();
+  const showRunOverlay = vi.fn().mockResolvedValue(undefined);
+  useAppStore.setState({
+    runs: [
+      {
+        id: 'finished-run',
+        workflowId: 'wf',
+        status: 'succeeded',
+        startedAt: new Date().toISOString(),
+      },
+    ],
+    activeRunId: 'finished-run',
+    runResults: { 'finished-run': [] },
+    workflows: [],
+    profiles: [],
+    showRunOverlay,
+  });
+  render(<RunsView />);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Show on canvas' }));
+  expect(showRunOverlay).toHaveBeenCalledWith('finished-run');
+  expect(screen.queryByRole('button', { name: 'Cancel run' })).toBeNull();
 });
 
 it('disables duplicate decisions and displays approval failures', async () => {

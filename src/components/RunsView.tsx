@@ -442,8 +442,8 @@ export function RunsView(): React.JSX.Element {
                 <p className="field-hint">
                   {activeRun.id} · started {formatTime(activeRun.startedAt)}
                 </p>
-                {(activeRun.status === 'running' || activeRun.status === 'paused') && (
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  {(activeRun.status === 'running' || activeRun.status === 'paused') && (
                     <button
                       className="btn"
                       disabled={
@@ -455,42 +455,42 @@ export function RunsView(): React.JSX.Element {
                     >
                       Cancel run
                     </button>
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        void showRunOverlay(activeRun.id).catch((err: unknown) =>
-                          setActionError(errorMessage(err)),
-                        );
-                      }}
-                    >
-                      Show on canvas
-                    </button>
-                    {activeRun.status === 'paused' && (
-                      <>
-                        <button
-                          className="btn btn-primary"
-                          disabled={
-                            pendingApproval === undefined ||
-                            pendingRuns.includes(`decision:${activeRun.id}`)
-                          }
-                          onClick={() => void approve(activeRun.id, true)}
-                        >
-                          Approve & continue
-                        </button>
-                        <button
-                          className="btn btn-danger"
-                          disabled={
-                            pendingApproval === undefined ||
-                            pendingRuns.includes(`decision:${activeRun.id}`)
-                          }
-                          onClick={() => void approve(activeRun.id, false)}
-                        >
-                          Reject
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
+                  )}
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      void showRunOverlay(activeRun.id).catch((err: unknown) =>
+                        setActionError(errorMessage(err)),
+                      );
+                    }}
+                  >
+                    Show on canvas
+                  </button>
+                  {activeRun.status === 'paused' && (
+                    <>
+                      <button
+                        className="btn btn-primary"
+                        disabled={
+                          pendingApproval === undefined ||
+                          pendingRuns.includes(`decision:${activeRun.id}`)
+                        }
+                        onClick={() => void approve(activeRun.id, true)}
+                      >
+                        Approve & continue
+                      </button>
+                      <button
+                        className="btn btn-danger"
+                        disabled={
+                          pendingApproval === undefined ||
+                          pendingRuns.includes(`decision:${activeRun.id}`)
+                        }
+                        onClick={() => void approve(activeRun.id, false)}
+                      >
+                        Reject
+                      </button>
+                    </>
+                  )}
+                </div>
                 {activeRun.status === 'paused' && (
                   <div className="field" style={{ maxWidth: 560 }}>
                     <label className="field-label" htmlFor="approve-note">

@@ -1,6 +1,6 @@
 import definitions from './builtin-templates.json';
 import type { InstantiationPreview, WorkflowTemplate } from './generation';
-import { validateWorkflowLocal } from './workflow';
+import { newId, validateWorkflowLocal } from './workflow';
 import { remapConfigReferences } from './workflow-document';
 
 /** The core constructors are authoritative; a Rust test pins this browser data. */
@@ -43,14 +43,14 @@ export function instantiateTemplateLocal(
     throw new Error(
       `Template needs role mappings for: ${[...missing].sort().join(', ')}.`,
     );
-  const ids = Object.fromEntries(workflow.nodes.map((n) => [n.id, n.id + '-inst']));
+  const ids = Object.fromEntries(workflow.nodes.map((n) => [n.id, newId('node')]));
   for (const node of workflow.nodes) {
     node.config = remapConfigReferences(node.config, ids);
     node.id = ids[node.id] ?? node.id;
   }
-  workflow.id += '-inst';
+  workflow.id = newId('wf');
   for (const edge of workflow.edges) {
-    edge.id += '-inst';
+    edge.id = newId('edge');
     edge.source = ids[edge.source] ?? edge.source;
     edge.target = ids[edge.target] ?? edge.target;
   }

@@ -3,6 +3,21 @@ import { builtinTemplates, instantiateTemplateLocal } from './templates';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
 
+it('creates independent workflow clones on repeated template use', () => {
+  const template = builtinTemplates()[0];
+  if (!template) throw new Error('fixture');
+  const roles = {
+    planning: 'plan',
+    implementation: 'impl',
+    fastReview: 'fast',
+    deepReview: 'deep',
+  };
+  const first = instantiateTemplateLocal(template, roles).workflow;
+  const second = instantiateTemplateLocal(template, roles).workflow;
+  expect(first.id).not.toBe(second.id);
+  expect(first.nodes.map((n) => n.id)).not.toEqual(second.nodes.map((n) => n.id));
+});
+
 it('mirrors nine portable templates, required commands and role setup', () => {
   const templates = builtinTemplates();
   expect(templates).toHaveLength(9);

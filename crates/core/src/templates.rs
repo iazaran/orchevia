@@ -131,14 +131,14 @@ pub struct Instantiated {
 fn remap_ids(workflow: &mut Workflow) -> Result<(), String> {
     let mut id_map: HashMap<String, String> = HashMap::new();
     for node in workflow.nodes.iter_mut() {
-        let fresh = format!("{}-inst", node.id);
+        let fresh = format!("node-{}", uuid::Uuid::new_v4().simple());
         id_map.insert(node.id.clone(), fresh.clone());
         node.id = fresh;
     }
     for node in &mut workflow.nodes {
         crate::workflow_document::remap_config_references(&mut node.config, &id_map)?;
     }
-    workflow.id = format!("{}-inst", workflow.id);
+    workflow.id = format!("wf-{}", uuid::Uuid::new_v4().simple());
     for edge in workflow.edges.iter_mut() {
         if let Some(fresh) = id_map.get(&edge.source) {
             edge.source = fresh.clone();
@@ -146,7 +146,7 @@ fn remap_ids(workflow: &mut Workflow) -> Result<(), String> {
         if let Some(fresh) = id_map.get(&edge.target) {
             edge.target = fresh.clone();
         }
-        edge.id = format!("{}-inst", edge.id);
+        edge.id = format!("edge-{}", uuid::Uuid::new_v4().simple());
     }
     Ok(())
 }
@@ -1102,18 +1102,28 @@ mod tests {
     }
 
     #[test]
+    fn repeated_instantiation_creates_independent_clones() {
+        let template = builtin_templates().remove(0);
+        let first = instantiate(&template, &roles(), true).unwrap().workflow;
+        let second = instantiate(&template, &roles(), true).unwrap().workflow;
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.nodes[0].id, second.nodes[0].id);
+    }
+
+    #[test]
     fn instantiated_references_follow_new_ids() {
         let mut t = builtin_templates().remove(0);
         t.workflow.nodes[1].config.prompt = Some("Read {{node.start.output}}".into());
         t.workflow.nodes[1].config.input_refs = vec!["start".into()];
         let cloned = instantiate(&t, &roles(), true).unwrap();
+        let start_id = &cloned.workflow.nodes[0].id;
         assert_eq!(
-            cloned.workflow.nodes[1].config.prompt.as_deref(),
-            Some("Read {{node.start-inst.output}}")
+            cloned.workflow.nodes[1].config.prompt,
+            Some(format!("Read {{{{node.{start_id}.output}}}}"))
         );
         assert_eq!(
             cloned.workflow.nodes[1].config.input_refs,
-            vec!["start-inst"]
+            vec![start_id.clone()]
         );
     }
 
