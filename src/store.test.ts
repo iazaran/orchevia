@@ -3,6 +3,30 @@ import { __setMockBackendForTests } from './lib/backend';
 import { createEmptyWorkflow } from './lib/workflow';
 import { useAppStore } from './store';
 afterEach(() => vi.restoreAllMocks());
+
+it('reports cancelled same-run navigation even when its previous overlay remains', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Cancelled');
+  await backend.saveWorkflow(wf);
+  const { runId } = await backend.runWorkflow(wf.id);
+  await useAppStore.getState().openRunOnCanvas(runId);
+  const getRun = backend.getRun.bind(backend);
+  let release: () => void = () => {};
+  vi.spyOn(backend, 'getRun').mockImplementation(
+    (id) =>
+      new Promise((resolve) => {
+        release = () => {
+          void getRun(id).then(resolve);
+        };
+      }),
+  );
+  const request = useAppStore.getState().openRunOnCanvas(runId);
+  useAppStore.getState().setView('automations');
+  release();
+  expect(await request).toBe(false);
+  expect(useAppStore.getState().view).toBe('automations');
+  expect(useAppStore.getState().overlayRunId).toBe(runId);
+});
 it('opens the immutable snapshot and rejects missing runs without replacing it', async () => {
   const backend = __setMockBackendForTests();
   const wf = createEmptyWorkflow('Original');

@@ -12,6 +12,32 @@ import { createDefaultProfile } from './agents';
 import { createEmptyWorkflow } from './workflow';
 import type { Preference } from './generation';
 
+it('preserves node directory overrides in observed project commands', () => {
+  const previous = createEmptyWorkflow('Directories');
+  previous.defaults = { repoDir: '/repo' };
+  previous.nodes.push({
+    id: 'tests',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 0 },
+    config: { executable: 'npm', args: ['run', 'old'], workingDir: '/repo/frontend' },
+  });
+  const current = structuredClone(previous);
+  current.nodes.at(-1)!.config.args = ['test'];
+  expect(commandEdits(previous, current, 'repo:/repo')).toEqual([
+    {
+      scope: 'repo:/repo',
+      field: 'testCommand',
+      from: "cd '/repo/frontend' && npm run old",
+      to: "cd '/repo/frontend' && npm test",
+    },
+  ]);
+  current.nodes.at(-1)!.config.workingDir = '/external/repo';
+  expect(commandEdits(previous, current, 'repo:/repo')[0]?.to).toBe(
+    "cd '/external/repo' && npm test",
+  );
+});
+
 it('normalizes browser scope and shares the core namespace vector', () => {
   expect(projectScope('/projects/./alpha/')).toBe('repo:/projects/alpha');
   expect(projectKey('repo:/projects/alpha', 'testCommand')).toBe(

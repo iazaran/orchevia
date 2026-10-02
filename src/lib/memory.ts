@@ -199,13 +199,20 @@ export function observeEdit(
         note: `Suggested after ${String(count)} saved edits to ${observation.field}. Previous value: ${Array.from(observation.from).slice(0, 80).join('')}.`,
       };
 }
-function commandText(node: WorkflowNode): string {
+function commandText(node: WorkflowNode, repoDir?: string): string {
   const args = node.config.args ?? [];
-  if (node.config.executable === 'sh' && args.length === 2 && args[0] === '-c')
-    return args[1] ?? '';
   const quote = (s: string): string =>
     /^[A-Za-z0-9_./:-]+$/.test(s) ? s : "'" + s.replaceAll("'", "'\"'\"'") + "'";
-  return [node.config.executable ?? '', ...args].map(quote).join(' ');
+  const command =
+    node.config.executable === 'sh' && args.length === 2 && args[0] === '-c'
+      ? (args[1] ?? '')
+      : [node.config.executable ?? '', ...args].map(quote).join(' ');
+  const directory = node.config.workingDir?.trim();
+  if (directory && repoDir?.trim() && directory !== repoDir.trim()) {
+    const quoted = "'" + directory.replaceAll("'", "'\"'\"'") + "'";
+    return `cd ${quoted} && ${command}`;
+  }
+  return command;
 }
 export function successfulCommand(
   workflow: Workflow,
@@ -229,17 +236,10 @@ export function successfulCommand(
       throw new Error('Cannot promote a command with unresolved run variables.');
     return rendered.rendered;
   });
-  const command = commandText({ ...node, config: { ...node.config, args } });
-  const directory = node.config.workingDir?.trim();
-  if (
-    directory &&
-    workflow.defaults?.repoDir &&
-    directory !== workflow.defaults.repoDir
-  ) {
-    const quoted = "'" + directory.replaceAll("'", "'\"'\"'") + "'";
-    return `cd ${quoted} && ${command}`;
-  }
-  return command;
+  return commandText(
+    { ...node, config: { ...node.config, args } },
+    workflow.defaults?.repoDir,
+  );
 }
 export function commandEdits(
   previous: Workflow,
@@ -259,8 +259,8 @@ export function commandEdits(
           ? 'buildCommand'
           : null;
     if (!field) return [];
-    const from = commandText(old),
-      to = commandText(node);
+    const from = commandText(old, previous.defaults?.repoDir),
+      to = commandText(node, current.defaults?.repoDir);
     if (from === to || !to.trim()) return [];
     return [{ scope, field, from, to }];
   });

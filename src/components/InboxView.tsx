@@ -96,8 +96,7 @@ export function InboxView(): React.JSX.Element {
                   const runId = n.runId;
                   if (runId === undefined) return;
                   void act(async () => {
-                    await openRun(runId);
-                    if (useAppStore.getState().overlayRunId === runId)
+                    if (await openRun(runId))
                       await getBackend().markNotificationRead(n.id);
                   });
                 }}

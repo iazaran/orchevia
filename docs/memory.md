@@ -107,3 +107,8 @@ instructions win; commands require repository verification and ordinary preview
 and Run approval. Browser preview persists templates, preferences and observation
 counts using guarded storage. Browser paths normalize syntactically; desktop
 paths resolve filesystem aliases through canonicalization.
+
+JSON and inspector saves share the command-observation path. A node-specific
+working directory is preserved as an explicit `cd` prefix in suggested command
+text, so accepting a command learned in a repository subdirectory keeps its
+execution context.

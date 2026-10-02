@@ -69,11 +69,11 @@ interface AppState {
   selectWorkflow: (id: string | null) => void;
   selectNode: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
-  openRunOnCanvas: (runId: string) => Promise<void>;
+  openRunOnCanvas: (runId: string) => Promise<boolean>;
   refreshRunOverlay: () => Promise<void>;
   showRunOverlay: (runId: string | null) => Promise<void>;
   updateActiveWorkflow: (workflow: Workflow) => void;
-  saveActiveWorkflow: () => Promise<void>;
+  saveActiveWorkflow: (definition?: Workflow) => Promise<StoredWorkflow | undefined>;
   setValidation: (issues: ValidationIssue[]) => void;
   selectRun: (id: string | null) => Promise<void>;
   setError: (message: string | null) => void;
@@ -267,7 +267,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     ]);
     if (run === null || workflow === null)
       throw new Error(`Unknown run '${runId}' or its saved workflow is unavailable.`);
-    if (request !== navigationSequence) return;
+    if (request !== navigationSequence) return false;
     set({
       view: 'workflows',
       activeRunId: runId,
@@ -280,6 +280,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       validation: [],
       runs: [run, ...get().runs.filter((r) => r.id !== run.id)],
     });
+    return true;
   },
   refreshRunOverlay: async () => {
     const { overlayRunId } = get();
@@ -308,17 +309,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  saveActiveWorkflow: async () => {
+  saveActiveWorkflow: async (definition) => {
     if (get().overlayRunId !== null) return;
     const { workflows, activeWorkflowId } = get();
     const active = workflows.find((w) => w.id === activeWorkflowId);
     if (active === undefined) return;
     const backend = getBackend();
-    const previous = await backend.getWorkflow(active.definition.id);
+    const workflow = definition ?? active.definition;
+    const previous = await backend.getWorkflow(workflow.id);
     const before = previous ? structuredClone(previous.definition) : null;
     const [stored, validation] = await Promise.all([
-      backend.saveWorkflow(active.definition),
-      backend.validateWorkflow(active.definition),
+      backend.saveWorkflow(workflow),
+      backend.validateWorkflow(workflow),
     ]);
     set({
       workflows: get().workflows.map((w) => (w.id === stored.id ? stored : w)),
@@ -340,6 +342,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         });
       }
     }
+    return stored;
   },
 
   setValidation: (validation) => {

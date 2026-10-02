@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { InboxView } from './InboxView';
 import { __setMockBackendForTests } from '../lib/backend';
@@ -14,6 +14,27 @@ const notification = {
   createdAt: new Date().toISOString(),
 };
 afterEach(() => vi.restoreAllMocks());
+
+it('does not mark read when a repeated navigation is cancelled with the same old overlay', async () => {
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ notifications: [notification], overlayRunId: 'run-1' });
+  let resolve: (committed: boolean) => void = () => {};
+  vi.spyOn(useAppStore.getState(), 'openRunOnCanvas').mockImplementation(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const mark = vi.spyOn(backend, 'markNotificationRead').mockResolvedValue(undefined);
+  render(<InboxView />);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Open run' }));
+  useAppStore.getState().setView('automations');
+  await act(async () => {
+    resolve(false);
+    await Promise.resolve();
+  });
+  expect(mark).not.toHaveBeenCalled();
+});
 it('shows unread items, retains history and hides successfully read items', async () => {
   const backend = __setMockBackendForTests();
   useAppStore.setState({

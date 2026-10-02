@@ -308,7 +308,11 @@ export function WorkflowsView(): React.JSX.Element {
           });
           if (!ok) return;
         }
-        const stored = await backend.saveWorkflow(parsed);
+        const stored = await saveActiveWorkflow(parsed);
+        if (!stored)
+          throw new Error(
+            'Workflow is no longer editable. Close JSON and select a saved workflow.',
+          );
         await refreshWorkflows();
         selectWorkflow(stored.id);
         setValidation(issues);
