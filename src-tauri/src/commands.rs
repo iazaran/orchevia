@@ -1189,24 +1189,15 @@ pub async fn generate_workflow(
             .take(120)
             .collect::<String>()
     };
-    let mut profile_context = roles
-        .iter()
-        .map(|role| {
-            let mapped = role_map
-                .get(role)
-                .and_then(|id| profiles.iter().find(|profile| &profile.id == id));
-            match mapped {
-                Some(profile) => format!(
-                    "- {role}: {} ({}, model {})",
-                    prompt_label(&profile.name),
-                    profile.adapter.as_str(),
-                    prompt_label(profile.model.as_deref().unwrap_or("CLI default"))
-                ),
-                None => format!("- {role}: no profile configured"),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let memory_scope = repo
+        .as_ref()
+        .map(|context| orchevia_core::memory::project_scope(&context.dir))
+        .transpose()?;
+    let preferences = state.db.list_preferences().map_err(|e| e.to_string())?;
+    let memory_context =
+        orchevia_core::memory::project_context(&preferences, memory_scope.as_deref());
+    let mut profile_context =
+        orchevia_core::generation::build_profile_context(&profiles, &role_map, &memory_context);
     // Probe configured MCP servers before drafting. Their actual tool names and
     // required argument keys prevent the generator from inventing Jira REST
     // credentials or an MCP method that the installed server does not expose.
@@ -1305,8 +1296,13 @@ pub async fn generate_workflow(
         repo_dir: Some(r.dir),
         branch: r.branch,
     });
-    match orchevia_core::generation::compile_proposal(&proposal, &role_map, &workflow_id, defaults)
-    {
+    match orchevia_core::generation::compile_proposal_with_profiles(
+        &proposal,
+        &role_map,
+        &workflow_id,
+        defaults,
+        &profiles,
+    ) {
         Ok(preview) => {
             let _ = state.db.record_generation(
                 &generation_id,

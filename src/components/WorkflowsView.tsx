@@ -1183,13 +1183,15 @@ export function WorkflowsView(): React.JSX.Element {
                   </summary>
                   <ol className="preview-steps">
                     {preview.workflow.nodes.map((n) => {
-                      const detail = describeGeneratedStep(n);
+                      const detail = describeGeneratedStep(n, profiles);
                       return (
                         <li key={n.id}>
                           <span className="status-pill status-paused">{n.type}</span>{' '}
                           {n.label ?? n.id}
                           {detail !== '' && (
-                            <span className="preview-step-detail">{detail}</span>
+                            <span className="preview-step-detail" title={detail}>
+                              {detail}
+                            </span>
                           )}
                         </li>
                       );

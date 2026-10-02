@@ -3,6 +3,7 @@
  * generation/templates/memory).
  */
 
+import type { AgentProfile } from './agents';
 import type { ValidationIssue, Workflow, WorkflowNode } from './workflow';
 
 export interface GenerationPreview {
@@ -150,7 +151,10 @@ export function isPendingSuggestion(p: Preference): boolean {
 }
 
 /** Describe the executable part of a proposed node for human preview. */
-export function describeGeneratedStep(node: WorkflowNode): string {
+export function describeGeneratedStep(
+  node: WorkflowNode,
+  profiles: Pick<AgentProfile, 'id' | 'name' | 'adapter' | 'model'>[] = [],
+): string {
   if (node.type === 'git') {
     const op = node.config.gitOp;
     if (op === undefined) return 'Operation missing';
@@ -177,7 +181,15 @@ export function describeGeneratedStep(node: WorkflowNode): string {
     }
     return op.op;
   }
-  if (node.type === 'agent') return 'Agent role: ' + (node.config.agentRole ?? 'missing');
+  if (node.type === 'agent') {
+    if (node.config.agentProfileId) {
+      const profile = profiles.find((p) => p.id === node.config.agentProfileId);
+      return profile
+        ? `Agent: ${profile.name} (${profile.adapter}, ${profile.model ?? 'CLI default'})`
+        : 'Agent Profile unavailable — check Agents.';
+    }
+    return 'Agent role: ' + (node.config.agentRole ?? 'missing');
+  }
   if (node.type === 'ticket') return 'Ticket: ' + (node.config.ticketKey ?? 'missing');
   if (node.type === 'mcp') {
     const args = Object.entries(node.config.mcpArgs ?? {})
@@ -189,7 +201,16 @@ export function describeGeneratedStep(node: WorkflowNode): string {
       (args.length > 0 ? ' · ' + args.join(' · ') : '')
     );
   }
-  if (node.type === 'command') return 'CLI: ' + (node.config.executable ?? 'missing');
+  if (node.type === 'command')
+    return (
+      'CLI: ' +
+      [
+        node.config.executable ?? 'missing',
+        ...(node.config.args ?? []).map((arg) =>
+          /\s|["']/.test(arg) || !arg ? JSON.stringify(arg) : arg,
+        ),
+      ].join(' ')
+    );
   if (node.type === 'approval') return 'Human approval';
   if (node.type === 'condition') return 'True / false decision';
   return '';
