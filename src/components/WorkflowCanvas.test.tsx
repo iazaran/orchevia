@@ -35,3 +35,18 @@ it('changes arrangement only after Arrange and preserves connections/config', as
   expect(changed.nodes.map((n) => n.config)).toEqual(wf.nodes.map((n) => n.config));
   expect(changed.nodes[1]?.position.x).toBeGreaterThan(changed.nodes[0]?.position.x ?? 0);
 });
+
+it('disables graph mutations while inspecting a run snapshot', () => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+  render(<WorkflowCanvas workflow={createEmptyWorkflow('Snapshot')} readOnly />);
+  expect(screen.getByRole('button', { name: '⤢ Arrange' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '+ CLI / Command' })).toBeDisabled();
+  expect(screen.getByLabelText('Arrange direction')).toBeDisabled();
+});

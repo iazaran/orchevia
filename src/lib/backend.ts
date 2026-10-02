@@ -75,6 +75,8 @@ export interface Backend {
     note?: string,
     expectedApprovalId?: number,
   ): Promise<void>;
+  getRun(runId: string): Promise<StoredRun | null>;
+  getRunWorkflow(runId: string): Promise<Workflow | null>;
   listRuns(limit?: number): Promise<StoredRun[]>;
   getRunResults(runId: string): Promise<StoredNodeResult[]>;
   deleteRun(runId: string): Promise<boolean>;
@@ -223,6 +225,12 @@ class TauriBackend implements Backend {
       note: note ?? null,
       expectedApprovalId: expectedApprovalId ?? null,
     });
+  }
+  getRun(runId: string): Promise<StoredRun | null> {
+    return this.invoke('get_run', { runId });
+  }
+  getRunWorkflow(runId: string): Promise<Workflow | null> {
+    return this.invoke('get_run_workflow', { runId });
   }
   listRuns(limit = 50): Promise<StoredRun[]> {
     return this.invoke('list_runs', { limit });
@@ -806,6 +814,18 @@ class MockBackend implements Backend {
     void this.simulate(workflow, runId);
   }
 
+  async getRun(runId: string): Promise<StoredRun | null> {
+    return structuredClone(this.runs.find((r) => r.id === runId) ?? null);
+  }
+  async getRunWorkflow(runId: string): Promise<Workflow | null> {
+    const run = this.runs.find((r) => r.id === runId);
+    if (run === undefined) return null;
+    return structuredClone(
+      this.runWorkflows.get(runId) ??
+        this.workflows.get(run.workflowId)?.definition ??
+        null,
+    );
+  }
   async listRuns(limit = 50): Promise<StoredRun[]> {
     return this.runs.slice(0, limit);
   }

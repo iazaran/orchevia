@@ -50,6 +50,7 @@ interface AppState {
   generations: StoredGeneration[];
   selectedEdgeId: string | null;
   overlayRunId: string | null;
+  overlayWorkflow: Workflow | null;
   overlayResults: StoredNodeResult[];
   loading: boolean;
   error: string | null;
@@ -67,6 +68,8 @@ interface AppState {
   selectWorkflow: (id: string | null) => void;
   selectNode: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
+  openRunOnCanvas: (runId: string) => Promise<void>;
+  refreshRunOverlay: () => Promise<void>;
   showRunOverlay: (runId: string | null) => Promise<void>;
   updateActiveWorkflow: (workflow: Workflow) => void;
   saveActiveWorkflow: () => Promise<void>;
@@ -75,6 +78,7 @@ interface AppState {
   setError: (message: string | null) => void;
 }
 
+let navigationSequence = 0;
 export const useAppStore = create<AppState>()((set, get) => ({
   view: 'workflows',
   workflows: [],
@@ -101,11 +105,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   generations: [],
   selectedEdgeId: null,
   overlayRunId: null,
+  overlayWorkflow: null,
   overlayResults: [],
   loading: false,
   error: null,
 
   setView: (view) => {
+    navigationSequence++;
     set({ view });
   },
 
@@ -230,7 +236,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   selectWorkflow: (id) => {
+    navigationSequence++;
     set({
+      overlayRunId: null,
+      overlayWorkflow: null,
+      overlayResults: [],
       activeWorkflowId: id,
       selectedNodeId: null,
       selectedEdgeId: null,
@@ -246,17 +256,47 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ selectedEdgeId: id, selectedNodeId: null });
   },
 
+  openRunOnCanvas: async (runId) => {
+    const request = ++navigationSequence;
+    const backend = getBackend();
+    const [run, workflow, results] = await Promise.all([
+      backend.getRun(runId),
+      backend.getRunWorkflow(runId),
+      backend.getRunResults(runId),
+    ]);
+    if (run === null || workflow === null)
+      throw new Error(`Unknown run '${runId}' or its saved workflow is unavailable.`);
+    if (request !== navigationSequence) return;
+    set({
+      view: 'workflows',
+      activeRunId: runId,
+      activeWorkflowId: run.workflowId,
+      overlayRunId: runId,
+      overlayWorkflow: workflow,
+      overlayResults: results,
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      validation: [],
+      runs: [run, ...get().runs.filter((r) => r.id !== run.id)],
+    });
+  },
+  refreshRunOverlay: async () => {
+    const { overlayRunId } = get();
+    if (overlayRunId === null) return;
+    const results = await getBackend().getRunResults(overlayRunId);
+    if (get().overlayRunId === overlayRunId) set({ overlayResults: results });
+  },
   showRunOverlay: async (runId) => {
     if (runId === null) {
-      set({ overlayRunId: null, overlayResults: [] });
+      navigationSequence++;
+      set({ overlayRunId: null, overlayWorkflow: null, overlayResults: [] });
       return;
     }
-    const backend = getBackend();
-    const results = await backend.getRunResults(runId);
-    set({ overlayRunId: runId, overlayResults: results });
+    await get().openRunOnCanvas(runId);
   },
 
   updateActiveWorkflow: (workflow) => {
+    if (get().overlayRunId !== null) return;
     const { workflows, activeWorkflowId } = get();
     set({
       workflows: workflows.map((w) =>
@@ -268,6 +308,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   saveActiveWorkflow: async () => {
+    if (get().overlayRunId !== null) return;
     const { workflows, activeWorkflowId } = get();
     const active = workflows.find((w) => w.id === activeWorkflowId);
     if (active === undefined) return;

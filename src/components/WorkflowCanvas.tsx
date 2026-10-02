@@ -143,7 +143,13 @@ const ADDABLE: NodeKind[] = [
   'approval',
 ];
 
-export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.Element {
+export function WorkflowCanvas({
+  workflow,
+  readOnly = false,
+}: {
+  workflow: Workflow;
+  readOnly?: boolean;
+}): React.JSX.Element {
   const [layoutDirection, setLayoutDirection] = useState<'vertical' | 'horizontal'>(
     'vertical',
   );
@@ -241,6 +247,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
 
   const onConnect = useCallback(
     (connection: Connection) => {
+      if (readOnly) return;
       const source = connection.source;
       const target = connection.target;
       if (source === '' || target === '') return;
@@ -280,7 +287,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
       updateActiveWorkflow(updated);
       revalidate(updated);
     },
-    [workflow, updateActiveWorkflow, setEdges, revalidate],
+    [workflow, updateActiveWorkflow, setEdges, revalidate, readOnly],
   );
 
   const defaultAgentProfile = useCallback((): string | null => {
@@ -446,7 +453,13 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
 
   return (
     <div className="canvas-wrap" ref={wrapRef}>
-      <div className="canvas-toolbar" role="toolbar" aria-label="Add nodes">
+      <fieldset
+        disabled={readOnly}
+        className="canvas-toolbar"
+        style={{ border: 0, margin: 0 }}
+        role="toolbar"
+        aria-label="Add nodes"
+      >
         {ADDABLE.map((kind) => (
           <button key={kind} className="tool-chip" onClick={() => void addNode(kind)}>
             + {NODE_KIND_META[kind].label}
@@ -486,15 +499,23 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           Drag from the bottom dot to connect · condition branches auto-label true/false ·
           click an edge to relabel · Del removes selection
         </span>
-      </div>
+      </fieldset>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onInit={(instance) => {
           flowInstance.current = instance;
         }}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
+        onNodesChange={(changes) =>
+          onNodesChange(
+            readOnly
+              ? changes.filter((c) => c.type === 'dimensions' || c.type === 'select')
+              : changes,
+          )
+        }
+        onEdgesChange={(changes) =>
+          onEdgesChange(readOnly ? changes.filter((c) => c.type === 'select') : changes)
+        }
         onConnect={onConnect}
         onNodeClick={(_, node) => {
           selectNode(node.id);
@@ -506,6 +527,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           selectNode(null);
         }}
         onNodesDelete={(deleted) => {
+          if (readOnly) return;
           const ids = new Set(deleted.map((d) => d.id));
           const updated: Workflow = {
             ...workflow,
@@ -517,6 +539,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           if (selectedNodeId !== null && ids.has(selectedNodeId)) selectNode(null);
         }}
         onEdgesDelete={(deleted) => {
+          if (readOnly) return;
           const ids = new Set(deleted.map((d) => d.id));
           const updated: Workflow = {
             ...workflow,
@@ -526,6 +549,7 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           revalidate(updated);
         }}
         onNodeDragStop={(_, node) => {
+          if (readOnly) return;
           updateActiveWorkflow({
             ...workflow,
             nodes: workflow.nodes.map((n) =>
@@ -536,7 +560,10 @@ export function WorkflowCanvas({ workflow }: { workflow: Workflow }): React.JSX.
           });
         }}
         nodeTypes={nodeTypes}
-        deleteKeyCode={['Backspace', 'Delete']}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        edgesReconnectable={!readOnly}
+        deleteKeyCode={readOnly ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ interactionWidth: 32 }}
         connectionRadius={32}
         fitView={workflow.nodes.length <= 10}

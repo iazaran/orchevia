@@ -192,6 +192,8 @@ fn main() {
             commands::approve_run,
             commands::cancel_run,
             commands::list_runs,
+            commands::get_run,
+            commands::get_run_workflow,
             commands::get_run_results,
             commands::delete_run,
             commands::clear_finished_runs,

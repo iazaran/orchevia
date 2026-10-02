@@ -166,7 +166,6 @@ export function RunsView(): React.JSX.Element {
     expandedOutputState.runId === activeRunId ? expandedOutputState.values : {};
   const [reportOpen, setReportOpen] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
-  const setView = useAppStore((s) => s.setView);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
   const [findingsState, setFindingsState] = useState<{
     runId: string;
@@ -393,9 +392,9 @@ export function RunsView(): React.JSX.Element {
                     <button
                       className="btn btn-ghost"
                       onClick={() => {
-                        void showRunOverlay(activeRun.id).then(() => {
-                          setView('workflows');
-                        });
+                        void showRunOverlay(activeRun.id).catch((err: unknown) =>
+                          setActionError(errorMessage(err)),
+                        );
                       }}
                     >
                       Show on canvas

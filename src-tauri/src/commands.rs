@@ -737,6 +737,21 @@ pub fn list_runs(state: State<AppState>, limit: Option<i64>) -> Result<Vec<Store
 }
 
 #[tauri::command]
+pub fn get_run(state: State<AppState>, run_id: String) -> Result<Option<StoredRun>, String> {
+    state.db.get_run(&run_id).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub fn get_run_workflow(
+    state: State<AppState>,
+    run_id: String,
+) -> Result<Option<Workflow>, String> {
+    state
+        .db
+        .get_run_workflow(&run_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_run_results(
     state: State<AppState>,
     run_id: String,

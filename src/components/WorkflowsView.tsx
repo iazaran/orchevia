@@ -75,10 +75,20 @@ export function WorkflowsView(): React.JSX.Element {
   const setValidation = useAppStore((s) => s.setValidation);
   const profiles = useAppStore((s) => s.profiles);
   const overlayRunId = useAppStore((s) => s.overlayRunId);
+  const overlayWorkflow = useAppStore((s) => s.overlayWorkflow);
+  const selectedNodeId = useAppStore((s) => s.selectedNodeId);
+  const refreshRunOverlay = useAppStore((s) => s.refreshRunOverlay);
   const overlayResults = useAppStore((s) => s.overlayResults);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
   const [showSamples, setShowSamples] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (overlayRunId === null) return;
+    const timer = setInterval(() => {
+      void refreshRunOverlay().catch((err: unknown) => setRunMessage(errorMessage(err)));
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [overlayRunId, refreshRunOverlay]);
   const [starting, setStarting] = useState(false);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
@@ -610,7 +620,11 @@ export function WorkflowsView(): React.JSX.Element {
         <span className="topbar-sub">
           Design, then run — execution is always explicit.
         </span>
-        <div className="topbar-actions">
+        <fieldset
+          className="topbar-actions"
+          style={{ border: 0, margin: 0, padding: 0 }}
+          disabled={overlayRunId !== null}
+        >
           <button className="btn" onClick={createWorkflow}>
             + New
           </button>
@@ -665,7 +679,7 @@ export function WorkflowsView(): React.JSX.Element {
           >
             Delete
           </button>
-        </div>
+        </fieldset>
       </div>
       {runMessage !== null && (
         <div style={{ padding: '12px 20px 0' }}>
@@ -768,14 +782,15 @@ export function WorkflowsView(): React.JSX.Element {
       {overlayRunId !== null && (
         <div style={{ padding: '12px 20px 0' }}>
           <Notice>
-            Showing run {overlayRunId} on canvas ({overlayResults.length} results).{' '}
+            Read-only snapshot of run {overlayRunId} on canvas ({overlayResults.length}{' '}
+            results).{' '}
             <button
               className="btn btn-ghost"
               onClick={() => {
                 void showRunOverlay(null);
               }}
             >
-              Clear overlay
+              Edit saved workflow
             </button>
           </Notice>
         </div>
@@ -1321,7 +1336,9 @@ export function WorkflowsView(): React.JSX.Element {
             </button>
           ))}
         </div>
-        {active !== null ? (
+        {overlayWorkflow !== null ? (
+          <WorkflowCanvas key={overlayRunId} workflow={overlayWorkflow} readOnly />
+        ) : active !== null ? (
           <WorkflowCanvas key={active.id} workflow={active.definition} />
         ) : (
           <div className="canvas-wrap">
@@ -1331,7 +1348,51 @@ export function WorkflowsView(): React.JSX.Element {
             </div>
           </div>
         )}
-        <NodeInspector />
+        {overlayWorkflow !== null ? (
+          <aside className="inspector">
+            <h2>Run node</h2>
+            <p className="field-hint">
+              Saved configuration and output; this view is read-only.
+            </p>
+            {selectedNodeId === null ? (
+              <p>Select a node to inspect its result.</p>
+            ) : (
+              <>
+                <h3>
+                  {overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)?.label ??
+                    selectedNodeId}
+                </h3>
+                <details>
+                  <summary>Configuration</summary>
+                  <pre className="log-block" style={{ maxHeight: 240, overflow: 'auto' }}>
+                    {JSON.stringify(
+                      overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)?.config,
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </details>
+                {overlayResults
+                  .filter((r) => r.nodeId === selectedNodeId)
+                  .map((r) => (
+                    <details key={r.id} open>
+                      <summary>{r.status}</summary>
+                      <pre
+                        className="log-block"
+                        style={{ maxHeight: 300, overflow: 'auto' }}
+                      >
+                        {r.stdout}
+                        {r.stderr}
+                        {r.error}
+                      </pre>
+                    </details>
+                  ))}
+              </>
+            )}
+          </aside>
+        ) : (
+          <NodeInspector />
+        )}
       </div>
       {jsonModal && active !== null && (
         <Modal

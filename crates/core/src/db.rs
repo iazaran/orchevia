@@ -1658,6 +1658,30 @@ mod tests {
     }
 
     #[test]
+    fn direct_run_lookup_retains_snapshot_beyond_recent_list() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let wf = sample_workflow("snapshots");
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run_with_workflow("original-run", &wf, &std::collections::HashMap::new())
+            .unwrap();
+        for i in 0..105 {
+            db.create_run_with_workflow(
+                &format!("recent-{i}"),
+                &wf,
+                &std::collections::HashMap::new(),
+            )
+            .unwrap();
+        }
+        let mut edited = wf.clone();
+        edited.name = "Edited later".into();
+        db.upsert_workflow(&edited).unwrap();
+        assert_eq!(db.list_runs(100).unwrap().len(), 100);
+        assert!(db.get_run("original-run").unwrap().is_some());
+        assert_eq!(db.get_run_workflow("original-run").unwrap(), Some(wf));
+        assert!(db.get_run("missing").unwrap().is_none());
+    }
+
+    #[test]
     fn workflow_crud_round_trip() {
         let db = SqliteDb::open_in_memory().expect("open");
         let wf = sample_workflow("wf-1");
