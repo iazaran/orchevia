@@ -1,6 +1,6 @@
 [package]
 name = "orchevia-core"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Orchevia core domain logic: workflow model, persistence, process execution, tool discovery (Tauri-free, fully testable)."
 license = "Apache-2.0"
