@@ -2,7 +2,7 @@
 
 mod commands;
 
-use commands::{AppState, EngineStarter};
+use commands::AppState;
 use orchevia_core::db::SqliteDb;
 use std::sync::Arc;
 use tauri::Manager;
@@ -96,17 +96,15 @@ fn main() {
                     let _ = db.upsert_workflow(&orchevia_core::workflow::sample_workflow());
                 }
             }
-            app.manage(AppState::new(Arc::clone(&db)));
+            let state = AppState::new(Arc::clone(&db));
+            // Manual controls and automation must address the same active runs.
+            let starter: Arc<dyn orchevia_core::scheduler::RunStarter> =
+                Arc::new(state.scheduler_starter());
+            app.manage(state);
 
             // Background scheduler: schedules + watchers, conservative poll.
             let scheduler_db = Arc::clone(&db);
             tauri::async_runtime::spawn(async move {
-                let cancel = orchevia_core::engine::CancellationRegistry::default();
-                let starter: Arc<dyn orchevia_core::scheduler::RunStarter> =
-                    Arc::new(EngineStarter {
-                        db: Arc::clone(&scheduler_db),
-                        cancel,
-                    });
                 let scheduler = orchevia_core::scheduler::Scheduler::new(scheduler_db);
                 loop {
                     // Interval re-read each pass so Settings apply live.

@@ -666,6 +666,27 @@ class MockBackend implements Backend {
   }
 
   private async simulate(workflow: Workflow, runId: string): Promise<void> {
+    // Static reachability includes every condition branch. Only disconnected
+    // nodes are skipped here; approval replay preserves their existing rows.
+    const reachable = new Set<string>();
+    const start = workflow.nodes.find((node) => node.type === 'start');
+    const pending = start ? [start.id] : [];
+    while (pending.length > 0) {
+      const id = pending.pop();
+      if (id === undefined || reachable.has(id)) continue;
+      reachable.add(id);
+      for (const edge of workflow.edges) {
+        if (edge.source === id) pending.push(edge.target);
+      }
+    }
+    for (const node of workflow.nodes) {
+      if (
+        !reachable.has(node.id) &&
+        !(this.results.get(runId) ?? []).some((row) => row.nodeId === node.id)
+      ) {
+        this.pushResult(runId, node.id, 'skipped', '');
+      }
+    }
     for (;;) {
       const run = this.runs.find((r) => r.id === runId);
       if (run === undefined || run.status !== 'running') return;

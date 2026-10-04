@@ -591,6 +591,14 @@ impl Engine {
         let rows = self.db.list_node_results(run_id)?;
         for row in rows.iter().filter(|r| is_terminal_status(&r.status)) {
             let outcome = outcome_of_status(&row.status);
+            // Replaying an upstream skip may already cascade into this node.
+            // Its durable row must not resolve the same outgoing join twice.
+            // Loop resets remove terminal marks, allowing later visits to replay.
+            if outcome == NodeOutcome::Skipped
+                && state.terminal.get(&row.node_id) == Some(&NodeOutcome::Skipped)
+            {
+                continue;
+            }
             if outcome == NodeOutcome::Succeeded || outcome == NodeOutcome::Failed {
                 *state.visits.entry(row.node_id.clone()).or_insert(0) += 1;
             }
@@ -613,6 +621,23 @@ impl Engine {
             if effect.run_failed.is_some() {
                 // History already failed; keep replaying for state fullness.
                 continue;
+            }
+        }
+
+        // Validation deliberately permits unreachable nodes as warnings.
+        // Give them durable skips, resolving their edges into reachable
+        // joins just like untaken branches. Replayed skips are already terminal
+        // and must not create duplicate rows on approval resumption.
+        if let Some(start) = workflow
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Start)
+        {
+            let reachable = reachable_from_graph(&graph, &start.id);
+            for node in &workflow.nodes {
+                if !reachable.contains(&node.id) {
+                    self.mark_skipped(&graph, &mut state, run_id, &node.id, true)?;
+                }
             }
         }
 
@@ -3141,6 +3166,124 @@ mod tests {
             .start_run(&wf, run_id, &empty_inputs())
             .expect("start");
         engine.execute(wf, run_id.to_string()).await;
+    }
+
+    #[tokio::test]
+    async fn unreachable_nodes_are_skipped_and_do_not_block_reachable_joins() {
+        let (db, engine) = harness();
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-orphans".into(),
+            name: "Unreachable branches".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                simple_node("end", NodeKind::End, 100.0),
+                command_node("orphan", "false", &[], 200.0),
+                command_node("orphan-child", "false", &[], 300.0),
+                command_node("isolated", "false", &[], 400.0),
+            ],
+            edges: vec![
+                edge("live", "start", "end", None),
+                edge("orphan-chain", "orphan", "orphan-child", None),
+                edge("orphan-join", "orphan-child", "end", None),
+            ],
+        };
+        assert!(validate_workflow(&wf)
+            .iter()
+            .any(|issue| issue.code == "unreachable-node"));
+        run_to_end(&db, &engine, wf, "run-orphans").await;
+        assert_eq!(
+            db.get_run("run-orphans")
+                .expect("run")
+                .expect("exists")
+                .status,
+            RunStatus::Succeeded
+        );
+        let results = db.list_node_results("run-orphans").expect("results");
+        for id in ["orphan", "orphan-child", "isolated"] {
+            let rows: Vec<_> = results.iter().filter(|row| row.node_id == id).collect();
+            assert_eq!(rows.len(), 1, "{id} should have one durable skip");
+            assert_eq!(rows[0].status, "skipped");
+        }
+    }
+
+    #[tokio::test]
+    async fn unreachable_nodes_have_one_skip_after_approval_resume() {
+        let (db, engine) = harness();
+        let mut wf = vertical_slice();
+        wf.nodes.push(command_node("orphan", "false", &[], 500.0));
+        run_to_end(&db, &engine, wf.clone(), "run-orphan-approval").await;
+        engine
+            .approve_run("run-orphan-approval", true, None, wf)
+            .await
+            .expect("approve");
+        assert_eq!(
+            db.get_run("run-orphan-approval")
+                .expect("run")
+                .expect("exists")
+                .status,
+            RunStatus::Succeeded
+        );
+        let results = db
+            .list_node_results("run-orphan-approval")
+            .expect("results");
+        let orphans: Vec<_> = results
+            .iter()
+            .filter(|row| row.node_id == "orphan")
+            .collect();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].status, "skipped");
+    }
+
+    #[tokio::test]
+    async fn approval_replay_resolves_each_unreachable_join_edge_once() {
+        let (db, engine) = harness();
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-orphan-replay-join".into(),
+            name: "Approval with an unreachable join".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                simple_node("gate", NodeKind::Approval, 100.0),
+                command_node("live", "echo", &["approved work"], 200.0),
+                simple_node("end", NodeKind::End, 300.0),
+                command_node("orphan", "false", &[], 400.0),
+                command_node("orphan-child", "false", &[], 500.0),
+            ],
+            edges: vec![
+                edge("start-gate", "start", "gate", None),
+                edge("gate-live", "gate", "live", None),
+                edge("live-end", "live", "end", None),
+                edge("orphan-chain", "orphan", "orphan-child", None),
+                edge("orphan-join", "orphan-child", "live", None),
+            ],
+        };
+        run_to_end(&db, &engine, wf.clone(), "run-orphan-replay-join").await;
+        assert_eq!(
+            db.get_run("run-orphan-replay-join")
+                .expect("run")
+                .expect("exists")
+                .status,
+            RunStatus::Paused
+        );
+        engine
+            .approve_run("run-orphan-replay-join", true, None, wf)
+            .await
+            .expect("approve");
+        let rows = db
+            .list_node_results("run-orphan-replay-join")
+            .expect("results");
+        let live: Vec<_> = rows.iter().filter(|row| row.node_id == "live").collect();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].status, "succeeded");
+        assert!(live[0].stdout.contains("approved work"));
+        for id in ["orphan", "orphan-child"] {
+            assert_eq!(rows.iter().filter(|row| row.node_id == id).count(), 1);
+        }
     }
 
     #[tokio::test]

@@ -93,12 +93,14 @@ pub fn status(root: &str) -> Result<GitStatus, String> {
     for line in porcelain.lines() {
         if let Some(tracking) = line.strip_prefix("## ") {
             // e.g. "## main...origin/main [ahead 1, behind 2]".
-            for chunk in tracking.split([',', ' ', '[', ']']) {
-                if let Some(n) = chunk.strip_prefix("ahead ") {
-                    ahead = n.trim().parse().unwrap_or(0);
-                }
-                if let Some(n) = chunk.strip_prefix("behind ") {
-                    behind = n.trim().parse().unwrap_or(0);
+            if let Some((_, counts)) = tracking.split_once('[') {
+                for chunk in counts.trim_end_matches(']').split(',').map(str::trim) {
+                    if let Some(n) = chunk.strip_prefix("ahead ") {
+                        ahead = n.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(n) = chunk.strip_prefix("behind ") {
+                        behind = n.trim().parse().unwrap_or(0);
+                    }
                 }
             }
             continue;
@@ -451,6 +453,34 @@ mod tests {
         assert!(state.clean);
         assert_eq!(state.branch, "main");
         assert!(state.changed_files.is_empty());
+    }
+
+    #[test]
+    fn status_reports_ahead_and_behind_for_a_diverged_tracking_branch() {
+        let Some(dir) = fresh_repo() else {
+            eprintln!("SKIP: git not installed");
+            return;
+        };
+        let root = dir.path().to_string_lossy().into_owned();
+        git(&root, &["branch", "upstream"], 10).expect("upstream branch");
+        git(&root, &["branch", "--set-upstream-to=upstream", "main"], 10).expect("set tracking");
+        assert_eq!(status(&root).expect("aligned").ahead, 0);
+        std::fs::write(dir.path().join("local.txt"), "local\n").expect("local write");
+        stage(&root, &["local.txt".into()]).expect("local stage");
+        commit_staged(&root, "local commit").expect("local commit");
+        assert_eq!(status(&root).expect("ahead").ahead, 1);
+        checkout(&root, "upstream", false).expect("checkout upstream");
+        std::fs::write(dir.path().join("remote.txt"), "remote\n").expect("remote write");
+        stage(&root, &["remote.txt".into()]).expect("remote stage");
+        commit_staged(&root, "upstream commit").expect("upstream commit");
+        checkout(&root, "main", false).expect("checkout main");
+        let porcelain =
+            git(&root, &["status", "--porcelain=v1", "--branch"], 15).expect("porcelain fixture");
+        assert!(porcelain.contains("[ahead 1, behind 1]"), "{porcelain}");
+        let state = status(&root).expect("diverged status");
+        assert_eq!(state.ahead, 1);
+        assert_eq!(state.behind, 1);
+        assert!(state.clean);
     }
 
     #[test]

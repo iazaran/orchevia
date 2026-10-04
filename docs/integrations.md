@@ -42,6 +42,14 @@ list PRs, PR details/files/checks/comments, create PR (draft supported), and
 post comment. Reviewer requests currently need an explicit Command node using
 `gh pr edit --add-reviewer`; they are not a native GitHub node operation. Tolerant `--json` parsing: unknown fields ignored.
 
+**PR checks:** use the installed CLI's supported `name`, `state`, and `bucket`
+fields. Pending and failed checks are returned as data, including when `gh`
+returns its pending/failed-check exit code. Authentication and network errors
+remain errors. The normalized result preserves check names and states, with an
+empty conclusion for pending checks and a lowercase terminal state otherwise.
+Reading checks does not wait for CI, enforce an approval gate, or merge the PR;
+route on the result explicitly when the workflow needs that decision.
+
 **PR creation safety:** title/base/head are required in node config; the run
 shows repository, branch/base, title, draft flag, and body preview in history.
 Nothing pushes or comments unless the workflow explicitly contains that node.

@@ -1,9 +1,55 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
 import { createEmptyWorkflow } from './workflow';
 
 describe('mock backend (browser dev)', () => {
+  it('records unreachable skips once, including after approval replay', async () => {
+    const backend = __setMockBackendForTests();
+    const workflow = createEmptyWorkflow('Unreachable nodes');
+    const start = workflow.nodes.find((node) => node.type === 'start');
+    const end = workflow.nodes.find((node) => node.type === 'end');
+    if (!start || !end) throw new Error('fixture');
+    workflow.nodes.push(
+      { id: 'gate', type: 'approval', position: { x: 0, y: 0 }, config: {} },
+      ...['orphan', 'orphan-child', 'isolated'].map((id) => ({
+        id,
+        type: 'command' as const,
+        position: { x: 0, y: 0 },
+        config: { executable: 'false' },
+      })),
+    );
+    workflow.edges = [
+      { id: 'to-gate', source: start.id, target: 'gate' },
+      { id: 'to-end', source: 'gate', target: end.id },
+      { id: 'orphan-chain', source: 'orphan', target: 'orphan-child' },
+      { id: 'orphan-join', source: 'orphan-child', target: end.id },
+    ];
+    await backend.saveWorkflow(workflow);
+    const { runId } = await backend.runWorkflow(workflow.id);
+    await vi.waitFor(async () =>
+      expect((await backend.getRun(runId))?.status).toBe('paused'),
+    );
+    for (const id of ['orphan', 'orphan-child', 'isolated']) {
+      expect(
+        (await backend.getRunResults(runId))
+          .filter((row) => row.nodeId === id)
+          .map((row) => row.status),
+      ).toEqual(['skipped']);
+    }
+    await backend.approveRun(runId, true);
+    await vi.waitFor(async () =>
+      expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+    );
+    for (const id of ['orphan', 'orphan-child', 'isolated']) {
+      expect(
+        (await backend.getRunResults(runId))
+          .filter((row) => row.nodeId === id)
+          .map((row) => row.status),
+      ).toEqual(['skipped']);
+    }
+  });
+
   it('pauses at every approval gate after resuming', async () => {
     const backend = __setMockBackendForTests();
     const wf = createEmptyWorkflow('Two gates');

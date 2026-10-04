@@ -92,9 +92,15 @@ export function WorkflowsView(): React.JSX.Element {
   }, [overlayRunId, refreshRunOverlay]);
   const [starting, setStarting] = useState(false);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
-  const [inputValues, setInputValues] = useState<Record<string, string>>({});
-  const [showInputs, setShowInputs] = useState(false);
-  const [expandedInputs, setExpandedInputs] = useState<Record<string, boolean>>({});
+  const [inputState, setInputState] = useState<{
+    workflowId: string | null;
+    values: Record<string, string>;
+    shown: boolean;
+    expanded: Record<string, boolean>;
+  }>({ workflowId: null, values: {}, shown: false, expanded: {} });
+  const inputValues = inputState.workflowId === active?.id ? inputState.values : {};
+  const showInputs = inputState.workflowId === active?.id && inputState.shown;
+  const expandedInputs = inputState.workflowId === active?.id ? inputState.expanded : {};
   const [goal, setGoal] = useState('');
   const [genRepoDir, setGenRepoDir] = useState<string>(
     () => readLocal('orchevia.genRepo.v1') ?? '',
@@ -350,8 +356,12 @@ export function WorkflowsView(): React.JSX.Element {
       for (const input of declaredInputs) {
         seeded[input.name] = inputValues[input.name] ?? input.default ?? '';
       }
-      setInputValues(seeded);
-      setShowInputs(true);
+      setInputState({
+        workflowId: active.id,
+        values: seeded,
+        shown: true,
+        expanded: expandedInputs,
+      });
       return;
     }
     setRunMessage(null);
@@ -366,7 +376,13 @@ export function WorkflowsView(): React.JSX.Element {
           setRunMessage(`Cannot run: ${blocking[0]?.message ?? 'validation failed.'}`);
           return;
         }
-        const { runId } = await backend.runWorkflow(active.id, inputValues);
+        const inputs = Object.fromEntries(
+          declaredInputs.map((input) => [
+            input.name,
+            inputValues[input.name] ?? input.default ?? '',
+          ]),
+        );
+        const { runId } = await backend.runWorkflow(active.id, inputs);
         await refreshRuns();
         await selectRun(runId);
         setView('runs');
@@ -550,7 +566,7 @@ export function WorkflowsView(): React.JSX.Element {
         } catch {
           autoServer = null;
         }
-        const workflow = { ...preview.workflow, inputs: mergedInputs };
+        const workflow = { ...structuredClone(preview.workflow), inputs: mergedInputs };
         if (autoServer !== null) {
           for (const node of workflow.nodes) {
             if (
@@ -569,6 +585,12 @@ export function WorkflowsView(): React.JSX.Element {
           };
           const saved = await backend.saveAgentProfile(fresh);
           created.push(saved.name);
+          for (const node of workflow.nodes) {
+            if (node.type === 'agent' && node.config.agentRole === role) {
+              node.config.agentProfileId = saved.id;
+              delete node.config.agentRole;
+            }
+          }
         }
         if (created.length > 0) await refreshProfiles();
         const stored = await backend.saveWorkflow(workflow);
@@ -735,7 +757,7 @@ export function WorkflowsView(): React.JSX.Element {
           </Notice>
         </div>
       )}
-      {showInputs && active !== null && (active.definition.inputs ?? []).length > 0 && (
+      {showInputs && (active.definition.inputs ?? []).length > 0 && (
         <div style={{ padding: '12px 20px 0' }}>
           <div className="notice" role="form" aria-label="Workflow inputs">
             <strong>Run inputs:</strong>
@@ -764,7 +786,11 @@ export function WorkflowsView(): React.JSX.Element {
                         value={value}
                         placeholder={input.default ?? ''}
                         onChange={(e) => {
-                          setInputValues((v) => ({ ...v, [input.name]: e.target.value }));
+                          const value = e.target.value;
+                          setInputState((state) => ({
+                            ...state,
+                            values: { ...state.values, [input.name]: value },
+                          }));
                         }}
                       />
                     ) : (
@@ -774,7 +800,11 @@ export function WorkflowsView(): React.JSX.Element {
                         value={value}
                         placeholder={input.default ?? ''}
                         onChange={(e) => {
-                          setInputValues((v) => ({ ...v, [input.name]: e.target.value }));
+                          const value = e.target.value;
+                          setInputState((state) => ({
+                            ...state,
+                            values: { ...state.values, [input.name]: value },
+                          }));
                         }}
                       />
                     )}
@@ -790,7 +820,10 @@ export function WorkflowsView(): React.JSX.Element {
                         expanded ? 'Collapse to a single line' : 'Expand for long text'
                       }
                       onClick={() => {
-                        setExpandedInputs((v) => ({ ...v, [input.name]: !expanded }));
+                        setInputState((state) => ({
+                          ...state,
+                          expanded: { ...state.expanded, [input.name]: !expanded },
+                        }));
                       }}
                     >
                       {expanded ? 'Collapse ▲' : 'Expand ▼'}
@@ -803,7 +836,7 @@ export function WorkflowsView(): React.JSX.Element {
               className="btn btn-primary"
               style={{ marginLeft: 8 }}
               onClick={() => {
-                setShowInputs(false);
+                setInputState((state) => ({ ...state, shown: false }));
                 runActive();
               }}
             >
@@ -812,7 +845,7 @@ export function WorkflowsView(): React.JSX.Element {
             <button
               className="btn btn-ghost"
               onClick={() => {
-                setShowInputs(false);
+                setInputState((state) => ({ ...state, shown: false }));
               }}
             >
               Cancel

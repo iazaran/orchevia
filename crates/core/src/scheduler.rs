@@ -223,9 +223,23 @@ impl Scheduler {
             if !watcher.poll_due(now) {
                 continue;
             }
+            // last_checked_at also advances on failures for backoff. Preserve
+            // the successful feedback watermark separately in the existing
+            // watcher-scoped settings before a poll can overwrite that field.
+            let feedback_since_key = format!("watcher.{}.feedbackSince", watcher.id);
+            if watcher.kind == WatcherKind::Feedback {
+                if let Some(since) = self.feedback_since(&watcher) {
+                    let _ = self
+                        .db
+                        .set_setting(&feedback_since_key, &since.to_rfc3339());
+                }
+            }
             let outcome = self.poll_watcher(starter, &watcher, now).await;
             match outcome {
                 Ok((action, detail)) => {
+                    if watcher.kind == WatcherKind::Feedback {
+                        let _ = self.db.set_setting(&feedback_since_key, &now.to_rfc3339());
+                    }
                     watcher.last_checked_at = Some(now);
                     watcher.last_result = Some(detail.clone());
                     if let WatcherAction::Trigger { head_shas, .. } = &action {
@@ -348,7 +362,7 @@ impl Scheduler {
                 let handled = self.handled_comments(watcher);
                 let fresh = feedback_updates(
                     &comments,
-                    watcher.last_checked_at,
+                    self.feedback_since(watcher),
                     &handled,
                     auth.user.as_deref(),
                     "posted by Orchevia",
@@ -398,6 +412,26 @@ impl Scheduler {
         if crate::notify::should_notify(&prefs, &event) {
             crate::notify::dispatch_os(title, body);
         }
+    }
+
+    /// Successful feedback watermark, persisted with other watcher settings.
+    fn feedback_since(&self, watcher: &Watcher) -> Option<DateTime<Utc>> {
+        self.db
+            .get_setting(&format!("watcher.{}.feedbackSince", watcher.id))
+            .ok()
+            .flatten()
+            .and_then(|raw| parse_time(&raw))
+            .or_else(|| {
+                // Preserve the existing baseline when upgrading a successful
+                // watcher. An errored watcher has no trustworthy last-handled
+                // timestamp, so recover unhandled comments through dedupe.
+                watcher.last_checked_at.filter(|_| {
+                    !watcher
+                        .last_result
+                        .as_deref()
+                        .is_some_and(|result| result.starts_with("error:"))
+                })
+            })
     }
 
     /// Known head SHAs, persisted as settings (watcher-scoped).
@@ -702,6 +736,101 @@ mod tick_tests {
         );
         // A blocked notice landed in the Center.
         assert!(!db.list_notifications(10, false).expect("notes").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // existing process-global gh fixture lock
+    async fn feedback_retries_unhandled_comments_after_start_failure() {
+        use crate::schedule::{Watcher, WatcherKind};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct RetryStarter {
+            fail: AtomicBool,
+            started: Mutex<Vec<HashMap<String, String>>>,
+        }
+        impl RunStarter for RetryStarter {
+            fn start_workflow_run(
+                &self,
+                _workflow_id: &str,
+                inputs: &HashMap<String, String>,
+            ) -> Result<String, String> {
+                if self.fail.load(Ordering::SeqCst) {
+                    return Err("Required workflow input is missing.".into());
+                }
+                self.started.lock().expect("started").push(inputs.clone());
+                Ok("run-feedback-retry".into())
+            }
+        }
+
+        let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("gh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if [ "$1" = "auth" ]; then
+  echo 'Logged in to github.com account alice (keyring)'
+elif [ "$5" = "reviews,comments" ]; then
+  echo '{"reviews":[],"comments":[{"author":{"login":"carol"},"body":"old feedback","createdAt":"2026-03-04T08:00:00Z"},{"author":{"login":"bob"},"body":"please fix","createdAt":"2026-03-04T09:30:00Z"}]}'
+else
+  echo '{"number":7,"headRefOid":"stable"}'
+fi
+"#,
+        )
+        .expect("fixture");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("executable");
+        std::env::set_var("ORCHEVIA_GH_BIN", &script);
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let now: DateTime<Utc> = "2026-03-04T10:00:00Z".parse().expect("now");
+        db.upsert_watcher(&Watcher {
+            id: "feedback-retry".into(),
+            name: "Feedback retry".into(),
+            workflow_id: "wf".into(),
+            kind: WatcherKind::Feedback,
+            repo_dir: dir.path().to_string_lossy().into_owned(),
+            pr_number: Some(7),
+            enabled: true,
+            check_interval_secs: 300,
+            last_head_sha: Some("stable".into()),
+            last_checked_at: Some(now - chrono::Duration::hours(1)),
+            last_result: Some("quiet".into()),
+        })
+        .expect("watcher");
+        db.set_setting("watcher.feedback-retry.shas", r#"{"7":"stable"}"#)
+            .expect("known sha");
+        let concrete = Arc::new(RetryStarter {
+            fail: AtomicBool::new(true),
+            started: Mutex::new(Vec::new()),
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        let scheduler = Scheduler::new(Arc::clone(&db));
+        let first = scheduler.tick_once(&starter, now).await;
+        concrete.fail.store(false, Ordering::SeqCst);
+        let retry = scheduler
+            .tick_once(&starter, now + chrono::Duration::minutes(5))
+            .await;
+        let quiet = scheduler
+            .tick_once(&starter, now + chrono::Duration::minutes(10))
+            .await;
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+        assert!(first.iter().any(|note| note.contains("error")), "{first:?}");
+        assert!(
+            retry.iter().any(|note| note.contains("triggered")),
+            "{retry:?}"
+        );
+        assert!(
+            quiet.is_empty(),
+            "handled feedback must stay quiet: {quiet:?}"
+        );
+        let started = concrete.started.lock().expect("started");
+        assert_eq!(started.len(), 1);
+        assert_eq!(
+            started[0].get("feedbackCount").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[tokio::test]

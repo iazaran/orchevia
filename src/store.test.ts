@@ -1,8 +1,95 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { __setMockBackendForTests } from './lib/backend';
 import { createEmptyWorkflow } from './lib/workflow';
+import type { StoredWorkflow, ValidationIssue } from './lib/workflow';
 import { useAppStore } from './store';
 afterEach(() => vi.restoreAllMocks());
+
+it('keeps edits made while an older save is pending', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Before save');
+  const stored = await backend.saveWorkflow(wf);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: wf.id,
+    overlayRunId: null,
+    validation: [],
+  });
+  let finish: (value: StoredWorkflow) => void = () => {};
+  const save = vi.spyOn(backend, 'saveWorkflow').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const saving = useAppStore.getState().saveActiveWorkflow();
+  await vi.waitFor(() => expect(save).toHaveBeenCalled());
+  useAppStore.getState().updateActiveWorkflow({ ...wf, name: 'New draft' });
+  finish(stored);
+  await saving;
+  expect(useAppStore.getState().workflows[0]?.definition.name).toBe('New draft');
+});
+
+it('does not apply saved validation after selecting another workflow', async () => {
+  const backend = __setMockBackendForTests();
+  const first = await backend.saveWorkflow(createEmptyWorkflow('First'));
+  const second = await backend.saveWorkflow(createEmptyWorkflow('Second'));
+  useAppStore.setState({
+    workflows: [first, second],
+    activeWorkflowId: first.id,
+    overlayRunId: null,
+    validation: [],
+  });
+  let finish: (value: ValidationIssue[]) => void = () => {};
+  const validate = vi.spyOn(backend, 'validateWorkflow').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const saving = useAppStore.getState().saveActiveWorkflow();
+  await vi.waitFor(() => expect(validate).toHaveBeenCalled());
+  useAppStore.getState().selectWorkflow(second.id);
+  finish([{ code: 'old-error', severity: 'error', message: 'First workflow only' }]);
+  await saving;
+  expect(useAppStore.getState().activeWorkflowId).toBe(second.id);
+  expect(useAppStore.getState().validation).toEqual([]);
+});
+
+it('persists overlapping saves in request order', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Before saves');
+  const stored = await backend.saveWorkflow(wf);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: wf.id,
+    overlayRunId: null,
+    validation: [],
+  });
+  const save = backend.saveWorkflow.bind(backend);
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const firstStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  vi.spyOn(backend, 'saveWorkflow').mockImplementationOnce(async (workflow) => {
+    started();
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return save(workflow);
+  });
+  useAppStore.getState().updateActiveWorkflow({ ...wf, name: 'First edit' });
+  const first = useAppStore.getState().saveActiveWorkflow();
+  await firstStarted;
+  useAppStore.getState().updateActiveWorkflow({ ...wf, name: 'Latest edit' });
+  const second = useAppStore.getState().saveActiveWorkflow();
+  await Promise.resolve();
+  release();
+  await Promise.all([first, second]);
+  expect((await backend.getWorkflow(wf.id))?.name).toBe('Latest edit');
+  expect(useAppStore.getState().workflows[0]?.name).toBe('Latest edit');
+});
 
 it('reports cancelled same-run navigation even when its previous overlay remains', async () => {
   const backend = __setMockBackendForTests();

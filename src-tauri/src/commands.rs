@@ -33,6 +33,13 @@ impl AppState {
         let engine = Engine::new(Arc::clone(&db), cancel.clone());
         Self { db, engine, cancel }
     }
+
+    pub fn scheduler_starter(&self) -> EngineStarter {
+        EngineStarter {
+            db: Arc::clone(&self.db),
+            cancel: self.cancel.clone(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1601,7 +1608,66 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{custom_models_key, parse_custom_models, role_map_for_db};
+    use super::{custom_models_key, parse_custom_models, role_map_for_db, AppState};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manual_controls_cancel_scheduler_runs_with_partial_output() {
+        use orchevia_core::{db::RunStatus, scheduler::RunStarter, workflow::NodeKind};
+        use std::{collections::HashMap, sync::Arc, time::Duration};
+
+        let db = Arc::new(orchevia_core::db::SqliteDb::open_in_memory().expect("db"));
+        let mut workflow = orchevia_core::workflow::sample_workflow();
+        let command = workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == NodeKind::Command)
+            .expect("command");
+        let node_id = command.id.clone();
+        command.config.executable = Some("sh".into());
+        command.config.args = vec!["-c".into(), "printf scheduled; sleep 5".into()];
+        db.upsert_workflow(&workflow).expect("workflow");
+        let state = AppState::new(Arc::clone(&db));
+        let run_id = state
+            .scheduler_starter()
+            .start_workflow_run(&workflow.id, &HashMap::new())
+            .expect("scheduled run");
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if db
+                    .list_node_results(&run_id)
+                    .expect("results")
+                    .iter()
+                    .any(|result| result.node_id == node_id && result.stdout.contains("scheduled"))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("running output");
+        assert!(state.engine.cancel_run(&run_id).expect("cancel"));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if db
+                    .get_run(&run_id)
+                    .expect("run")
+                    .is_some_and(|run| run.status == RunStatus::Cancelled)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelled run");
+        let results = db.list_node_results(&run_id).expect("results");
+        assert!(results.iter().any(|result| result.node_id == node_id
+            && result.status == "cancelled"
+            && result.stdout.contains("scheduled")));
+    }
 
     #[test]
     fn role_preferences_do_not_resolve_deleted_profiles() {

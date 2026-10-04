@@ -80,6 +80,10 @@ interface AppState {
 }
 
 let navigationSequence = 0;
+const workflowSaves = new Map<
+  string,
+  { promise: Promise<StoredWorkflow>; token: symbol }
+>();
 export const useAppStore = create<AppState>()((set, get) => ({
   view: 'workflows',
   workflows: [],
@@ -316,33 +320,57 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (active === undefined) return;
     const backend = getBackend();
     const workflow = definition ?? active.definition;
-    const previous = await backend.getWorkflow(workflow.id);
-    const before = previous ? structuredClone(previous.definition) : null;
-    const [stored, validation] = await Promise.all([
-      backend.saveWorkflow(workflow),
-      backend.validateWorkflow(workflow),
-    ]);
-    set({
-      workflows: get().workflows.map((w) => (w.id === stored.id ? stored : w)),
-      validation,
-    });
-    if (before && stored.definition.defaults?.repoDir?.trim()) {
-      try {
-        const context = await backend.getProjectMemoryContext(
-          stored.definition.defaults.repoDir,
-        );
-        const observations = commandEdits(before, stored.definition, context.scope);
-        if (observations.length) {
-          await backend.observeEdits(observations);
-          await get().refreshLibrary();
-        }
-      } catch (error: unknown) {
+    const navigation = navigationSequence;
+    const pending = workflowSaves.get(workflow.id);
+    const token = Symbol();
+    // Keep writes in request order so an older autosave cannot finish last.
+    const saving: Promise<StoredWorkflow> = (async () => {
+      await pending?.promise.catch(() => {});
+      const previous = await backend.getWorkflow(workflow.id);
+      const before = previous ? structuredClone(previous.definition) : null;
+      const [stored, validation] = await Promise.all([
+        backend.saveWorkflow(workflow),
+        backend.validateWorkflow(workflow),
+      ]);
+      const current = get();
+      const unchanged =
+        current.workflows.find((w) => w.id === active.id)?.definition ===
+        active.definition;
+      if (unchanged && workflowSaves.get(workflow.id)?.token === token) {
         set({
-          error: 'Workflow saved. Memory observation failed: ' + errorMessage(error),
+          workflows: current.workflows.map((w) => (w.id === stored.id ? stored : w)),
+          ...(navigation === navigationSequence &&
+          current.activeWorkflowId === active.id &&
+          current.overlayRunId === null
+            ? { validation }
+            : {}),
         });
       }
+      if (before && stored.definition.defaults?.repoDir?.trim()) {
+        try {
+          const context = await backend.getProjectMemoryContext(
+            stored.definition.defaults.repoDir,
+          );
+          const observations = commandEdits(before, stored.definition, context.scope);
+          if (observations.length) {
+            await backend.observeEdits(observations);
+            await get().refreshLibrary();
+          }
+        } catch (error: unknown) {
+          set({
+            error: 'Workflow saved. Memory observation failed: ' + errorMessage(error),
+          });
+        }
+      }
+      return stored;
+    })();
+    workflowSaves.set(workflow.id, { promise: saving, token });
+    try {
+      return await saving;
+    } finally {
+      if (workflowSaves.get(workflow.id)?.token === token)
+        workflowSaves.delete(workflow.id);
     }
-    return stored;
   },
 
   setValidation: (validation) => {

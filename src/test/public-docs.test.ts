@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { decodeDocument } from '../lib/workflow-document';
+import { validateWorkflowLocal } from '../lib/workflow';
 
 const page = new DOMParser().parseFromString(
   readFileSync('docs/index.html', 'utf8'),
@@ -8,8 +10,6 @@ const page = new DOMParser().parseFromString(
 const readme = readFileSync('README.md', 'utf8');
 const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
   .version;
-// Source versions advance on feature branches before release assets are published.
-const publishedInstallerVersion = '0.1.5';
 
 describe('public documentation before launch', () => {
   it('announces upcoming public access without offering private downloads', () => {
@@ -38,8 +38,8 @@ describe('public documentation before launch', () => {
     expect(page.documentElement.innerHTML).not.toContain('api.github.com');
   });
 
-  it('keeps published installation guidance separate from the source version', () => {
-    expect(readme).toContain(`Install v${publishedInstallerVersion}`);
+  it('targets permanent installers for the matching release tag', () => {
+    expect(readme).toContain(`Release v${version} installers`);
     expect(readme).toContain(`source version ${version}`);
     expect(readme).not.toMatch(/pending|being prepared|planned.*files|processing/i);
     expect(readme).not.toContain('/releases/latest/download/');
@@ -48,11 +48,7 @@ describe('public documentation before launch', () => {
       (match) => match[1],
     );
     expect(linkedVersions).toHaveLength(5);
-    expect(
-      linkedVersions.every(
-        (linkedVersion) => linkedVersion === publishedInstallerVersion,
-      ),
-    ).toBe(true);
+    expect(linkedVersions.every((linkedVersion) => linkedVersion === version)).toBe(true);
     expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
   });
 
@@ -64,12 +60,40 @@ describe('public documentation before launch', () => {
       'Orchevia-linux-x86_64.deb',
       'SHA256SUMS',
     ]) {
-      expect(readme).toContain(
-        `/releases/download/v${publishedInstallerVersion}/${asset}`,
-      );
+      expect(readme).toContain(`/releases/download/v${version}/${asset}`);
     }
     expect(readme).toMatch(/account that has repository access/i);
     expect(readme).toContain('sha256sum -c SHA256SUMS --ignore-missing');
     expect(readme).toContain('shasum -a 256 -c SHA256SUMS --ignore-missing');
+  });
+
+  it('offers working in-page navigation and a first-run guide', () => {
+    for (const link of page.querySelectorAll('a[href^="#"]')) {
+      const id = link.getAttribute('href')?.slice(1);
+      expect(
+        page.getElementById(id ?? ''),
+        `Missing section ${String(id)}`,
+      ).not.toBeNull();
+    }
+    expect(page.querySelector('#workflows')).not.toBeNull();
+    expect(page.querySelector('#authoring')).not.toBeNull();
+    expect(page.querySelector('#faq details summary')).not.toBeNull();
+    expect(page.querySelector('a[href$="/docs/getting-started.md"]')).not.toBeNull();
+  });
+
+  it('imports the documented first workflow with a valid command and connected graph', () => {
+    const workflow = decodeDocument(
+      readFileSync('docs/examples/hello-workflow.json', 'utf8'),
+      [],
+      {},
+    );
+    expect(
+      validateWorkflowLocal(workflow).filter((issue) => issue.severity === 'error'),
+    ).toEqual([]);
+    const command = workflow.nodes.find((node) => node.type === 'command');
+    expect(command?.config.executable).toBe('echo');
+    expect(command?.config.args).toEqual(['Hello from Orchevia']);
+    expect(workflow.edges).toHaveLength(2);
+    expect(workflow.nodes).toHaveLength(3);
   });
 });

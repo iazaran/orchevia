@@ -9,7 +9,7 @@
 //! The executable is configurable ([`GhRunner`]) so tests point at fixture
 //! scripts instead of real `gh` + network.
 
-use crate::process::{run_command, CommandSpec};
+use crate::process::{run_command, CommandSpec, ProcessResult};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -113,6 +113,15 @@ pub static GH_BIN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl GhRunner {
     fn run(&self, cwd: &str, args: &[&str]) -> Result<String, String> {
+        let result = self.run_result(cwd, args)?;
+        if result.exit_code == Some(0) {
+            Ok(result.stdout)
+        } else {
+            OkDenied::redact(&result.stdout, result.stderr.trim())
+        }
+    }
+
+    fn run_result(&self, cwd: &str, args: &[&str]) -> Result<ProcessResult, String> {
         if !std::path::Path::new(cwd).is_dir() {
             return Err(format!("Directory does not exist: {cwd}"));
         }
@@ -121,21 +130,15 @@ impl GhRunner {
             args: args.iter().map(|s| (*s).to_string()).collect(),
             working_dir: Some(cwd.to_string()),
         };
-        let result = run_command(&spec, Some(Duration::from_secs(self.timeout_secs)))
-            .map_err(|e| format!("Failed to run '{}': {e}", self.executable))?;
-        if result.exit_code == Some(0) {
-            Ok(result.stdout)
-        } else {
-            let stderr = result.stderr.trim();
-            OkDenied::redact(&result.stdout, stderr)
-        }
+        run_command(&spec, Some(Duration::from_secs(self.timeout_secs)))
+            .map_err(|e| format!("Failed to run '{}': {e}", self.executable))
     }
 }
 
 /// Error path that redacts anything token-shaped before surfacing.
 struct OkDenied;
 impl OkDenied {
-    fn redact(_stdout: &str, stderr: &str) -> Result<String, String> {
+    fn redact<T>(_stdout: &str, stderr: &str) -> Result<T, String> {
         // Never surface long hex runs (possible tokens) from CLI errors.
         let mut scrubbed = String::with_capacity(stderr.len());
         let mut run = String::new();
@@ -344,16 +347,27 @@ pub fn pr_files(runner: &GhRunner, cwd: &str, number: u64) -> Result<Vec<Changed
 /// CI/check conclusions for a PR.
 pub fn pr_checks(runner: &GhRunner, cwd: &str, number: u64) -> Result<Vec<CheckStatus>, String> {
     let num = number.to_string();
-    let out = runner.run(
-        cwd,
-        &["pr", "checks", &num, "--json", "name,state,conclusion"],
-    )?;
-    let values: serde_json::Value = serde_json::from_str(&out)
-        .map_err(|_| "Cannot parse `gh pr checks` output.".to_string())?;
+    let result = runner.run_result(cwd, &["pr", "checks", &num, "--json", "name,state,bucket"])?;
+    // gh uses 1 for failed checks and 8 for pending checks. Preserve those
+    // results, but only when stdout really contains check data; auth/network
+    // failures also use 1 and must remain errors with their stderr intact.
+    let values = serde_json::from_str::<Vec<serde_json::Value>>(&result.stdout);
+    let valid_checks = values.as_ref().is_ok_and(|values| {
+        !values.is_empty()
+            && values.iter().all(|value| {
+                value.get("name").is_some_and(|name| name.is_string())
+                    && value.get("state").is_some_and(|state| state.is_string())
+                    && matches!(
+                        value.get("bucket").and_then(|bucket| bucket.as_str()),
+                        Some("pass" | "fail" | "pending" | "skipping" | "cancel")
+                    )
+            })
+    });
+    if result.exit_code != Some(0) && !(matches!(result.exit_code, Some(1 | 8)) && valid_checks) {
+        return OkDenied::redact(&result.stdout, result.stderr.trim());
+    }
+    let values = values.map_err(|_| "Cannot parse `gh pr checks` output.".to_string())?;
     Ok(values
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
         .iter()
         .map(|v| CheckStatus {
             name: v
@@ -366,11 +380,14 @@ pub fn pr_checks(runner: &GhRunner, cwd: &str, number: u64) -> Result<Vec<CheckS
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string(),
-            conclusion: v
-                .get("conclusion")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
+            conclusion: if v.get("bucket").and_then(|bucket| bucket.as_str()) == Some("pending") {
+                String::new()
+            } else {
+                v.get("state")
+                    .and_then(|state| state.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+            },
         })
         .collect())
 }
@@ -576,8 +593,17 @@ if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
-  echo '[{"name":"ci","state":"completed","conclusion":"success"}]'
-  exit 0
+  if [ "$5" != "name,state,bucket" ]; then
+    echo 'Unknown JSON field: "conclusion"' >&2
+    exit 1
+  fi
+  case "$3" in
+    8) echo '[{"name":"ci","state":"IN_PROGRESS","bucket":"pending"}]'; exit 8 ;;
+    9) echo '[{"name":"ci","state":"FAILURE","bucket":"fail"}]'; exit 1 ;;
+    10) echo 'authentication required' >&2; exit 1 ;;
+    11) echo '{"message":"unexpected response"}'; exit 0 ;;
+    *) echo '[{"name":"ci","state":"SUCCESS","bucket":"pass"}]'; exit 0 ;;
+  esac
 fi
 if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
   echo "https://github.com/acme/shop/pull/8"
@@ -655,6 +681,21 @@ exit 1
         let comments = pr_comments(&runner, &cwd(&dir), 7).expect("comments");
         assert_eq!(comments.len(), 2);
         assert!(comments.iter().any(|c| c.source == "coderabbit"));
+    }
+
+    #[test]
+    fn pr_checks_returns_pending_and_failed_results_without_hiding_cli_errors() {
+        let (dir, runner) = fixture_runner();
+        let pending = pr_checks(&runner, &cwd(&dir), 8).expect("pending checks");
+        assert_eq!(pending[0].state, "IN_PROGRESS");
+        assert_eq!(pending[0].conclusion, "");
+        let failed = pr_checks(&runner, &cwd(&dir), 9).expect("failed checks");
+        assert_eq!(failed[0].conclusion, "failure");
+        assert_eq!(
+            pr_checks(&runner, &cwd(&dir), 10).expect_err("auth error"),
+            "authentication required"
+        );
+        assert!(pr_checks(&runner, &cwd(&dir), 11).is_err());
     }
 
     #[test]
