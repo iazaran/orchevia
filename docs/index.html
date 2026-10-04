@@ -112,6 +112,7 @@
       }
       header.site {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 12px;
         padding: 22px 0;
@@ -279,6 +280,75 @@
         font-family: ui-monospace, Menlo, Consolas, monospace;
         font-size: 0.92em;
       }
+      .section-intro {
+        color: var(--muted);
+        max-width: 760px;
+        margin: 0 0 22px;
+      }
+      .recipe {
+        color: var(--text);
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 13px;
+        margin: 14px 0;
+      }
+      .card p + p {
+        margin-top: 12px;
+      }
+      .table-scroll {
+        margin: 22px 0;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        text-align: left;
+        font-size: 14px;
+      }
+      caption {
+        text-align: left;
+        padding: 16px;
+        color: var(--muted);
+      }
+      th,
+      td {
+        padding: 14px 16px;
+        border-top: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--text);
+        background: var(--bg1);
+      }
+      td {
+        color: var(--muted);
+      }
+      details {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px 20px;
+        background: var(--bg1);
+        margin-bottom: 12px;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+      }
+      details p {
+        color: var(--muted);
+        margin-bottom: 0;
+      }
+      @media (max-width: 640px) {
+        nav.site {
+          margin-left: 0;
+          width: 100%;
+        }
+      }
       footer.site {
         border-top: 1px solid var(--border);
         margin-top: 40px;
@@ -289,6 +359,11 @@
         gap: 18px;
         flex-wrap: wrap;
         align-items: center;
+      }
+      footer.site nav {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
       }
       footer.site a {
         color: var(--muted);
@@ -324,18 +399,20 @@
           <span>Orchevia</span>
         </div>
         <nav class="site" aria-label="Site">
+          <a href="#workflows">Workflows</a>
           <a href="#features">Features</a>
           <a href="#start">5-minute start</a>
           <a href="#local-first">Local-first</a>
           <a href="#install">Install</a>
-          <a href="#roadmap">Roadmap</a>
+          <a href="#faq">FAQ</a>
           <a href="https://github.com/iazaran/orchevia">GitHub</a>
         </nav>
       </header>
 
       <main id="main">
         <div class="hero">
-          <h1>Orchevia</h1>
+          <span class="pill">Local developer workflows</span>
+          <h1>Give your developer workflow a repeatable path.</h1>
           <p>
             Orchestrate the AI tools you already use. Describe a task once, inspect the
             plan as a graph, and execute each step through your installed CLIs — Claude
@@ -344,7 +421,7 @@
           </p>
           <div class="cta">
             <a class="btn primary" href="#install">Installation</a>
-            <a class="btn" href="#features">Explore workflows</a>
+            <a class="btn" href="#workflows">Explore workflows</a>
           </div>
         </div>
 
@@ -367,6 +444,89 @@
           <span class="ok">Review (Codex)</span> → <span class="dim">End</span>
           <span class="dim">— explicit run, full history, cancellable</span>
         </div>
+
+        <section class="block" id="why" aria-labelledby="why-h">
+          <h2 id="why-h">Keep your tools. Make the handoffs visible.</h2>
+          <p class="section-intro">
+            You already know how to ask an agent, run tests, and review a diff. Orchevia
+            puts that sequence in a graph you can inspect, repeat, and share. Choose which
+            agent handles each step, where a human decision belongs, and which repository
+            commands prove the change works.
+          </p>
+          <div class="grid">
+            <div class="card">
+              <h3>A repeatable starting point</h3>
+              <p>
+                Save the sequence once. Supply new inputs for the next task instead of
+                rebuilding every prompt and command.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Review with a second perspective</h3>
+              <p>
+                Give implementation and review to different profiles. Keep their outputs
+                attached to the steps that produced them.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Stay part of the process</h3>
+              <p>
+                Pause at a Human Approval gate before continuing. Inspect progress and the
+                exact run graph when something needs attention.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="block" id="workflows" aria-labelledby="workflows-h">
+          <h2 id="workflows-h">Start with a workflow you already do</h2>
+          <p class="section-intro">
+            Build a small manual flow first. Add integrations and scheduling once its
+            steps work in your repository.
+          </p>
+          <div class="grid">
+            <article class="card">
+              <h3>Plan, implement, test, review</h3>
+              <div class="recipe">Plan → Approve → Implement → Test → Review</div>
+              <p>
+                Turn a change request into an inspected plan, then implementation and
+                independent review. Use your project's actual test command.
+              </p>
+              <p>
+                <strong>Set up:</strong> repository, agent profiles, test command. Keep
+                commit and push as explicit decisions.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Ticket to draft pull request</h3>
+              <div class="recipe">
+                Read Ticket → Plan → Approve → Implement → Test → Draft PR
+              </div>
+              <p>
+                Load a Jira ticket through your configured MCP server, then use supported
+                native Git and GitHub operations for the handoffs.
+              </p>
+              <p>
+                <strong>Set up:</strong> Jira MCP, authenticated <code>gh</code>, profiles
+                and branch inputs. Inspect every write step.
+              </p>
+            </article>
+            <article class="card">
+              <h3>A repeatable PR review</h3>
+              <div class="recipe">
+                Read PR → Parallel reviews → Summarize → Human decision
+              </div>
+              <p>
+                Assign separate reviewers and inspect their findings. Add a local watcher
+                when you are ready to repeat a proven review flow.
+              </p>
+              <p>
+                <strong>Set up:</strong> PR input, <code>gh</code>, reviewer profiles and
+                explicit permissions for comments.
+              </p>
+            </article>
+          </div>
+        </section>
 
         <section class="block" id="features" aria-labelledby="features-h">
           <h2 id="features-h">Key features</h2>
@@ -428,14 +588,113 @@
               <p>
                 Describe a goal to draft a validated preview using Agent, Git, GitHub,
                 Ticket, MCP, and other native nodes. Start from 9 built-in templates or
-                save your own.
+                save your own. Reuse accepted project commands and conventions in a local
+                playbook, without copying full run logs into memory.
               </p>
             </div>
           </div>
         </section>
 
+        <section class="block" id="authoring" aria-labelledby="authoring-h">
+          <h2 id="authoring-h">A graph for inspection. JSON for reuse.</h2>
+          <div class="grid">
+            <div class="card">
+              <h3>Readable workflow documents</h3>
+              <p>
+                Simple JSON uses node keys and portable profile selections. Edit the same
+                workflow on the canvas or in JSON, and arrange it by dependencies as it
+                grows. Advanced JSON keeps the full runtime format available.
+              </p>
+            </div>
+            <div class="card">
+              <h3>A draft you can inspect</h3>
+              <p>
+                Generate asks your local CLI for a proposal. Orchevia validates and
+                compiles it into a preview with setup notes. You can edit or reject it;
+                accepting the preview never runs it.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Knowledge with a project scope</h3>
+              <p>
+                Keep test commands, conventions, and reviewer choices in a project
+                playbook. Accept suggestions deliberately or save a command from a
+                successful run with its evidence.
+              </p>
+            </div>
+          </div>
+          <div
+            class="table-scroll"
+            tabindex="0"
+            role="region"
+            aria-label="Workflow node guide"
+          >
+            <table>
+              <caption>
+                Choose a native node when it supports the work; use Command for your
+                project's tools.
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Work</th>
+                  <th scope="col">Node</th>
+                  <th scope="col">What you supply</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Plan, implement or review</th>
+                  <td>AI Agent</td>
+                  <td>Profile, prompt and repository</td>
+                </tr>
+                <tr>
+                  <th scope="row">Repository and PR operations</th>
+                  <td>Git / GitHub</td>
+                  <td>Supported operation, repository and authenticated tools</td>
+                </tr>
+                <tr>
+                  <th scope="row">Ticket or integration data</th>
+                  <td>Ticket / MCP Tool</td>
+                  <td>Enabled MCP server, discovered tool and arguments</td>
+                </tr>
+                <tr>
+                  <th scope="row">Tests and local developer tools</th>
+                  <td>Command</td>
+                  <td>Executable and separate arguments; a shell only when explicit</td>
+                </tr>
+                <tr>
+                  <th scope="row">A decision or human checkpoint</th>
+                  <td>Condition / Human Approval</td>
+                  <td>Constrained rule or approval message</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <h3>Give generation a concrete goal</h3>
+          <pre
+            class="install-code"
+          ><code>Plan {{input.task}} in this repository, then pause for approval.
+Implement the approved plan, run the project's test command,
+and request one independent review. Leave changes uncommitted.</code></pre>
+          <p class="section-intro">
+            Declare the task input, choose your profiles, and inspect the preview.
+            Generation prefers supported native operations and honors explicit
+            instructions such as “CLI only.” Unsupported operations may need a Command
+            node or a manual step.
+          </p>
+        </section>
+
         <section class="block" id="start" aria-labelledby="start-h">
           <h2 id="start-h">Your first workflow in 5 minutes</h2>
+          <p class="section-intro">
+            Want to try it without an AI CLI first? The
+            <a
+              href="https://github.com/iazaran/orchevia/blob/main/docs/getting-started.md"
+              >getting-started guide</a
+            >
+            begins with a small <code>echo</code> workflow and then adds agents, tests and
+            approval.
+          </p>
           <ol class="steps">
             <li>
               <strong>Install and open Orchevia.</strong> The first-run wizard detects
@@ -479,7 +738,7 @@
               </p>
             </div>
             <div class="card">
-              <h3>Safe by default</h3>
+              <h3>Explicit execution</h3>
               <p>
                 Opening a workflow never executes it. Inspect commands before running;
                 runs are explicit, the active child is stopped on cancel, and
@@ -564,12 +823,80 @@ pnpm tauri dev</code></pre>
           </p>
         </section>
 
+        <section class="block" id="faq" aria-labelledby="faq-h">
+          <h2 id="faq-h">Before you start</h2>
+          <details>
+            <summary>Do I need an Orchevia account or model API key?</summary>
+            <p>
+              No. Orchevia orchestrates CLIs you install and authenticate yourself. Model
+              access and usage costs belong to those tools and providers. A command-only
+              workflow needs no AI profile.
+            </p>
+          </details>
+          <details>
+            <summary>Does local-first mean everything stays offline?</summary>
+            <p>
+              Workflows and run history live in local SQLite, and Orchevia has no
+              telemetry or hosted worker. Your AI CLIs, GitHub operations and MCP
+              integrations may contact their own remote services.
+            </p>
+          </details>
+          <details>
+            <summary>Can I use my own CLI or repository's test commands?</summary>
+            <p>
+              Yes. Configure a custom CLI profile or a Command node with an executable and
+              separate arguments. Built-in templates are language neutral. You provide the
+              commands, model choices and repository conventions that work in your
+              project.
+            </p>
+          </details>
+          <details>
+            <summary>What happens when a step fails or I cancel?</summary>
+            <p>
+              Inspect per-step errors and partial output in Runs. Workflows can define
+              explicit retries and failure paths. Cancellation stops the active child; it
+              does not undo earlier file edits, commits or remote writes, and child tools
+              may spawn their own processes. Review side effects before rerunning.
+            </p>
+          </details>
+          <details>
+            <summary>Will schedules run with the app closed?</summary>
+            <p>
+              Schedules and watchers need the app running. Opt into background mode to
+              keep it in the system tray when the window closes. Quitting the app or
+              shutting down the machine stops local automation; there is no cloud worker.
+            </p>
+          </details>
+          <details>
+            <summary>Which platforms and limitations should I know about?</summary>
+            <p>
+              The beta targets Linux x86_64 and macOS Apple Silicon/Intel. Windows is not
+              supported. macOS installers are unsigned and not notarized. Execution uses
+              your user permissions without a sandbox. Review imported workflows and
+              stored output before running or sharing them.
+            </p>
+          </details>
+        </section>
+
         <section class="block" id="contribute" aria-labelledby="contribute-h">
           <h2 id="contribute-h">Contribute</h2>
           <p style="color: var(--muted)">
-            The repository will be public soon, with Apache-2.0 source, a contributor
-            guide, and repeatable checks. Once access opens, you can clone it, run
-            <code>pnpm tauri dev</code>, and propose changes.
+            The repository will be public soon under Apache-2.0. Useful contributions
+            include a workflow recipe, clearer setup guidance, accessibility improvements,
+            or a bug report with the failing step and a redacted log. Start with a small
+            reproducible case and keep the CLI/core/UI boundaries consistent.
+          </p>
+          <p>
+            Contributors with access can follow the
+            <a href="https://github.com/iazaran/orchevia/blob/main/CONTRIBUTING.md"
+              >contributor guide</a
+            >,
+            <a href="https://github.com/iazaran/orchevia/blob/main/docs/development.md"
+              >development guide</a
+            >
+            and
+            <a href="https://github.com/iazaran/orchevia/blob/main/ROADMAP.md">roadmap</a
+            >.
           </p>
           <div class="cta" style="justify-content: flex-start">
             <a class="btn primary" href="https://github.com/iazaran/orchevia"

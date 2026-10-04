@@ -97,24 +97,6 @@ security indexes, and the full packaging/media dependency set stay intact. Conne
 timeouts and three retries bound stalled requests; timing output distinguishes index
 refresh from installation. No host dependency installation is skipped on cache hits.
 
-The previous PR → main → tag sequence built three platforms at each stage (nine
-installer builds); now only the three tag builds remain, alongside cheaper Linux
-checks on applicable PR/main changes. On the last v0.1.3 main CI, bundle jobs took
-about 7:05 Linux, 1:39 Apple Silicon, and 7:35 Intel (16:19 total runner time,
-including setup/cache work). The net saving is lower because Linux checks still
-cost time; cache warmth and runner billing rates vary. No fixed percentage of
-account minutes is promised. Shorter artifact retention saves storage, not build
-minutes. Concurrency cancels obsolete PR/main runs.
-
-The v0.1.4 main and Actions-only dependency PR each spent about 6–7 minutes in the
-desktop job. Avoiding native jobs for existing-workflow-only edits eliminates that
-job plus the core job, with a small workflow-lint cost. Applicable native jobs drop
-the separate check pass (2:15–2:22 in those cold runs), while retaining compilation
-and tests. Mirror selection targets the observed 20-minute download stall; actual
-savings depend on archive throughput. Linux release packaging itself took 9:20 and
-still runs, as do both real macOS builds. Measure new timings after merge/tag rather
-than promising a fixed release duration.
-
 ## Releases (`.github/workflows/release.yml`)
 
 A matching `v*.*.*` tag runs fresh validation, then Linux x86_64 (`.deb`, AppImage),
@@ -136,58 +118,50 @@ appears only at debug level. Packaging failures also print macOS version, Xcode,
 architecture, disk space, and mounted disk images. No automatic packaging retry or
 Finder workaround is applied without evidence of the underlying error.
 
-### Version 0.1.5 downloads
+### Merge is the beginning of release verification
 
-The [README installation section](../README.md#install) links directly to the
-versioned v0.1.5 Linux, Apple Silicon, and Intel installers and `SHA256SUMS`.
-Keep installation links scoped to the current version. Use the checksum commands
-there to verify each downloaded file.
+1. Run the complete local gate below and open a PR against `main`.
+2. Merge after **CI result** and **Validate docs site** pass. Main CI checks the
+   merged source; Pages deploys changed site files. Neither builds installers.
+3. Fetch the merged commit and check its version before creating a new tag.
+   For this release, the application, both Cargo manifests, Tauri configuration,
+   Cargo lock workspace packages and dated changelog entry must read `0.1.7`.
+4. The maintainer creates `v0.1.7` on that merged commit and pushes the tag. Do not
+   move or recreate an existing version tag. The Release workflow builds all
+   supported platforms from the tag and publishes permanent GitHub assets.
+5. Verify the successful Release run and all four nonempty installer assets plus
+   `SHA256SUMS`. Check that the README's versioned URLs match the exact filenames.
+   Download the checksum file and compare its hashes with GitHub's asset digests;
+   verify each downloaded installer before using it.
+6. Smoke-test installation and a small real workflow on Linux, Apple Silicon and
+   Intel macOS before claiming those native paths are verified.
 
-The repository and release files are private: readers need a GitHub account with
-repository access. A public Pages deployment does not grant access to private
-assets; the project page retains the public-soon notice.
+Example maintainer commands, **after merge** and after checking the intended commit:
 
-The previous v0.1.4 workflow completed on all three platforms and published four
-nonempty installers plus `SHA256SUMS`; the downloaded checksum file matched the
-four GitHub asset SHA-256 digests. README links are updated together with application
-manifests for each new release. Publication still requires a successful tag build.
+```bash
+git switch main
+git pull --ff-only
+pnpm version:check v0.1.7
+git tag v0.1.7
+git push origin v0.1.7
+gh run list --workflow release.yml --limit 5
+gh release view v0.1.7 --json url,assets
+```
 
-The Intel v0.1.3 [release run](https://github.com/iazaran/orchevia/actions/runs/36755474756)
-failed in two different places:
+Use the [README's permanent v0.1.7 links](../README.md#install) for `.deb`,
+AppImage, arm64 DMG, x86_64 DMG and `SHA256SUMS`. Temporary Actions artifacts
+expire and are not install guidance. A release page without all its files is not
+an installer-ready release. The source version and target download links can be
+reviewed in a PR before its matching tag builds them; do not claim readiness then.
 
-- Attempt 1 completed `Orchevia_0.1.3_x64.dmg` and staged a 5,810,069-byte DMG;
-  artifact creation then failed with `ENOTFOUND` (network/DNS at upload).
-- Attempt 2 compiled the binary and app, then failed in `bundle_dmg.sh` before
-  staging/upload. The original nonverbose log does not identify the failing
-  `hdiutil`/script command. It is not evidence of another upload failure or a
-  particular Finder bug. Tauri already skips Finder styling when `CI=true`.
+The repository and release files are private: readers need GitHub repository
+access. Public Pages does not grant access to private assets. Repository visibility
+and signing/notarization are separate maintainer decisions.
 
-### Maintainer handoff
-
-Merge this PR after checks pass, then create the matching `v0.1.5` tag/release.
-`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`,
-`crates/core/Cargo.toml`, workspace entries in `Cargo.lock`, and the dated changelog
-entry are aligned to 0.1.5. `pnpm-lock.yaml` has no application-version field and
-requires no change for this version bump; frozen installation verifies it remains
-consistent. `pnpm version:check v0.1.5` checks manifests, Cargo lock entries,
-changelog, and tag agreement.
-
-This PR includes the four Actions upgrades from Dependabot #17 (`setup-node` v7,
-`download-artifact` v8, `configure-pages` v6, and `deploy-pages` v5). Keep #17 open
-until this PR merges; Dependabot can then detect the equivalent updates. Artifact
-downloads retain v8's default digest-mismatch error behavior.
-
-The maintainer creates the matching new tag/release. Do not move or recreate an
-existing tag: rerunning v0.1.3 uses its original workflow and will not gain these
-changes. Ask for approval before additional expensive reruns/manual release builds.
-If approved, rerun only failed jobs rather than the whole matrix; successful tag-run
-artifacts can be used by the dependent publish job while retained. An old upload
-failure cannot recover an unuploaded DMG from a runner that has already exited.
-
-For each release, verify all four nonempty installers and checksums and check
-that the README's versioned URLs match the published asset names. Only adopt
-latest-download links when those exact URLs work for authorized readers.
-No release build is manually dispatched by this change.
+If release jobs fail, separate packaging, upload and validation failures before
+retrying. Retained verbose bundler logs are the starting point for DMG failures.
+Ask before additional expensive reruns; retry only failed jobs when approved.
+Never rerun an older tag expecting it to gain a newer workflow's fixes.
 
 ## GitHub Pages (`.github/workflows/pages.yml`)
 
@@ -205,10 +179,9 @@ Repository visibility and Pages settings are unchanged.
 
 Dependabot (`.github/dependabot.yml`) remains weekly, with one grouped version-update
 PR per ecosystem (npm, Cargo, and now GitHub Actions). The open version-PR limit is
-one per ecosystem; it does not disable security updates. TypeScript 7 is deferred
-until `typescript-eslint` supports its compiler API. No test/security rule is relaxed.
-PRs #13/#14 were closed as superseded before this change; no new dependency PRs were
-open during the audit. Review future dependency PRs separately.
+one per ecosystem; it does not disable security updates. Keep compiler, lint and test-tool compatibility verified together. Do not accept
+an ecosystem upgrade merely because a package manager resolves it. Run frozen
+installation and the full gate; no test or security rule is relaxed.
 
 Update the Rust `tauri` crate and npm `@tauri-apps/api` together: their major and
 minor versions must match. Dependabot groups npm and Cargo separately, so combine
@@ -231,3 +204,34 @@ The release workflow stages `Orchevia-linux-x86_64.deb`, `Orchevia-linux-x86_64.
 `Orchevia-macos-arm64.dmg`, `Orchevia-macos-x86_64.dmg`, and `SHA256SUMS`.
 The project page exposes direct downloads only when the release assets are
 publicly accessible. Check the version in `src-tauri/tauri.conf.json` before tagging.
+
+## Complete local quality gate
+
+```bash
+pnpm check
+pnpm build
+cargo test -p orchevia-core
+cargo clippy -p orchevia-core --all-targets -- -D warnings
+cargo fmt --check
+cargo check -p orchevia
+cargo test -p orchevia
+pnpm version:check v0.1.7
+git diff --check
+```
+
+When changing behavior, find the existing implementation pattern first, add a
+regression that fails for the original issue, and run it after the fix. Keep
+browser/native semantics aligned through `Backend`; mirror model and validation
+changes in TypeScript and Rust. Use the shared dialogs, notices, timestamps and
+error helpers rather than introducing parallel conventions.
+
+For async views and saves, preserve newer drafts and ignore stale responses after
+selection or navigation changes. React's [effect cleanup guidance](https://react.dev/reference/react/useEffect#fetching-data-with-effects)
+explains the lifecycle principle. TypeScript's
+[exact optional properties](https://www.typescriptlang.org/tsconfig/exactOptionalPropertyTypes.html)
+and [checked indexing](https://www.typescriptlang.org/tsconfig/noUncheckedIndexedAccess.html)
+match this repository's contract rules. For local processes, Rust's
+[Child documentation](https://doc.rust-lang.org/std/process/struct.Child.html)
+describes explicit child cleanup; cancellation and timeout tests must retain
+partial output. Verify CLI contracts against their installed help and official
+manuals, including [GitHub check fields and exit codes](https://cli.github.com/manual/gh_pr_checks).

@@ -4,7 +4,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
 
-[Download installers](#install) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
+[Download installers](#install) · [Getting started](./docs/getting-started.md) · [Project site](https://iazaran.github.io/orchevia/) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
 
 Orchevia is a **local-first** desktop app for visual developer workflows. You describe
 a task — _"implement this ticket with Claude, review with Codex, open a draft PR"_ — inspect
@@ -20,20 +20,43 @@ branch → draft PR, nightly review sweeps) without sending code to an Orchevia 
 
 ![Example Orchevia workflow: Start → Implement with Claude → Human Approval → Review with Codex → End](./docs/workflow-visual.svg)
 
+## Why Orchevia
+
+Turn a familiar sequence of terminal tasks into a workflow you can inspect,
+repeat, and share. Keep your existing CLIs and repository conventions while
+making the handoffs visible: which agent plans, when tests run, who reviews,
+and where you approve a write.
+
+| Developer need                                       | How Orchevia helps                                                    |
+| ---------------------------------------------------- | --------------------------------------------------------------------- |
+| Repeat a task without rebuilding the prompt sequence | Save a workflow or template with typed inputs.                        |
+| Use different agents for implementation and review   | Assign a profile to each step and inspect its output.                 |
+| Stay involved before important decisions             | Put a durable Human Approval gate in the graph.                       |
+| Understand a failed run                              | Inspect live output, per-step results, and the exact saved run graph. |
+| Reuse repository-specific knowledge                  | Save accepted commands and conventions in a project playbook.         |
+| Keep orchestration on your own machine               | Store workflows and history locally; use your own CLI authentication. |
+
+Orchevia fits developers who already use local CLIs and want explicit, repeatable
+coordination. It is in beta: start with a small manual flow before scheduling
+writes. CLI usage costs and remote-provider behavior remain with your chosen tools.
+
 ## Install
 
-Install v0.1.5 using the platform downloads below. See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.5).
+Release v0.1.7 installers use the permanent platform links below. See the
+[release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.7).
+Versioned downloads are published when the matching tag's release workflow
+succeeds. A merged PR alone does not build installers.
 
 The repository and release files are **private for now**: sign in to GitHub with an
 account that has repository access. The repository and downloads will be public soon.
 
 | Platform                    | Installer                                                                                                                                                                                                |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-macos-arm64.dmg)                                                                                                            |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-macos-x86_64.dmg)                                                                                                           |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.5/Orchevia-linux-x86_64.deb) |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.7/Orchevia-macos-arm64.dmg)                                                                                                            |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.7/Orchevia-macos-x86_64.dmg)                                                                                                           |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.7/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.7/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.5/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.7/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -70,6 +93,10 @@ Optional tools (`git`, `gh`, `claude`, `codex`) are detected locally; install an
 authenticate the ones your workflows need.
 
 ## Your first workflow in 5 minutes
+
+New to the app? The [getting-started guide](./docs/getting-started.md) begins with
+[a small `echo` workflow](./docs/examples/hello-workflow.json) that needs no AI
+profile, then shows how to add agents, tests, approval and reuse.
 
 1. **Open Orchevia** — the first-run wizard detects your tools and creates Claude + Codex
    agent profiles. (Reopen it anytime from the sidebar.)
@@ -118,6 +145,33 @@ How it fits together: [docs/architecture.md](./docs/architecture.md) ·
 [workflow schema](./docs/workflow-schema.md) · [security model](./docs/security.md) ·
 [site source](./docs/index.html).
 
+## Workflow recipes
+
+| Start with                | Typical sequence                                           | What you configure                                   |
+| ------------------------- | ---------------------------------------------------------- | ---------------------------------------------------- |
+| A change you want to make | Plan → Approve → Implement → Test → Review                 | Repository, agent profiles, real test command        |
+| A tracked ticket          | Read Ticket → Plan → Approve → Implement → Test → Draft PR | Jira MCP, `git`/`gh`, profiles, explicit write steps |
+| An existing PR            | Read PR → Independent reviews → Summarize → Human decision | Authenticated `gh`, PR input, reviewer profiles      |
+
+Use supported native nodes for Git, GitHub, Ticket and MCP operations. A Command
+node covers your project's tools and unsupported operations. Keep commit, push,
+comment, and PR creation explicit in the graph. A review or a successful test step
+does not merge anything unless you add an authorized write operation.
+
+## Author, inspect, reuse
+
+**Simple JSON** uses readable node keys and portable profile selections. The
+canvas and JSON editor stay in sync; **Advanced JSON** keeps the full runtime
+format available. Arrange graphs by dependencies when they become hard to follow.
+Save reusable **Templates** with inputs instead of duplicating project-specific
+values. In **Memory**, maintain project commands, conventions and review choices;
+accept suggestions deliberately or promote a command from a successful run.
+
+**Runs** keeps the workflow snapshot used for each execution, so later edits do
+not change the graph you are inspecting. Output and failures belong to individual
+steps. Local **Automations** can repeat a proven flow while the app stays running;
+review scope and trust permissions before enabling writes.
+
 ## How generation works
 
 A configured local AI CLI drafts a proposal. Orchevia validates and compiles it into a
@@ -150,7 +204,7 @@ not a guarantee that every requested integration operation is supported.
 
 ## Current limits
 
-- **Beta:** source version 0.1.6 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** source version 0.1.7 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.
@@ -180,14 +234,6 @@ cargo clippy -p orchevia-core --all-targets -- -D warnings
 cargo fmt --check
 cargo check -p orchevia
 ```
-
-Generation asks the selected local CLI for a compact JSON proposal. It now shows
-configured role/profile mappings and discovered MCP tool names to the generator;
-compilation validates the graph and exposes required setup before accepting it.
-For Jira Cloud, the MCP guide uses `JIRA_URL`, `JIRA_USERNAME`, and
-`JIRA_API_TOKEN`. Raw shell commands may demand different variables; inspect
-Command nodes before Run. The Runs view keeps per-node output and errors so a
-failed step is traceable.
 
 ## Roadmap
 

@@ -19,15 +19,18 @@ canvas positions never affect execution.
   but routing decisions are pure functions of recorded results.
 - **Skips are records:** untaken branches are recorded as `skipped` node
   results (visible on canvas overlay and in run history), never silent gaps.
+  Nodes unreachable from Start remain validation warnings, receive a durable
+  skip, and do not prevent connected paths or joins from completing. Resuming
+  an approval preserves those skip rows without duplicating them.
 
 ## Node behaviors
 
-| Node                | Behavior                                                                                                                                                                                            |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `start` / `end`     | Instant success markers.                                                                                                                                                                            |
-| `command` / `agent` | Run a local process (no shell), optional bounded retries, optional per-node timeout (1–3600 s, default 600). Non-zero exit fails the node.                                                          |
-| `approval`          | Pauses the run durably (`paused` row + run status `paused`). Resumes via approve (records `approved` + optional note) or fails via reject. Approvals engage only when no other branch is in flight. |
-| `condition`         | Evaluates a constrained expression (see below) and routes to the `true` or `false` labeled edge. Missing variables or type errors fail the node.                                                    |
+| Node                | Behavior                                                                                                                                                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start` / `end`     | Instant success markers.                                                                                                                                                                                                                 |
+| `command` / `agent` | Run a local process with separate arguments (a shell only when explicit), optional bounded retries and per-node timeout up to 12 hours. Commands default to 600 seconds; agents use their profile default. Non-zero exit fails the node. |
+| `approval`          | Pauses the run durably (`paused` row + run status `paused`). Resumes via approve (records `approved` + optional note) or fails via reject. Approvals engage only when no other branch is in flight.                                      |
+| `condition`         | Evaluates a constrained expression (see below) and routes to the `true` or `false` labeled edge. Missing variables or type errors fail the node.                                                                                         |
 
 ## Edge labels (routing)
 

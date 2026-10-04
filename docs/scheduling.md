@@ -25,6 +25,9 @@ written back with the current field name.
 - Missed one-time runs within 15 minutes still fire once (late boot grace);
   ancient ones retire (Skip) instead of surprising you.
 - Use **Run now** to fire manually; the schedule row records last status.
+- Scheduled and watcher-started runs share the manual run cancellation controls.
+  Cancel them under **Runs**; partial process output stays in history. Cancellation
+  does not undo changes or remote writes already performed.
 
 Timezones are wall-clock in the chosen offset; DST edge cases follow the
 fixed offset (documented limitation — prefer `local` for DST-aware daily
@@ -50,7 +53,10 @@ Three trigger kinds, evaluated separately from execution:
   handled items (dedupe store, capped at 500).
 
 Minimum poll interval is 300 s (conservative by default: 900 s). Failures back
-off by leaving `last_checked_at` set — no hammering. Watchers pass
+off by leaving `last_checked_at` set — no hammering. Feedback keeps a separate
+successful-handling watermark, so a failed poll or run start does not consume
+unhandled comments. The next eligible poll can retry them; handled events remain
+deduplicated. Watchers pass
 `prNumber`/`prHeadSha`/`feedbackCount` as workflow inputs; use `number: 0` in
 GitHub nodes to consume `prNumber` at runtime.
 

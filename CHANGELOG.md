@@ -6,6 +6,36 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-04
+
+### Added
+
+- A command-only getting-started guide and portable Hello Orchevia workflow,
+  practical workflow recipes, setup troubleshooting, and expanded project-site
+  explanations of authoring, approvals, project memory, and product boundaries.
+
+### Changed
+
+- Preserve newer editor drafts during saves, serialize saves per workflow, and
+  scope validation and run-input review to the selected workflow.
+- Replace historical release instructions with a maintained merge, tag and
+  installer-verification guide; align permanent installer links with v0.1.7.
+
+### Fixed
+
+- Cancel scheduled and watcher-started runs through the same controls as manual
+  runs, retaining partial output.
+- Read native GitHub PR checks using supported CLI fields and normalize pending,
+  failed, cancelled and skipped checks without losing CLI errors.
+- Preserve unhandled watcher feedback after a failed poll or run start, and
+  report actual Git tracking ahead/behind counts.
+- Record unreachable nodes as skipped so warning-only graphs complete and joins
+  and approval replay remain consistent.
+- Assign newly created Agent Profiles to accepted generated workflow steps instead
+  of saving unresolved roles.
+- Prevent older save responses from replacing newer edits or another workflow's
+  validation, and prevent input values from carrying across workflows.
+
 ## [0.1.6] - 2026-10-03
 
 ### Added

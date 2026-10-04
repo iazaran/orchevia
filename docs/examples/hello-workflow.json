@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "Hello Orchevia",
+  "nodes": [
+    { "key": "start", "type": "start", "config": {} },
+    {
+      "key": "hello",
+      "type": "command",
+      "label": "Say hello",
+      "config": {
+        "executable": "echo",
+        "args": ["Hello from Orchevia"],
+        "timeoutSecs": 30
+      }
+    },
+    { "key": "end", "type": "end", "config": {} }
+  ],
+  "edges": [
+    { "from": "start", "to": "hello" },
+    { "from": "hello", "to": "end" }
+  ]
+}
