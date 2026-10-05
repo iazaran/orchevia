@@ -1,4 +1,4 @@
-# Setup and notification polish
+# Setup and notification polish — v0.1.9
 
 Scope: the five new testing notes collected on 2026-10-05. The bottom-left message
 stack supersedes the earlier top-right Saved placement. Previous withdrawn notes
@@ -40,3 +40,14 @@ autosave retry, and new Inbox event deduplication.
 Required gates: `pnpm check`, `cargo test -p orchevia-core`, core Clippy with warnings
 as errors, `cargo fmt --check`, `cargo check -p orchevia`. Also run desktop command
 tests, frontend build, diff review and browser visual checks before PR handoff.
+
+## Release preparation
+
+The user requested v0.1.9 for this PR. Move its changelog items into a dated
+0.1.9 entry, synchronize package/Tauri/core versions and the two workspace Cargo
+lock entries, and update README platform links plus release commands to v0.1.9.
+The README labels those links as release targets until the tag workflow publishes
+all four installers and SHA256SUMS; published v0.1.8 remains available meanwhile.
+Do not change historical v0.1.8 implementation notes or registry dependency
+versions. Validate version consistency against the exact v0.1.9 tag and update the
+documentation contract test for prepared, rather than published, installer links.

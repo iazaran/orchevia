@@ -8,10 +8,10 @@ const page = new DOMParser().parseFromString(
   'text/html',
 );
 const readme = readFileSync('README.md', 'utf8');
-// Download links advance after installers have been published and verified.
-const installerVersion = '0.1.7';
 const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
   .version;
+// Release preparation targets source-version assets without claiming publication.
+const installerVersion = version;
 
 describe('public documentation before launch', () => {
   it('announces upcoming public access without offering private downloads', () => {
@@ -40,10 +40,13 @@ describe('public documentation before launch', () => {
     expect(page.documentElement.innerHTML).not.toContain('api.github.com');
   });
 
-  it('targets published permanent installers separately from the source version', () => {
-    expect(readme).toContain(`Release v${installerVersion} installers`);
+  it('targets prepared installers without claiming they are already published', () => {
+    expect(readme).toContain(`Release v${installerVersion} is being prepared`);
     expect(readme).toContain(`source version ${version}`);
-    expect(readme).not.toMatch(/pending|being prepared|planned.*files|processing/i);
+    expect(readme).toContain(
+      "become available after the matching tag's release workflow succeeds",
+    );
+    expect(readme).toContain('/releases/tag/v0.1.8');
     expect(readme).not.toContain('/releases/latest/download/');
     const linkedVersions = Array.from(
       readme.matchAll(/\/releases\/download\/v([^/]+)\//g),
@@ -56,7 +59,7 @@ describe('public documentation before launch', () => {
     expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
   });
 
-  it('links each architecture and checksums directly to the published installer version', () => {
+  it('links each architecture and checksums directly to the prepared installer version', () => {
     for (const asset of [
       'Orchevia-macos-arm64.dmg',
       'Orchevia-macos-x86_64.dmg',
