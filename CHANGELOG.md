@@ -6,6 +6,37 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-05
+
+### Added
+
+- Reviewable local CLI assistance for existing workflows, with a configurable
+  Workflow Assistance profile, developer instructions, project playbook and
+  latest matching run failure context. Applying a preview never starts a run.
+- Direct Simple JSON or Advanced workflow JSON import into a new template.
+- Watcher last/next-check status, quiet/error outcomes and automation provenance.
+
+### Changed
+
+- Arrange uses dependency layers, branch/join centering, measured dimensions and
+  loop entry order in both directions. Canvas controls have a translucent bar.
+- Workflow/node edits autosave with saving/saved/error feedback and retry; local
+  drafts survive refreshes and navigation. Redundant editor Save buttons removed.
+- Project suggestions also observe new test/lint/build steps through existing
+  review controls; repository playbooks remain isolated and accepted-only.
+- Formatted reports render tables, nested lists, headings, code and safe links.
+
+### Fixed
+
+- Right-align workflow actions with responsive wrapping and reserve watcher
+  card space for both the Enabled badge and shared delete control.
+- Refresh Runs on every navigation entry, preserve selection and reject stale
+  refresh responses while keeping one non-overlapping polling loop.
+- Enforce GitHub requested-review scope, revision deduplication, bounded watcher
+  dispatch and schedule overlap controls; preserve accepted partial dispatches.
+- Prevent one-time schedules from repeatedly firing and preserve due work on
+  scheduler startup instead of advancing it before evaluation.
+
 ## [0.1.7] - 2026-10-04
 
 ### Added

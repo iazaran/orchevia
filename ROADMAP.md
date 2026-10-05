@@ -7,16 +7,16 @@ private while public access is prepared.
 
 ## Implemented
 
-| Area            | Current capabilities                                                                                              |
-| --------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Workflow editor | Visual nodes and connections, validation, repository defaults, JSON editing, layout, run overlays                 |
-| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, command previews                      |
-| Execution       | Parallel paths and joins, conditions, retries, bounded loops, approval gates, timeouts, cancellation, live output |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                       |
-| Reuse           | Built-in templates, user templates, import/export, local preferences and generation history                       |
-| Automation      | Local schedules, GitHub watchers, inbox, trust settings, optional background mode                                 |
-| Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                     |
-| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, private-beta project page                 |
+| Area            | Current capabilities                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays                |
+| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, command previews                        |
+| Execution       | Parallel paths and joins, conditions, retries, bounded loops, approval gates, timeouts, cancellation, live output   |
+| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                         |
+| Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history   |
+| Automation      | Bounded local schedules/watchers, requested-review scope, revision tracking, check outcomes, inbox, background mode |
+| Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                       |
+| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, private-beta project page                   |
 
 ## Current priorities
 

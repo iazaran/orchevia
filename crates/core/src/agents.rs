@@ -223,6 +223,7 @@ impl AgentRole {
             "fastReview".to_string(),
             "deepReview".to_string(),
             "workflowGenerator".to_string(),
+            "workflowAssistance".to_string(),
         ]
     }
 }

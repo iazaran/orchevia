@@ -96,6 +96,7 @@ export const WELL_KNOWN_ROLES = [
   'fastReview',
   'deepReview',
   'workflowGenerator',
+  'workflowAssistance',
 ] as const;
 
 export function newProfileId(): string {
@@ -144,6 +145,12 @@ export function recommendedProfiles(existing: AgentProfile[]): AgentProfile[] {
       model: 'fable',
     },
     { adapter: 'claude', role: 'deepReview', label: 'Deep review', model: 'fable' },
+    {
+      adapter: 'claude',
+      role: 'workflowAssistance',
+      label: 'Workflow assistance',
+      model: 'fable',
+    },
     { adapter: 'codex', role: 'deepReview', label: 'Deep review', model: 'gpt-6.1-sol' },
   ];
   return recommendations

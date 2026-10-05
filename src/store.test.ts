@@ -217,3 +217,239 @@ it('observes only concrete command changes after successful saves', async () => 
   await useAppStore.getState().saveActiveWorkflow();
   expect(observe).not.toHaveBeenCalled();
 });
+
+it('autosaves every edit after leaving the workflow and reports persistence state', async () => {
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Autosave'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    overlayRunId: null,
+  });
+  useAppStore
+    .getState()
+    .updateActiveWorkflow({ ...stored.definition, name: 'Edited without blur' });
+  expect(useAppStore.getState().workflowSaveStates[stored.id]?.status).toBe('saving');
+  useAppStore.getState().selectWorkflow(null);
+  await vi.waitFor(async () =>
+    expect((await backend.getWorkflow(stored.id))?.name).toBe('Edited without blur'),
+  );
+  expect(useAppStore.getState().workflowSaveStates[stored.id]?.status).toBe('saved');
+});
+
+it('retains failed autosave drafts across refresh and retries their latest edits', async () => {
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Retry'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    overlayRunId: null,
+  });
+  vi.spyOn(backend, 'saveWorkflow').mockRejectedValueOnce(new Error('Disk busy'));
+  useAppStore
+    .getState()
+    .updateActiveWorkflow({ ...stored.definition, name: 'Unsaved draft' });
+  await vi.waitFor(() =>
+    expect(useAppStore.getState().workflowSaveStates[stored.id]?.status).toBe('error'),
+  );
+  expect(useAppStore.getState().workflowSaveStates[stored.id]?.error).toContain(
+    'Disk busy',
+  );
+  await useAppStore.getState().refreshWorkflows();
+  expect(useAppStore.getState().workflows.find((w) => w.id === stored.id)?.name).toBe(
+    'Unsaved draft',
+  );
+  await useAppStore.getState().retryWorkflowSave(stored.id);
+  expect((await backend.getWorkflow(stored.id))?.name).toBe('Unsaved draft');
+  expect(useAppStore.getState().workflowSaveStates[stored.id]?.status).toBe('saved');
+});
+
+it('preserves a newer draft when a workflow list request returns stale data', async () => {
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Refresh race'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    overlayRunId: null,
+  });
+  let release: (value: StoredWorkflow[]) => void = () => {};
+  vi.spyOn(backend, 'listWorkflows').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const refresh = useAppStore.getState().refreshWorkflows();
+  useAppStore
+    .getState()
+    .updateActiveWorkflow({ ...stored.definition, name: 'Latest draft' });
+  await useAppStore.getState().saveActiveWorkflow();
+  release([stored]);
+  await refresh;
+  expect(useAppStore.getState().workflows.find((w) => w.id === stored.id)?.name).toBe(
+    'Latest draft',
+  );
+});
+
+it('keeps the newest Runs refresh when older list requests finish last', async () => {
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Run refresh'));
+  const first = await backend.runWorkflow(stored.id);
+  const older = await backend.listRuns(100);
+  const second = await backend.runWorkflow(stored.id);
+  const latest = await backend.listRuns(100);
+  let release: (value: typeof older) => void = () => {};
+  vi.spyOn(backend, 'listRuns').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  useAppStore.setState({ activeRunId: first.runId });
+  const request = useAppStore.getState().refreshRuns();
+  await useAppStore.getState().refreshRuns();
+  release(older);
+  await request;
+  expect(useAppStore.getState().runs.map((r) => r.id)).toEqual(latest.map((r) => r.id));
+  expect(useAppStore.getState().runs.some((r) => r.id === second.runId)).toBe(true);
+  expect(useAppStore.getState().activeRunId).toBe(first.runId);
+});
+
+it('deletes a workflow after its pending autosave and prevents draft resurrection', async () => {
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Delete pending'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    overlayRunId: null,
+    selectedNodeId: stored.definition.nodes[0]?.id ?? null,
+  });
+  const save = backend.saveWorkflow.bind(backend);
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const startedSaving = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  vi.spyOn(backend, 'saveWorkflow').mockImplementationOnce(async (definition) => {
+    started();
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return save(definition);
+  });
+  useAppStore
+    .getState()
+    .updateActiveWorkflow({ ...stored.definition, name: 'Pending before delete' });
+  const saving = useAppStore.getState().saveActiveWorkflow();
+  await startedSaving;
+  const deleting = useAppStore.getState().deleteWorkflow(stored.id);
+  useAppStore
+    .getState()
+    .updateActiveWorkflow({ ...stored.definition, name: 'Late edit during deletion' });
+  release();
+  await saving;
+  expect(await deleting).toBe(true);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await useAppStore.getState().refreshWorkflows();
+  expect(await backend.getWorkflow(stored.id)).toBeNull();
+  expect(useAppStore.getState().workflows.some((w) => w.id === stored.id)).toBe(false);
+  expect(useAppStore.getState().workflowSaveStates[stored.id]).toBeUndefined();
+  expect(useAppStore.getState().selectedNodeId).toBeNull();
+});
+
+it('keeps a failed deletion draft available for saving and retry', async () => {
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Failed deletion'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    overlayRunId: null,
+  });
+  useAppStore
+    .getState()
+    .updateActiveWorkflow({ ...stored.definition, name: 'Retained draft' });
+  vi.spyOn(backend, 'deleteWorkflow').mockRejectedValueOnce(new Error('Disk busy'));
+  await expect(useAppStore.getState().deleteWorkflow(stored.id)).rejects.toThrow(
+    'Disk busy',
+  );
+  expect(useAppStore.getState().workflows.find((w) => w.id === stored.id)?.name).toBe(
+    'Retained draft',
+  );
+  expect(useAppStore.getState().workflowSaveStates[stored.id]?.status).toBe('error');
+  await useAppStore.getState().retryWorkflowSave(stored.id);
+  expect((await backend.getWorkflow(stored.id))?.name).toBe('Retained draft');
+});
+
+it('ignores a workflow list captured before a successful deletion', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(
+    createEmptyWorkflow('Deleted during refresh'),
+  );
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    overlayRunId: null,
+    workflowSaveStates: {},
+  });
+  let finish: (rows: StoredWorkflow[]) => void = () => {};
+  vi.spyOn(backend, 'listWorkflows').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const loading = useAppStore.getState().refreshWorkflows();
+  await useAppStore.getState().deleteWorkflow(stored.id);
+  finish([stored]);
+  await loading;
+  expect(useAppStore.getState().workflows).toEqual([]);
+  expect(useAppStore.getState().activeWorkflowId).toBeNull();
+  expect(await backend.getWorkflow(stored.id)).toBeNull();
+});
+
+it('ignores an older result response for the same selected run', async () => {
+  const backend = __setMockBackendForTests();
+  const row = {
+    id: 1,
+    runId: 'selected-run',
+    nodeId: 'step',
+    status: 'succeeded',
+    stdout: 'current',
+    stderr: '',
+    startedAt: new Date().toISOString(),
+  };
+  let finish: (rows: (typeof row)[]) => void = () => {};
+  vi.spyOn(backend, 'getRunResults')
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue([row]);
+  const oldRequest = useAppStore.getState().selectRun('selected-run');
+  await useAppStore.getState().selectRun('selected-run');
+  finish([{ ...row, stdout: 'stale' }]);
+  await oldRequest;
+  expect(useAppStore.getState().runResults['selected-run']).toEqual([row]);
+});
+
+it('does not save a different workflow when a supplied draft no longer matches selection', async () => {
+  const backend = __setMockBackendForTests();
+  const source = await backend.saveWorkflow(createEmptyWorkflow('Source'));
+  const selected = await backend.saveWorkflow(createEmptyWorkflow('Selected'));
+  useAppStore.setState({
+    workflows: [source, selected],
+    activeWorkflowId: selected.id,
+    overlayRunId: null,
+  });
+  const save = vi.spyOn(backend, 'saveWorkflow');
+  expect(
+    await useAppStore
+      .getState()
+      .saveActiveWorkflow({ ...source.definition, name: 'Late source edit' }),
+  ).toBeUndefined();
+  expect(save).not.toHaveBeenCalled();
+  expect((await backend.getWorkflow(selected.id))?.name).toBe('Selected');
+});

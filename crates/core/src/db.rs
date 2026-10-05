@@ -588,14 +588,31 @@ impl SqliteDb {
     }
 
     pub fn list_runs(&self, limit: i64) -> DbResult<Vec<StoredRun>> {
+        self.list_run_rows(limit, false, None)
+    }
+
+    pub fn list_active_runs(&self) -> DbResult<Vec<StoredRun>> {
+        self.list_run_rows(i64::MAX, true, None)
+    }
+
+    pub fn list_workflow_runs(&self, workflow_id: &str, limit: i64) -> DbResult<Vec<StoredRun>> {
+        self.list_run_rows(limit, false, Some(workflow_id))
+    }
+
+    fn list_run_rows(
+        &self,
+        limit: i64,
+        active_only: bool,
+        workflow_id: Option<&str>,
+    ) -> DbResult<Vec<StoredRun>> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         let mut stmt = conn.prepare(
-            "SELECT id, workflow_id, status, started_at, finished_at, inputs FROM runs ORDER BY started_at DESC LIMIT ?1",
+            "SELECT id, workflow_id, status, started_at, finished_at, inputs FROM runs WHERE (?2 = 0 OR status IN ('pending', 'running', 'paused')) AND (?3 IS NULL OR workflow_id = ?3) ORDER BY started_at DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit], |row| {
+        let rows = stmt.query_map(params![limit, active_only, workflow_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1113,6 +1130,40 @@ impl SqliteDb {
             )));
         }
         self.upsert_definition("watchers", &watcher.id, &watcher.name, watcher)
+    }
+
+    pub fn record_schedule_check(
+        &self,
+        before: &crate::schedule::Schedule,
+        after: &crate::schedule::Schedule,
+    ) -> DbResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let changed = conn.execute(
+            "UPDATE schedules SET definition = ?1, updated_at = ?2 WHERE id = ?3 AND definition = ?4",
+            params![serde_json::to_string(after)?, Utc::now().to_rfc3339(), before.id, serde_json::to_string(before)?],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Poll bookkeeping must not resurrect deleted watchers or overwrite a
+    /// configuration changed while `gh` was running.
+    pub fn record_watcher_check(
+        &self,
+        before: &crate::schedule::Watcher,
+        after: &crate::schedule::Watcher,
+    ) -> DbResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let changed = conn.execute(
+            "UPDATE watchers SET definition = ?1, updated_at = ?2 WHERE id = ?3 AND definition = ?4",
+            params![serde_json::to_string(after)?, Utc::now().to_rfc3339(), before.id, serde_json::to_string(before)?],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn get_watcher(&self, id: &str) -> DbResult<Option<crate::schedule::Watcher>> {

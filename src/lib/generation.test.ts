@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyAssistancePreview,
+  resolveAssistanceProfile,
   describeGeneratedStep,
   parseInputDeclarations,
   resolveGeneratorProfile,
@@ -184,4 +186,35 @@ it('describes each resolved exact reviewer and project command in preview', () =
       config: { executable: 'sh', args: ['-c', '{{input.testCommand}}'] },
     }),
   ).toContain('{{input.testCommand}}');
+});
+
+it('assistance profile prefers its dedicated role, then the existing generator', () => {
+  expect(
+    resolveAssistanceProfile(
+      [
+        { id: 'generator', adapter: 'claude', role: 'workflowGenerator' },
+        { id: 'assistant', adapter: 'claude', role: 'workflowAssistance' },
+      ],
+      'claude',
+    ),
+  ).toBe('assistant');
+});
+
+it('applying assistance retains identity and refuses a stale edited base', () => {
+  const base = {
+    schemaVersion: 6,
+    id: 'existing',
+    name: 'Current',
+    nodes: [],
+    edges: [],
+    inputs: [],
+  };
+  const proposed = { ...base, id: 'draft', name: 'Improved' };
+  expect(applyAssistancePreview(base, base, proposed)).toEqual({
+    ...proposed,
+    id: base.id,
+  });
+  expect(() =>
+    applyAssistancePreview(base, { ...base, name: 'Edited meanwhile' }, proposed),
+  ).toThrow('changed');
 });

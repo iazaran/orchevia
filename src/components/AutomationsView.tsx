@@ -5,6 +5,9 @@ import {
   WEEKDAYS,
   describeScheduleKind,
   newScheduleId,
+  validateWatcher,
+  watcherNextCheck,
+  workflowConsumesPrNumber,
   type NotificationPrefs,
   type RiskCategory,
   type Schedule,
@@ -154,6 +157,15 @@ export function AutomationsView(): React.JSX.Element {
 
   const defaultWorkflow = workflows[0]?.id ?? '';
 
+  useEffect(() => {
+    // The scheduler runs independently; refresh visible status while this
+    // view is open, including quiet checks that create no run or notification.
+    const timer = setInterval(() => {
+      void refreshAutomations();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [refreshAutomations]);
+
   const reload = (): void => {
     void Promise.all([refreshAutomations(), refreshNotifications()]);
   };
@@ -176,7 +188,11 @@ export function AutomationsView(): React.JSX.Element {
       .saveWatcher(watcher)
       .then(() => {
         setEditingWatcher(null);
-        setMessage(`Saved watcher '${watcher.name}'.`);
+        setMessage(
+          watcher.enabled
+            ? `Saved watcher '${watcher.name}'. An eligible check is queued now; unchanged revisions stay quiet.`
+            : `Saved watcher '${watcher.name}' (disabled).`,
+        );
         reload();
       })
       .catch((err: unknown) => {
@@ -333,7 +349,7 @@ export function AutomationsView(): React.JSX.Element {
           {schedules.map((s) => (
             <div
               key={s.id}
-              className="tool-card profile-card"
+              className="tool-card profile-card has-dismiss automation-card"
               style={{ position: 'relative' }}
             >
               <CloseButton
@@ -442,7 +458,7 @@ export function AutomationsView(): React.JSX.Element {
           {watchers.map((w) => (
             <div
               key={w.id}
-              className="tool-card profile-card"
+              className="tool-card profile-card has-dismiss automation-card"
               style={{ position: 'relative' }}
             >
               <CloseButton
@@ -496,6 +512,16 @@ export function AutomationsView(): React.JSX.Element {
                   </dd>
                 </div>
                 <div>
+                  <dt>Next check</dt>
+                  <dd title={watcherNextCheck(w)}>
+                    {!w.enabled
+                      ? 'Disabled'
+                      : watcherNextCheck(w) !== undefined
+                        ? formatTime(watcherNextCheck(w) ?? '')
+                        : 'Queued for first check'}
+                  </dd>
+                </div>
+                <div>
                   <dt>Last check</dt>
                   <dd title={w.lastCheckedAt ?? undefined}>
                     {w.lastCheckedAt !== undefined
@@ -504,9 +530,18 @@ export function AutomationsView(): React.JSX.Element {
                   </dd>
                 </div>
               </dl>
-              <div className="watcher-result" title={w.lastResult ?? 'never checked'}>
+              <div
+                className="watcher-result"
+                title={
+                  w.lastResult ??
+                  (w.enabled ? 'Waiting for first check' : 'never checked')
+                }
+              >
                 <span className="field-label">Last result</span>
-                <span>{w.lastResult ?? 'never checked'}</span>
+                <span>
+                  {w.lastResult ??
+                    (w.enabled ? 'Waiting for first check' : 'never checked')}
+                </span>
               </div>
               <div className="profile-actions">
                 <button className="btn" onClick={() => setEditingWatcher({ ...w })}>
@@ -899,6 +934,41 @@ function WatcherEditor({
     setForm((f) => ({ ...f, ...patch }));
   };
   const errors = validateWatcherForm(form, workflows.length > 0);
+  const scopeKey =
+    form.enabled && form.repoDir.trim() !== '' && form.workflowId.trim() !== ''
+      ? JSON.stringify({
+          watcher: form,
+          definition: workflows.find((workflow) => workflow.id === form.workflowId)
+            ?.definition,
+        })
+      : null;
+  const [scopeResult, setScopeResult] = useState<{
+    key: string;
+    issues: string[];
+  } | null>(null);
+  const checkingScope = scopeKey !== null && scopeResult?.key !== scopeKey;
+  useEffect(() => {
+    if (scopeKey === null) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      void getBackend()
+        .watcherScopeIssues(form)
+        .then((issues) => {
+          if (active) setScopeResult({ key: scopeKey, issues });
+        })
+        .catch((err: unknown) => {
+          if (active) setScopeResult({ key: scopeKey, issues: [errorMessage(err)] });
+        });
+    }, 200);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [form, scopeKey]);
+  const saveErrors = [
+    ...errors,
+    ...(scopeResult?.key === scopeKey ? scopeResult.issues : []),
+  ];
   return (
     <>
       <h3 style={{ marginTop: 0 }}>Watcher</h3>
@@ -982,6 +1052,7 @@ function WatcherEditor({
             className="input"
             type="number"
             min={300}
+            max={2592000}
             value={form.checkIntervalSecs}
             onChange={(e) => set({ checkIntervalSecs: Number(e.target.value) })}
           />
@@ -996,15 +1067,30 @@ function WatcherEditor({
         Enabled (enabling runs the workflow for new revisions — review write actions
         first)
       </label>
-      {errors.length > 0 && (
+      <p className="field-hint">
+        {workflowConsumesPrNumber(
+          workflows.find((workflow) => workflow.id === form.workflowId)?.definition ?? {
+            schemaVersion: 6,
+            id: '',
+            name: '',
+            nodes: [],
+            edges: [],
+          },
+        )
+          ? 'Each eligible PR revision starts a distinct run, within the shared two-run limit.'
+          : 'This workflow does not consume prNumber: requested reviews start one repository scan for the batch.'}{' '}
+        Enabling queues a check immediately. Later checks use the interval after the last
+        check, including quiet checks; they do not align to wall-clock quarter-hours.
+      </p>
+      {saveErrors.length > 0 && (
         <Notice variant="error" style={{ marginBottom: 12 }}>
-          {errors[0]}
+          {saveErrors[0]}
         </Notice>
       )}
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           className="btn btn-primary"
-          disabled={errors.length > 0}
+          disabled={saveErrors.length > 0 || checkingScope}
           onClick={() => onSave(form)}
         >
           Save watcher
@@ -1023,14 +1109,7 @@ function validateWatcherForm(form: Watcher, hasWorkflows: boolean): string[] {
     return ['Pick the workflow this watcher runs.'];
   if (form.repoDir.trim() === '')
     return ['Repository directory is required (Browse… or type it).'];
-  if (!Number.isFinite(form.checkIntervalSecs) || form.checkIntervalSecs < 300)
-    return ['Check interval must be at least 300 s (be kind to the API).'];
-  if (
-    (form.kind === 'prUpdated' || form.kind === 'feedback') &&
-    !(form.prNumber !== undefined && form.prNumber > 0)
-  )
-    return ['PR-scoped watchers need a PR number above 0.'];
-  return [];
+  return validateWatcher(form);
 }
 
 function validateScheduleForm(form: Schedule): string[] {

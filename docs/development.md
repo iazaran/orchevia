@@ -125,8 +125,8 @@ Finder workaround is applied without evidence of the underlying error.
    merged source; Pages deploys changed site files. Neither builds installers.
 3. Fetch the merged commit and check its version before creating a new tag.
    For this release, the application, both Cargo manifests, Tauri configuration,
-   Cargo lock workspace packages and dated changelog entry must read `0.1.7`.
-4. The maintainer creates `v0.1.7` on that merged commit and pushes the tag. Do not
+   Cargo lock workspace packages and dated changelog entry must read `0.1.8`.
+4. The maintainer creates `v0.1.8` on that merged commit and pushes the tag. Do not
    move or recreate an existing version tag. The Release workflow builds all
    supported platforms from the tag and publishes permanent GitHub assets.
 5. Verify the successful Release run and all four nonempty installer assets plus
@@ -141,14 +141,14 @@ Example maintainer commands, **after merge** and after checking the intended com
 ```bash
 git switch main
 git pull --ff-only
-pnpm version:check v0.1.7
-git tag v0.1.7
-git push origin v0.1.7
+pnpm version:check v0.1.8
+git tag v0.1.8
+git push origin v0.1.8
 gh run list --workflow release.yml --limit 5
-gh release view v0.1.7 --json url,assets
+gh release view v0.1.8 --json url,assets
 ```
 
-Use the [README's permanent v0.1.7 links](../README.md#install) for `.deb`,
+Use the [README's permanent published installer links](../README.md#install) for `.deb`,
 AppImage, arm64 DMG, x86_64 DMG and `SHA256SUMS`. Temporary Actions artifacts
 expire and are not install guidance. A release page without all its files is not
 an installer-ready release. The source version and target download links can be
@@ -215,7 +215,7 @@ cargo clippy -p orchevia-core --all-targets -- -D warnings
 cargo fmt --check
 cargo check -p orchevia
 cargo test -p orchevia
-pnpm version:check v0.1.7
+pnpm version:check v0.1.8
 git diff --check
 ```
 

@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getBackend } from '../lib/backend';
-import { recommendedProfiles } from '../lib/agents';
+import {
+  createDefaultProfile,
+  ADAPTER_LABELS,
+  recommendedProfiles,
+  type AdapterKind,
+} from '../lib/agents';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 import { Modal } from './Modal';
@@ -85,28 +90,77 @@ export function OnboardingWizard({
   const [step, setStep] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [assistanceProfileId, setAssistanceProfileId] = useState('');
+  const [assistanceAdapter, setAssistanceAdapter] = useState<AdapterKind>('claude');
+  const [assistanceModel, setAssistanceModel] = useState('fable');
+  const [assistanceEffort, setAssistanceEffort] = useState('high');
+
+  useEffect(() => {
+    let cancelled = false;
+    void getBackend()
+      .getSetting('workflow.assistanceProfileId')
+      .then((id) => {
+        if (!cancelled && id !== null && profiles.some((p) => p.id === id))
+          setAssistanceProfileId(id);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setMessage(errorMessage(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profiles]);
+
+  const existingAssistant =
+    assistanceProfileId !== ''
+      ? profiles.find((p) => p.id === assistanceProfileId)
+      : profiles.find(
+          (p) => p.role === 'workflowAssistance' && p.adapter === assistanceAdapter,
+        );
+  const needsProfiles =
+    recommendedProfiles(profiles).some((p) => p.role !== 'workflowAssistance') ||
+    existingAssistant === undefined;
 
   const installed = (id: string): boolean =>
     tools.some((t) => t.id === id && t.installed);
 
   const finish = (): void => {
-    void getBackend()
-      .setSetting('onboarding.completed', '1')
-      .catch(() => {})
-      .finally(() => {
+    void (async () => {
+      try {
+        if (assistanceProfileId !== '')
+          await getBackend().setSetting(
+            'workflow.assistanceProfileId',
+            assistanceProfileId,
+          );
+        await getBackend().setSetting('onboarding.completed', '1');
         onClose();
-      });
+      } catch (err) {
+        setMessage(errorMessage(err));
+      }
+    })();
   };
 
   const seedProfiles = (): void => {
     setBusy(true);
     setMessage(null);
-    const missing = recommendedProfiles(profiles);
+    const missing = recommendedProfiles(profiles).filter(
+      (p) => p.role !== 'workflowAssistance',
+    );
+    const assistant = existingAssistant ?? {
+      ...createDefaultProfile(assistanceAdapter),
+      name: `${ADAPTER_LABELS[assistanceAdapter]} — Workflow assistance`,
+      role: 'workflowAssistance',
+      ...(assistanceModel.trim() ? { model: assistanceModel.trim() } : {}),
+      effort: assistanceEffort,
+    };
+    if (!existingAssistant) missing.push(assistant);
     void (async () => {
       try {
         for (const item of missing) {
           await getBackend().saveAgentProfile(item);
         }
+        await getBackend().setSetting('workflow.assistanceProfileId', assistant.id);
+        setAssistanceProfileId(assistant.id);
         await refreshAll();
         setMessage(
           missing.length === 0
@@ -235,7 +289,8 @@ export function OnboardingWizard({
             <p className="field-hint">
               AI Agent nodes <strong>require</strong> a profile — without one the workflow
               fails validation. Templates, samples, and the generator expect these roles:
-              planning, implementation, fast + deep review, and a workflow generator.
+              planning, implementation, fast + deep review, workflow generation and
+              assistance.
             </p>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
               {[
@@ -244,6 +299,7 @@ export function OnboardingWizard({
                 'fastReview',
                 'deepReview',
                 'workflowGenerator',
+                'workflowAssistance',
               ].map((role) => {
                 const covered = profiles.some((p) => p.role === role);
                 return (
@@ -256,8 +312,79 @@ export function OnboardingWizard({
                 );
               })}
             </div>
+            <div className="field">
+              <label className="field-label" htmlFor="setup-assistance-profile">
+                Default workflow assistance profile
+              </label>
+              <select
+                id="setup-assistance-profile"
+                className="input"
+                value={assistanceProfileId}
+                onChange={(e) => setAssistanceProfileId(e.target.value)}
+              >
+                <option value="">Configure a recommendation below</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.adapter})
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">
+                Assistance arranges or improves an existing workflow through a reviewed
+                preview. Existing profiles keep their settings.
+              </span>
+            </div>
+            {assistanceProfileId === '' && (
+              <div className="generator-row">
+                <div className="field">
+                  <label className="field-label" htmlFor="setup-assistance-cli">
+                    Assistance CLI
+                  </label>
+                  <select
+                    id="setup-assistance-cli"
+                    className="input"
+                    value={assistanceAdapter}
+                    onChange={(e) => {
+                      const adapter = e.target.value as AdapterKind;
+                      setAssistanceAdapter(adapter);
+                      setAssistanceModel(adapter === 'codex' ? 'gpt-6.1-sol' : 'fable');
+                    }}
+                  >
+                    <option value="claude">Claude Code</option>
+                    <option value="codex">Codex</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label className="field-label" htmlFor="setup-assistance-model">
+                    Assistance model
+                  </label>
+                  <input
+                    id="setup-assistance-model"
+                    className="input"
+                    value={assistanceModel}
+                    onChange={(e) => setAssistanceModel(e.target.value)}
+                    placeholder="Blank uses CLI default"
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label" htmlFor="setup-assistance-effort">
+                    Assistance effort
+                  </label>
+                  <select
+                    id="setup-assistance-effort"
+                    className="input"
+                    value={assistanceEffort}
+                    onChange={(e) => setAssistanceEffort(e.target.value)}
+                  >
+                    {['low', 'medium', 'high', 'xhigh'].map((effort) => (
+                      <option key={effort}>{effort}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8 }}>
-              {recommendedProfiles(profiles).length === 0 ? (
+              {!needsProfiles ? (
                 <p className="field-hint" style={{ marginBottom: 0 }}>
                   ✓ All recommended roles are covered — nothing left to create.
                 </p>

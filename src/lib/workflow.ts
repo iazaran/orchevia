@@ -253,8 +253,24 @@ export function arrangeWorkflowPositions(
       collect(id, groups.length - 1);
     }
   const order = new Map(nodes.map((n, i) => [n.id, i]));
-  for (const group of groups)
+  for (const group of groups) {
     group.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    if (group.length < 2) continue;
+    const members = new Set(group);
+    const sequence: string[] = [];
+    const seen = new Set<string>();
+    const follow = (id: string): void => {
+      if (!members.has(id) || seen.has(id)) return;
+      seen.add(id);
+      sequence.push(id);
+      for (const child of outgoing.get(id) ?? []) follow(child);
+    };
+    // Enter a review cycle through its actual incoming edge before following the loop.
+    for (const id of group)
+      if ((reverse.get(id) ?? []).some((parent) => !members.has(parent))) follow(id);
+    for (const id of group) follow(id);
+    group.splice(0, group.length, ...sequence);
+  }
   const next = groups.map(() => new Set<number>());
   const prev = groups.map(() => new Set<number>());
   for (const e of edges) {
@@ -291,40 +307,92 @@ export function arrangeWorkflowPositions(
   }));
   const crossCenter = new Map<number, number>();
   const positions: Record<string, Position> = {};
-  let majorCursor = 60;
-  for (let r = 0; r <= Math.max(-1, ...rank); r++) {
-    const groupIds = groups.map((_, i) => i).filter((i) => rank[i] === r);
-    const desired = (g: number): number => {
-      const parents = [...(prev[g] ?? [])];
-      return parents.length === 0
-        ? 0
-        : parents.reduce((sum, p) => sum + (crossCenter.get(p) ?? 0), 0) / parents.length;
-    };
-    groupIds.sort(
+  const isolated = groups
+    .map((_, i) => i)
+    .filter((i) => !prev[i]?.size && !next[i]?.size);
+  const isolatedSet = new Set(isolated);
+  const layers = Array.from({ length: Math.max(-1, ...rank) + 1 }, (_, r) =>
+    groups.map((_, i) => i).filter((i) => rank[i] === r && !isolatedSet.has(i)),
+  );
+  const average = (neighbors: Set<number> | undefined): number | undefined => {
+    const values = [...(neighbors ?? [])].flatMap((id) => {
+      const center = crossCenter.get(id);
+      return center === undefined ? [] : [center];
+    });
+    return values.length
+      ? values.reduce((sum, n) => sum + n, 0) / values.length
+      : undefined;
+  };
+  const sweep = (layer: number[], backwards: boolean): void => {
+    const desired = (g: number): number =>
+      average(backwards ? next[g] : prev[g]) ?? crossCenter.get(g) ?? 0;
+    layer.sort(
       (a, b) =>
         desired(a) - desired(b) ||
         (order.get(groups[a]?.[0] ?? '') ?? 0) - (order.get(groups[b]?.[0] ?? '') ?? 0),
     );
-    let crossCursor = 80;
+    let cursor = -Infinity;
+    const centers = new Map<number, number>();
+    for (const g of layer) {
+      const half = (bounds[g]?.cross ?? 0) / 2;
+      const center = Math.max(desired(g), cursor + half);
+      centers.set(g, center);
+      cursor = center + half + 100;
+    }
+    // Packing pushes a fork's children apart; shift the layer so their mean stays
+    // on the parents' center line instead of drifting a lane at every branch.
+    const offset = layer.length
+      ? layer.reduce((sum, g) => sum + (centers.get(g) ?? 0) - desired(g), 0) /
+        layer.length
+      : 0;
+    for (const g of layer) crossCenter.set(g, (centers.get(g) ?? 0) - offset);
+  };
+  for (const layer of layers) sweep(layer, false);
+  // A backward pass centers forks on their children and keeps joins near both
+  // incoming branches. Alternating sweeps also reduce crossed parallel paths.
+  for (let pass = 0; pass < 4; pass++) {
+    for (const layer of [...layers].reverse()) sweep(layer, true);
+    for (const layer of layers) sweep(layer, false);
+  }
+  const minimumCross = Math.min(
+    0,
+    ...layers.flatMap((layer) =>
+      layer.map((g) => (crossCenter.get(g) ?? 0) - (bounds[g]?.cross ?? 0) / 2),
+    ),
+  );
+  let majorCursor = 60;
+  for (const layer of layers) {
     let layerMajor = 0;
-    // Wrap broad disconnected layers after five lanes; depth reserves their full bounds.
-    const maxMajor = Math.max(0, ...groupIds.map((g) => bounds[g]?.major ?? 0)) + 100;
-    for (const [index, g] of groupIds.entries()) {
+    for (const g of layer) {
       const bound = bounds[g];
-      if (bound === undefined) continue;
-      const block = Math.floor(index / 5);
-      if (index % 5 === 0) crossCursor = 80;
-      const cross = Math.max(crossCursor, desired(g) - bound.cross / 2);
-      crossCenter.set(g, cross + bound.cross / 2);
-      crossCursor = cross + bound.cross + 100;
-      let cursor = majorCursor + block * maxMajor;
+      if (!bound) continue;
+      const center = (crossCenter.get(g) ?? 0) - minimumCross + 80;
+      let cursor = majorCursor;
       for (const id of groups[g] ?? []) {
+        const cross = center - dimension(id).cross / 2;
         positions[id] = horizontal ? { x: cursor, y: cross } : { x: cross, y: cursor };
         cursor += dimension(id).major + 80;
       }
-      layerMajor = Math.max(layerMajor, block * maxMajor + bound.major);
+      layerMajor = Math.max(layerMajor, bound.major);
     }
     majorCursor += layerMajor + 100;
+  }
+  // Only islands wrap into a compact grid; connected branches share their rank.
+  // Keep them beyond the connected graph so large measured boxes cannot overlap.
+  const islandMajor = Math.max(0, ...isolated.map((g) => bounds[g]?.major ?? 0)) + 100;
+  let islandCross = 80;
+  for (const [index, g] of isolated.entries()) {
+    if (index % 5 === 0) islandCross = 80;
+    const center = islandCross + (bounds[g]?.cross ?? 0) / 2;
+    let cursor =
+      (layers.some((layer) => layer.length) ? majorCursor : 60) +
+      Math.floor(index / 5) * islandMajor;
+    for (const id of groups[g] ?? []) {
+      const cross = center - dimension(id).cross / 2;
+      positions[id] = horizontal ? { x: cursor, y: cross } : { x: cross, y: cursor };
+      cursor += dimension(id).major + 80;
+    }
+    islandCross += (bounds[g]?.cross ?? 0) + 100;
   }
   return positions;
 }

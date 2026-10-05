@@ -1,3 +1,4 @@
+import { errorMessage } from './errors';
 import {
   projectScope,
   projectKey,
@@ -9,6 +10,7 @@ import {
 import {
   builtinTemplates,
   instantiateTemplateLocal,
+  importTemplateDocument,
   validateTemplate,
 } from './templates';
 import { readLocal, writeLocal } from './storage';
@@ -41,12 +43,14 @@ import type { GitHubState, McpServerConfig, McpToolInfo } from './integrations';
 import type {
   EditObservation,
   GenerationPreview,
+  WorkflowAssistance,
   InstantiationPreview,
   Preference,
   ProjectMemoryContext,
   StoredGeneration,
   WorkflowTemplate,
 } from './generation';
+import { prepareWatcherSave, validateWatcher, validateWatcherScope } from './scheduler';
 import type {
   GroupedFinding,
   Notification,
@@ -135,6 +139,7 @@ export interface Backend {
   ): Promise<string[]>;
   listWatchers(): Promise<Watcher[]>;
   saveWatcher(watcher: Watcher): Promise<Watcher>;
+  watcherScopeIssues(watcher: Watcher): Promise<string[]>;
   deleteWatcher(id: string): Promise<boolean>;
   workflowRisks(workflow: Workflow): Promise<RiskCategory[]>;
   getRunFindings(runId: string): Promise<GroupedFinding[]>;
@@ -166,6 +171,7 @@ export interface Backend {
     profileId: string,
     goal: string,
     repo?: { dir?: string; branch?: string },
+    assistance?: WorkflowAssistance,
   ): Promise<GenerationPreview>;
   markGenerationStatus(id: string, status: string): Promise<void>;
   listGenerations(limit?: number): Promise<StoredGeneration[]>;
@@ -357,6 +363,9 @@ class TauriBackend implements Backend {
   saveWatcher(watcher: Watcher): Promise<Watcher> {
     return this.invoke('save_watcher', { watcher });
   }
+  watcherScopeIssues(watcher: Watcher): Promise<string[]> {
+    return this.invoke('watcher_scope_issues', { watcher });
+  }
   deleteWatcher(id: string): Promise<boolean> {
     return this.invoke('delete_watcher', { id });
   }
@@ -426,12 +435,14 @@ class TauriBackend implements Backend {
     profileId: string,
     goal: string,
     repo?: { dir?: string; branch?: string },
+    assistance?: WorkflowAssistance,
   ): Promise<GenerationPreview> {
     return this.invoke('generate_workflow', {
       profileId,
       goal,
       repoDir: repo?.dir ?? null,
       branch: repo?.branch ?? null,
+      assistance: assistance ?? null,
     });
   }
   markGenerationStatus(id: string, status: string): Promise<void> {
@@ -1126,12 +1137,31 @@ class MockBackend implements Backend {
   }
 
   async listWatchers(): Promise<Watcher[]> {
-    return [...this.watchers.values()];
+    return [...this.watchers.values()].map((watcher) => ({ ...watcher }));
   }
 
   async saveWatcher(watcher: Watcher): Promise<Watcher> {
-    this.watchers.set(watcher.id, watcher);
-    return watcher;
+    const errors = validateWatcher(watcher);
+    if (errors.length > 0) throw new Error(`Invalid watcher: ${errors.join('; ')}`);
+    if (watcher.enabled && !this.workflows.has(watcher.workflowId))
+      throw new Error(`Unknown workflow '${watcher.workflowId}'.`);
+    if (watcher.enabled) {
+      const scopeIssues = await this.watcherScopeIssues(watcher);
+      if (scopeIssues.length > 0) throw new Error(scopeIssues.join('; '));
+    }
+    const saved = prepareWatcherSave(watcher, this.watchers.get(watcher.id));
+    this.watchers.set(watcher.id, saved);
+    return { ...saved };
+  }
+
+  async watcherScopeIssues(watcher: Watcher): Promise<string[]> {
+    const workflow = this.workflows.get(watcher.workflowId)?.definition;
+    if (workflow === undefined) return [`Unknown workflow '${watcher.workflowId}'.`];
+    try {
+      return validateWatcherScope(workflow, watcher, [...this.profiles.values()]);
+    } catch (err: unknown) {
+      return [errorMessage(err)];
+    }
   }
 
   async deleteWatcher(id: string): Promise<boolean> {
@@ -1257,10 +1287,8 @@ class MockBackend implements Backend {
     );
   }
   async importTemplate(json: string): Promise<WorkflowTemplate> {
-    const parsed = JSON.parse(json) as WorkflowTemplate;
-    const workflow = await this.decodeWorkflowDocument(JSON.stringify(parsed.workflow));
-    const template = { ...parsed, workflow, id: 'user-' + crypto.randomUUID() };
-    if (!workflow.nodes.length) throw new Error('Template workflow has no nodes.');
+    const template = importTemplateDocument(json, await this.listAgentProfiles());
+    template.id = 'user-' + crypto.randomUUID();
     return this.saveUserTemplate(template);
   }
   async instantiateTemplate(

@@ -65,7 +65,7 @@ export function TemplatesView(): React.JSX.Element {
 
   const doImport = (): void => {
     if (importText.trim() === '') {
-      setMessage('Paste template JSON first, then Import.');
+      setMessage('Paste workflow or template JSON first, then Import.');
       return;
     }
     void getBackend()
@@ -155,7 +155,7 @@ export function TemplatesView(): React.JSX.Element {
         <div className="topbar-actions">
           <button
             className="btn btn-primary"
-            title="Paste portable template JSON to add it to your library"
+            title="Paste workflow or template JSON to add a new template to your library"
             onClick={() => {
               setImportText('');
               setIoModal({ mode: 'import' });
@@ -224,11 +224,13 @@ export function TemplatesView(): React.JSX.Element {
               <>
                 <h3 style={{ marginTop: 0 }}>Import template JSON</h3>
                 <p className="field-hint">
-                  Pasted JSON is validated before anything is stored; secrets are refused.
+                  Paste Simple JSON, Advanced workflow JSON, or an exported template. A
+                  new template is created directly; configuration and role references are
+                  preserved. Invalid JSON and secrets are refused.
                 </p>
                 <div className="field">
                   <label className="field-label" htmlFor="tpl-import">
-                    Template JSON
+                    Workflow or template JSON
                   </label>
                   <textarea
                     id="tpl-import"
@@ -238,7 +240,7 @@ export function TemplatesView(): React.JSX.Element {
                     onChange={(e) => {
                       setImportText(e.target.value);
                     }}
-                    placeholder='{"id": "...", "name": "...", ...}'
+                    placeholder='{"version": 1, "name": "My template", "nodes": [...], "edges": [...]}'
                   />
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>

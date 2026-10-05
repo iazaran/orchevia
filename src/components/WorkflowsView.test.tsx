@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { WorkflowsView } from './WorkflowsView';
 import { __setMockBackendForTests } from '../lib/backend';
@@ -242,4 +242,211 @@ it('shows only applicable accepted project memory before generation', async () =
   await user.type(screen.getByLabelText('Repository directory'), '/project');
   await waitFor(() => expect(screen.getByText(/make current/)).toBeInTheDocument());
   expect(screen.queryByText(/make other/)).toBeNull();
+});
+
+it('reviews local CLI assistance before replacing the current workflow and never runs it', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const original = createEmptyWorkflow('Existing workflow');
+  original.defaults = { repoDir: '/project', branch: 'feature/current' };
+  const stored = await backend.saveWorkflow(original);
+  const profile = await backend.saveAgentProfile({
+    ...createDefaultProfile('codex'),
+    role: 'workflowAssistance',
+  });
+  await backend.setSetting('workflow.assistanceProfileId', profile.id);
+  const initialWorkflowCount = (await backend.listWorkflows()).length;
+  const proposed = { ...structuredClone(original), name: 'Reviewed improvement' };
+  const generate = vi.spyOn(backend, 'generateWorkflow').mockResolvedValue({
+    generationId: 'assistance',
+    proposalName: proposed.name,
+    explanation: 'Improve labels.',
+    workflow: proposed,
+    issues: [],
+    unavailable: [],
+    riskLabels: [],
+    riskyNodes: [],
+    blocking: [],
+    repairs: [],
+    setupNeeded: [],
+    unmappedRoles: [],
+  });
+  const run = vi.spyOn(backend, 'runWorkflow');
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [profile],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+  });
+  render(<WorkflowsView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: '✦ Assist' }));
+  await user.type(
+    screen.getByLabelText('Developer instructions (optional)'),
+    'Keep approvals and simplify labels',
+  );
+  await user.click(screen.getByRole('button', { name: 'Preview improvements' }));
+  await screen.findByText('Proposed: Reviewed improvement');
+  expect((await backend.getWorkflow(stored.id))?.name).toBe('Existing workflow');
+  expect(generate).toHaveBeenCalledWith(
+    profile.id,
+    'Keep approvals and simplify labels',
+    { dir: '/project', branch: 'feature/current' },
+    { workflowId: stored.id, mode: 'optimize' },
+  );
+  act(() =>
+    useAppStore.setState({
+      workflows: [
+        {
+          ...stored,
+          definition: { ...stored.definition, name: 'New edit while drafting' },
+        },
+      ],
+    }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Apply reviewed changes' }));
+  expect(await screen.findAllByText(/changed since this proposal/)).not.toHaveLength(0);
+  expect((await backend.getWorkflow(stored.id))?.name).toBe('Existing workflow');
+  act(() => useAppStore.setState({ workflows: [stored] }));
+  await user.click(screen.getByRole('button', { name: 'Apply reviewed changes' }));
+  await waitFor(async () =>
+    expect((await backend.getWorkflow(stored.id))?.name).toBe('Reviewed improvement'),
+  );
+  expect(await backend.listWorkflows()).toHaveLength(initialWorkflowCount);
+  expect(run).not.toHaveBeenCalled();
+});
+
+it('rechecks the assistance base after delayed missing-profile creation', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const original = createEmptyWorkflow('Original for delayed profile');
+  const stored = await backend.saveWorkflow(original);
+  const assistant = await backend.saveAgentProfile({
+    ...createDefaultProfile('claude'),
+    role: 'workflowAssistance',
+  });
+  const proposed = structuredClone(original);
+  proposed.nodes.push({
+    id: 'plan',
+    type: 'agent',
+    label: 'Plan',
+    position: { x: 0, y: 0 },
+    config: { agentRole: 'planning', prompt: 'Plan' },
+  });
+  vi.spyOn(backend, 'generateWorkflow').mockResolvedValue({
+    generationId: 'delayed',
+    proposalName: proposed.name,
+    explanation: '',
+    workflow: proposed,
+    issues: [],
+    unavailable: [],
+    riskLabels: [],
+    riskyNodes: [],
+    blocking: ["Role 'planning' has no Agent Profile mapping."],
+    repairs: [],
+    setupNeeded: [],
+    unmappedRoles: ['planning'],
+  });
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [assistant],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+  });
+  render(<WorkflowsView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: '✦ Assist' }));
+  await user.click(screen.getByRole('button', { name: 'Preview improvements' }));
+  await screen.findByRole('button', { name: 'Create 1 profile & accept' });
+  const saveProfile = backend.saveAgentProfile.bind(backend);
+  let completeProfile: (() => Promise<void>) | undefined;
+  const delayed = vi.spyOn(backend, 'saveAgentProfile').mockImplementationOnce(
+    (profile) =>
+      new Promise((resolve) => {
+        completeProfile = async () => resolve(await saveProfile(profile));
+      }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Create 1 profile & accept' }));
+  await waitFor(() => expect(delayed).toHaveBeenCalledOnce());
+  const edited = {
+    ...stored,
+    definition: { ...stored.definition, name: 'Changed during profile setup' },
+  };
+  act(() => useAppStore.setState({ workflows: [edited] }));
+  await act(async () => {
+    await completeProfile?.();
+  });
+  expect(await screen.findAllByText(/changed since this proposal/)).not.toHaveLength(0);
+  expect((await backend.getWorkflow(stored.id))?.definition.nodes).toHaveLength(
+    original.nodes.length,
+  );
+  expect(
+    useAppStore.getState().workflows.find((w) => w.id === stored.id)?.definition.name,
+  ).toBe('Changed during profile setup');
+});
+
+it('replaces redundant editor Save with autosave feedback and a working retry', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Autosaved header'));
+  const actualSave = backend.saveWorkflow.bind(backend);
+  const save = vi
+    .spyOn(backend, 'saveWorkflow')
+    .mockRejectedValue(new Error('Disk temporarily unavailable'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    workflowSaveStates: {},
+  });
+  render(<WorkflowsView />);
+  expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  act(() =>
+    useAppStore
+      .getState()
+      .updateActiveWorkflow({ ...stored.definition, name: 'Retained draft' }),
+  );
+  expect(screen.getByRole('status')).toHaveTextContent('Saving');
+  await waitFor(() =>
+    expect(screen.getByRole('status')).toHaveTextContent('Disk temporarily unavailable'),
+  );
+  save.mockImplementation(actualSave);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Retry save' }));
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Saved'));
+  expect((await backend.getWorkflow(stored.id))?.name).toBe('Retained draft');
+});
+
+it('flushes an editor draft before saving it as a template', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Old saved name'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    workflowSaveStates: {},
+  });
+  render(<WorkflowsView />);
+  act(() =>
+    useAppStore
+      .getState()
+      .updateActiveWorkflow({ ...stored.definition, name: 'Current edited name' }),
+  );
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Save as template' }));
+  await user.click(screen.getByRole('button', { name: 'Save template' }));
+  await waitFor(async () => expect((await backend.listTemplates()).user).toHaveLength(1));
+  expect((await backend.listTemplates()).user[0]?.workflow.name).toBe(
+    'Current edited name',
+  );
 });

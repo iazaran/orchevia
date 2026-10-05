@@ -127,6 +127,7 @@ export const WELL_KNOWN_ROLES = [
   'fastReview',
   'deepReview',
   'workflowGenerator',
+  'workflowAssistance',
 ] as const;
 
 /**
@@ -214,4 +215,77 @@ export function describeGeneratedStep(
   if (node.type === 'approval') return 'Human approval';
   if (node.type === 'condition') return 'True / false decision';
   return '';
+}
+
+export type AssistanceMode = 'arrange' | 'optimize';
+export interface WorkflowAssistance {
+  workflowId: string;
+  mode: AssistanceMode;
+}
+
+export function resolveAssistanceProfile(
+  profiles: { id: string; adapter: string; role?: string | undefined }[],
+  adapter: string,
+): string | null {
+  return (
+    profiles.find((p) => p.adapter === adapter && p.role === 'workflowAssistance')?.id ??
+    resolveGeneratorProfile(profiles, adapter)
+  );
+}
+
+/** A reviewed proposal may replace only the exact workflow used to draft it. */
+export function applyAssistancePreview(
+  base: Workflow,
+  current: Workflow,
+  proposal: Workflow,
+): Workflow {
+  if (JSON.stringify(base) !== JSON.stringify(current))
+    throw new Error(
+      'The workflow changed since this proposal was drafted. Generate a fresh preview before applying.',
+    );
+  return { ...structuredClone(proposal), id: base.id };
+}
+
+export function assistanceRepoDir(workflow: Workflow): string {
+  const root = workflow.defaults?.repoDir?.trim();
+  if (root) return root;
+  const directories = [
+    ...new Set(
+      workflow.nodes
+        .map((n) => n.config.workingDir?.trim())
+        .filter((dir): dir is string => Boolean(dir)),
+    ),
+  ];
+  return directories.length === 1 ? (directories[0] ?? '') : '';
+}
+
+/** Display actual configuration/graph changes, including agent prompt text. */
+export function assistanceChanges(base: Workflow, proposed: Workflow): string {
+  const changes: { field: string; before: unknown; after: unknown }[] = [];
+  const add = (field: string, before: unknown, after: unknown): void => {
+    if (JSON.stringify(before) !== JSON.stringify(after))
+      changes.push({ field, before: before ?? null, after: after ?? null });
+  };
+  add('name', base.name, proposed.name);
+  add('inputs', base.inputs ?? [], proposed.inputs ?? []);
+  add('defaults', base.defaults, proposed.defaults);
+  add(
+    'edges',
+    base.edges.map(({ source, target, label }) => ({ source, target, label })),
+    proposed.edges.map(({ source, target, label }) => ({ source, target, label })),
+  );
+  for (const node of proposed.nodes) {
+    const old = base.nodes.find((n) => n.id === node.id);
+    if (!old) {
+      add(`new step: ${node.label ?? node.id}`, null, node);
+      continue;
+    }
+    add(`${node.id}.label`, old.label, node.label);
+    add(`${node.id}.config`, old.config, node.config);
+    add(`${node.id}.position`, old.position, node.position);
+  }
+  for (const old of base.nodes)
+    if (!proposed.nodes.some((n) => n.id === old.id))
+      add(`removed step: ${old.id}`, old, null);
+  return changes.length === 0 ? 'No changes proposed.' : JSON.stringify(changes, null, 2);
 }

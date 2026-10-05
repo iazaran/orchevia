@@ -20,18 +20,24 @@ written back with the current field name.
   summary lists what the workflow may do (see Security).
 - At most one catch-up per policy: `Skip` jumps stale slots silently (no
   storm after offline periods); `RunOnce` fires a single catch-up.
-- At most 2 scheduled runs concurrently; the poll interval is 30–3600 s
-  (default 60 s) and re-read live from Settings.
+- Automatic dispatch shares a two-active-run budget across schedules and watchers;
+  pending, running and approval-paused runs count toward the budget. A workflow
+  already active is deferred (distinct PR inputs may run separately). Due slots
+  and unstarted revisions remain eligible. The scheduler poll interval is 30–3600 s
+  (default 60 s) and re-read live from Settings. Launch evaluates persisted due
+  slots before advancing them, so `RunOnce` catch-up is retained.
 - Missed one-time runs within 15 minutes still fire once (late boot grace);
-  ancient ones retire (Skip) instead of surprising you.
+  ancient ones retire (Skip) instead of surprising you. A completed one-time
+  schedule cannot start again on the next check.
 - Use **Run now** to fire manually; the schedule row records last status.
 - Scheduled and watcher-started runs share the manual run cancellation controls.
   Cancel them under **Runs**; partial process output stays in history. Cancellation
   does not undo changes or remote writes already performed.
 
-Timezones are wall-clock in the chosen offset; DST edge cases follow the
-fixed offset (documented limitation — prefer `local` for DST-aware daily
-rhythms on laptops that travel).
+Intervals use an epoch-aligned grid: a 15-minute schedule has quarter-hour
+slots. Daily, weekly and cron schedules use the chosen offset. Fixed offsets
+do not follow DST; `local` samples the system offset when calculating the next
+slot, so already stored future slots are not an IANA/DST-aware calendar.
 
 ## Background mode
 
@@ -44,19 +50,54 @@ reboot means relaunch, and missed schedules apply their policy on boot.
 
 Three trigger kinds, evaluated separately from execution:
 
-- **Review requested** — open PRs assigned to you (or all, minus drafts and
-  your own). New PRs and new head SHAs trigger; unchanged revisions never
+- **Review requested** — open PRs in the watched repository whose review is
+  requested from the authenticated GitHub user (`review-requested:@me -author:@me`, including GitHub team request scope). Drafts and your own PRs
+  are excluded. New PRs and new head SHAs trigger; unchanged revisions never
   re-fire.
 - **PR updated** — a pinned PR number; fires on new head SHA.
-- **Feedback** — comments/checks newer than the last handled state: ignores
+- **Feedback** — review/comments newer than the last handled state: ignores
   your own comments, Orchevia's own comments (marker footer), and already
   handled items (dedupe store, capped at 500).
 
-Minimum poll interval is 300 s (conservative by default: 900 s). Failures back
-off by leaving `last_checked_at` set — no hammering. Feedback keeps a separate
+Watcher intervals range from 300 s to 30 days (default 900 s). Enabling a new
+watcher, re-enabling one, or changing its repository/workflow/PR scope queues
+an immediate eligible check. Already open requested PRs are eligible on that
+first check; enabling does not establish a baseline that silently skips them.
+Existing handled revisions stay deduplicated when a watcher is re-enabled.
+Later checks are relative to the last check, including quiet and error checks;
+a first check at 17:21:24 with a 900-second interval is next eligible at
+17:36:24, not 17:30. The global scheduler tick may delay a due check. Status
+shows the last check, next eligibility time, quiet/deferred/error outcome and
+accepted run IDs; the Automations view refreshes those statuses while open.
+
+For a workflow that consumes `prNumber` through a reachable native PR operation
+with `number: 0`, a rendered template or a condition's left operand, each new
+PR revision receives a distinct dispatch within the shared run limit. A declared
+but unused input, literal condition right operand, escaped template or unreachable
+node does not make a workflow consume the PR. A workflow that scans the repository
+independently receives one batch run, with `prNumbers`/`prHeadShas` provenance.
+This prevents starting several copies of the same repository scan for one poll.
+Pending revisions are reconsidered on the next eligible check.
+
+Declared execution directories must agree with the watched repository. Native
+checks resolve Git roots and canonical paths; node directories take precedence
+over applicable workflow/profile defaults, exactly as in execution. Enabling a
+mismatch is rejected, and runtime dispatch validates the definition it actually
+starts. `input.repoDir` does not override working directories. The browser mock
+checks normalized declared paths and cannot resolve filesystem symlinks or Git
+roots. Arbitrary CLI scripts and agent prompt instructions remain user-controlled.
+
+Each accepted run stores `automationKind`/`automationId` plus its watcher kind,
+repository and PR revision or batch inputs. A `run-sched-` ID alone does not
+identify whether a schedule or a watcher started it. Accepted dispatches are
+checkpointed individually, so a failure starting a later PR cannot duplicate an
+earlier one. Cancelling or failing an accepted run does not automatically retry
+an unchanged revision: use an explicit manual run when needed.
+
+Failures back off by leaving `last_checked_at` set — no hammering. Feedback keeps a separate
 successful-handling watermark, so a failed poll or run start does not consume
 unhandled comments. The next eligible poll can retry them; handled events remain
-deduplicated. Watchers pass
+deduplicated. PR-scoped watchers pass
 `prNumber`/`prHeadSha`/`feedbackCount` as workflow inputs; use `number: 0` in
 GitHub nodes to consume `prNumber` at runtime.
 

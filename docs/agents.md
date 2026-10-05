@@ -17,17 +17,17 @@ in Orchevia itself.
 
 A profile is a persisted, inspectable recipe for invoking one CLI:
 
-| Field                  | Meaning                                                                                                 |
-| ---------------------- | ------------------------------------------------------------------------------------------------------- |
-| Name                   | Human label, e.g. “Claude — Implementation”                                                             |
-| Provider/CLI           | `claude`, `codex`, or a custom CLI with an explicit executable                                          |
-| Executable             | Blank = auto-detect the adapter default on `PATH`; or pin an explicit path                              |
-| Model                  | Free-form, adapter-specific (e.g. `opus`); validated lightly since names evolve                         |
-| Additional arguments   | Passed verbatim as argv (no shell); credential-like flags are rejected                                  |
-| Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                               |
-| Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                         |
-| Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                              |
-| Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator` |
+| Field                  | Meaning                                                                                                                       |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Name                   | Human label, e.g. “Claude — Implementation”                                                                                   |
+| Provider/CLI           | `claude`, `codex`, or a custom CLI with an explicit executable                                                                |
+| Executable             | Blank = auto-detect the adapter default on `PATH`; or pin an explicit path                                                    |
+| Model                  | Free-form, adapter-specific (e.g. `opus`); validated lightly since names evolve                                               |
+| Additional arguments   | Passed verbatim as argv (no shell); credential-like flags are rejected                                                        |
+| Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                                                     |
+| Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                               |
+| Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                    |
+| Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator`, `workflowAssistance` |
 
 Manage profiles in the **Agents** tab: create, rename, reconfigure, **Test** (probes the
 CLI without running a workflow), or delete (workflows referencing it fail validation
@@ -91,8 +91,13 @@ this before every run; approval gates let you review plans before implementation
 
 The wizard creates missing recommendations per adapter and role without replacing
 your profiles: Claude Opus for implementation and fast review, Claude Fable for
-planning, workflow generation, and deep review, plus Codex gpt-6.1-sol for deep
+planning, workflow generation, workflow assistance, and deep review, plus Codex gpt-6.1-sol for deep
 review. Recommendations use high effort, a 3600-second timeout, the workflow
 node directory, and CLI-selected skills. Missing CLIs remain unavailable.
 Generated steps may select an exact `profileName` in addition to their role;
 missing or duplicate profile names are reported rather than substituted.
+
+The wizard lets you choose the workflow assistant's CLI, model and effort, or
+select an existing profile. It remembers the selection for Workflows → Assist.
+The default recommendation uses Claude Code, Fable and high effort; existing
+profiles are preserved. You can change the profile on each assistance request.

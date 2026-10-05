@@ -165,3 +165,19 @@ it('promotes only successful saved commands and observes concrete edits', () => 
     { scope: 'repo:/a', field: 'testCommand', from: 'make test', to: 'make check' },
   ]);
 });
+
+it('new concrete project check commands become reviewable observations', () => {
+  const previous = createEmptyWorkflow('Project checks');
+  previous.defaults = { repoDir: '/repo' };
+  const current = structuredClone(previous);
+  current.nodes.push({
+    id: 'test',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 0 },
+    config: { executable: 'cargo', args: ['test'] },
+  });
+  expect(commandEdits(previous, current, 'repo:/repo')).toEqual([
+    { scope: 'repo:/repo', field: 'testCommand', from: '', to: 'cargo test' },
+  ]);
+});

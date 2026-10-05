@@ -84,3 +84,92 @@ it('persists user templates and uses simple portable documents', async () => {
     ),
   ).rejects.toThrow(/credential/i);
 });
+
+it('imports plain Simple JSON directly into a template with portable roles and configuration', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const plain = JSON.stringify({
+    version: 1,
+    name: 'Imported review',
+    defaults: { repoDir: '/project' },
+    inputs: [{ name: 'prNumber', required: true }],
+    nodes: [
+      { key: 'start', type: 'start', config: {} },
+      {
+        key: 'review',
+        type: 'agent',
+        role: 'deepReview',
+        config: { prompt: 'Review {{input.prNumber}}', timeoutSecs: 300 },
+      },
+      { key: 'end', type: 'end', config: {} },
+    ],
+    edges: [
+      { from: 'start', to: 'review' },
+      { from: 'review', to: 'end' },
+    ],
+  });
+  const before = await backend.listWorkflows();
+  const imported = await backend.importTemplate(plain);
+  expect(imported.name).toBe('Imported review');
+  expect(imported.category).toBe('general');
+  expect(imported.workflow.defaults?.repoDir).toBe('/project');
+  expect(imported.workflow.nodes[1]?.config).toMatchObject({
+    agentRole: 'deepReview',
+    timeoutSecs: 300,
+  });
+  expect(await backend.listWorkflows()).toEqual(before);
+  expect(await backend.exportTemplate(imported.id, false)).toContain(
+    '"role": "deepReview"',
+  );
+});
+
+it('imports runtime workflow JSON and refuses invalid structure without persisting a template', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  expect((await backend.importTemplate(JSON.stringify(workflow))).name).toBe(
+    workflow.name,
+  );
+  const count = (await backend.listTemplates()).user.length;
+  for (const value of [
+    null,
+    [],
+    {},
+    { version: 1, name: 'Broken', nodes: [], edges: [] },
+    {
+      version: 1,
+      name: 'Broken',
+      nodes: [{ key: 'start', type: 'start', config: {} }],
+      edges: [{ from: 'start', to: 'missing' }],
+    },
+  ]) {
+    await expect(backend.importTemplate(JSON.stringify(value))).rejects.toThrow();
+  }
+  expect((await backend.listTemplates()).user).toHaveLength(count);
+});
+
+it('refuses machine-only profile bindings while allowing a portable role fallback', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  workflow.nodes.push({
+    id: 'review',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: 'foreign-profile', prompt: 'Review' },
+  });
+  await expect(backend.importTemplate(JSON.stringify(workflow))).rejects.toThrow(
+    /profile.*missing/i,
+  );
+  const reviewer = workflow.nodes.at(-1);
+  if (!reviewer) throw new Error('fixture');
+  reviewer.config.agentRole = 'deepReview';
+  const imported = await backend.importTemplate(JSON.stringify(workflow));
+  expect(imported.workflow.nodes.at(-1)?.config.agentProfileId).toBeUndefined();
+  expect(imported.workflow.nodes.at(-1)?.config.agentRole).toBe('deepReview');
+  expect(await backend.exportTemplate(imported.id, false)).toContain(
+    '"role": "deepReview"',
+  );
+});

@@ -142,11 +142,12 @@ describe('prompt composition', () => {
 });
 
 describe('recommendations', () => {
-  it('matches the six configured models and preserves custom profiles', () => {
+  it('matches the seven configured models and preserves custom profiles', () => {
     const profiles = recommendedProfiles([]);
     expect(profiles.map((p) => p.model)).toEqual([
       'opus',
       'opus',
+      'fable',
       'fable',
       'fable',
       'fable',

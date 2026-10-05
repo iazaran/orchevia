@@ -47,3 +47,19 @@ completion with actionable findings raises a notification (opt-out capable).
 Orchevia does not grade prose. If agents disagree on severity, both findings
 stand (different fingerprints) unless textually identical. Tune the review
 prompts, not the parser.
+
+## Formatted reports
+
+Runs renders Markdown tables (including alignment), headings, nested numbered
+and bullet lists, inline code, fenced code blocks, emphasis and links. Ordered
+items stay in one list across blank lines, so repeated `1.` source markers count
+up normally. Tables scroll horizontally and long reports remain in bounded
+scroll regions. Raw output, Copy, Download .md and full report controls remain
+available. Raw HTML is escaped; links permit only HTTP, HTTPS, mailto and anchors,
+with external links isolated from the app window.
+
+Entering Runs refreshes current run data every time, including returning after
+another page. Selection is kept, and selected results refresh too. Active work
+uses one polling loop with no overlapping requests; older list responses cannot
+replace newer data. An entry-refresh failure shows an error and retains cached
+history for retry.
