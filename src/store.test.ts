@@ -453,3 +453,38 @@ it('does not save a different workflow when a supplied draft no longer matches s
   expect(save).not.toHaveBeenCalled();
   expect((await backend.getWorkflow(selected.id))?.name).toBe('Selected');
 });
+
+it('shows new inbox notifications once with their severity and preserves inbox history', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const old = {
+    id: 1,
+    kind: 'success',
+    title: 'Old result',
+    body: 'Done',
+    createdAt: '2026-10-05T12:00:00Z',
+    read: false,
+  };
+  const failure = { ...old, id: 2, kind: 'failure', title: 'Run failed' };
+  const success = { ...old, id: 3, title: 'New result' };
+  const list = vi.spyOn(backend, 'listNotifications').mockResolvedValue([old]);
+  useAppStore.setState({
+    notifications: [],
+    notificationSnapshotLoaded: false,
+    seenNotificationIds: [],
+    uiNotices: [],
+  });
+  await useAppStore.getState().refreshNotifications();
+  expect(useAppStore.getState().uiNotices).toEqual([]);
+  list.mockResolvedValue([success, failure, old]);
+  await useAppStore.getState().refreshNotifications();
+  const notices = useAppStore.getState().uiNotices;
+  expect(notices.map((n) => [n.content, n.variant])).toEqual([
+    ['Run failed: Done', 'error'],
+    ['New result: Done', 'info'],
+  ]);
+  for (const notice of notices) useAppStore.getState().removeUiNotice(notice.id);
+  await useAppStore.getState().refreshNotifications();
+  expect(useAppStore.getState().uiNotices).toEqual([]);
+  expect(useAppStore.getState().notifications).toEqual([success, failure, old]);
+});

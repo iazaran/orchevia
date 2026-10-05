@@ -8,7 +8,7 @@ import { isPendingSuggestion, type Preference } from '../lib/generation';
 import { formatTime } from '../lib/time';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
 import { MarkdownText } from './Markdown';
 
@@ -33,7 +33,7 @@ export function MemoryView(): React.JSX.Element {
   const preferences = useAppStore((s) => s.preferences);
   const generations = useAppStore((s) => s.generations);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [memoryText, setMemoryText] = useState<string | null>(null);
 
   const suggestions = preferences.filter(isPendingSuggestion);
@@ -51,7 +51,7 @@ export function MemoryView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -65,7 +65,7 @@ export function MemoryView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -81,7 +81,7 @@ export function MemoryView(): React.JSX.Element {
         .deletePreference(key)
         .then(() => reload())
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -91,7 +91,7 @@ export function MemoryView(): React.JSX.Element {
       .savePreference({ ...pref, enabled: !pref.enabled })
       .then(() => reload())
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -111,7 +111,7 @@ export function MemoryView(): React.JSX.Element {
           reload();
         })
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -124,7 +124,7 @@ export function MemoryView(): React.JSX.Element {
         setMessage(null);
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -137,7 +137,7 @@ export function MemoryView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -165,7 +165,7 @@ export function MemoryView(): React.JSX.Element {
       })
       .catch(
         (e: unknown) =>
-          request === playbookRequest.current && setMessage(errorMessage(e)),
+          request === playbookRequest.current && setMessage(errorMessage(e), 'error'),
       )
       .finally(() => request === playbookRequest.current && setBusy(false));
   };
@@ -183,7 +183,7 @@ export function MemoryView(): React.JSX.Element {
         await refreshLibrary();
         setMessage(`Saved ${FIELD_LABELS[field] ?? field}.`);
       })
-      .catch((e: unknown) => setMessage(errorMessage(e)))
+      .catch((e: unknown) => setMessage(errorMessage(e), 'error'))
       .finally(() => setBusy(false));
   };
   const editPreference = (): void => {
@@ -195,7 +195,7 @@ export function MemoryView(): React.JSX.Element {
           ? editValue
           : (JSON.parse(editValue) as Preference['value']);
     } catch {
-      setMessage('Enter valid JSON for this scalar preference.');
+      setMessage('Enter valid JSON for this scalar preference.', 'error');
       return;
     }
     void getBackend()
@@ -205,7 +205,7 @@ export function MemoryView(): React.JSX.Element {
         await refreshLibrary();
         setMessage('Preference updated.');
       })
-      .catch((e: unknown) => setMessage(errorMessage(e)));
+      .catch((e: unknown) => setMessage(errorMessage(e), 'error'));
   };
 
   const learning = preferences.find((p) => p.key === 'learning.enabled');
@@ -223,7 +223,7 @@ export function MemoryView(): React.JSX.Element {
       })
       .then(() => reload())
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -246,6 +246,8 @@ export function MemoryView(): React.JSX.Element {
       <div className="view">
         {message !== null && (
           <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
             style={{ marginBottom: 12 }}
             onDismiss={() => {
               setMessage(null);
@@ -254,7 +256,7 @@ export function MemoryView(): React.JSX.Element {
             <span>{message}</span>
           </Notice>
         )}
-        <Notice style={{ marginBottom: 16 }}>
+        <Notice inline style={{ marginBottom: 16 }}>
           Orchevia learns only what you repeatedly do: after 3 consistent edits it{' '}
           <strong>suggests</strong> a preference — you accept, reject, edit, disable, or
           reset it. Everything stays on this machine; nothing contains credentials.
@@ -402,7 +404,7 @@ export function MemoryView(): React.JSX.Element {
                   note: 'Explicit default selected in Memory.',
                 })
                 .then(() => refreshLibrary())
-                .catch((err: unknown) => setMessage(errorMessage(err)));
+                .catch((err: unknown) => setMessage(errorMessage(err), 'error'));
             }}
           >
             <option value="">First configured profile with the role</option>

@@ -21,7 +21,7 @@ import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
 
 function emptyForm(adapter: AdapterKind): AgentProfile {
@@ -37,8 +37,8 @@ export function AgentsView(): React.JSX.Element {
   const refreshTools = useAppStore((s) => s.refreshTools);
 
   const [editing, setEditing] = useState<AgentProfile | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
+  const [testResult, setTestResult, testVariant, testEvent] = useNoticeMessage();
   const [newAdapter, setNewAdapter] = useState<AdapterKind>('claude');
   const [customModels, setCustomModels] = useState<Record<AdapterKind, string[]>>({
     claude: [],
@@ -66,7 +66,7 @@ export function AgentsView(): React.JSX.Element {
   const save = (profile: AgentProfile): void => {
     const errors = validateProfile(profile);
     if (errors.length > 0) {
-      setMessage(errors[0] ?? 'Invalid profile.');
+      setMessage(errors[0] ?? 'Invalid profile.', 'error');
       return;
     }
     // Observe role-default changes for memory suggestions: if this profile
@@ -104,7 +104,7 @@ export function AgentsView(): React.JSX.Element {
         }
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -123,7 +123,7 @@ export function AgentsView(): React.JSX.Element {
           setMessage(`Deleted profile '${name}'.`);
         })
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -139,7 +139,7 @@ export function AgentsView(): React.JSX.Element {
         setCustomModels((prev) => ({ ...prev, [adapter]: models }));
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -153,7 +153,7 @@ export function AgentsView(): React.JSX.Element {
         setCustomModels((prev) => ({ ...prev, [adapter]: models }));
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -166,10 +166,11 @@ export function AgentsView(): React.JSX.Element {
           status.installed
             ? `Found ${status.path ?? ''} ${status.version ?? ''}`.trim()
             : 'CLI not found on PATH. Install/authenticate it yourself; the profile is kept and shows unavailable.',
+          status.installed ? 'info' : 'warn',
         );
       })
       .catch((err: unknown) => {
-        setTestResult(errorMessage(err));
+        setTestResult(errorMessage(err), 'error');
       });
   };
 
@@ -217,6 +218,8 @@ export function AgentsView(): React.JSX.Element {
       <div className="view">
         {message !== null && (
           <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
             style={{ marginBottom: 12 }}
             onDismiss={() => {
               setMessage(null);
@@ -225,7 +228,7 @@ export function AgentsView(): React.JSX.Element {
             <span>{message}</span>{' '}
           </Notice>
         )}
-        <Notice style={{ marginBottom: 16 }}>
+        <Notice inline style={{ marginBottom: 16 }}>
           Orchevia delegates AI work to CLIs you installed and authenticated yourself (
           {adapters.length > 0
             ? adapters
@@ -389,7 +392,15 @@ export function AgentsView(): React.JSX.Element {
           })}
         </div>
 
-        {testResult !== null && <Notice style={{ marginTop: 12 }}>{testResult}</Notice>}
+        {testResult !== null && (
+          <Notice
+            variant={testVariant}
+            eventId={testEvent}
+            onDismiss={() => setTestResult(null)}
+          >
+            {testResult}
+          </Notice>
+        )}
 
         {knownFolders.length > 0 && (
           <section aria-label="Recent project folders" style={{ marginTop: 20 }}>

@@ -42,7 +42,10 @@ export function Modal({
         ...dialog.querySelectorAll<HTMLElement>(
           'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]',
         ),
-      ].filter((element) => !element.closest('[hidden]'));
+        ...document.querySelectorAll<HTMLElement>(
+          '.notice-stack button:not(:disabled), .notice-stack a[href]',
+        ),
+      ].filter((element) => !element.closest('[hidden], .notice-exiting'));
     const field = dialog.querySelector<HTMLElement>(
       'input:not(:disabled), textarea:not(:disabled), select:not(:disabled)',
     );
@@ -62,20 +65,20 @@ export function Modal({
       }
       if (event.key !== 'Tab') return;
       const elements = focusable();
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (first === undefined || last === undefined) {
-        event.preventDefault();
+      // Portal notices live after the application in DOM order. Handle every
+      // Tab explicitly so background controls cannot receive focus in between.
+      event.preventDefault();
+      if (elements.length === 0) {
         dialog.focus();
-      } else if (
-        event.shiftKey &&
-        (document.activeElement === first || document.activeElement === dialog)
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
+      } else {
+        const index = elements.findIndex((element) => element === document.activeElement);
+        const next =
+          index < 0
+            ? event.shiftKey
+              ? elements.length - 1
+              : 0
+            : (index + (event.shiftKey ? -1 : 1) + elements.length) % elements.length;
+        elements[next]?.focus();
       }
     };
     document.addEventListener('keydown', onKeyDown);

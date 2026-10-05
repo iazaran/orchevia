@@ -547,6 +547,7 @@ class MockBackend implements Backend {
       const data = JSON.parse(raw) as {
         workflows: StoredWorkflow[];
         profiles?: AgentProfile[];
+        settings?: [string, string][];
         mcpServers?: McpServerConfig[];
         templates?: WorkflowTemplate[];
         preferences?: Preference[];
@@ -560,6 +561,7 @@ class MockBackend implements Backend {
       for (const t of data.templates ?? []) this.userTemplates.set(t.id, t);
       for (const w of data.workflows) this.workflows.set(w.id, w);
       for (const p of data.profiles ?? []) this.profiles.set(p.id, p);
+      for (const [key, value] of data.settings ?? []) this.settings.set(key, value);
       for (const s of data.mcpServers ?? []) this.mcpServers.set(s.id, s);
     } catch {
       // Corrupt dev storage: start fresh.
@@ -576,6 +578,7 @@ class MockBackend implements Backend {
           templates: [...this.userTemplates.values()],
           workflows: [...this.workflows.values()],
           profiles: [...this.profiles.values()],
+          settings: [...this.settings.entries()],
           mcpServers: [...this.mcpServers.values()],
         }),
       );
@@ -981,7 +984,17 @@ class MockBackend implements Backend {
   }
 
   async listAgentProfiles(): Promise<AgentProfile[]> {
-    return [...this.profiles.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return [...this.profiles.values()].sort((a, b) => {
+      // SQLite uses BINARY name order; locale collation chooses different defaults.
+      const encoder = new TextEncoder();
+      const left = encoder.encode(a.name);
+      const right = encoder.encode(b.name);
+      for (let i = 0; i < Math.min(left.length, right.length); i++) {
+        const difference = (left[i] ?? 0) - (right[i] ?? 0);
+        if (difference !== 0) return difference;
+      }
+      return left.length - right.length;
+    });
   }
 
   async listAgentSkills(
@@ -1197,11 +1210,36 @@ class MockBackend implements Backend {
   async setNotificationPrefs(): Promise<void> {}
 
   async getSetting(key: string): Promise<string | null> {
+    this.validateSettingKey(key);
     return this.settings.get(key) ?? null;
   }
 
+  private validateSettingKey(key: string): void {
+    if (
+      ![
+        'background.mode',
+        'notifications.os',
+        'scheduler.intervalSecs',
+        'ui.theme',
+        'onboarding.completed',
+        'workflow.assistanceProfileId',
+      ].includes(key)
+    )
+      throw new Error(`Setting '${key}' is not user-configurable.`);
+  }
+
   async setSetting(key: string, value: string): Promise<void> {
+    this.validateSettingKey(key);
+    if (key === 'scheduler.intervalSecs') {
+      if (!/^\d+$/.test(value)) throw new Error('Interval must be a number.');
+      const secs = Number(value);
+      if (secs < 30 || secs > 3600)
+        throw new Error('Scheduler interval must be 30–3600 s.');
+    }
+    if (new TextEncoder().encode(value).length > 200)
+      throw new Error('Setting value too long.');
     this.settings.set(key, value);
+    this.persist();
   }
 
   async diagnosticsBundle(): Promise<string> {
@@ -1210,7 +1248,7 @@ class MockBackend implements Backend {
 
   async roleMapDefault(): Promise<Record<string, string>> {
     const roles: Record<string, string> = {};
-    for (const p of this.profiles.values())
+    for (const p of await this.listAgentProfiles())
       if (p.role && !Object.hasOwn(roles, p.role)) roles[p.role] = p.id;
     for (const p of this.preferences.values()) {
       if (

@@ -101,3 +101,17 @@ The wizard lets you choose the workflow assistant's CLI, model and effort, or
 select an existing profile. It remembers the selection for Workflows → Assist.
 The default recommendation uses Claude Code, Fable and high effort; existing
 profiles are preserved. You can change the profile on each assistance request.
+
+## Profiles in imported templates
+
+Importing a template into the library can preserve logical roles without choosing
+machine-local profiles. When you use the template, an explicit profile is kept;
+otherwise an enabled global manual/accepted role preference is used, then the
+first configured profile with that role in alphabetical name order. No matching
+role mapping blocks template use instead of silently choosing another CLI.
+
+The creation notification lists the selected profiles. Select an AI Agent node to
+see its effective profile, CLI, model and effort in the inspector. A blank model
+or effort means the CLI default for that setting. A missing profile or unresolved
+role is shown explicitly; there is no hidden runtime profile fallback. Selecting a
+profile manually removes the unresolved role before autosaving.

@@ -10,7 +10,7 @@ import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
 
 export function EnvironmentView(): React.JSX.Element {
@@ -33,7 +33,7 @@ export function EnvironmentView(): React.JSX.Element {
       | { state: 'error'; message: string }
     >
   >({});
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [diagnostics, setDiagnostics] = useState<string | null>(null);
 
   const refreshAll = (): void => {
@@ -43,7 +43,7 @@ export function EnvironmentView(): React.JSX.Element {
   const saveServer = (server: McpServerConfig): void => {
     const errors = validateMcpServer(server);
     if (errors.length > 0) {
-      setMessage(errors[0] ?? 'Invalid server.');
+      setMessage(errors[0] ?? 'Invalid server.', 'error');
       return;
     }
     void getBackend()
@@ -54,7 +54,7 @@ export function EnvironmentView(): React.JSX.Element {
         setMessage(`Saved MCP server '${server.name}'.`);
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -70,7 +70,7 @@ export function EnvironmentView(): React.JSX.Element {
         .deleteMcpServer(id)
         .then(() => refreshIntegrations())
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -112,6 +112,8 @@ export function EnvironmentView(): React.JSX.Element {
       <div className="view">
         {message !== null && (
           <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
             style={{ marginBottom: 12 }}
             onDismiss={() => {
               setMessage(null);
@@ -120,7 +122,7 @@ export function EnvironmentView(): React.JSX.Element {
             <span>{message}</span>{' '}
           </Notice>
         )}
-        <Notice>
+        <Notice inline>
           Orchevia never installs tools for you. Install and authenticate <code>git</code>
           , <code>gh</code>, <code>claude</code> or <code>codex</code> yourself; Orchevia
           discovers them on <code>PATH</code> and delegates AI work to them. Those tools
@@ -362,7 +364,7 @@ export function EnvironmentView(): React.JSX.Element {
                 setMessage(null);
               })
               .catch((err: unknown) => {
-                setMessage(errorMessage(err));
+                setMessage(errorMessage(err), 'error');
               });
           }}
         >

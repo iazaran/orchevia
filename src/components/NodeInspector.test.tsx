@@ -4,6 +4,7 @@ import { NodeInspector } from './NodeInspector';
 import { useAppStore } from '../store';
 import { __setMockBackendForTests } from '../lib/backend';
 import { createEmptyWorkflow } from '../lib/workflow';
+import { createDefaultProfile } from '../lib/agents';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -149,4 +150,105 @@ it('keeps an incomplete advanced expression visible while its prior valid edit f
       (n) => n.id === 'condition',
     )?.config.condition?.clauses[0]?.right,
   ).toBe('P1');
+});
+
+it('explains an unresolved imported role and removes it when a profile is selected', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = await backend.saveAgentProfile({
+    ...createDefaultProfile('codex'),
+    name: 'My implementer',
+    model: 'chosen-model',
+    effort: 'high',
+    role: 'implementation',
+  });
+  const workflow = createEmptyWorkflow('Imported');
+  workflow.nodes.push({
+    id: 'agent',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentRole: 'implementation', prompt: 'Implement' },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'agent',
+    selectedEdgeId: null,
+    overlayRunId: null,
+    profiles: [profile],
+  });
+  render(<NodeInspector />);
+  expect(screen.getByText(/Role 'implementation' is unresolved/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Agent Profile'), {
+    target: { value: profile.id },
+  });
+  expect(
+    screen.getByText(/My implementer.*Codex.*chosen-model.*high/),
+  ).toBeInTheDocument();
+  await waitFor(async () => {
+    const config = (await backend.getWorkflow(stored.id))?.definition.nodes.find(
+      (n) => n.id === 'agent',
+    )?.config;
+    expect(config?.agentProfileId).toBe(profile.id);
+    expect(config?.agentRole).toBeUndefined();
+    expect(
+      (
+        await backend.validateWorkflow((await backend.getWorkflow(stored.id))!.definition)
+      ).some((i) => i.code === 'agent-role-unresolved'),
+    ).toBe(false);
+  });
+});
+
+it('shows the profile chosen from a template role default', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveAgentProfile({
+    ...createDefaultProfile('codex'),
+    name: 'Z reviewer',
+    role: 'deepReview',
+  });
+  const expected = await backend.saveAgentProfile({
+    ...createDefaultProfile('claude'),
+    name: 'A reviewer',
+    model: 'chosen-model',
+    role: 'deepReview',
+  });
+  const template = await backend.importTemplate(
+    JSON.stringify({
+      version: 1,
+      name: 'Portable review',
+      nodes: [
+        { key: 'start', type: 'start', config: {} },
+        {
+          key: 'review',
+          type: 'agent',
+          role: 'deepReview',
+          config: { prompt: 'Review' },
+        },
+        { key: 'end', type: 'end', config: {} },
+      ],
+      edges: [
+        { from: 'start', to: 'review' },
+        { from: 'review', to: 'end' },
+      ],
+    }),
+  );
+  const preview = await backend.instantiateTemplate(template.id, false);
+  const node = preview.workflow.nodes.find((n) => n.type === 'agent');
+  expect(node?.config.agentProfileId).toBe(expected.id);
+  const stored = await backend.saveWorkflow(preview.workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: node?.id ?? null,
+    selectedEdgeId: null,
+    overlayRunId: null,
+    profiles: await backend.listAgentProfiles(),
+  });
+  render(<NodeInspector />);
+  expect(screen.getByLabelText('Agent Profile')).toHaveValue(expected.id);
+  expect(
+    screen.getByText(/Uses A reviewer.*Claude Code.*chosen-model/),
+  ).toBeInTheDocument();
 });

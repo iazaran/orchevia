@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+import { newId } from './lib/workflow';
 import { commandEdits } from './lib/memory';
 import { create } from 'zustand';
 import { getBackend } from './lib/backend';
@@ -14,6 +16,16 @@ import type {
   Workflow,
 } from './lib/workflow';
 import { errorMessage } from './lib/errors';
+
+export interface UiNotice {
+  id: string;
+  content: ReactNode;
+  variant?: 'info' | 'warn' | 'error';
+  role?: 'status' | 'alert' | 'form';
+  dismissLabel?: string;
+  onDismiss?: () => void;
+  group?: string;
+}
 
 export type View =
   | 'workflows'
@@ -49,6 +61,8 @@ interface AppState {
   schedules: Schedule[];
   watchers: Watcher[];
   notifications: Notification[];
+  notificationSnapshotLoaded: boolean;
+  seenNotificationIds: number[];
   notificationPrefs: NotificationPrefs | null;
   backgroundMode: boolean;
   builtinTemplates: WorkflowTemplate[];
@@ -61,6 +75,9 @@ interface AppState {
   overlayResults: StoredNodeResult[];
   loading: boolean;
   error: string | null;
+  uiNotices: UiNotice[];
+  pushUiNotice: (notice: Omit<UiNotice, 'id'>) => void;
+  removeUiNotice: (id: string) => void;
 
   setView: (view: View) => void;
   refreshAll: () => Promise<void>;
@@ -91,6 +108,7 @@ let navigationSequence = 0;
 let runsRefreshSequence = 0;
 let workflowRefreshSequence = 0;
 let runSelectionSequence = 0;
+let notificationRefreshSequence = 0;
 const workflowSaves = new Map<
   string,
   { promise: Promise<StoredWorkflow>; token: symbol; definition: Workflow }
@@ -116,6 +134,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   schedules: [],
   watchers: [],
   notifications: [],
+  notificationSnapshotLoaded: false,
+  seenNotificationIds: [],
   notificationPrefs: null,
   backgroundMode: false,
   builtinTemplates: [],
@@ -128,6 +148,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
   overlayResults: [],
   loading: false,
   error: null,
+  uiNotices: [],
+  pushUiNotice: (notice) => {
+    set((current) => ({
+      uiNotices: [
+        ...current.uiNotices.filter((n) => !notice.group || n.group !== notice.group),
+        { ...notice, id: newId('notice') },
+      ],
+    }));
+  },
+  removeUiNotice: (id) => {
+    set((current) => ({ uiNotices: current.uiNotices.filter((n) => n.id !== id) }));
+  },
 
   setView: (view) => {
     navigationSequence++;
@@ -251,9 +283,33 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   refreshNotifications: async () => {
     const backend = getBackend();
+    const request = ++notificationRefreshSequence;
     try {
       const notifications = await backend.listNotifications(100);
-      set({ notifications });
+      if (request !== notificationRefreshSequence) return;
+      const current = get();
+      const seen = new Set(current.seenNotificationIds);
+      const incoming = notifications.filter((n) => !n.read && !seen.has(n.id));
+      for (const notification of notifications) seen.add(notification.id);
+      set({
+        notifications,
+        seenNotificationIds: [...seen],
+        notificationSnapshotLoaded: true,
+      });
+      // The first snapshot belongs to Inbox history; never replay it as popups.
+      if (current.notificationSnapshotLoaded) {
+        for (const notification of incoming.sort((a, b) => a.id - b.id)) {
+          get().pushUiNotice({
+            content: `${notification.title}: ${notification.body}`,
+            variant:
+              notification.kind === 'failure'
+                ? 'error'
+                : notification.kind === 'success'
+                  ? 'info'
+                  : 'warn',
+          });
+        }
+      }
     } catch {
       // Mock backend: stay empty.
     }
@@ -496,6 +552,7 @@ async function persistWorkflow(id: string): Promise<StoredWorkflow | undefined> 
           : {}),
       });
       status({ status: 'saved', error: null });
+      current.pushUiNotice({ content: 'Saved', group: `workflow-save:${id}` });
     }
     if (before && stored.definition.defaults?.repoDir?.trim()) {
       try {
@@ -524,6 +581,9 @@ async function persistWorkflow(id: string): Promise<StoredWorkflow | undefined> 
       useAppStore.getState().workflows.find((w) => w.id === id)?.definition === workflow
     ) {
       status({ status: 'error', error: errorMessage(err) });
+      useAppStore
+        .getState()
+        .pushUiNotice({ content: 'Save failed: ' + errorMessage(err), variant: 'error' });
     }
     throw err;
   } finally {

@@ -144,6 +144,11 @@ it('keeps malformed JSON in the editor without saving a crashing shape', async (
   expect(await screen.findByText(/Invalid args/)).toBeInTheDocument();
   expect(screen.getByLabelText('Workflow JSON')).toBeInTheDocument();
   expect(save).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Dismiss message' }));
+  await waitFor(() => expect(screen.queryByText(/Invalid args/)).toBeNull());
+  await user.click(screen.getByRole('button', { name: 'Save JSON' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Invalid args');
+  expect(save).not.toHaveBeenCalled();
 });
 
 it('observes concrete command edits saved through the JSON editor', async () => {
@@ -413,9 +418,9 @@ it('replaces redundant editor Save with autosave feedback and a working retry', 
       .getState()
       .updateActiveWorkflow({ ...stored.definition, name: 'Retained draft' }),
   );
-  expect(screen.getByRole('status')).toHaveTextContent('Saving');
+  expect(document.querySelector('.workflow-topbar')?.textContent).not.toContain('Saved');
   await waitFor(() =>
-    expect(screen.getByRole('status')).toHaveTextContent('Disk temporarily unavailable'),
+    expect(screen.getByRole('alert')).toHaveTextContent('Disk temporarily unavailable'),
   );
   save.mockImplementation(actualSave);
   await userEvent.setup().click(screen.getByRole('button', { name: 'Retry save' }));

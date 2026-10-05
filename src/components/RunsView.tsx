@@ -11,7 +11,7 @@ import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
 import { confirmDialog } from './ConfirmDialog';
 import { CloseButton } from './CloseButton';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
 
 /** Step output that collapses long logs behind an expand toggle.
@@ -97,9 +97,10 @@ export function RunsView(): React.JSX.Element {
     workflow: Workflow | null;
   } | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
-  const [memoryMessage, setMemoryMessage] = useState<string | null>(null);
+  const [memoryMessage, setMemoryMessage, , memoryMessageEvent] =
+    useNoticeMessage('info');
   const [memoryFields, setMemoryFields] = useState<Record<string, string>>({});
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError, , actionErrorEvent] = useNoticeMessage('error');
   const [now, setNow] = useState(0);
   const workflows = useAppStore((s) => s.workflows);
 
@@ -143,7 +144,7 @@ export function RunsView(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeRunId]);
+  }, [activeRunId, setActionError]);
   const promoteCommand = (runId: string, nodeId: string): void => {
     setMemoryBusy(true);
     setMemoryMessage(null);
@@ -196,7 +197,7 @@ export function RunsView(): React.JSX.Element {
     } finally {
       refreshBusy.current = false;
     }
-  }, [refreshRuns, selectRun]);
+  }, [refreshRuns, selectRun, setActionError]);
 
   // Each navigation mounts this view again, including a return after a prior visit.
   useEffect(() => {
@@ -285,7 +286,7 @@ export function RunsView(): React.JSX.Element {
     });
   };
 
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
 
   const runWorkflowName = (workflowId: string): string =>
     workflows.find((w) => w.id === workflowId)?.name ?? workflowId;
@@ -317,7 +318,7 @@ export function RunsView(): React.JSX.Element {
           return refreshRuns();
         })
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -347,7 +348,7 @@ export function RunsView(): React.JSX.Element {
           return refreshRuns();
         })
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -373,11 +374,14 @@ export function RunsView(): React.JSX.Element {
       </div>
       <div className="view">
         {memoryMessage && (
-          <Notice onDismiss={() => setMemoryMessage(null)}>{memoryMessage}</Notice>
+          <Notice eventId={memoryMessageEvent} onDismiss={() => setMemoryMessage(null)}>
+            {memoryMessage}
+          </Notice>
         )}
         {actionError !== null && (
           <Notice
             variant="error"
+            eventId={actionErrorEvent}
             onDismiss={() => {
               setActionError(null);
             }}
@@ -387,6 +391,8 @@ export function RunsView(): React.JSX.Element {
         )}
         {message !== null && (
           <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
             style={{ marginBottom: 12 }}
             onDismiss={() => {
               setMessage(null);
@@ -840,7 +846,9 @@ export function RunsView(): React.JSX.Element {
                         )}
                       </div>
                       {r.error !== undefined && r.error !== '' && (
-                        <Notice variant="error">{r.error}</Notice>
+                        <Notice inline variant="error">
+                          {r.error}
+                        </Notice>
                       )}
                       <OutputBlock
                         text={r.stdout}

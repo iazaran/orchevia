@@ -6,6 +6,23 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-05
+
+### Changed
+
+- Notifications, warnings, errors and workflow save feedback stack at the bottom-left
+  above dialogs without shifting content. Information fades after five seconds;
+  warnings and errors stay until dismissed. New Inbox events use the same feedback.
+- AI Agent inspectors show the configured profile, CLI, model and effort, and explain
+  missing profiles or unresolved imported roles. Using a template reports its selected
+  profiles; manually selecting a profile clears the unresolved role.
+
+### Fixed
+
+- Setup wizard and workflow assistance can read and save the default assistance
+  profile in the desktop app. Browser settings now mirror desktop access/validation.
+- Watcher and schedule badges align vertically with their shared delete controls.
+
 ## [0.1.8] - 2026-10-05
 
 ### Added
@@ -231,7 +248,12 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/iazaran/orchevia/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/iazaran/orchevia/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/iazaran/orchevia/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/iazaran/orchevia/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/iazaran/orchevia/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/iazaran/orchevia/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/iazaran/orchevia/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/iazaran/orchevia/compare/v0.1.1...v0.1.2

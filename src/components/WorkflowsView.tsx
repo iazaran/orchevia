@@ -29,8 +29,7 @@ import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
 import { NodeInspector } from './NodeInspector';
 import { WorkflowCanvas } from './WorkflowCanvas';
-import { CloseButton } from './CloseButton';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { Modal } from './Modal';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
@@ -91,14 +90,17 @@ export function WorkflowsView(): React.JSX.Element {
   const overlayResults = useAppStore((s) => s.overlayResults);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
   const [showSamples, setShowSamples] = useState(false);
-  const [runMessage, setRunMessage] = useState<string | null>(null);
+  const [runMessage, setRunMessage, runMessageVariant, runMessageEvent] =
+    useNoticeMessage('warn');
   useEffect(() => {
     if (overlayRunId === null) return;
     const timer = setInterval(() => {
-      void refreshRunOverlay().catch((err: unknown) => setRunMessage(errorMessage(err)));
+      void refreshRunOverlay().catch((err: unknown) =>
+        setRunMessage(errorMessage(err), 'error'),
+      );
     }, 1500);
     return () => clearInterval(timer);
-  }, [overlayRunId, refreshRunOverlay]);
+  }, [overlayRunId, refreshRunOverlay, setRunMessage]);
   const [starting, setStarting] = useState(false);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   const [inputState, setInputState] = useState<{
@@ -116,10 +118,10 @@ export function WorkflowsView(): React.JSX.Element {
   );
   const [genBranch, setGenBranch] = useState('');
   const [detectingGenBranch, setDetectingGenBranch] = useState(false);
-  const [genRepoMsg, setGenRepoMsg] = useState<string | null>(null);
+  const [genRepoMsg, setGenRepoMsg, , genRepoMsgEvent] = useNoticeMessage('warn');
   const [memoryContext, setMemoryContext] = useState<ProjectMemoryContext | null>(null);
   const [memoryDirectory, setMemoryDirectory] = useState<string | null>(null);
-  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryError, setMemoryError, , memoryErrorEvent] = useNoticeMessage('warn');
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
   const [assistanceBase, setAssistanceBase] = useState<Workflow | null>(null);
@@ -135,7 +137,7 @@ export function WorkflowsView(): React.JSX.Element {
   );
   const [genElapsed, setGenElapsed] = useState(0);
   const [lastGenError, setLastGenError] = useState<string | null>(null);
-  const [genError, setGenError] = useState<string | null>(null);
+  const [genError, setGenError, , genErrorEvent] = useNoticeMessage('error');
 
   useEffect(() => {
     if (!showGenerator) return;
@@ -167,7 +169,7 @@ export function WorkflowsView(): React.JSX.Element {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [showGenerator, genRepoDir]);
+  }, [showGenerator, genRepoDir, setMemoryError]);
 
   const assistanceTargetId = assistanceBase?.id;
   useEffect(() => {
@@ -185,7 +187,7 @@ export function WorkflowsView(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [showGenerator, assistanceTargetId, profiles]);
+  }, [showGenerator, assistanceTargetId, profiles, setGenError]);
 
   const closeGenerator = (): void => {
     if (generating || acceptingPreview) return;
@@ -204,7 +206,8 @@ export function WorkflowsView(): React.JSX.Element {
   const knownFolders = useAppStore((s) => s.knownFolders);
   const [commitPrDir, setCommitPrDir] = useState('');
   const [commitPrBranch, setCommitPrBranch] = useState('');
-  const [commitPrError, setCommitPrError] = useState<string | null>(null);
+  const [commitPrError, setCommitPrError, , commitPrErrorEvent] =
+    useNoticeMessage('error');
   useEffect(() => {
     if (!generating) return;
     const started = Date.now();
@@ -358,6 +361,7 @@ export function WorkflowsView(): React.JSX.Element {
           issues.length === 0
             ? `Saved '${stored.name}' from JSON — validation clean.`
             : `Saved '${stored.name}' from JSON with ${String(issues.length)} validation note${issues.length === 1 ? '' : 's'}.`,
+          issues.length === 0 ? 'info' : 'warn',
         );
       } catch (err) {
         setJsonError(errorMessage(err));
@@ -374,7 +378,7 @@ export function WorkflowsView(): React.JSX.Element {
         });
       })
       .catch((err: unknown) => {
-        setRunMessage(errorMessage(err));
+        setRunMessage(errorMessage(err), 'error');
       });
   };
 
@@ -418,7 +422,7 @@ export function WorkflowsView(): React.JSX.Element {
         await selectRun(runId);
         setView('runs');
       } catch (err) {
-        setRunMessage(errorMessage(err));
+        setRunMessage(errorMessage(err), 'error');
       } finally {
         setStarting(false);
       }
@@ -440,7 +444,7 @@ export function WorkflowsView(): React.JSX.Element {
       void deleteWorkflow(id)
         .then(() => refreshWorkflows())
         .catch((err: unknown) => {
-          setRunMessage(errorMessage(err));
+          setRunMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -518,6 +522,7 @@ export function WorkflowsView(): React.JSX.Element {
           profileId = saved.id;
           setRunMessage(
             `Created '${saved.name}' for generation. Tune its model/effort in Agents anytime.`,
+            'info',
           );
         }
         const { inputs: declared, problems } = parseInputDeclarations(
@@ -581,7 +586,7 @@ export function WorkflowsView(): React.JSX.Element {
         const mapped = explainGenerationError(errorMessage(err));
         setLastGenError(mapped);
         setGenError(mapped);
-        setRunMessage(mapped);
+        setRunMessage(mapped, 'error');
       } finally {
         setGenerating(false);
         setGenElapsed(0);
@@ -723,6 +728,7 @@ export function WorkflowsView(): React.JSX.Element {
         if (created.length > 0) {
           setRunMessage(
             `Accepted. Created profiles for missing roles: ${created.join(', ')}. Tune model/effort in Agents anytime.`,
+            'info',
           );
         }
         const notes: string[] = [];
@@ -743,9 +749,10 @@ export function WorkflowsView(): React.JSX.Element {
           notes.length > 0
             ? `Accepted '${stored.name}' (${notes.join('; ')}).`
             : `Accepted '${stored.name}' — open on the canvas for editing.`,
+          'info',
         );
       } catch (err) {
-        setRunMessage(errorMessage(err));
+        setRunMessage(errorMessage(err), 'error');
         setGenError(errorMessage(err));
       } finally {
         setAcceptingPreview(false);
@@ -770,7 +777,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [jsonBusy, setJsonBusy] = useState(false);
   const [jsonModal, setJsonModal] = useState(false);
   const [jsonText, setJsonText] = useState('');
-  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [jsonError, setJsonError, , jsonErrorEvent] = useNoticeMessage('error');
   const [templateName, setTemplateName] = useState('');
   const [templateCategory, setTemplateCategory] = useState('general');
 
@@ -796,11 +803,14 @@ export function WorkflowsView(): React.JSX.Element {
       })
       .then(() => {
         setTemplateModal(false);
-        setRunMessage(`Saved template '${name}' — find it under Templates → Mine.`);
+        setRunMessage(
+          `Saved template '${name}' — find it under Templates → Mine.`,
+          'info',
+        );
         void refreshLibrary();
       })
       .catch((err: unknown) => {
-        setRunMessage(errorMessage(err));
+        setRunMessage(errorMessage(err), 'error');
       });
   };
 
@@ -828,36 +838,20 @@ export function WorkflowsView(): React.JSX.Element {
           >
             Samples…
           </button>
-          {active !== null && overlayRunId === null && (
-            <>
-              <span
-                role="status"
-                aria-live="polite"
-                className={`workflow-save-status${activeSaveState?.status === 'error' ? ' save-error' : ''}`}
-                title={
-                  activeSaveState?.error ?? 'Workflow and graph edits save automatically.'
-                }
+          {active !== null &&
+            overlayRunId === null &&
+            activeSaveState?.status === 'error' && (
+              <button
+                className="btn"
+                onClick={() => {
+                  void retryWorkflowSave(active.id).catch((err: unknown) =>
+                    setRunMessage(errorMessage(err), 'error'),
+                  );
+                }}
               >
-                {activeSaveState?.status === 'saving'
-                  ? 'Saving…'
-                  : activeSaveState?.status === 'error'
-                    ? `Save failed: ${activeSaveState.error ?? 'Please retry.'}`
-                    : 'Saved'}
-              </span>
-              {activeSaveState?.status === 'error' && (
-                <button
-                  className="btn"
-                  onClick={() => {
-                    void retryWorkflowSave(active.id).catch((err: unknown) => {
-                      setRunMessage(errorMessage(err));
-                    });
-                  }}
-                >
-                  Retry save
-                </button>
-              )}
-            </>
-          )}
+                Retry save
+              </button>
+            )}
           <button
             className="btn"
             title="Draft a workflow from a goal using your own local AI CLI"
@@ -919,17 +913,15 @@ export function WorkflowsView(): React.JSX.Element {
         </fieldset>
       </div>
       {runMessage !== null && (
-        <div style={{ padding: '12px 20px 0' }}>
-          <Notice
-            variant="warn"
-            role="alert"
-            onDismiss={() => {
-              setRunMessage(null);
-            }}
-          >
-            <span>{runMessage}</span>
-          </Notice>
-        </div>
+        <Notice
+          variant={runMessageVariant}
+          eventId={runMessageEvent}
+          onDismiss={() => {
+            setRunMessage(null);
+          }}
+        >
+          <span>{runMessage}</span>
+        </Notice>
       )}
       {showInputs && (active.definition.inputs ?? []).length > 0 && (
         <div style={{ padding: '12px 20px 0' }}>
@@ -1029,7 +1021,7 @@ export function WorkflowsView(): React.JSX.Element {
       )}
       {overlayRunId !== null && (
         <div style={{ padding: '12px 20px 0' }}>
-          <Notice>
+          <Notice inline>
             Read-only snapshot of run {overlayRunId} on canvas ({overlayResults.length}{' '}
             results).{' '}
             <button
@@ -1143,7 +1135,9 @@ export function WorkflowsView(): React.JSX.Element {
                   {memoryLoading || memoryDirectory !== genRepoDir.trim() ? (
                     <p className="field-hint">Loading project memory…</p>
                   ) : memoryError ? (
-                    <Notice variant="warn">{memoryError}</Notice>
+                    <Notice variant="warn" eventId={memoryErrorEvent}>
+                      {memoryError}
+                    </Notice>
                   ) : (
                     <pre className="log-block" style={{ maxHeight: 220 }}>
                       {memoryContext?.text ||
@@ -1201,9 +1195,9 @@ export function WorkflowsView(): React.JSX.Element {
                     defaults.
                   </span>
                   {genRepoMsg !== null && (
-                    <span className="field-hint" style={{ marginTop: 4 }}>
+                    <Notice variant="warn" eventId={genRepoMsgEvent}>
                       {genRepoMsg}
-                    </span>
+                    </Notice>
                   )}
                 </div>
               </details>
@@ -1253,6 +1247,7 @@ export function WorkflowsView(): React.JSX.Element {
               {genError !== null && (
                 <Notice
                   variant="error"
+                  eventId={genErrorEvent}
                   style={{ marginTop: 8 }}
                   onDismiss={() => {
                     setGenError(null);
@@ -1368,7 +1363,12 @@ export function WorkflowsView(): React.JSX.Element {
               )}
             </div>
             {preview !== null && (
-              <Notice variant="warn" className="preview-scroll" style={{ marginTop: 12 }}>
+              <Notice
+                inline
+                variant="warn"
+                className="preview-scroll"
+                style={{ marginTop: 12 }}
+              >
                 <strong>Proposed: {preview.proposalName}</strong>
                 {assistanceBase !== null && (
                   <details className="preview-details" open>
@@ -1402,6 +1402,7 @@ export function WorkflowsView(): React.JSX.Element {
                 )}
                 {preview.blocking.length > 0 && (
                   <Notice
+                    inline
                     variant="error"
                     className="blocked-scroll"
                     style={{ marginTop: 8 }}
@@ -1617,7 +1618,11 @@ export function WorkflowsView(): React.JSX.Element {
                 End. Press Run, fill the two inputs, and walk away.
               </p>
               {commitPrError !== null && (
-                <Notice variant="error" style={{ marginBottom: 8 }}>
+                <Notice
+                  variant="error"
+                  style={{ marginBottom: 8 }}
+                  eventId={commitPrErrorEvent}
+                >
                   {commitPrError}
                 </Notice>
               )}
@@ -1782,7 +1787,11 @@ export function WorkflowsView(): React.JSX.Element {
               />
             </div>
             {jsonError !== null && (
-              <Notice variant="error" style={{ marginBottom: 12 }}>
+              <Notice
+                variant="error"
+                style={{ marginBottom: 12 }}
+                eventId={jsonErrorEvent}
+              >
                 {jsonError}
               </Notice>
             )}
@@ -1873,31 +1882,20 @@ export function WorkflowsView(): React.JSX.Element {
         </Modal>
       )}
       {validation.length > 0 && active !== null && !validationHidden && (
-        <div className="validation-bar" aria-live="polite">
-          <div
-            style={{ display: 'flex', justifyContent: 'flex-end', pointerEvents: 'auto' }}
-          >
-            <CloseButton
-              variant="ghost"
-              label="Dismiss validation messages"
-              title="Dismiss (reappears when validation changes)"
-              onClose={() => {
-                setDismissedValidation(validationIdentity);
-              }}
-            >
-              Dismiss ✕
-            </CloseButton>
-          </div>
+        <Notice
+          variant={
+            validation.some((issue) => issue.severity === 'error') ? 'error' : 'warn'
+          }
+          dismissLabel="Dismiss validation messages"
+          onDismiss={() => setDismissedValidation(validationIdentity)}
+        >
           {validation.slice(0, 4).map((issue) => (
-            <div
-              key={issue.code + (issue.nodeId ?? '')}
-              className={`validation-item ${issue.severity}`}
-            >
+            <div key={issue.code + (issue.nodeId ?? '')}>
               <strong>{issue.severity === 'error' ? 'Error' : 'Warning'}:</strong>{' '}
               {issue.message}
             </div>
           ))}
-        </div>
+        </Notice>
       )}
     </>
   );
