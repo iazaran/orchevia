@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import { ADAPTER_LABELS, createDefaultProfile, type AdapterKind } from '../lib/agents';
 import { getBackend } from '../lib/backend';
 import {
+  applyAssistancePreview,
+  assistanceChanges,
+  assistanceRepoDir,
+  resolveAssistanceProfile,
+  type AssistanceMode,
   describeGeneratedStep,
   parseInputDeclarations,
   resolveGeneratorProfile,
@@ -68,6 +73,10 @@ export function WorkflowsView(): React.JSX.Element {
   const active = useAppStore(selectActiveWorkflow);
   const selectWorkflow = useAppStore((s) => s.selectWorkflow);
   const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
+  const workflowSaveStates = useAppStore((s) => s.workflowSaveStates);
+  const retryWorkflowSave = useAppStore((s) => s.retryWorkflowSave);
+  const deleteWorkflow = useAppStore((s) => s.deleteWorkflow);
+  const activeSaveState = active === null ? undefined : workflowSaveStates[active.id];
   const refreshWorkflows = useAppStore((s) => s.refreshWorkflows);
   const refreshRuns = useAppStore((s) => s.refreshRuns);
   const setView = useAppStore((s) => s.setView);
@@ -113,10 +122,13 @@ export function WorkflowsView(): React.JSX.Element {
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [showGenerator, setShowGenerator] = useState(false);
+  const [assistanceBase, setAssistanceBase] = useState<Workflow | null>(null);
+  const [assistanceMode, setAssistanceMode] = useState<AssistanceMode>('optimize');
   const [generatorAdapter, setGeneratorAdapter] = useState<AdapterKind>('claude');
   const [advancedProfileId, setAdvancedProfileId] = useState('');
   const [showAdvancedProfile, setShowAdvancedProfile] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [acceptingPreview, setAcceptingPreview] = useState(false);
   const [showGoalInputs, setShowGoalInputs] = useState(false);
   const [goalInputs, setGoalInputs] = useState<string>(
     () => readLocal('orchevia.genInputs.v1') ?? '',
@@ -157,9 +169,28 @@ export function WorkflowsView(): React.JSX.Element {
     };
   }, [showGenerator, genRepoDir]);
 
+  const assistanceTargetId = assistanceBase?.id;
+  useEffect(() => {
+    if (!showGenerator || assistanceTargetId === undefined) return;
+    let cancelled = false;
+    void getBackend()
+      .getSetting('workflow.assistanceProfileId')
+      .then((id) => {
+        if (!cancelled && id !== null && profiles.some((p) => p.id === id))
+          setAdvancedProfileId(id);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setGenError(errorMessage(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showGenerator, assistanceTargetId, profiles]);
+
   const closeGenerator = (): void => {
-    if (generating) return;
+    if (generating || acceptingPreview) return;
     setShowGenerator(false);
+    setAssistanceBase(null);
     setPreview(null);
     setGenError(null);
     setLastGenError(null);
@@ -406,8 +437,7 @@ export function WorkflowsView(): React.JSX.Element {
       danger: true,
     }).then((ok) => {
       if (!ok) return;
-      void getBackend()
-        .deleteWorkflow(id)
+      void deleteWorkflow(id)
         .then(() => refreshWorkflows())
         .catch((err: unknown) => {
           setRunMessage(errorMessage(err));
@@ -416,7 +446,7 @@ export function WorkflowsView(): React.JSX.Element {
   };
 
   const startRepair = (): void => {
-    if (generating) return;
+    if (generating || acceptingPreview) return;
     if (repairRound >= 3) {
       const msg =
         '3 repair rounds used — edit the goal or inputs and press Generate for a fresh attempt, or finish the workflow by hand.';
@@ -443,7 +473,8 @@ export function WorkflowsView(): React.JSX.Element {
   };
 
   const generateFromGoal = (repairFeedback: string | null = null): void => {
-    if (goal.trim() === '') {
+    if (generating || acceptingPreview) return;
+    if (goal.trim() === '' && assistanceBase === null) {
       setRunMessage('Describe the goal first.');
       setGenError('Describe the goal first.');
       return;
@@ -471,13 +502,16 @@ export function WorkflowsView(): React.JSX.Element {
         let profileId = advancedProfileId;
         if (profileId === '') {
           const existing = await backend.listAgentProfiles();
-          profileId = resolveGeneratorProfile(existing, generatorAdapter) ?? '';
+          profileId =
+            (assistanceBase === null
+              ? resolveGeneratorProfile(existing, generatorAdapter)
+              : resolveAssistanceProfile(existing, generatorAdapter)) ?? '';
         }
         if (profileId === '') {
           const fresh = {
             ...createDefaultProfile(generatorAdapter),
-            name: `${ADAPTER_LABELS[generatorAdapter]} — Generator`,
-            role: 'workflowGenerator',
+            name: `${ADAPTER_LABELS[generatorAdapter]} — ${assistanceBase === null ? 'Generator' : 'Workflow assistance'}`,
+            role: assistanceBase === null ? 'workflowGenerator' : 'workflowAssistance',
           };
           const saved = await backend.saveAgentProfile(fresh);
           await refreshProfiles();
@@ -486,14 +520,20 @@ export function WorkflowsView(): React.JSX.Element {
             `Created '${saved.name}' for generation. Tune its model/effort in Agents anytime.`,
           );
         }
-        const { inputs: declared, problems } = parseInputDeclarations(goalInputs);
+        const { inputs: declared, problems } = parseInputDeclarations(
+          assistanceBase === null ? goalInputs : '',
+        );
         if (problems.length > 0) {
           setRunMessage(`Fix the inputs list first: ${problems[0] ?? ''}`);
           return;
         }
         writeLocal('orchevia.genInputs.v1', goalInputs);
         if (repoDir !== '') writeLocal('orchevia.genRepo.v1', repoDir);
-        let fullGoal = goal.trim();
+        let fullGoal =
+          goal.trim() ||
+          (assistanceMode === 'arrange'
+            ? 'Arrange this workflow for readability.'
+            : 'Improve this workflow using repository instructions and relevant run evidence.');
         if (declared.length > 0) {
           const lines = declared.map((d) =>
             d.default !== undefined ? `${d.name} (default: ${d.default})` : d.name,
@@ -508,10 +548,34 @@ export function WorkflowsView(): React.JSX.Element {
             '\n\nRepair round: the previous proposal had these problems. Fix EVERY item and keep everything else valid:\n' +
             repairFeedback;
         }
-        const result = await backend.generateWorkflow(profileId, fullGoal, {
-          ...(repoDir === '' ? {} : { dir: repoDir }),
-          ...(branch === '' ? {} : { branch }),
-        });
+        let savedBase: Workflow | null = null;
+        if (assistanceBase !== null) {
+          const state = useAppStore.getState();
+          const current = state.workflows.find((w) => w.id === assistanceBase.id);
+          if (state.activeWorkflowId !== assistanceBase.id || current === undefined)
+            throw new Error(
+              'Select the workflow used for assistance before requesting another preview.',
+            );
+          const saved = await saveActiveWorkflow(current.definition);
+          if (!saved) throw new Error('The workflow is no longer editable.');
+          savedBase = structuredClone(saved.definition);
+          setAssistanceBase(savedBase);
+        }
+        const result = await backend.generateWorkflow(
+          profileId,
+          fullGoal,
+          {
+            ...((savedBase?.defaults?.repoDir ?? repoDir) === ''
+              ? {}
+              : { dir: savedBase?.defaults?.repoDir ?? repoDir }),
+            ...((savedBase?.defaults?.branch ?? branch) === ''
+              ? {}
+              : { branch: savedBase?.defaults?.branch ?? branch }),
+          },
+          savedBase === null
+            ? undefined
+            : { workflowId: savedBase.id, mode: assistanceMode },
+        );
         setPreview(result);
       } catch (err) {
         const mapped = explainGenerationError(errorMessage(err));
@@ -526,7 +590,7 @@ export function WorkflowsView(): React.JSX.Element {
   };
 
   const acceptPreview = (): void => {
-    if (preview === null) return;
+    if (preview === null || acceptingPreview) return;
     // Role-mapping messages are auto-fixable (profiles get created below);
     // anything else blocks.
     const roleMsgs = new Set(preview.unmappedRoles.map(roleMappingMessage));
@@ -536,7 +600,9 @@ export function WorkflowsView(): React.JSX.Element {
       return;
     }
     // Merge user-declared inputs (before-generate box wins on conflicts).
-    const { inputs: declared } = parseInputDeclarations(goalInputs);
+    const { inputs: declared } = parseInputDeclarations(
+      assistanceBase === null ? goalInputs : '',
+    );
     const mergedInputs = [...(preview.workflow.inputs ?? [])];
     for (const d of declared) {
       const entry = {
@@ -549,9 +615,25 @@ export function WorkflowsView(): React.JSX.Element {
       else mergedInputs.push(entry);
     }
     const missingRoles = [...preview.unmappedRoles];
+    setAcceptingPreview(true);
     void (async () => {
       try {
         const backend = getBackend();
+        if (assistanceBase !== null) {
+          const current = useAppStore
+            .getState()
+            .workflows.find((w) => w.id === assistanceBase.id);
+          if (
+            useAppStore.getState().activeWorkflowId !== assistanceBase.id ||
+            current === undefined
+          )
+            throw new Error('Select the original workflow before applying assistance.');
+          applyAssistancePreview(assistanceBase, current.definition, preview.workflow);
+          const persisted = await backend.getWorkflow(assistanceBase.id);
+          if (persisted === null)
+            throw new Error('The original workflow no longer exists.');
+          applyAssistancePreview(assistanceBase, persisted.definition, preview.workflow);
+        }
         const created: string[] = [];
         // Auto-wire the MCP server when there is exactly one enabled choice:
         // ticket/mcp nodes without a server get it, so Jira flows accept
@@ -566,8 +648,18 @@ export function WorkflowsView(): React.JSX.Element {
         } catch {
           autoServer = null;
         }
-        const workflow = { ...structuredClone(preview.workflow), inputs: mergedInputs };
-        if (autoServer !== null) {
+        let workflow: Workflow = {
+          ...structuredClone(preview.workflow),
+          inputs: mergedInputs,
+        };
+        if (assistanceBase !== null) {
+          const state = useAppStore.getState();
+          const current = state.workflows.find((w) => w.id === assistanceBase.id);
+          if (state.activeWorkflowId !== assistanceBase.id || current === undefined)
+            throw new Error('Select the original workflow before applying assistance.');
+          workflow = applyAssistancePreview(assistanceBase, current.definition, workflow);
+        }
+        if (autoServer !== null && assistanceBase === null) {
           for (const node of workflow.nodes) {
             if (
               (node.type === 'ticket' || node.type === 'mcp') &&
@@ -593,13 +685,41 @@ export function WorkflowsView(): React.JSX.Element {
           }
         }
         if (created.length > 0) await refreshProfiles();
-        const stored = await backend.saveWorkflow(workflow);
+        if (assistanceBase !== null) {
+          const persisted = await backend.getWorkflow(assistanceBase.id);
+          if (persisted === null)
+            throw new Error('The original workflow no longer exists.');
+          applyAssistancePreview(assistanceBase, persisted.definition, workflow);
+          // Check after every setup await, immediately before the store captures this save.
+          const state = useAppStore.getState();
+          const current = state.workflows.find((w) => w.id === assistanceBase.id);
+          if (
+            state.activeWorkflowId !== assistanceBase.id ||
+            state.overlayRunId !== null ||
+            current === undefined
+          )
+            throw new Error(
+              'Select the original editable workflow before applying assistance.',
+            );
+          workflow = applyAssistancePreview(assistanceBase, current.definition, workflow);
+        }
+        const stored =
+          assistanceBase === null
+            ? await backend.saveWorkflow(workflow)
+            : await saveActiveWorkflow(workflow);
+        if (!stored) throw new Error('The workflow is no longer editable.');
         await backend
           .markGenerationStatus(preview.generationId, 'accepted')
           .catch(() => {});
         void refreshLibrary();
         await refreshWorkflows();
-        selectWorkflow(stored.id);
+        const currentState = useAppStore.getState();
+        if (
+          assistanceBase === null ||
+          (currentState.activeWorkflowId === assistanceBase.id &&
+            currentState.overlayRunId === null)
+        )
+          selectWorkflow(stored.id);
         if (created.length > 0) {
           setRunMessage(
             `Accepted. Created profiles for missing roles: ${created.join(', ')}. Tune model/effort in Agents anytime.`,
@@ -609,7 +729,7 @@ export function WorkflowsView(): React.JSX.Element {
         if (created.length > 0) {
           notes.push(`created profiles for missing roles: ${created.join(', ')}`);
         }
-        if (autoServer !== null) {
+        if (autoServer !== null && assistanceBase === null) {
           notes.push('wired your MCP server into ticket/MCP nodes');
         }
         setPreview(null);
@@ -618,6 +738,7 @@ export function WorkflowsView(): React.JSX.Element {
         setRepairRound(0);
         // Back to the canvas: the new workflow is selected and ready to edit.
         setShowGenerator(false);
+        setAssistanceBase(null);
         setRunMessage(
           notes.length > 0
             ? `Accepted '${stored.name}' (${notes.join('; ')}).`
@@ -625,11 +746,15 @@ export function WorkflowsView(): React.JSX.Element {
         );
       } catch (err) {
         setRunMessage(errorMessage(err));
+        setGenError(errorMessage(err));
+      } finally {
+        setAcceptingPreview(false);
       }
     })();
   };
 
   const discardPreview = (): void => {
+    if (acceptingPreview) return;
     if (preview !== null) {
       void getBackend()
         .markGenerationStatus(preview.generationId, 'discarded')
@@ -664,8 +789,11 @@ export function WorkflowsView(): React.JSX.Element {
     }
     const name = templateName.trim();
     const category = templateCategory.trim() === '' ? 'general' : templateCategory.trim();
-    void getBackend()
-      .saveWorkflowAsTemplate(active.id, name, category)
+    void saveActiveWorkflow(active.definition)
+      .then((stored) => {
+        if (!stored) throw new Error('The workflow is no longer editable.');
+        return getBackend().saveWorkflowAsTemplate(stored.id, name, category);
+      })
       .then(() => {
         setTemplateModal(false);
         setRunMessage(`Saved template '${name}' — find it under Templates → Mine.`);
@@ -678,14 +806,14 @@ export function WorkflowsView(): React.JSX.Element {
 
   return (
     <>
-      <div className="topbar">
+      <div className="topbar workflow-topbar">
         <h1>Workflows</h1>
         <span className="topbar-sub">
           Design, then run — execution is always explicit.
         </span>
         <fieldset
           className="topbar-actions"
-          style={{ border: 0, margin: 0, padding: 0 }}
+          style={{ border: 0, margin: 0, marginLeft: 'auto', padding: 0, minWidth: 0 }}
           disabled={overlayRunId !== null}
         >
           <button className="btn" onClick={createWorkflow}>
@@ -700,21 +828,67 @@ export function WorkflowsView(): React.JSX.Element {
           >
             Samples…
           </button>
-          <button
-            className="btn"
-            onClick={() => void saveActiveWorkflow()}
-            disabled={active === null}
-          >
-            Save
-          </button>
+          {active !== null && overlayRunId === null && (
+            <>
+              <span
+                role="status"
+                aria-live="polite"
+                className={`workflow-save-status${activeSaveState?.status === 'error' ? ' save-error' : ''}`}
+                title={
+                  activeSaveState?.error ?? 'Workflow and graph edits save automatically.'
+                }
+              >
+                {activeSaveState?.status === 'saving'
+                  ? 'Saving…'
+                  : activeSaveState?.status === 'error'
+                    ? `Save failed: ${activeSaveState.error ?? 'Please retry.'}`
+                    : 'Saved'}
+              </span>
+              {activeSaveState?.status === 'error' && (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    void retryWorkflowSave(active.id).catch((err: unknown) => {
+                      setRunMessage(errorMessage(err));
+                    });
+                  }}
+                >
+                  Retry save
+                </button>
+              )}
+            </>
+          )}
           <button
             className="btn"
             title="Draft a workflow from a goal using your own local AI CLI"
             onClick={() => {
+              setAssistanceBase(null);
+              setPreview(null);
               setShowGenerator(true);
             }}
           >
             ✦ Generate
+          </button>
+          <button
+            className="btn"
+            disabled={active === null}
+            title="Arrange or improve this workflow using a configured local CLI; review before applying"
+            onClick={() => {
+              if (active === null) return;
+              setAssistanceBase(structuredClone(active.definition));
+              setAssistanceMode('optimize');
+              setGenRepoDir(assistanceRepoDir(active.definition));
+              setGenBranch(active.definition.defaults?.branch ?? '');
+              setGoal('');
+              setPreview(null);
+              setGenError(null);
+              setLastGenError(null);
+              setShowAdvancedProfile(true);
+              setAdvancedProfileId('');
+              setShowGenerator(true);
+            }}
+          >
+            ✦ Assist
           </button>
           <button className="btn" onClick={openSaveAsTemplate} disabled={active === null}>
             Save as template
@@ -871,15 +1045,44 @@ export function WorkflowsView(): React.JSX.Element {
       )}
       {showGenerator && (
         <Modal
-          label="Generate workflow"
+          label={assistanceBase === null ? 'Generate workflow' : 'Assist workflow'}
           onClose={closeGenerator}
           closeLabel="Close generator"
-          closeDisabled={generating}
+          closeDisabled={generating || acceptingPreview}
           onBackdrop={closeGenerator}
           maxWidth={780}
         >
           <div>
-            <h3 style={{ marginTop: 0, paddingRight: 40 }}>Generate workflow</h3>
+            <h3 style={{ marginTop: 0, paddingRight: 40 }}>
+              {assistanceBase === null
+                ? 'Generate workflow'
+                : `Assist: ${assistanceBase.name}`}
+            </h3>
+            {assistanceBase !== null && (
+              <div className="field">
+                <label className="field-label" htmlFor="assistance-mode">
+                  Assistance task
+                </label>
+                <select
+                  id="assistance-mode"
+                  className="input"
+                  value={assistanceMode}
+                  disabled={generating || acceptingPreview}
+                  onChange={(e) => {
+                    setAssistanceMode(e.target.value as AssistanceMode);
+                    setPreview(null);
+                  }}
+                >
+                  <option value="optimize">Optimize workflow</option>
+                  <option value="arrange">Arrange layout only</option>
+                </select>
+                <span className="field-hint">
+                  Uses the saved workflow, repository instructions, accepted project
+                  playbook and latest run from the same repository. Review the proposal
+                  before applying.
+                </span>
+              </div>
+            )}
             <div className="generator-panel" role="form" aria-label="Generate workflow">
               <div>
                 <div
@@ -891,7 +1094,11 @@ export function WorkflowsView(): React.JSX.Element {
                   }}
                 >
                   <strong>
-                    <label htmlFor="gen-goal">Describe what you want to do</label>
+                    <label htmlFor="gen-goal">
+                      {assistanceBase === null
+                        ? 'Describe what you want to do'
+                        : 'Developer instructions (optional)'}
+                    </label>
                   </strong>
                   <span
                     className="field-hint"
@@ -902,9 +1109,9 @@ export function WorkflowsView(): React.JSX.Element {
                   </span>
                 </div>
                 <div className="field-hint">
-                  Pick an AI — Orchevia drafts with it (creating a Generator profile if
-                  you don’t have one) and shows a preview. Never auto-runs, and Orchevia
-                  itself has no built-in AI.
+                  Pick an AI — Orchevia drafts with it (creating a profile if you don’t
+                  have one) and shows a preview. Never auto-runs, and Orchevia itself has
+                  no built-in AI.
                 </div>
               </div>
               <textarea
@@ -919,13 +1126,18 @@ export function WorkflowsView(): React.JSX.Element {
                 <summary>
                   Repository context (optional) — the AI inspects it before drafting
                 </summary>
-                <DirPicker
-                  id="gen-repo-dir"
-                  label="Repository directory"
-                  value={genRepoDir}
-                  placeholder={knownFolders[0] ?? '/path/to/repo'}
-                  onChange={setGenRepoDir}
-                />
+                <fieldset
+                  disabled={assistanceBase !== null || generating || acceptingPreview}
+                  style={{ border: 0, padding: 0, margin: 0 }}
+                >
+                  <DirPicker
+                    id="gen-repo-dir"
+                    label="Repository directory"
+                    value={genRepoDir}
+                    placeholder={knownFolders[0] ?? '/path/to/repo'}
+                    onChange={setGenRepoDir}
+                  />
+                </fieldset>
                 <details>
                   <summary className="field-hint">Included project memory</summary>
                   {memoryLoading || memoryDirectory !== genRepoDir.trim() ? (
@@ -940,44 +1152,49 @@ export function WorkflowsView(): React.JSX.Element {
                   )}
                 </details>
                 <div className="field" style={{ marginBottom: 0 }}>
-                  <BranchPicker
-                    id="gen-branch"
-                    label="Branch (optional)"
-                    repoDir={genRepoDir}
-                    value={genBranch}
-                    placeholder="feature/my-work (optional)"
-                    onChange={setGenBranch}
-                    action={
-                      <button
-                        className="btn btn-ghost"
-                        style={{ padding: '2px 8px', fontSize: 12 }}
-                        disabled={detectingGenBranch || genRepoDir.trim() === ''}
-                        title="Fill in the current branch of the repository above"
-                        onClick={() => {
-                          const dir = genRepoDir.trim();
-                          if (dir === '') {
-                            setGenRepoMsg('Set the repository directory first.');
-                            return;
-                          }
-                          setDetectingGenBranch(true);
-                          setGenRepoMsg(null);
-                          void getBackend()
-                            .gitCurrentBranch(dir)
-                            .then((branch) => {
-                              setGenBranch(branch);
-                            })
-                            .catch((err: unknown) => {
-                              setGenRepoMsg(errorMessage(err));
-                            })
-                            .finally(() => {
-                              setDetectingGenBranch(false);
-                            });
-                        }}
-                      >
-                        {detectingGenBranch ? 'Detecting…' : 'Detect current'}
-                      </button>
-                    }
-                  />
+                  <fieldset
+                    disabled={assistanceBase !== null || generating || acceptingPreview}
+                    style={{ border: 0, padding: 0, margin: 0 }}
+                  >
+                    <BranchPicker
+                      id="gen-branch"
+                      label="Branch (optional)"
+                      repoDir={genRepoDir}
+                      value={genBranch}
+                      placeholder="feature/my-work (optional)"
+                      onChange={setGenBranch}
+                      action={
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: '2px 8px', fontSize: 12 }}
+                          disabled={detectingGenBranch || genRepoDir.trim() === ''}
+                          title="Fill in the current branch of the repository above"
+                          onClick={() => {
+                            const dir = genRepoDir.trim();
+                            if (dir === '') {
+                              setGenRepoMsg('Set the repository directory first.');
+                              return;
+                            }
+                            setDetectingGenBranch(true);
+                            setGenRepoMsg(null);
+                            void getBackend()
+                              .gitCurrentBranch(dir)
+                              .then((branch) => {
+                                setGenBranch(branch);
+                              })
+                              .catch((err: unknown) => {
+                                setGenRepoMsg(errorMessage(err));
+                              })
+                              .finally(() => {
+                                setDetectingGenBranch(false);
+                              });
+                          }}
+                        >
+                          {detectingGenBranch ? 'Detecting…' : 'Detect current'}
+                        </button>
+                      }
+                    />
+                  </fieldset>
                   <span className="field-hint">
                     Grounded drafts: the AI reads this repo (never writes), wires node
                     working directories, and the accepted workflow keeps these as its
@@ -998,6 +1215,7 @@ export function WorkflowsView(): React.JSX.Element {
                   }}
                   aria-expanded={showGoalInputs}
                   title="Name the {{input.*}} variables up front so the AI references real ones"
+                  disabled={assistanceBase !== null}
                 >
                   {showGoalInputs
                     ? 'Hide inputs'
@@ -1006,7 +1224,7 @@ export function WorkflowsView(): React.JSX.Element {
                       : 'Inputs… (optional)'}
                 </button>
               </div>
-              {showGoalInputs && (
+              {showGoalInputs && assistanceBase === null && (
                 <div className="field" style={{ marginTop: 8, maxWidth: 640 }}>
                   <label className="field-label" htmlFor="gen-inputs">
                     Workflow inputs (one per line: NAME or NAME=default)
@@ -1058,10 +1276,16 @@ export function WorkflowsView(): React.JSX.Element {
                 </select>
                 <button
                   className="btn btn-primary btn-generate"
-                  disabled={generating}
+                  disabled={generating || acceptingPreview}
                   onClick={() => generateFromGoal()}
                 >
-                  {generating ? `Generating… ${String(genElapsed)}s` : '✦ Generate'}
+                  {generating
+                    ? `Generating… ${String(genElapsed)}s`
+                    : assistanceBase === null
+                      ? '✦ Generate'
+                      : assistanceMode === 'arrange'
+                        ? 'Preview arrangement'
+                        : 'Preview improvements'}
                 </button>
                 <button
                   className="btn btn-ghost"
@@ -1132,7 +1356,7 @@ export function WorkflowsView(): React.JSX.Element {
                   </div>
                   <button
                     className="btn"
-                    disabled={generating}
+                    disabled={generating || acceptingPreview}
                     title="Send the failure + your hint back to the AI for another attempt (max 3 rounds)"
                     onClick={startRepair}
                   >
@@ -1146,6 +1370,14 @@ export function WorkflowsView(): React.JSX.Element {
             {preview !== null && (
               <Notice variant="warn" className="preview-scroll" style={{ marginTop: 12 }}>
                 <strong>Proposed: {preview.proposalName}</strong>
+                {assistanceBase !== null && (
+                  <details className="preview-details" open>
+                    <summary>Review changes to the current workflow</summary>
+                    <pre className="log-block" style={{ maxHeight: 260 }}>
+                      {assistanceChanges(assistanceBase, preview.workflow)}
+                    </pre>
+                  </details>
+                )}
                 <p className="preview-summary">
                   {summarizeGenerationExplanation(preview.explanation) ||
                     'Review the proposed steps and required setup before accepting.'}
@@ -1245,7 +1477,7 @@ export function WorkflowsView(): React.JSX.Element {
                     return (
                       <button
                         className="btn btn-primary"
-                        disabled={hard.length > 0}
+                        disabled={hard.length > 0 || acceptingPreview}
                         title={
                           hard.length > 0
                             ? 'Resolve the blocking items above (or ask the AI to fix them)'
@@ -1255,18 +1487,22 @@ export function WorkflowsView(): React.JSX.Element {
                         }
                         onClick={acceptPreview}
                       >
-                        {hard.length > 0
-                          ? 'Accept & edit'
-                          : autoCreatable > 0
-                            ? `Create ${String(autoCreatable)} profile${autoCreatable === 1 ? '' : 's'} & accept`
-                            : 'Accept & edit'}
+                        {acceptingPreview
+                          ? 'Applying…'
+                          : hard.length > 0
+                            ? 'Accept & edit'
+                            : autoCreatable > 0
+                              ? `Create ${String(autoCreatable)} profile${autoCreatable === 1 ? '' : 's'} & accept`
+                              : assistanceBase === null
+                                ? 'Accept & edit'
+                                : 'Apply reviewed changes'}
                       </button>
                     );
                   })()}
                   {preview.blocking.length > 0 && (
                     <button
                       className="btn"
-                      disabled={generating}
+                      disabled={generating || acceptingPreview}
                       title="Send the blocking items + your hint back to the AI (max 3 rounds)"
                       onClick={startRepair}
                     >
@@ -1274,15 +1510,24 @@ export function WorkflowsView(): React.JSX.Element {
                       {repairRound > 0 ? ` (round ${String(repairRound + 1)}/3)` : ''}
                     </button>
                   )}
-                  <button className="btn" onClick={() => generateFromGoal()}>
+                  <button
+                    className="btn"
+                    disabled={acceptingPreview}
+                    onClick={() => generateFromGoal()}
+                  >
                     Retry
                   </button>
-                  <button className="btn btn-ghost" onClick={discardPreview}>
+                  <button
+                    className="btn btn-ghost"
+                    disabled={acceptingPreview}
+                    onClick={discardPreview}
+                  >
                     Discard
                   </button>
                 </div>
                 <span className="field-hint">
-                  Never auto-runs. Accept to open it on the canvas for editing first.
+                  Never auto-runs. Review every proposed step before applying it to the
+                  canvas.
                 </span>
               </Notice>
             )}

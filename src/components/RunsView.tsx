@@ -1,6 +1,6 @@
 import { successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import type { GroupedFinding } from '../lib/scheduler';
 import { isMarkdown } from '../lib/markdown';
@@ -89,6 +89,8 @@ export function RunsView(): React.JSX.Element {
   const runResults = useAppStore((s) => s.runResults);
   const refreshRuns = useAppStore((s) => s.refreshRuns);
   const pending = useRef(new Set<string>());
+  const refreshBusy = useRef(false);
+  const mounted = useRef(false);
   const [pendingRuns, setPendingRuns] = useState<string[]>([]);
   const [snapshot, setSnapshot] = useState<{
     runId: string;
@@ -181,18 +183,40 @@ export function RunsView(): React.JSX.Element {
       .finally(() => setMemoryBusy(false));
   };
 
-  // Poll while a run is active so progress/output appears live.
+  const refreshRunData = useCallback(async (): Promise<void> => {
+    if (refreshBusy.current) return;
+    refreshBusy.current = true;
+    try {
+      await refreshRuns();
+      if (!mounted.current) return;
+      const selected = useAppStore.getState().activeRunId;
+      if (selected !== null) await selectRun(selected);
+    } catch (error: unknown) {
+      if (mounted.current) setActionError(errorMessage(error));
+    } finally {
+      refreshBusy.current = false;
+    }
+  }, [refreshRuns, selectRun]);
+
+  // Each navigation mounts this view again, including a return after a prior visit.
   useEffect(() => {
-    if (!runs.some((r) => r.status === 'running' || r.status === 'paused')) return;
+    mounted.current = true;
+    void refreshRunData();
+    return () => {
+      mounted.current = false;
+    };
+  }, [refreshRunData]);
+
+  // Keep one timer, independent of changes to result/list object identities.
+  const hasActiveRuns = runs.some((r) => r.status === 'running' || r.status === 'paused');
+  useEffect(() => {
+    if (!hasActiveRuns) return;
     const timer = setInterval(() => {
       setNow(Date.now());
-      void refreshRuns();
-      if (activeRunId !== null) void selectRun(activeRunId);
+      void refreshRunData();
     }, 1500);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [runs, activeRunId, refreshRuns, selectRun]);
+    return () => clearInterval(timer);
+  }, [hasActiveRuns, refreshRunData]);
 
   const actOnRun = async (
     runId: string,
@@ -334,7 +358,7 @@ export function RunsView(): React.JSX.Element {
         <h1>Runs</h1>
         <span className="topbar-sub">History of explicit workflow executions.</span>
         <div className="topbar-actions">
-          <button className="btn" onClick={() => void refreshRuns()}>
+          <button className="btn" onClick={() => void refreshRunData()}>
             Refresh
           </button>
           <button

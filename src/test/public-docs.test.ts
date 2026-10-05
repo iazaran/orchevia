@@ -8,6 +8,8 @@ const page = new DOMParser().parseFromString(
   'text/html',
 );
 const readme = readFileSync('README.md', 'utf8');
+// Download links advance after installers have been published and verified.
+const installerVersion = '0.1.7';
 const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string })
   .version;
 
@@ -38,8 +40,8 @@ describe('public documentation before launch', () => {
     expect(page.documentElement.innerHTML).not.toContain('api.github.com');
   });
 
-  it('targets permanent installers for the matching release tag', () => {
-    expect(readme).toContain(`Release v${version} installers`);
+  it('targets published permanent installers separately from the source version', () => {
+    expect(readme).toContain(`Release v${installerVersion} installers`);
     expect(readme).toContain(`source version ${version}`);
     expect(readme).not.toMatch(/pending|being prepared|planned.*files|processing/i);
     expect(readme).not.toContain('/releases/latest/download/');
@@ -48,7 +50,9 @@ describe('public documentation before launch', () => {
       (match) => match[1],
     );
     expect(linkedVersions).toHaveLength(5);
-    expect(linkedVersions.every((linkedVersion) => linkedVersion === version)).toBe(true);
+    expect(
+      linkedVersions.every((linkedVersion) => linkedVersion === installerVersion),
+    ).toBe(true);
     expect(readme).not.toContain('actions/workflows/ci.yml/badge.svg');
   });
 
@@ -60,7 +64,7 @@ describe('public documentation before launch', () => {
       'Orchevia-linux-x86_64.deb',
       'SHA256SUMS',
     ]) {
-      expect(readme).toContain(`/releases/download/v${version}/${asset}`);
+      expect(readme).toContain(`/releases/download/v${installerVersion}/${asset}`);
     }
     expect(readme).toMatch(/account that has repository access/i);
     expect(readme).toContain('sha256sum -c SHA256SUMS --ignore-missing');

@@ -410,3 +410,48 @@ describe('dependency layout', () => {
     expect(positions['merge']?.y).toBeGreaterThan(positions['b']?.y ?? 0);
   });
 });
+
+it.each(['vertical', 'horizontal'] as const)(
+  'centers branches and joins using measured bounds in %s layout',
+  (direction) => {
+    const nodes = ['fork', 'left', 'right', 'join'].map((id) => ({ id }));
+    const edges = [
+      { source: 'fork', target: 'left' },
+      { source: 'fork', target: 'right' },
+      { source: 'left', target: 'join' },
+      { source: 'right', target: 'join' },
+    ];
+    const sizes = {
+      fork: { width: 300, height: 110 },
+      left: { width: 400, height: 220 },
+      right: { width: 250, height: 140 },
+      join: { width: 280, height: 120 },
+    };
+    const positions = arrangeWorkflowPositions(nodes, edges, { direction, sizes });
+    const crossCenter = (id: keyof typeof sizes): number =>
+      direction === 'vertical'
+        ? positions[id]!.x + sizes[id].width / 2
+        : positions[id]!.y + sizes[id].height / 2;
+    const branches = (crossCenter('left') + crossCenter('right')) / 2;
+    expect(crossCenter('fork')).toBeCloseTo(branches, 0);
+    expect(crossCenter('join')).toBeCloseTo(branches, 0);
+    expect(Math.abs(crossCenter('left') - crossCenter('right'))).toBeGreaterThan(
+      direction === 'vertical' ? 325 : 180,
+    );
+  },
+);
+
+it('orders a review loop from its entry along dependencies instead of definition order', () => {
+  const nodes = ['start', 'fix', 'condition', 'review', 'end'].map((id) => ({ id }));
+  const edges = [
+    { source: 'start', target: 'review' },
+    { source: 'review', target: 'condition' },
+    { source: 'condition', target: 'fix' },
+    { source: 'fix', target: 'review' },
+    { source: 'condition', target: 'end' },
+  ];
+  const positions = arrangeWorkflowPositions(nodes, edges);
+  expect(positions['review']!.y).toBeLessThan(positions['condition']!.y);
+  expect(positions['condition']!.y).toBeLessThan(positions['fix']!.y);
+  expect(positions['fix']!.y).toBeLessThan(positions['end']!.y);
+});

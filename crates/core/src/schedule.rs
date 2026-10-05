@@ -385,6 +385,9 @@ pub fn evaluate(
     }
     match &schedule.kind {
         ScheduleKind::OneTime { at } => {
+            if schedule.last_run_at.is_some() {
+                return (ScheduleDecision::Retire, None);
+            }
             if *at > now {
                 return (ScheduleDecision::Wait, Some(*at));
             }
@@ -650,6 +653,28 @@ mod tests {
     }
 
     #[test]
+    fn completed_one_time_schedule_never_refires() {
+        let now = utc(2026, 3, 4, 10, 0);
+        let schedule = Schedule {
+            id: "once".into(),
+            name: "Once".into(),
+            workflow_id: "wf".into(),
+            kind: ScheduleKind::OneTime { at: now },
+            timezone: "utc".into(),
+            enabled: true,
+            trusted: true,
+            missed_policy: MissedPolicy::RunOnce,
+            last_run_at: Some(now),
+            next_run_at: None,
+            last_status: Some("started run".into()),
+        };
+        assert_eq!(
+            evaluate(&schedule, now + chrono::Duration::minutes(1)).0,
+            ScheduleDecision::Retire
+        );
+    }
+
+    #[test]
     fn stale_interval_skips_without_storm() {
         let schedule = Schedule {
             id: "s".into(),
@@ -770,9 +795,13 @@ impl Watcher {
         if self.repo_dir.trim().is_empty() {
             errors.push("Watcher needs a repository directory.".to_string());
         }
-        if self.check_interval_secs < 300 {
-            errors
-                .push("Watcher interval must be at least 300 s (be kind to the API).".to_string());
+        if self.pr_number == Some(0) {
+            errors.push("PR number must be above 0.".to_string());
+        }
+        if self.check_interval_secs < 300 || self.check_interval_secs > 2_592_000 {
+            errors.push(
+                "Watcher interval must be 300 s to 30 days (be kind to the API).".to_string(),
+            );
         }
         if matches!(self.kind, WatcherKind::PrUpdated | WatcherKind::Feedback)
             && self.pr_number.is_none()
@@ -780,6 +809,33 @@ impl Watcher {
             errors.push("PR-scoped watchers need a PR number.".to_string());
         }
         errors
+    }
+
+    /// Scope excludes display name, interval and enabled state: edits to those
+    /// must retain handled revisions. Repository/workflow/PR changes reset them.
+    pub fn same_scope(&self, other: &Self) -> bool {
+        self.repo_dir == other.repo_dir
+            && self.workflow_id == other.workflow_id
+            && self.kind == other.kind
+            && self.pr_number == other.pr_number
+    }
+
+    pub fn prepare_save(&mut self, previous: Option<&Self>) {
+        if let Some(previous) = previous {
+            if self.same_scope(previous) {
+                self.last_head_sha = previous.last_head_sha.clone();
+                self.last_checked_at = previous.last_checked_at;
+                self.last_result = previous.last_result.clone();
+                if self.enabled && !previous.enabled {
+                    self.last_checked_at = None;
+                    self.last_result = Some("waiting: first check after enabling".into());
+                }
+            } else {
+                self.last_head_sha = None;
+                self.last_checked_at = None;
+                self.last_result = None;
+            }
+        }
     }
 
     /// Whether the watcher is due for a poll at `now`.

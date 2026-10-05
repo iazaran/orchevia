@@ -25,13 +25,19 @@ pub struct AppState {
     pub db: Arc<SqliteDb>,
     pub engine: Engine,
     pub cancel: CancellationRegistry,
+    pub scheduler_wake: Arc<tokio::sync::Notify>,
 }
 
 impl AppState {
     pub fn new(db: Arc<SqliteDb>) -> Self {
         let cancel = CancellationRegistry::default();
         let engine = Engine::new(Arc::clone(&db), cancel.clone());
-        Self { db, engine, cancel }
+        Self {
+            db,
+            engine,
+            cancel,
+            scheduler_wake: Arc::new(tokio::sync::Notify::new()),
+        }
     }
 
     pub fn scheduler_starter(&self) -> EngineStarter {
@@ -378,6 +384,32 @@ impl orchevia_core::scheduler::RunStarter for EngineStarter {
             .get_workflow(workflow_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Unknown workflow '{workflow_id}'."))?;
+        // Validate the exact definition that will be executed, even if the
+        // workflow changed between a GitHub check and this dispatch.
+        if inputs
+            .get("automationKind")
+            .is_some_and(|kind| kind == "watcher")
+        {
+            let watcher_id = inputs
+                .get("automationId")
+                .ok_or("Watcher dispatch needs automationId.")?;
+            let watcher = self
+                .db
+                .get_watcher(watcher_id)
+                .map_err(|e| e.to_string())?
+                .ok_or("Watcher was removed during dispatch.")?;
+            if !watcher.enabled
+                || watcher.workflow_id != workflow_id
+                || inputs.get("repoDir") != Some(&watcher.repo_dir)
+            {
+                return Err("Watcher was disabled or changed during dispatch.".into());
+            }
+            orchevia_core::scheduler::validate_watcher_definition(
+                &self.db,
+                &stored.definition,
+                &watcher,
+            )?;
+        }
         let run_id = format!("run-sched-{}", Uuid::new_v4().simple());
         let engine = Engine::new(Arc::clone(&self.db), self.cancel.clone());
         engine
@@ -429,6 +461,7 @@ pub fn save_schedule(
         .db
         .upsert_schedule(&schedule)
         .map_err(|e| e.to_string())?;
+    state.scheduler_wake.notify_one();
     state
         .db
         .get_schedule(&schedule.id)
@@ -457,7 +490,14 @@ pub async fn fire_schedule_now(
         cancel: state.cancel.clone(),
     };
     let run_id = starter
-        .start_workflow_run(&schedule.workflow_id, &std::collections::HashMap::new())
+        .start_workflow_run(
+            &schedule.workflow_id,
+            &std::collections::HashMap::from([
+                ("automationKind".into(), "schedule".into()),
+                ("automationId".into(), schedule.id.clone()),
+                ("automationTrigger".into(), "manual".into()),
+            ]),
+        )
         .map_err(|e| e.to_string())?;
     // Record the manual fire on the schedule row.
     let mut updated = schedule;
@@ -512,28 +552,43 @@ pub fn list_watchers(
 #[tauri::command]
 pub fn save_watcher(
     state: State<AppState>,
-    watcher: orchevia_core::schedule::Watcher,
+    mut watcher: orchevia_core::schedule::Watcher,
 ) -> Result<orchevia_core::schedule::Watcher, String> {
-    // Enabling a watcher IS the trust opt-in (explicit user action), but the
-    // workflow must still exist.
-    if watcher.enabled
-        && state
-            .db
-            .get_workflow(&watcher.workflow_id)
-            .map_err(|e| e.to_string())?
-            .is_none()
-    {
-        return Err(format!("Unknown workflow '{}'.", watcher.workflow_id));
+    // Enabling is the trust opt-in; declared repository bindings must agree.
+    if watcher.enabled {
+        orchevia_core::scheduler::validate_watcher_workflow(&state.db, &watcher)?;
     }
+    let previous = state
+        .db
+        .get_watcher(&watcher.id)
+        .map_err(|e| e.to_string())?;
+    watcher.prepare_save(previous.as_ref());
     state
         .db
         .upsert_watcher(&watcher)
         .map_err(|e| e.to_string())?;
+    state.scheduler_wake.notify_one();
     state
         .db
         .get_watcher(&watcher.id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Failed to read back saved watcher.".to_string())
+}
+
+#[tauri::command]
+pub async fn watcher_scope_issues(
+    state: State<'_, AppState>,
+    watcher: orchevia_core::schedule::Watcher,
+) -> Result<Vec<String>, String> {
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || {
+        match orchevia_core::scheduler::validate_watcher_workflow(&db, &watcher) {
+            Ok(()) => Vec::new(),
+            Err(message) => vec![message],
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1120,6 +1175,13 @@ pub struct GenerationPreview {
 /// generator prompt ceiling.
 const MAX_GOAL_CHARS: usize = 12_000;
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowAssistanceRequest {
+    pub workflow_id: String,
+    pub mode: orchevia_core::generation::AssistanceMode,
+}
+
 #[tauri::command]
 pub async fn generate_workflow(
     state: State<'_, AppState>,
@@ -1127,6 +1189,7 @@ pub async fn generate_workflow(
     goal: String,
     repo_dir: Option<String>,
     branch: Option<String>,
+    assistance: Option<WorkflowAssistanceRequest>,
 ) -> Result<GenerationPreview, String> {
     if goal.trim().is_empty() {
         return Err("Describe what you want to do first.".to_string());
@@ -1140,6 +1203,25 @@ pub async fn generate_workflow(
             "Goal is too long (max {MAX_GOAL_CHARS} characters)."
         ));
     }
+    let base = assistance
+        .as_ref()
+        .map(|request| {
+            state
+                .db
+                .get_workflow(&request.workflow_id)
+                .map_err(|e| e.to_string())?
+                .map(|stored| stored.definition)
+                .ok_or_else(|| "The workflow for assistance no longer exists.".to_string())
+        })
+        .transpose()?;
+    let (repo_dir, branch) = if let Some(workflow) = &base {
+        (
+            orchevia_core::generation::assistance_repo_dir(workflow),
+            workflow.defaults.as_ref().and_then(|d| d.branch.clone()),
+        )
+    } else {
+        (repo_dir, branch)
+    };
     let profile = state
         .db
         .get_agent_profile(&profile_id)
@@ -1178,6 +1260,14 @@ pub async fn generate_workflow(
             return Err("Branch name is too long.".to_string());
         }
     }
+    let repo_dir = repo_dir
+        .as_deref()
+        .map(|dir| {
+            std::fs::canonicalize(dir)
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
     let repo = repo_dir
         .clone()
         .map(|dir| orchevia_core::generation::RepoContext {
@@ -1205,6 +1295,17 @@ pub async fn generate_workflow(
         orchevia_core::memory::project_context(&preferences, memory_scope.as_deref());
     let mut profile_context =
         orchevia_core::generation::build_profile_context(&profiles, &role_map, &memory_context);
+    if let (Some(workflow), Some(request)) = (&base, &assistance) {
+        let run_context =
+            orchevia_core::generation::latest_assistance_run_context(&state.db, workflow)?;
+        profile_context.push('\n');
+        profile_context.push_str(&orchevia_core::generation::build_assistance_context(
+            workflow,
+            request.mode,
+            &profiles,
+            &run_context,
+        )?);
+    }
     // Probe configured MCP servers before drafting. Their actual tool names and
     // required argument keys prevent the generator from inventing Jira REST
     // credentials or an MCP method that the installed server does not expose.
@@ -1278,7 +1379,12 @@ pub async fn generate_workflow(
     // Blocking CLI run on a worker thread; bounded by the profile timeout.
     let output = tauri::async_runtime::spawn_blocking(move || {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        orchevia_core::generation::run_generator_cli(&profile, &prompt, &cancel)
+        orchevia_core::generation::run_generator_cli(
+            &profile,
+            &prompt,
+            repo_dir.as_deref(),
+            &cancel,
+        )
     })
     .await
     .map_err(|e| format!("Generator task failed to join: {e}"))??;
@@ -1303,13 +1409,24 @@ pub async fn generate_workflow(
         repo_dir: Some(r.dir),
         branch: r.branch,
     });
-    match orchevia_core::generation::compile_proposal_with_profiles(
-        &proposal,
-        &role_map,
-        &workflow_id,
-        defaults,
-        &profiles,
-    ) {
+    let compiled = if let (Some(workflow), Some(request)) = (&base, &assistance) {
+        orchevia_core::generation::compile_assistance_proposal(
+            &proposal,
+            workflow,
+            request.mode,
+            &role_map,
+            &profiles,
+        )
+    } else {
+        orchevia_core::generation::compile_proposal_with_profiles(
+            &proposal,
+            &role_map,
+            &workflow_id,
+            defaults,
+            &profiles,
+        )
+    };
+    match compiled {
         Ok(preview) => {
             let _ = state.db.record_generation(
                 &generation_id,

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Background,
   Controls,
@@ -157,6 +164,8 @@ export function WorkflowCanvas({
     'vertical',
   );
   const needsFit = useRef(false);
+  const toolbarRef = useRef<HTMLFieldSetElement | null>(null);
+  const [toolbarHeight, setToolbarHeight] = useState(0);
   const fitFrame = useRef<number | null>(null);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectNode = useAppStore((s) => s.selectNode);
@@ -172,13 +181,35 @@ export function WorkflowCanvas({
   // (new nodes land in the center of the current view, not at a fixed spot).
   const flowInstance = useRef<ReactFlowInstance<Node<CanvasNodeData>> | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    const measure = (): void => setToolbarHeight(toolbar.getBoundingClientRect().height);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, []);
+  const fitPadding = useMemo(
+    () =>
+      toolbarHeight > 0
+        ? {
+            top: `${String(toolbarHeight + 32)}px` as `${number}px`,
+            right: '32px' as const,
+            bottom: '32px' as const,
+            left: '32px' as const,
+          }
+        : 0.15,
+    [toolbarHeight],
+  );
 
   const firstNode =
     workflow.nodes.find((node) => node.type === 'start') ?? workflow.nodes[0];
   const initialZoom = 0.85;
   const largeGraphViewport = {
     x: 24 - (firstNode?.position.x ?? 0) * initialZoom,
-    y: 110 - (firstNode?.position.y ?? 0) * initialZoom,
+    y: Math.max(110, toolbarHeight + 44) - (firstNode?.position.y ?? 0) * initialZoom,
     zoom: initialZoom,
   };
 
@@ -250,7 +281,15 @@ export function WorkflowCanvas({
     (updated: Workflow) => {
       void getBackend()
         .validateWorkflow(updated)
-        .then(setValidation)
+        .then((issues) => {
+          const state = useAppStore.getState();
+          if (
+            state.activeWorkflowId === updated.id &&
+            state.overlayRunId === null &&
+            state.workflows.find((w) => w.id === updated.id)?.definition === updated
+          )
+            setValidation(issues);
+        })
         .catch(() => {});
     },
     [setValidation],
@@ -427,22 +466,43 @@ export function WorkflowCanvas({
     if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
     fitFrame.current = requestAnimationFrame(() => {
       fitFrame.current = null;
+      const firstSteps = [...nodes]
+        .sort((a, b) =>
+          appliedDirection === 'vertical'
+            ? a.position.y - b.position.y || a.position.x - b.position.x
+            : a.position.x - b.position.x || a.position.y - b.position.y,
+        )
+        .slice(0, 6);
+      const viewport = wrapRef.current?.getBoundingClientRect();
+      let fittingSteps = firstSteps;
+      if (viewport && viewport.width > 0 && viewport.height > 0) {
+        const availableWidth = viewport.width - 64;
+        const availableHeight = viewport.height - toolbarHeight - 64;
+        for (let count = 2; count <= firstSteps.length; count++) {
+          const candidates = firstSteps.slice(0, count);
+          const width =
+            Math.max(
+              ...candidates.map((n) => n.position.x + (n.measured?.width ?? 240)),
+            ) - Math.min(...candidates.map((n) => n.position.x));
+          const height =
+            Math.max(
+              ...candidates.map((n) => n.position.y + (n.measured?.height ?? 100)),
+            ) - Math.min(...candidates.map((n) => n.position.y));
+          if (width * 0.65 > availableWidth || height * 0.65 > availableHeight) {
+            fittingSteps = firstSteps.slice(0, count - 1);
+            break;
+          }
+        }
+      }
       void flowInstance.current
         ?.fitView({
-          padding: 0.15,
+          padding: fitPadding,
           maxZoom: 1,
           duration: 200,
           ...(nodes.length > 12
             ? {
                 minZoom: 0.65,
-                nodes: [...nodes]
-                  .sort((a, b) =>
-                    appliedDirection === 'vertical'
-                      ? a.position.y - b.position.y || a.position.x - b.position.x
-                      : a.position.x - b.position.x || a.position.y - b.position.y,
-                  )
-                  .slice(0, 6)
-                  .map((n) => ({ id: n.id })),
+                nodes: fittingSteps.map((n) => ({ id: n.id })),
               }
             : {}),
         })
@@ -450,7 +510,7 @@ export function WorkflowCanvas({
           if (fitted) needsFit.current = false;
         });
     });
-  }, [nodes, appliedDirection]);
+  }, [nodes, appliedDirection, fitPadding, toolbarHeight]);
   useEffect(
     () => () => {
       if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
@@ -494,6 +554,7 @@ export function WorkflowCanvas({
       <fieldset
         disabled={readOnly}
         className="canvas-toolbar"
+        ref={toolbarRef}
         style={{ border: 0, margin: 0 }}
         role="toolbar"
         aria-label="Add nodes"
@@ -537,7 +598,7 @@ export function WorkflowCanvas({
           {nodes.length > 12 && (
             <>Large graph: pan or use the minimap to follow later steps. </>
           )}
-          Drag from the bottom dot to connect · condition branches auto-label true/false ·
+          Drag from the output dot to connect · condition branches auto-label true/false ·
           click an edge to relabel · Del removes selection
         </span>
       </fieldset>
@@ -546,6 +607,16 @@ export function WorkflowCanvas({
         edges={edges}
         onInit={(instance) => {
           flowInstance.current = instance;
+          if (workflow.nodes.length > 10) {
+            const top = Math.max(
+              110,
+              (toolbarRef.current?.getBoundingClientRect().height ?? 0) + 44,
+            );
+            void instance.setViewport({
+              ...largeGraphViewport,
+              y: top - (firstNode?.position.y ?? 0) * initialZoom,
+            });
+          }
         }}
         onNodesChange={(changes) =>
           onNodesChange(
@@ -589,15 +660,20 @@ export function WorkflowCanvas({
           updateActiveWorkflow(updated);
           revalidate(updated);
         }}
-        onNodeDragStop={(_, node) => {
+        onNodeDragStop={(_, node, movedNodes) => {
           if (readOnly) return;
+          const positions = new Map(
+            (movedNodes.length ? movedNodes : [node]).map((moved) => [
+              moved.id,
+              moved.position,
+            ]),
+          );
           updateActiveWorkflow({
             ...workflow,
-            nodes: workflow.nodes.map((n) =>
-              n.id === node.id
-                ? { ...n, position: { x: node.position.x, y: node.position.y } }
-                : n,
-            ),
+            nodes: workflow.nodes.map((n) => {
+              const position = positions.get(n.id);
+              return position ? { ...n, position: { ...position } } : n;
+            }),
           });
         }}
         nodeTypes={nodeTypes}
@@ -609,13 +685,13 @@ export function WorkflowCanvas({
         connectionRadius={32}
         fitView={workflow.nodes.length <= 10}
         defaultViewport={largeGraphViewport}
-        fitViewOptions={{ padding: 0.15, maxZoom: 1, duration: 0 }}
+        fitViewOptions={{ padding: fitPadding, maxZoom: 1, duration: 0 }}
         minZoom={0.3}
         colorMode="system"
         attributionPosition="bottom-right"
       >
         <Background />
-        <Controls />
+        <Controls fitViewOptions={{ padding: fitPadding, maxZoom: 1 }} />
         <MiniMap pannable zoomable />
       </ReactFlow>
     </div>

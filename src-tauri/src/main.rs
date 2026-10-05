@@ -79,15 +79,6 @@ fn main() {
                     let _ = db.finish_run(&run.id, orchevia_core::db::RunStatus::Failed);
                 }
             }
-            // Recompute schedule slots at boot (missed windows apply the
-            // stored policy — Skip by default, so no catch-up storm).
-            if let Ok(schedules) = db.list_schedules() {
-                let now = chrono::Utc::now();
-                for mut schedule in schedules {
-                    orchevia_core::schedule::refresh_next(&mut schedule, now);
-                    let _ = db.upsert_schedule(&schedule);
-                }
-            }
             let db = Arc::new(db);
             // First-run onboarding: seed a safe sample workflow so a fresh
             // install opens with something runnable (uname/echo only).
@@ -100,6 +91,7 @@ fn main() {
             // Manual controls and automation must address the same active runs.
             let starter: Arc<dyn orchevia_core::scheduler::RunStarter> =
                 Arc::new(state.scheduler_starter());
+            let scheduler_wake = Arc::clone(&state.scheduler_wake);
             app.manage(state);
 
             // Background scheduler: schedules + watchers, conservative poll.
@@ -107,6 +99,12 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 let scheduler = orchevia_core::scheduler::Scheduler::new(scheduler_db);
                 loop {
+                    // Evaluate persisted due slots before advancing them. This
+                    // also checks enabled watchers immediately on launch/save.
+                    let notes = scheduler.tick_once(&starter, chrono::Utc::now()).await;
+                    for note in notes {
+                        eprintln!("[scheduler] {note}");
+                    }
                     // Interval re-read each pass so Settings apply live.
                     let interval = scheduler
                         .db
@@ -116,11 +114,9 @@ fn main() {
                         .and_then(|v| v.parse::<u64>().ok())
                         .map(|secs| secs.clamp(30, 3600))
                         .unwrap_or(60);
-                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-                    let now = chrono::Utc::now();
-                    let notes = scheduler.tick_once(&starter, now).await;
-                    for note in notes {
-                        eprintln!("[scheduler] {note}");
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {},
+                        _ = scheduler_wake.notified() => {},
                     }
                 }
             });
@@ -220,6 +216,7 @@ fn main() {
             commands::schedule_preview,
             commands::list_watchers,
             commands::save_watcher,
+            commands::watcher_scope_issues,
             commands::delete_watcher,
             commands::workflow_risks,
             commands::get_run_findings,

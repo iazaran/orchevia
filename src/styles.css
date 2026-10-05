@@ -423,6 +423,13 @@ textarea {
 }
 
 .canvas-toolbar {
+  padding: 10px;
+  max-width: calc(100% - 24px);
+  background: color-mix(in srgb, var(--bg-1) 75%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-m);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
   position: absolute;
   top: 12px;
   left: 12px;
@@ -1265,7 +1272,9 @@ details[open] > .gen-summary::after {
 .md-body h1,
 .md-body h2,
 .md-body h3,
-.md-body h4 {
+.md-body h4,
+.md-body h5,
+.md-body h6 {
   margin: 14px 0 6px;
   line-height: 1.3;
   letter-spacing: -0.01em;
@@ -1285,7 +1294,9 @@ details[open] > .gen-summary::after {
   font-size: 15px;
 }
 
-.md-body h4 {
+.md-body h4,
+.md-body h5,
+.md-body h6 {
   font-size: 13.5px;
 }
 
@@ -1334,6 +1345,46 @@ details[open] > .gen-summary::after {
   border: none;
   border-top: 1px solid var(--border);
   margin: 12px 0;
+}
+
+.md-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md-body li > p {
+  margin: 3px 0;
+}
+
+.md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+.md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--border);
+  padding: 7px 10px;
+  text-align: left;
+  vertical-align: top;
+  min-width: 90px;
+}
+
+.md-body th {
+  background: var(--bg-3);
+  font-weight: 650;
+}
+
+.md-body tbody tr:nth-child(even) {
+  background: var(--bg-2);
 }
 
 /* Long formatted run content stays readable without taking over the view. */
@@ -1608,4 +1659,36 @@ details[open] > .gen-summary::after {
   overflow-wrap: anywhere;
   max-height: 180px;
   overflow: auto;
+}
+
+/* Leave the shared dismiss control its own space on automation cards. */
+.automation-card .profile-head {
+  padding-right: 28px;
+  flex-wrap: wrap;
+}
+
+/* Editor actions retain their right edge when the header wraps. */
+.workflow-topbar .topbar-actions {
+  justify-content: flex-end;
+  flex: 1 1 auto;
+}
+
+.workflow-save-status {
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workflow-save-status.save-error {
+  color: var(--danger);
+}
+
+@media (max-width: 1000px) {
+  .workflow-topbar .topbar-actions {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
 }

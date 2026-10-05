@@ -69,7 +69,6 @@ export function GitEditor({
   workflow: Workflow;
   nodeId: string;
 }): React.JSX.Element {
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const { patchNode } = useNodeConfig(workflow, nodeId);
   const node = workflow.nodes.find((n) => n.id === nodeId);
   if (node === undefined) return <></>;
@@ -99,7 +98,6 @@ export function GitEditor({
           onChange={(e) => {
             const next = e.target.value as (typeof GIT_OPS)[number];
             setOp(defaultGitOp(next));
-            void saveActiveWorkflow();
           }}
         >
           {GIT_OPS.map((o) => (
@@ -114,7 +112,6 @@ export function GitEditor({
         label="Repository directory (blank = workflow default)"
         value={node.config.workingDir ?? ''}
         onChange={setWorkdir}
-        onPicked={() => void saveActiveWorkflow()}
       />
       {op.op === 'branchCreate' && (
         <GitTextField
@@ -122,7 +119,6 @@ export function GitEditor({
           value={op.name}
           placeholder="feature/DEV-1234"
           onChange={(name) => setOp({ ...op, name })}
-          onBlur={saveActiveWorkflow}
         />
       )}
       {op.op === 'checkout' && (
@@ -132,7 +128,6 @@ export function GitEditor({
             value={op.name}
             placeholder="main"
             onChange={(name) => setOp({ ...op, name })}
-            onBlur={saveActiveWorkflow}
           />
           <label className="field-hint" style={{ display: 'flex', gap: 6 }}>
             <input
@@ -140,7 +135,6 @@ export function GitEditor({
               checked={op.allowDirty ?? false}
               onChange={(e) => {
                 setOp({ ...op, allowDirty: e.target.checked });
-                void saveActiveWorkflow();
               }}
             />
             Allow switching with dirty worktree (never discards)
@@ -163,7 +157,6 @@ export function GitEditor({
                   .filter((s) => s !== ''),
               });
             }}
-            onBlur={() => void saveActiveWorkflow()}
           />
         </div>
       )}
@@ -173,7 +166,6 @@ export function GitEditor({
           value={op.message}
           placeholder="Implement DEV-1234 or {{input.commitMessage}}"
           onChange={(message) => setOp({ ...op, message })}
-          onBlur={saveActiveWorkflow}
           textarea
         />
       )}
@@ -184,7 +176,6 @@ export function GitEditor({
             value={op.path}
             placeholder="/tmp/wt-DEV-1234"
             onChange={(path) => setOp({ ...op, path })}
-            onBlur={saveActiveWorkflow}
           />
           <GitTextField
             label="Branch (optional, created when new)"
@@ -193,7 +184,6 @@ export function GitEditor({
             onChange={(branch) =>
               setOp({ ...op, branch: branch === '' ? undefined : branch })
             }
-            onBlur={saveActiveWorkflow}
           />
         </>
       )}
@@ -203,7 +193,6 @@ export function GitEditor({
           value={op.path}
           placeholder="/tmp/wt-DEV-1234"
           onChange={(path) => setOp({ ...op, path })}
-          onBlur={saveActiveWorkflow}
         />
       )}
       <span className="field-hint">
@@ -244,19 +233,14 @@ function GitTextField({
   value,
   placeholder,
   onChange,
-  onBlur,
   textarea,
 }: {
   label: string;
   value: string;
   placeholder: string;
   onChange: (v: string) => void;
-  onBlur: () => unknown;
   textarea?: boolean;
 }): React.JSX.Element {
-  const handleBlur = (): void => {
-    void onBlur();
-  };
   return (
     <div className="field">
       <span className="field-label">{label}</span>
@@ -269,7 +253,6 @@ function GitTextField({
           onChange={(e) => {
             onChange(e.target.value);
           }}
-          onBlur={handleBlur}
         />
       ) : (
         <input
@@ -279,7 +262,6 @@ function GitTextField({
           onChange={(e) => {
             onChange(e.target.value);
           }}
-          onBlur={handleBlur}
         />
       )}
     </div>
@@ -303,7 +285,6 @@ export function GitHubEditor({
   workflow: Workflow;
   nodeId: string;
 }): React.JSX.Element {
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const { patchNode } = useNodeConfig(workflow, nodeId);
   const node = workflow.nodes.find((n) => n.id === nodeId);
   if (node === undefined) return <></>;
@@ -324,7 +305,6 @@ export function GitHubEditor({
           onChange={(e) => {
             const next = e.target.value as (typeof GITHUB_OPS)[number];
             setOp(defaultGitHubOp(next));
-            void saveActiveWorkflow();
           }}
         >
           {GITHUB_OPS.map((o) => (
@@ -347,7 +327,6 @@ export function GitHubEditor({
           }
           patchNode(config, node.label);
         }}
-        onPicked={() => void saveActiveWorkflow()}
       />
       {(op.op === 'prDetails' || op.op === 'prFiles' || op.op === 'prChecks') && (
         <GitTextField
@@ -355,7 +334,6 @@ export function GitHubEditor({
           value={String(op.number)}
           placeholder="7"
           onChange={(v) => setOp({ ...op, number: Number(v) })}
-          onBlur={saveActiveWorkflow}
         />
       )}
       {op.op === 'listPrs' && (
@@ -364,7 +342,6 @@ export function GitHubEditor({
           value={op.state ?? 'open'}
           placeholder="open"
           onChange={(state) => setOp({ ...op, state })}
-          onBlur={saveActiveWorkflow}
         />
       )}
       {op.op === 'createPr' && (
@@ -374,14 +351,12 @@ export function GitHubEditor({
             value={op.title}
             placeholder="Implement DEV-1234"
             onChange={(title) => setOp({ ...op, title })}
-            onBlur={saveActiveWorkflow}
           />
           <GitTextField
             label="Body (supports {{…}})"
             value={op.body ?? ''}
             placeholder="Summary…"
             onChange={(body) => setOp({ ...op, body })}
-            onBlur={saveActiveWorkflow}
             textarea
           />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -390,14 +365,12 @@ export function GitHubEditor({
               value={op.base}
               placeholder="main"
               onChange={(base) => setOp({ ...op, base })}
-              onBlur={saveActiveWorkflow}
             />
             <GitTextField
               label="Head (blank = workflow default)"
               value={op.head}
               placeholder="feature/DEV-1234"
               onChange={(head) => setOp({ ...op, head })}
-              onBlur={saveActiveWorkflow}
             />
           </div>
           <label className="field-hint" style={{ display: 'flex', gap: 6 }}>
@@ -406,7 +379,6 @@ export function GitHubEditor({
               checked={op.draft ?? false}
               onChange={(e) => {
                 setOp({ ...op, draft: e.target.checked });
-                void saveActiveWorkflow();
               }}
             />
             Draft PR
@@ -420,14 +392,12 @@ export function GitHubEditor({
             value={String(op.number)}
             placeholder="7"
             onChange={(v) => setOp({ ...op, number: Number(v) })}
-            onBlur={saveActiveWorkflow}
           />
           <GitTextField
             label="Body (explicit action)"
             value={op.body}
             placeholder="Review notes…"
             onChange={(body) => setOp({ ...op, body })}
-            onBlur={saveActiveWorkflow}
             textarea
           />
         </>
@@ -468,7 +438,6 @@ export function TicketEditor({
   workflow: Workflow;
   nodeId: string;
 }): React.JSX.Element {
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const mcpServers = useAppStore((s) => s.mcpServers);
   const { patchNode } = useNodeConfig(workflow, nodeId);
   const node = workflow.nodes.find((n) => n.id === nodeId);
@@ -487,7 +456,6 @@ export function TicketEditor({
           onChange={(e) => {
             patchNode({ ...node.config, ticketKey: e.target.value }, node.label);
           }}
-          onBlur={() => void saveActiveWorkflow()}
         />
       </div>
       <div className="field">
@@ -500,7 +468,6 @@ export function TicketEditor({
           value={node.config.mcpServerId ?? ''}
           onChange={(e) => {
             patchNode({ ...node.config, mcpServerId: e.target.value }, node.label);
-            void saveActiveWorkflow();
           }}
         >
           <option value="">— Select a server —</option>
@@ -527,7 +494,6 @@ export function McpNodeEditor({
   workflow: Workflow;
   nodeId: string;
 }): React.JSX.Element {
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const mcpServers = useAppStore((s) => s.mcpServers);
   const { patchNode } = useNodeConfig(workflow, nodeId);
   const node = workflow.nodes.find((n) => n.id === nodeId);
@@ -544,7 +510,6 @@ export function McpNodeEditor({
           value={node.config.mcpServerId ?? ''}
           onChange={(e) => {
             patchNode({ ...node.config, mcpServerId: e.target.value }, node.label);
-            void saveActiveWorkflow();
           }}
         >
           <option value="">— Select a server —</option>
@@ -560,7 +525,6 @@ export function McpNodeEditor({
         value={node.config.mcpTool ?? ''}
         placeholder="jira_get_issue"
         onChange={(mcpTool) => patchNode({ ...node.config, mcpTool }, node.label)}
-        onBlur={saveActiveWorkflow}
       />
       <div className="field">
         <label className="field-label">
@@ -581,7 +545,6 @@ export function McpNodeEditor({
             }
             patchNode({ ...node.config, mcpArgs: args }, node.label);
           }}
-          onBlur={() => void saveActiveWorkflow()}
         />
         <span className="field-hint">
           Invocation is explicit and recorded with server/tool provenance.
@@ -599,8 +562,11 @@ export function ConditionEditor({
   nodeId: string;
 }): React.JSX.Element {
   const updateActiveWorkflow = useAppStore((s) => s.updateActiveWorkflow);
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const [textError, setTextError] = useState<string | null>(null);
+  const [textDraft, setTextDraft] = useState<{
+    condition: string;
+    text: string;
+  } | null>(null);
   const node = workflow.nodes.find((n) => n.id === nodeId);
   if (node === undefined) return <></>;
   const condition = node.config.condition ?? { logic: 'or' as const, clauses: [] };
@@ -633,7 +599,6 @@ export function ConditionEditor({
               );
               setCondition({ ...condition, clauses });
             }}
-            onBlur={() => void saveActiveWorkflow()}
           />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
             <select
@@ -645,7 +610,6 @@ export function ConditionEditor({
                   i === index ? { ...c, op: e.target.value as ConditionOp } : c,
                 );
                 setCondition({ ...condition, clauses });
-                void saveActiveWorkflow();
               }}
             >
               {CONDITION_OPS.map((o) => (
@@ -665,7 +629,6 @@ export function ConditionEditor({
                 );
                 setCondition({ ...condition, clauses });
               }}
-              onBlur={() => void saveActiveWorkflow()}
             />
           </div>
           <button
@@ -675,7 +638,6 @@ export function ConditionEditor({
                 ...condition,
                 clauses: condition.clauses.filter((_, i) => i !== index),
               });
-              void saveActiveWorkflow();
             }}
           >
             Remove clause
@@ -705,7 +667,6 @@ export function ConditionEditor({
                 ...condition,
                 logic: e.target.value === 'or' ? 'or' : 'and',
               });
-              void saveActiveWorkflow();
             }}
           >
             <option value="and">and</option>
@@ -725,20 +686,26 @@ export function ConditionEditor({
           id={`cond-text-${nodeId}`}
           className="textarea"
           rows={2}
-          defaultValue={(() => {
+          value={
+            textDraft?.condition === JSON.stringify(condition)
+              ? textDraft.text
+              : (() => {
+                  try {
+                    return renderCondition(condition);
+                  } catch {
+                    return '';
+                  }
+                })()
+          }
+          onChange={(e) => {
+            const text = e.target.value;
             try {
-              return renderCondition(condition);
-            } catch {
-              return '';
-            }
-          })()}
-          key={JSON.stringify(condition)}
-          onBlur={(e) => {
-            try {
-              setCondition(parseCondition(e.target.value));
+              const next = parseCondition(text);
+              setTextDraft({ condition: JSON.stringify(next), text });
+              setCondition(next);
               setTextError(null);
-              void saveActiveWorkflow();
             } catch (err) {
+              setTextDraft({ condition: JSON.stringify(condition), text });
               setTextError(errorMessage(err));
             }
           }}
@@ -761,7 +728,6 @@ export function RetryEditor({
   nodeId: string;
 }): React.JSX.Element {
   const updateActiveWorkflow = useAppStore((s) => s.updateActiveWorkflow);
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const node = workflow.nodes.find((n) => n.id === nodeId);
   if (node === undefined) return <></>;
   const retry = node.config.retry;
@@ -784,7 +750,6 @@ export function RetryEditor({
           className="btn btn-ghost"
           onClick={() => {
             setRetry({ maxAttempts: 3, delayMs: 1000, backoff: true });
-            void saveActiveWorkflow();
           }}
         >
           + Add retry policy
@@ -807,7 +772,6 @@ export function RetryEditor({
             onChange={(e) => {
               setRetry({ ...retry, maxAttempts: Number(e.target.value) });
             }}
-            onBlur={() => void saveActiveWorkflow()}
           />
         </label>
         <label className="field-hint">
@@ -821,7 +785,6 @@ export function RetryEditor({
             onChange={(e) => {
               setRetry({ ...retry, delayMs: Number(e.target.value) });
             }}
-            onBlur={() => void saveActiveWorkflow()}
           />
         </label>
       </div>
@@ -831,7 +794,6 @@ export function RetryEditor({
           checked={retry.backoff ?? false}
           onChange={(e) => {
             setRetry({ ...retry, backoff: e.target.checked });
-            void saveActiveWorkflow();
           }}
         />
         Exponential backoff (×2 per attempt)
@@ -841,7 +803,6 @@ export function RetryEditor({
         style={{ marginTop: 6 }}
         onClick={() => {
           setRetry(undefined);
-          void saveActiveWorkflow();
         }}
       >
         Remove retry policy
@@ -855,8 +816,6 @@ export function NodeInspector(): React.JSX.Element | null {
   const activeWorkflowId = useAppStore((s) => s.activeWorkflowId);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const updateActiveWorkflow = useAppStore((s) => s.updateActiveWorkflow);
-  const setValidation = useAppStore((s) => s.setValidation);
-  const saveActiveWorkflow = useAppStore((s) => s.saveActiveWorkflow);
   const profiles = useAppStore((s) => s.profiles);
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
@@ -875,8 +834,16 @@ export function NodeInspector(): React.JSX.Element | null {
     void getBackend()
       .gitCurrentBranch(dir)
       .then((branch) => {
-        updateActiveWorkflow(setWorkflowDefaults(workflow, dir, branch));
-        void saveActiveWorkflow();
+        const state = useAppStore.getState();
+        const latest = state.workflows.find((w) => w.id === workflow.id)?.definition;
+        if (
+          state.activeWorkflowId === workflow.id &&
+          latest &&
+          latest.defaults?.repoDir?.trim() === dir &&
+          latest.defaults.branch === workflow.defaults?.branch
+        ) {
+          updateActiveWorkflow(setWorkflowDefaults(latest, dir, branch));
+        }
       })
       .catch((err: unknown) => {
         setBranchDetectMsg(errorMessage(err));
@@ -924,7 +891,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 }),
               });
             }}
-            onBlur={() => void saveActiveWorkflow()}
           >
             {EDGE_LABELS.map((l) => (
               <option key={l} value={l}>
@@ -973,13 +939,12 @@ export function NodeInspector(): React.JSX.Element | null {
             onChange={(e) => {
               updateActiveWorkflow({ ...workflow, name: e.target.value });
             }}
-            onBlur={() => void saveActiveWorkflow()}
           />
         </div>
         <p className="field-hint">
           Select a node on the canvas to edit its configuration. Changes save
-          automatically when the field loses focus; use Save in the toolbar to persist
-          immediately.
+          automatically as you edit, including graph changes. The toolbar shows saving
+          progress and offers a retry if saving fails.
         </p>
         <div className="field">
           <span className="field-label">Repository defaults</span>
@@ -997,7 +962,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 setWorkflowDefaults(workflow, v, workflow.defaults?.branch ?? ''),
               );
             }}
-            onPicked={() => void saveActiveWorkflow()}
           />
 
           {branchDetectMsg !== null && (
@@ -1015,7 +979,6 @@ export function NodeInspector(): React.JSX.Element | null {
               updateActiveWorkflow(
                 setWorkflowDefaults(workflow, workflow.defaults?.repoDir ?? '', v),
               );
-              void saveActiveWorkflow();
             }}
             action={
               <button
@@ -1056,7 +1019,6 @@ export function NodeInspector(): React.JSX.Element | null {
                     ),
                   });
                 }}
-                onBlur={() => void saveActiveWorkflow()}
               />
               <input
                 className="input"
@@ -1076,7 +1038,6 @@ export function NodeInspector(): React.JSX.Element | null {
                     ),
                   });
                 }}
-                onBlur={() => void saveActiveWorkflow()}
               />
               <button
                 className="btn btn-ghost"
@@ -1086,7 +1047,6 @@ export function NodeInspector(): React.JSX.Element | null {
                     ...workflow,
                     inputs: (workflow.inputs ?? []).filter((x) => x.name !== input.name),
                   });
-                  void saveActiveWorkflow();
                 }}
               >
                 ✕
@@ -1101,7 +1061,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 ...workflow,
                 inputs: [...(workflow.inputs ?? []), { name, default: '' }],
               });
-              void saveActiveWorkflow();
             }}
           >
             + Add input
@@ -1155,7 +1114,6 @@ export function NodeInspector(): React.JSX.Element | null {
           onChange={(e) => {
             patch(node.config, e.target.value);
           }}
-          onBlur={() => void saveActiveWorkflow()}
         />
       </div>
 
@@ -1174,7 +1132,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 patch({ ...node.config, executable: e.target.value }, node.label);
               }}
               onBlur={() => {
-                void saveActiveWorkflow();
                 refreshPreview();
               }}
               onFocus={refreshPreview}
@@ -1205,7 +1162,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 );
               }}
               onBlur={() => {
-                void saveActiveWorkflow();
                 refreshPreview();
               }}
             />
@@ -1225,7 +1181,6 @@ export function NodeInspector(): React.JSX.Element | null {
               }
               patch(config, node.label);
             }}
-            onPicked={() => void saveActiveWorkflow()}
           />
           {preview !== null && preview !== '' && (
             <div className="field">
@@ -1257,7 +1212,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 }
                 patch(config, node.label);
               }}
-              onBlur={() => void saveActiveWorkflow()}
             />
             <label
               className="field-hint"
@@ -1275,7 +1229,6 @@ export function NodeInspector(): React.JSX.Element | null {
                   }
                   patch(config, node.label);
                 }}
-                onBlur={() => void saveActiveWorkflow()}
               />
               Keep running while output flows — the countdown restarts on every output
               chunk (up to 12 h total). For long AI implementations.
@@ -1298,7 +1251,6 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 patch({ ...node.config, agentProfileId: e.target.value }, node.label);
               }}
-              onBlur={() => void saveActiveWorkflow()}
             >
               <option value="">— Select a profile —</option>
               {profiles.map((p) => (
@@ -1328,7 +1280,6 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 patch({ ...node.config, prompt: e.target.value }, node.label);
               }}
-              onBlur={() => void saveActiveWorkflow()}
             />
             <span className="field-hint">
               Variables: {'{{workflow.name}}'}, {'{{workflow.id}}'}, {'{{node.<id>}}'} and{' '}
@@ -1356,7 +1307,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 }
                 patch(config, node.label);
               }}
-              onPicked={() => void saveActiveWorkflow()}
             />
             <span className="field-hint">
               Must exist before execution. Repository changes happen here — the profile’s
@@ -1384,7 +1334,6 @@ export function NodeInspector(): React.JSX.Element | null {
                 }
                 patch(config, node.label);
               }}
-              onBlur={() => void saveActiveWorkflow()}
             />
             <label
               className="field-hint"
@@ -1402,7 +1351,6 @@ export function NodeInspector(): React.JSX.Element | null {
                   }
                   patch(config, node.label);
                 }}
-                onBlur={() => void saveActiveWorkflow()}
               />
               Keep running while output flows — the countdown restarts on every output
               chunk (up to 12 h total). For long AI implementations.
@@ -1483,7 +1431,6 @@ export function NodeInspector(): React.JSX.Element | null {
             }
             patch(config, node.label);
           }}
-          onBlur={() => void saveActiveWorkflow()}
         />
         <span className="field-hint">
           Nodes on a review/fix cycle must set this ≥ 2; cycles without a Condition guard
@@ -1505,23 +1452,9 @@ export function NodeInspector(): React.JSX.Element | null {
             onChange={(e) => {
               patch({ ...node.config, message: e.target.value }, node.label);
             }}
-            onBlur={() => void saveActiveWorkflow()}
           />
         </div>
       )}
-
-      <button
-        className="btn"
-        onClick={() => {
-          void getBackend()
-            .validateWorkflow(workflow)
-            .then(setValidation)
-            .catch(() => {});
-          void saveActiveWorkflow();
-        }}
-      >
-        Save node
-      </button>
     </aside>
   );
 }

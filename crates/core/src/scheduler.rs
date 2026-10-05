@@ -124,8 +124,13 @@ impl Scheduler {
         now: DateTime<Utc>,
     ) -> Vec<String> {
         let mut notes = Vec::new();
-        notes.extend(self.tick_schedules(starter, now).await);
-        notes.extend(self.tick_watchers(starter, now).await);
+        let mut budget = self
+            .db
+            .list_active_runs()
+            .map(|runs| self.max_concurrent_runs.saturating_sub(runs.len()))
+            .unwrap_or(0);
+        notes.extend(self.tick_schedules(starter, now, &mut budget).await);
+        notes.extend(self.tick_watchers(starter, now, &mut budget).await);
         notes
     }
 
@@ -133,33 +138,27 @@ impl Scheduler {
         &self,
         starter: &Arc<dyn RunStarter>,
         now: DateTime<Utc>,
+        budget: &mut usize,
     ) -> Vec<String> {
         let mut notes = Vec::new();
         let schedules = self.db.list_schedules().unwrap_or_default();
-        // Bounded concurrency: count running runs started by scheduler.
-        let running = self
-            .db
-            .list_runs(200)
-            .map(|runs| {
-                runs.iter()
-                    .filter(|r| matches!(r.status, crate::db::RunStatus::Running))
-                    .count()
-            })
-            .unwrap_or(usize::MAX);
-        let mut budget = self
-            .max_concurrent_runs
-            .saturating_sub(running.min(self.max_concurrent_runs));
         for mut schedule in schedules {
-            if budget == 0 {
-                break;
-            }
+            let before = schedule.clone();
             let (decision, next) = crate::schedule::evaluate(&schedule, now);
-            schedule.next_run_at = next;
             match decision {
                 ScheduleDecision::Wait | ScheduleDecision::Retire => {
-                    let _ = self.db.upsert_schedule(&schedule);
+                    schedule.next_run_at = next;
+                    if decision == ScheduleDecision::Retire {
+                        schedule.enabled = false;
+                    }
+                    let _ = self.db.record_schedule_check(&before, &schedule);
                 }
                 ScheduleDecision::Fire => {
+                    if *budget == 0 {
+                        schedule.last_status = Some("deferred: run limit reached".into());
+                        let _ = self.db.record_schedule_check(&before, &schedule);
+                        continue;
+                    }
                     if !schedule.enabled {
                         continue;
                     }
@@ -177,7 +176,7 @@ impl Scheduler {
                     };
                     if let Err(message) = trust {
                         schedule.last_status = Some(format!("blocked: {message}"));
-                        let _ = self.db.upsert_schedule(&schedule);
+                        let _ = self.db.record_schedule_check(&before, &schedule);
                         self.notify(
                             "schedule-blocked",
                             "Scheduled run blocked",
@@ -186,12 +185,27 @@ impl Scheduler {
                         );
                         continue;
                     }
-                    match starter.start_workflow_run(&schedule.workflow_id, &HashMap::new()) {
+                    if self.overlaps(&schedule.workflow_id, None).unwrap_or(true) {
+                        schedule.last_status = Some("deferred: workflow already active".into());
+                        let _ = self.db.record_schedule_check(&before, &schedule);
+                        continue;
+                    }
+                    if !self.refresh_budget(budget).unwrap_or(false) {
+                        schedule.last_status = Some("deferred: run limit reached".into());
+                        let _ = self.db.record_schedule_check(&before, &schedule);
+                        continue;
+                    }
+                    let inputs = HashMap::from([
+                        ("automationKind".into(), "schedule".into()),
+                        ("automationId".into(), schedule.id.clone()),
+                    ]);
+                    match starter.start_workflow_run(&schedule.workflow_id, &inputs) {
                         Ok(run_id) => {
-                            budget -= 1;
+                            *budget -= 1;
+                            schedule.next_run_at = next;
                             schedule.last_run_at = Some(now);
                             schedule.last_status = Some(format!("started {run_id}"));
-                            let _ = self.db.upsert_schedule(&schedule);
+                            let _ = self.db.record_schedule_check(&before, &schedule);
                             notes.push(format!("schedule '{}' started {run_id}", schedule.name));
                             self.notify(
                                 "schedule-started",
@@ -202,7 +216,7 @@ impl Scheduler {
                         }
                         Err(e) => {
                             schedule.last_status = Some(format!("failed to start: {e}"));
-                            let _ = self.db.upsert_schedule(&schedule);
+                            let _ = self.db.record_schedule_check(&before, &schedule);
                             notes.push(format!("schedule '{}' failed: {e}", schedule.name));
                         }
                     }
@@ -216,6 +230,7 @@ impl Scheduler {
         &self,
         starter: &Arc<dyn RunStarter>,
         now: DateTime<Utc>,
+        budget: &mut usize,
     ) -> Vec<String> {
         let mut notes = Vec::new();
         let watchers = self.db.list_watchers().unwrap_or_default();
@@ -226,18 +241,21 @@ impl Scheduler {
             // last_checked_at also advances on failures for backoff. Preserve
             // the successful feedback watermark separately in the existing
             // watcher-scoped settings before a poll can overwrite that field.
-            let feedback_since_key = format!("watcher.{}.feedbackSince", watcher.id);
+            let before = watcher.clone();
+            let feedback_since_key = watcher_setting_key(&watcher, "feedbackSince");
+            self.remember_shas(&watcher, &HashMap::new());
+            self.remember_comments(&watcher, &[]);
             if watcher.kind == WatcherKind::Feedback {
-                if let Some(since) = self.feedback_since(&watcher) {
-                    let _ = self
-                        .db
-                        .set_setting(&feedback_since_key, &since.to_rfc3339());
-                }
+                let since = self
+                    .feedback_since(&watcher)
+                    .map(|since| since.to_rfc3339())
+                    .unwrap_or_default();
+                let _ = self.db.set_setting(&feedback_since_key, &since);
             }
-            let outcome = self.poll_watcher(starter, &watcher, now).await;
+            let outcome = self.poll_watcher(starter, &watcher, now, budget).await;
             match outcome {
                 Ok((action, detail)) => {
-                    if watcher.kind == WatcherKind::Feedback {
+                    if watcher.kind == WatcherKind::Feedback && !detail.starts_with("deferred:") {
                         let _ = self.db.set_setting(&feedback_since_key, &now.to_rfc3339());
                     }
                     watcher.last_checked_at = Some(now);
@@ -249,8 +267,8 @@ impl Scheduler {
                             watcher.last_head_sha = Some(sha.clone());
                         }
                     }
-                    let _ = self.db.upsert_watcher(&watcher);
-                    if detail != "quiet" {
+                    let _ = self.db.record_watcher_check(&before, &watcher);
+                    if !detail.starts_with("quiet") {
                         notes.push(detail);
                     }
                 }
@@ -258,7 +276,7 @@ impl Scheduler {
                     // Back off: push next check out instead of hammering.
                     watcher.last_checked_at = Some(now);
                     watcher.last_result = Some(format!("error: {e}"));
-                    let _ = self.db.upsert_watcher(&watcher);
+                    let _ = self.db.record_watcher_check(&before, &watcher);
                     notes.push(format!("watcher '{}' error: {e}", watcher.name));
                     // Failures must be visible: the Inbox shows this with details.
                     self.notify(
@@ -278,6 +296,7 @@ impl Scheduler {
         starter: &Arc<dyn RunStarter>,
         watcher: &Watcher,
         _now: DateTime<Utc>,
+        budget: &mut usize,
     ) -> Result<(WatcherAction, String), String> {
         if !watcher.enabled {
             return Ok((WatcherAction::Quiet, "quiet".to_string()));
@@ -290,7 +309,7 @@ impl Scheduler {
         }
         match watcher.kind {
             WatcherKind::ReviewRequested => {
-                let prs = crate::github::list_prs(&runner, &watcher.repo_dir, "open")?;
+                let prs = crate::github::list_requested_reviews(&runner, &watcher.repo_dir)?;
                 let mut known = HashMap::new();
                 if let (Some(number), Some(sha)) =
                     (watcher.pr_number, watcher.last_head_sha.clone())
@@ -299,35 +318,109 @@ impl Scheduler {
                 }
                 let mut known_all = self.known_shas(watcher);
                 known_all.extend(known);
-                let fresh = review_requested_updates(&prs, &known_all, auth.user.as_deref());
+                let fresh: Vec<_> =
+                    review_requested_updates(&prs, &known_all, auth.user.as_deref())
+                        .into_iter()
+                        .filter(|pr| watcher.pr_number.is_none_or(|number| number == pr.number))
+                        .collect();
                 if fresh.is_empty() {
-                    return Ok((WatcherAction::Quiet, "quiet".to_string()));
+                    return Ok((
+                        WatcherAction::Quiet,
+                        "quiet: no new requested revisions".to_string(),
+                    ));
                 }
-                let numbers: Vec<u64> = fresh.iter().map(|pr| pr.number).collect();
-                let shas: HashMap<u64, String> = fresh
-                    .iter()
-                    .map(|pr| (pr.number, pr.head_sha.clone()))
-                    .collect();
-                for pr in &fresh {
-                    let mut inputs = HashMap::new();
-                    inputs.insert("prNumber".to_string(), pr.number.to_string());
-                    inputs.insert("prHeadSha".to_string(), pr.head_sha.clone());
-                    starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                let workflow = self
+                    .db
+                    .get_workflow(&watcher.workflow_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("Unknown workflow '{}'.", watcher.workflow_id))?;
+                let scoped = workflow_consumes_pr_number(&workflow.definition);
+                let mut shas = HashMap::new();
+                let mut runs = Vec::new();
+                if scoped {
+                    for pr in &fresh {
+                        if *budget == 0
+                            || !self.watcher_current(watcher)?
+                            || self.overlaps(&watcher.workflow_id, Some(pr.number))?
+                            || !self.refresh_budget(budget)?
+                        {
+                            continue;
+                        }
+                        let mut inputs = watcher_inputs(watcher);
+                        inputs.insert("prNumber".into(), pr.number.to_string());
+                        inputs.insert("prHeadSha".into(), pr.head_sha.clone());
+                        let run = starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                        *budget -= 1;
+                        let revision = HashMap::from([(pr.number, pr.head_sha.clone())]);
+                        // Persist each accepted dispatch immediately; a later failure
+                        // must not cause the already-started PR to run again.
+                        self.remember_shas(watcher, &revision);
+                        shas.extend(revision);
+                        runs.push(format!("#{}/{} → {run}", pr.number, pr.head_sha));
+                    }
+                } else if *budget > 0
+                    && self.watcher_current(watcher)?
+                    && !self.overlaps(&watcher.workflow_id, None)?
+                    && self.refresh_budget(budget)?
+                {
+                    let mut inputs = watcher_inputs(watcher);
+                    inputs.insert(
+                        "prNumbers".into(),
+                        fresh
+                            .iter()
+                            .map(|pr| pr.number.to_string())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                    inputs.insert(
+                        "prHeadShas".into(),
+                        serde_json::to_string(
+                            &fresh
+                                .iter()
+                                .map(|pr| (pr.number, &pr.head_sha))
+                                .collect::<HashMap<_, _>>(),
+                        )
+                        .map_err(|e| e.to_string())?,
+                    );
+                    let run = starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                    *budget -= 1;
+                    shas.extend(fresh.iter().map(|pr| (pr.number, pr.head_sha.clone())));
+                    self.remember_shas(watcher, &shas);
+                    runs.push(format!("repository scan → {run}"));
                 }
-                self.remember_shas(watcher, &shas);
+                if shas.is_empty() {
+                    return Ok((WatcherAction::Quiet, "deferred: run limit or workflow already active; requested revisions remain eligible".into()));
+                }
+                let mut numbers: Vec<_> = shas.keys().copied().collect();
+                numbers.sort_unstable();
+                let detail = format!(
+                    "watcher '{}' triggered {} ({} revision(s) deferred)",
+                    watcher.name,
+                    runs.join(", "),
+                    fresh.len() - shas.len()
+                );
                 Ok((
                     WatcherAction::Trigger {
-                        pr_numbers: numbers.clone(),
+                        pr_numbers: numbers,
                         head_shas: shas,
-                        reason: "review requested".to_string(),
+                        reason: "review requested".into(),
                     },
-                    format!("watcher '{}' triggered for PR(s) {numbers:?}", watcher.name),
+                    detail,
                 ))
             }
             WatcherKind::PrUpdated | WatcherKind::Feedback => {
                 let number = watcher
                     .pr_number
                     .ok_or_else(|| "PR-scoped watcher needs a PR number.".to_string())?;
+                if *budget == 0
+                    || !self.watcher_current(watcher)?
+                    || self.overlaps(&watcher.workflow_id, Some(number))?
+                {
+                    return Ok((
+                        WatcherAction::Quiet,
+                        "deferred: run limit or PR workflow already active".into(),
+                    ));
+                }
                 let pr = crate::github::pr_details(&runner, &watcher.repo_dir, number)?;
                 let known = self.known_shas(watcher);
                 let changed = known
@@ -338,10 +431,18 @@ impl Scheduler {
                     if !changed {
                         return Ok((WatcherAction::Quiet, "quiet".to_string()));
                     }
-                    let mut inputs = HashMap::new();
+                    let mut inputs = watcher_inputs(watcher);
                     inputs.insert("prNumber".to_string(), number.to_string());
                     inputs.insert("prHeadSha".to_string(), pr.head_sha.clone());
-                    starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                    if !self.watcher_current(watcher)? || !self.refresh_budget(budget)? {
+                        return Ok((
+                            WatcherAction::Quiet,
+                            "deferred: watcher disabled, removed or scope changed during check"
+                                .into(),
+                        ));
+                    }
+                    let run_id = starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                    *budget -= 1;
                     let mut shas = HashMap::new();
                     shas.insert(number, pr.head_sha.clone());
                     self.remember_shas(watcher, &shas);
@@ -352,7 +453,7 @@ impl Scheduler {
                             reason: "new PR revision".to_string(),
                         },
                         format!(
-                            "watcher '{}' triggered for new revision of #{number}",
+                            "watcher '{}' triggered for new revision of #{number}: {run_id}",
                             watcher.name
                         ),
                     ));
@@ -370,11 +471,18 @@ impl Scheduler {
                 if fresh.is_empty() && !changed {
                     return Ok((WatcherAction::Quiet, "quiet".to_string()));
                 }
-                let mut inputs = HashMap::new();
+                let mut inputs = watcher_inputs(watcher);
                 inputs.insert("prNumber".to_string(), number.to_string());
                 inputs.insert("prHeadSha".to_string(), pr.head_sha.clone());
                 inputs.insert("feedbackCount".to_string(), fresh.len().to_string());
-                starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                if !self.watcher_current(watcher)? || !self.refresh_budget(budget)? {
+                    return Ok((
+                        WatcherAction::Quiet,
+                        "deferred: watcher disabled, removed or scope changed during check".into(),
+                    ));
+                }
+                let run_id = starter.start_workflow_run(&watcher.workflow_id, &inputs)?;
+                *budget -= 1;
                 let mut shas = HashMap::new();
                 shas.insert(number, pr.head_sha.clone());
                 self.remember_shas(watcher, &shas);
@@ -386,13 +494,47 @@ impl Scheduler {
                         reason: format!("{} new feedback item(s)", fresh.len()),
                     },
                     format!(
-                        "watcher '{}' triggered: {} new feedback item(s) on #{number}",
+                        "watcher '{}' triggered: {} new feedback item(s) on #{number}: {run_id}",
                         watcher.name,
                         fresh.len()
                     ),
                 ))
             }
         }
+    }
+
+    fn refresh_budget(&self, budget: &mut usize) -> Result<bool, String> {
+        let available = self
+            .max_concurrent_runs
+            .saturating_sub(self.db.list_active_runs().map_err(|e| e.to_string())?.len());
+        *budget = (*budget).min(available);
+        Ok(*budget > 0)
+    }
+
+    fn watcher_current(&self, watcher: &Watcher) -> Result<bool, String> {
+        let current = self
+            .db
+            .get_watcher(&watcher.id)
+            .map_err(|e| e.to_string())?;
+        if !current.is_some_and(|current| current.enabled && current.same_scope(watcher)) {
+            return Ok(false);
+        }
+        validate_watcher_workflow(&self.db, watcher)?;
+        Ok(true)
+    }
+
+    fn overlaps(&self, workflow_id: &str, pr_number: Option<u64>) -> Result<bool, String> {
+        let runs = self.db.list_active_runs().map_err(|e| e.to_string())?;
+        Ok(runs.iter().any(|run| {
+            run.workflow_id == workflow_id
+                && match pr_number {
+                    None => true,
+                    Some(number) => run
+                        .inputs
+                        .get("prNumber")
+                        .is_none_or(|value| value == &number.to_string()),
+                }
+        }))
     }
 
     fn notify(&self, kind: &str, title: &str, body: &str, run_id: Option<&str>) {
@@ -417,9 +559,19 @@ impl Scheduler {
     /// Successful feedback watermark, persisted with other watcher settings.
     fn feedback_since(&self, watcher: &Watcher) -> Option<DateTime<Utc>> {
         self.db
-            .get_setting(&format!("watcher.{}.feedbackSince", watcher.id))
+            .get_setting(&watcher_setting_key(watcher, "feedbackSince"))
             .ok()
             .flatten()
+            .or_else(|| {
+                (watcher.last_checked_at.is_some() || watcher.last_head_sha.is_some())
+                    .then(|| {
+                        self.db
+                            .get_setting(&format!("watcher.{}.feedbackSince", watcher.id))
+                            .ok()
+                            .flatten()
+                    })
+                    .flatten()
+            })
             .and_then(|raw| parse_time(&raw))
             .or_else(|| {
                 // Preserve the existing baseline when upgrading a successful
@@ -437,9 +589,19 @@ impl Scheduler {
     /// Known head SHAs, persisted as settings (watcher-scoped).
     fn known_shas(&self, watcher: &Watcher) -> HashMap<u64, String> {
         self.db
-            .get_setting(&format!("watcher.{}.shas", watcher.id))
+            .get_setting(&watcher_setting_key(watcher, "shas"))
             .ok()
             .flatten()
+            .or_else(|| {
+                (watcher.last_checked_at.is_some() || watcher.last_head_sha.is_some())
+                    .then(|| {
+                        self.db
+                            .get_setting(&format!("watcher.{}.shas", watcher.id))
+                            .ok()
+                            .flatten()
+                    })
+                    .flatten()
+            })
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default()
     }
@@ -450,15 +612,25 @@ impl Scheduler {
         if let Ok(raw) = serde_json::to_string(&known) {
             let _ = self
                 .db
-                .set_setting(&format!("watcher.{}.shas", watcher.id), &raw);
+                .set_setting(&watcher_setting_key(watcher, "shas"), &raw);
         }
     }
 
     fn handled_comments(&self, watcher: &Watcher) -> HashSet<String> {
         self.db
-            .get_setting(&format!("watcher.{}.handled", watcher.id))
+            .get_setting(&watcher_setting_key(watcher, "handled"))
             .ok()
             .flatten()
+            .or_else(|| {
+                (watcher.last_checked_at.is_some() || watcher.last_head_sha.is_some())
+                    .then(|| {
+                        self.db
+                            .get_setting(&format!("watcher.{}.handled", watcher.id))
+                            .ok()
+                            .flatten()
+                    })
+                    .flatten()
+            })
             .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
             .map(|v| v.into_iter().collect())
             .unwrap_or_default()
@@ -481,9 +653,166 @@ impl Scheduler {
         if let Ok(raw) = serde_json::to_string(&vec) {
             let _ = self
                 .db
-                .set_setting(&format!("watcher.{}.handled", watcher.id), &raw);
+                .set_setting(&watcher_setting_key(watcher, "handled"), &raw);
         }
     }
+}
+
+/// Validate declared execution directories against the repository being polled.
+/// Inputs do not override working directories in the engine.
+pub fn validate_watcher_workflow(db: &SqliteDb, watcher: &Watcher) -> Result<(), String> {
+    let workflow = db
+        .get_workflow(&watcher.workflow_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Unknown workflow '{}'.", watcher.workflow_id))?
+        .definition;
+    validate_watcher_definition(db, &workflow, watcher)
+}
+
+pub fn validate_watcher_definition(
+    db: &SqliteDb,
+    workflow: &crate::workflow::Workflow,
+    watcher: &Watcher,
+) -> Result<(), String> {
+    use crate::agents::WorkingDirMode;
+    use crate::workflow::NodeKind;
+    let mut roots: HashMap<String, String> = HashMap::new();
+    let mut scope = |directory: &str| -> Result<String, String> {
+        if let Some(root) = roots.get(directory) {
+            return Ok(root.clone());
+        }
+        let root = crate::git::discover_root(directory).unwrap_or_else(|| directory.into());
+        let scope = crate::memory::project_scope(&root)?;
+        roots.insert(directory.to_string(), scope.clone());
+        Ok(scope)
+    };
+    let expected = scope(&watcher.repo_dir)?;
+    let profiles = db.list_agent_profiles().map_err(|e| e.to_string())?;
+    for node in &workflow.nodes {
+        let explicit = node
+            .config
+            .working_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty());
+        let fallback = workflow
+            .defaults
+            .as_ref()
+            .and_then(|defaults| defaults.repo_dir.as_deref())
+            .map(str::trim)
+            .filter(|dir| !dir.is_empty());
+        let directory = match node.kind {
+            NodeKind::Git | NodeKind::GitHub | NodeKind::Command => explicit.or(fallback),
+            NodeKind::Agent => profiles
+                .iter()
+                .find(|profile| Some(&profile.id) == node.config.agent_profile_id.as_ref())
+                .and_then(|profile| match profile.working_dir_mode {
+                    WorkingDirMode::Node => explicit,
+                    WorkingDirMode::Profile => profile.working_dir.as_deref(),
+                    WorkingDirMode::Inherit => None,
+                }),
+            _ => None,
+        };
+        if let Some(directory) = directory {
+            if scope(directory)? != expected {
+                return Err(format!("Watcher repository does not match workflow node '{}'. Set its working directory (or applicable workflow/profile default) to the watched repository.", node.id));
+            }
+        } else if matches!(node.kind, NodeKind::Git | NodeKind::GitHub) {
+            return Err(format!("Workflow node '{}' needs a repository directory matching the watcher; input.repoDir does not override directories.", node.id));
+        }
+    }
+    Ok(())
+}
+
+fn watcher_setting_key(watcher: &Watcher, suffix: &str) -> String {
+    // Include the actual scope so an old in-flight check cannot consume a
+    // revision in a newly edited watcher scope with the same id.
+    format!(
+        "watcher.{}.scope.{:?}.{suffix}",
+        watcher.id,
+        (
+            watcher.kind,
+            &watcher.repo_dir,
+            &watcher.workflow_id,
+            watcher.pr_number
+        )
+    )
+}
+
+fn watcher_inputs(watcher: &Watcher) -> HashMap<String, String> {
+    HashMap::from([
+        ("automationKind".into(), "watcher".into()),
+        ("automationId".into(), watcher.id.clone()),
+        ("watcherKind".into(), format!("{:?}", watcher.kind)),
+        ("repoDir".into(), watcher.repo_dir.clone()),
+    ])
+}
+
+/// A declared input alone is insufficient: the workflow must consume it.
+/// Native PR operations resolve number 0; templates use input.prNumber.
+pub fn workflow_consumes_pr_number(workflow: &crate::workflow::Workflow) -> bool {
+    use crate::workflow::{GitHubOp, GitOp, NodeKind};
+    fn consumes(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(template) => {
+                crate::prompt::render_prompt(template, &HashMap::new())
+                    .1
+                    .iter()
+                    .any(|name| name == "input.prNumber")
+            }
+            serde_json::Value::Array(values) => values.iter().any(consumes),
+            serde_json::Value::Object(values) => values.values().any(consumes),
+            _ => false,
+        }
+    }
+    let reachable = workflow
+        .nodes
+        .iter()
+        .find(|node| node.kind == NodeKind::Start)
+        .map(|start| crate::workflow::reachable_from(workflow, &start.id))
+        .unwrap_or_default();
+    workflow
+        .nodes
+        .iter()
+        .filter(|node| reachable.contains(&node.id))
+        .any(|node| {
+            let config = &node.config;
+            if node.kind == NodeKind::GitHub
+                && matches!(
+                    config.github_op,
+                    Some(
+                        GitHubOp::PrDetails { number: 0 }
+                            | GitHubOp::PrFiles { number: 0 }
+                            | GitHubOp::PrChecks { number: 0 }
+                            | GitHubOp::PostComment { number: 0, .. }
+                    )
+                )
+            {
+                return true;
+            }
+            let value = match node.kind {
+                NodeKind::Condition => {
+                    return config.condition.as_ref().is_some_and(|condition| {
+                        condition
+                            .clauses
+                            .iter()
+                            .any(|clause| clause.left == "input.prNumber")
+                    })
+                }
+                NodeKind::Command => serde_json::to_value(&config.args),
+                NodeKind::Agent => serde_json::to_value(&config.prompt),
+                NodeKind::Mcp => serde_json::to_value(&config.mcp_args),
+                NodeKind::Ticket => serde_json::to_value(&config.ticket_key),
+                NodeKind::Git if !matches!(config.git_op, Some(GitOp::Stage { .. })) => {
+                    serde_json::to_value(&config.git_op)
+                }
+                NodeKind::GitHub if !matches!(config.github_op, Some(GitHubOp::ListPrs { .. })) => {
+                    serde_json::to_value(&config.github_op)
+                }
+                _ => return false,
+            };
+            value.is_ok_and(|value| consumes(&value))
+        })
 }
 
 /// Scheduled-run starter trait object helper.
@@ -799,6 +1128,8 @@ fi
             last_result: Some("quiet".into()),
         })
         .expect("watcher");
+        db.upsert_workflow(&linear_workflow("wf"))
+            .expect("workflow");
         db.set_setting("watcher.feedback-retry.shas", r#"{"7":"stable"}"#)
             .expect("known sha");
         let concrete = Arc::new(RetryStarter {
@@ -875,5 +1206,443 @@ fi
                 && n.body.contains('W')),
             "{notes_db:?}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod reliability_tests {
+    use super::*;
+    use crate::workflow::{sample_workflow, GitHubOp};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    struct Recorder {
+        inputs: Mutex<Vec<HashMap<String, String>>>,
+        fail_number: Option<String>,
+    }
+    impl RunStarter for Recorder {
+        fn start_workflow_run(
+            &self,
+            _: &str,
+            inputs: &HashMap<String, String>,
+        ) -> Result<String, String> {
+            if self
+                .fail_number
+                .as_ref()
+                .is_some_and(|n| inputs.get("prNumber") == Some(n))
+            {
+                return Err("fixture start failed".into());
+            }
+            let mut rows = self.inputs.lock().expect("rows");
+            rows.push(inputs.clone());
+            Ok(format!("run-{}", rows.len()))
+        }
+    }
+    fn setup(scoped: bool) -> (tempfile::TempDir, Arc<SqliteDb>, Watcher) {
+        let dir = tempfile::tempdir().expect("dir");
+        let script = dir.path().join("gh");
+        std::fs::write(&script, r#"#!/bin/sh
+if [ "$1" = "auth" ]; then
+  echo 'Logged in to github.com account alice (keyring)'
+elif [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  case "$*" in
+    *review-requested:@me*) echo '[{"number":1,"author":{"login":"bob"},"headRefOid":"a","reviewRequests":[{"login":"alice"}]},{"number":2,"author":{"login":"carol"},"headRefOid":"b","reviewRequests":[{"login":"alice"}]},{"number":3,"author":{"login":"dan"},"headRefOid":"c","reviewRequests":[{"login":"alice"}]}]' ;;
+    *) echo '[{"number":9,"author":{"login":"bob"},"headRefOid":"unrelated","reviewRequests":[{"login":"someone-else"}]}]' ;;
+  esac
+else
+  exit 1
+fi
+"#).expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::env::set_var("ORCHEVIA_GH_BIN", &script);
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let mut wf = sample_workflow();
+        wf.id = "wf".into();
+        if scoped {
+            wf.nodes[1].kind = crate::workflow::NodeKind::GitHub;
+            wf.nodes[1].config.github_op = Some(GitHubOp::PrDetails { number: 0 });
+            wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        }
+        db.upsert_workflow(&wf).expect("wf");
+        let watcher = Watcher {
+            id: "requested".into(),
+            name: "Requested".into(),
+            workflow_id: "wf".into(),
+            kind: WatcherKind::ReviewRequested,
+            repo_dir: dir.path().to_string_lossy().into_owned(),
+            pr_number: None,
+            enabled: true,
+            check_interval_secs: 300,
+            last_head_sha: None,
+            last_checked_at: None,
+            last_result: None,
+        };
+        db.upsert_watcher(&watcher).expect("watcher");
+        (dir, db, watcher)
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn disabling_a_watcher_during_dispatch_stops_the_remaining_batch() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let (_dir, db, watcher) = setup(true);
+        struct DisableStarter {
+            db: Arc<SqliteDb>,
+            watcher: Watcher,
+            count: Mutex<usize>,
+        }
+        impl RunStarter for DisableStarter {
+            fn start_workflow_run(
+                &self,
+                _: &str,
+                _: &HashMap<String, String>,
+            ) -> Result<String, String> {
+                *self.count.lock().expect("count") += 1;
+                let mut disabled = self.watcher.clone();
+                disabled.enabled = false;
+                self.db.upsert_watcher(&disabled).expect("disable");
+                Ok("accepted-run".into())
+            }
+        }
+        let concrete = Arc::new(DisableStarter {
+            db: Arc::clone(&db),
+            watcher,
+            count: Mutex::new(0),
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        Scheduler::new(Arc::clone(&db))
+            .tick_once(&starter, Utc::now())
+            .await;
+        assert_eq!(*concrete.count.lock().expect("count"), 1);
+        assert!(
+            !db.get_watcher("requested")
+                .expect("get")
+                .expect("watcher")
+                .enabled
+        );
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    #[tokio::test]
+    async fn full_run_budget_defers_schedule_without_consuming_its_slot() {
+        use crate::schedule::{MissedPolicy, Schedule, ScheduleKind};
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let wf = sample_workflow();
+        db.upsert_workflow(&wf).expect("wf");
+        for id in ["manual-one", "manual-two"] {
+            db.create_run(id, &wf.id, &HashMap::new()).expect("run");
+        }
+        let now = Utc::now();
+        db.upsert_schedule(&Schedule {
+            id: "capacity".into(),
+            name: "Due".into(),
+            workflow_id: wf.id,
+            kind: ScheduleKind::Interval { every_secs: 900 },
+            timezone: "utc".into(),
+            enabled: true,
+            trusted: true,
+            missed_policy: MissedPolicy::RunOnce,
+            last_run_at: None,
+            next_run_at: Some(now),
+            last_status: None,
+        })
+        .expect("schedule");
+        let starter: Arc<dyn RunStarter> = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        Scheduler::new(Arc::clone(&db))
+            .tick_once(&starter, now)
+            .await;
+        let saved = db.get_schedule("capacity").expect("get").expect("exists");
+        assert_eq!(saved.next_run_at, Some(now));
+        assert_eq!(
+            saved.last_status.as_deref(),
+            Some("deferred: run limit reached")
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_schedule_during_start_does_not_resurrect_it() {
+        use crate::schedule::{MissedPolicy, Schedule, ScheduleKind};
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        db.upsert_workflow(&sample_workflow()).expect("workflow");
+        let now = Utc::now();
+        db.upsert_schedule(&Schedule {
+            id: "delete-me".into(),
+            name: "Once".into(),
+            workflow_id: sample_workflow().id,
+            kind: ScheduleKind::OneTime { at: now },
+            timezone: "utc".into(),
+            enabled: true,
+            trusted: true,
+            missed_policy: MissedPolicy::RunOnce,
+            last_run_at: None,
+            next_run_at: Some(now),
+            last_status: None,
+        })
+        .expect("schedule");
+        struct DeleteStarter(Arc<SqliteDb>);
+        impl RunStarter for DeleteStarter {
+            fn start_workflow_run(
+                &self,
+                _: &str,
+                _: &HashMap<String, String>,
+            ) -> Result<String, String> {
+                self.0.delete_schedule("delete-me").expect("delete");
+                Ok("accepted-run".into())
+            }
+        }
+        let starter: Arc<dyn RunStarter> = Arc::new(DeleteStarter(Arc::clone(&db)));
+        Scheduler::new(Arc::clone(&db))
+            .tick_once(&starter, now)
+            .await;
+        assert!(db.get_schedule("delete-me").expect("get").is_none());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_workflow_pointing_to_another_repository_is_not_dispatched() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let (_dir, db, watcher) = setup(true);
+        let other = tempfile::tempdir().expect("other repo");
+        let mut wf = db.get_workflow("wf").expect("get").expect("wf").definition;
+        wf.nodes[1].config.working_dir = Some(other.path().to_string_lossy().into_owned());
+        db.upsert_workflow(&wf).expect("update");
+        let concrete = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        let notes = Scheduler::new(Arc::clone(&db))
+            .tick_once(&starter, Utc::now())
+            .await;
+        assert!(concrete.inputs.lock().expect("inputs").is_empty());
+        assert!(
+            notes.iter().any(|note| note.contains("repository")),
+            "{notes:?}"
+        );
+        assert!(Scheduler::new(db).known_shas(&watcher).is_empty());
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn manual_runs_started_during_github_poll_reduce_the_dispatch_budget() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let (dir, db, mut watcher) = setup(false);
+        watcher.kind = WatcherKind::PrUpdated;
+        watcher.pr_number = Some(7);
+        db.upsert_watcher(&watcher).expect("watcher");
+        let script = dir.path().join("gh");
+        let marker = dir.path().join("started");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+if [ "$1" = "auth" ]; then echo 'Logged in to github.com account alice (keyring)'
+else
+  touch "$(dirname "$0")/started"; sleep 0.3
+  echo '{"number":7,"headRefOid":"a"}'
+fi
+"#,
+        )
+        .expect("script");
+        let mut manual_wf = sample_workflow();
+        manual_wf.id = "manual-workflow".into();
+        db.upsert_workflow(&manual_wf).expect("workflow");
+        let manual_db = Arc::clone(&db);
+        let insert = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !marker.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(marker.exists());
+            for id in ["manual-one", "manual-two"] {
+                manual_db
+                    .create_run(id, "manual-workflow", &HashMap::new())
+                    .expect("run");
+            }
+        });
+        let concrete = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        Scheduler::new(db).tick_once(&starter, Utc::now()).await;
+        insert.join().expect("manual runs");
+        assert!(concrete.inputs.lock().expect("inputs").is_empty());
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn pr_scoped_watchers_recheck_saved_scope_after_slow_github_reads() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        for kind in [WatcherKind::PrUpdated, WatcherKind::Feedback] {
+            let (dir, db, mut watcher) = setup(false);
+            watcher.kind = kind;
+            watcher.pr_number = Some(7);
+            db.upsert_watcher(&watcher).expect("watcher");
+            let script = dir.path().join("gh");
+            let marker = dir.path().join("started");
+            std::fs::write(&script, r#"#!/bin/sh
+if [ "$1" = "auth" ]; then
+  echo 'Logged in to github.com account alice (keyring)'
+elif [ "$5" = "reviews,comments" ]; then
+  echo '{"reviews":[],"comments":[{"author":{"login":"bob"},"body":"please fix","createdAt":"2026-03-04T09:30:00Z"}]}'
+else
+  touch "$(dirname "$0")/started"
+  sleep 0.3
+  echo '{"number":7,"headRefOid":"a"}'
+fi
+"#).expect("script");
+            let editing_db = Arc::clone(&db);
+            let mut changed = watcher;
+            if kind == WatcherKind::PrUpdated {
+                changed.enabled = false;
+            } else {
+                changed.repo_dir = "/different-repository".into();
+            }
+            let edit = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                while !marker.exists() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert!(
+                    marker.exists(),
+                    "GitHub query must start before editing scope"
+                );
+                editing_db.upsert_watcher(&changed).expect("edit");
+            });
+            let concrete = Arc::new(Recorder {
+                inputs: Mutex::new(vec![]),
+                fail_number: None,
+            });
+            let starter: Arc<dyn RunStarter> = concrete.clone();
+            Scheduler::new(db).tick_once(&starter, Utc::now()).await;
+            edit.join().expect("edit finished");
+            assert!(
+                concrete.inputs.lock().expect("inputs").is_empty(),
+                "{kind:?} must honor changes made during the GitHub read"
+            );
+        }
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    #[test]
+    fn literal_condition_right_operand_does_not_consume_a_pr() {
+        use crate::workflow::{
+            ConditionClause, ConditionConfig, ConditionLogic, ConditionOp, NodeKind,
+        };
+        let mut wf = sample_workflow();
+        wf.nodes[1].kind = NodeKind::Condition;
+        wf.nodes[1].config.args.clear();
+        wf.nodes[1].config.condition = Some(ConditionConfig {
+            logic: ConditionLogic::And,
+            clauses: vec![ConditionClause {
+                left: "workflow.name".into(),
+                op: ConditionOp::Equals,
+                right: "input.prNumber".into(),
+            }],
+        });
+        assert!(!workflow_consumes_pr_number(&wf));
+        wf.nodes[1]
+            .config
+            .condition
+            .as_mut()
+            .expect("condition")
+            .clauses[0]
+            .right = "{{input.prNumber}}".into();
+        assert!(
+            !workflow_consumes_pr_number(&wf),
+            "right operands remain literal even with template syntax"
+        );
+    }
+
+    #[test]
+    fn pr_consumption_includes_mcp_templates_but_excludes_escaped_literals() {
+        let mut wf = sample_workflow();
+        wf.nodes[1].config.args = vec![r"\{{input.prNumber}}".into()];
+        assert!(
+            !workflow_consumes_pr_number(&wf),
+            "escaped text is not a consumed PR input"
+        );
+        wf.nodes[1].config.args.clear();
+        wf.nodes[1].kind = crate::workflow::NodeKind::Mcp;
+        wf.nodes[1].config.mcp_args =
+            Some(HashMap::from([("pr".into(), "{{input.prNumber}}".into())]));
+        assert!(workflow_consumes_pr_number(&wf));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn requested_reviews_are_scoped_bounded_and_initially_eligible() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let (_dir, db, _) = setup(true);
+        let concrete = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        let scheduler = Scheduler::new(db);
+        let now = Utc::now();
+        scheduler.tick_once(&starter, now).await;
+        let first = concrete.inputs.lock().expect("rows").clone();
+        assert_eq!(first.len(), 2, "two-run budget applies to watcher dispatch");
+        assert_eq!(first[0].get("prNumber").map(String::as_str), Some("1"));
+        assert_eq!(
+            first[0].get("automationId").map(String::as_str),
+            Some("requested")
+        );
+        scheduler
+            .tick_once(&starter, now + chrono::Duration::minutes(5))
+            .await;
+        let rows = concrete.inputs.lock().expect("rows");
+        assert_eq!(
+            rows.len(),
+            3,
+            "deferred PR remains eligible; handled SHAs do not refire"
+        );
+        assert_eq!(rows[2].get("prNumber").map(String::as_str), Some("3"));
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn repository_scanner_dispatches_once_for_the_batch() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let (_dir, db, _) = setup(false);
+        let concrete = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        let scheduler = Scheduler::new(db);
+        scheduler.tick_once(&starter, Utc::now()).await;
+        let rows = concrete.inputs.lock().expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("prNumbers").map(String::as_str), Some("1,2,3"));
+        assert!(!rows[0].contains_key("prNumber"));
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn partial_dispatch_failure_retains_successful_revision() {
+        let _guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let (_dir, db, watcher) = setup(true);
+        let concrete = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: Some("2".into()),
+        });
+        let starter: Arc<dyn RunStarter> = concrete.clone();
+        let scheduler = Scheduler::new(db);
+        scheduler.tick_once(&starter, Utc::now()).await;
+        assert_eq!(
+            scheduler.known_shas(&watcher).get(&1).map(String::as_str),
+            Some("a")
+        );
+        assert!(!scheduler.known_shas(&watcher).contains_key(&2));
+        std::env::remove_var("ORCHEVIA_GH_BIN");
     }
 }

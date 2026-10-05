@@ -311,6 +311,30 @@ pub fn list_prs(runner: &GhRunner, cwd: &str, state: &str) -> Result<Vec<PullReq
         .collect())
 }
 
+/// GitHub applies the authenticated user's requested-review scope, including
+/// team requests. Scope the query before the result limit so unrelated PRs
+/// cannot hide requested reviews on busy repositories.
+pub fn list_requested_reviews(runner: &GhRunner, cwd: &str) -> Result<Vec<PullRequest>, String> {
+    let out = runner.run(
+        cwd,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--search",
+            "review-requested:@me -author:@me",
+            "--json",
+            PR_FIELDS,
+            "--limit",
+            "50",
+        ],
+    )?;
+    let values: Vec<serde_json::Value> = serde_json::from_str(&out)
+        .map_err(|_| "Cannot parse requested-review PR list.".to_string())?;
+    Ok(values.iter().filter_map(normalize_pr).collect())
+}
+
 pub fn pr_details(runner: &GhRunner, cwd: &str, number: u64) -> Result<PullRequest, String> {
     let num = number.to_string();
     let out = runner.run(cwd, &["pr", "view", &num, "--json", PR_FIELDS])?;

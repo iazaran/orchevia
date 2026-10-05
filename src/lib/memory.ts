@@ -249,7 +249,8 @@ export function commandEdits(
   if (previous.defaults?.repoDir !== current.defaults?.repoDir) return [];
   return current.nodes.flatMap((node) => {
     const old = previous.nodes.find((n) => n.id === node.id);
-    if (node.type !== 'command' || old?.type !== 'command') return [];
+    if (node.type !== 'command' || (old !== undefined && old.type !== 'command'))
+      return [];
     const label = node.label ?? node.id;
     const field = /test/i.test(label)
       ? 'testCommand'
@@ -259,7 +260,7 @@ export function commandEdits(
           ? 'buildCommand'
           : null;
     if (!field) return [];
-    const from = commandText(old, previous.defaults?.repoDir),
+    const from = old ? commandText(old, previous.defaults?.repoDir) : '',
       to = commandText(node, current.defaults?.repoDir);
     if (from === to || !to.trim()) return [];
     return [{ scope, field, from, to }];

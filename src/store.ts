@@ -25,12 +25,18 @@ export type View =
   | 'templates'
   | 'memory';
 
+export interface WorkflowSaveState {
+  status: 'saving' | 'saved' | 'error';
+  error: string | null;
+}
+
 interface AppState {
   view: View;
   workflows: StoredWorkflow[];
   activeWorkflowId: string | null;
   selectedNodeId: string | null;
   validation: ValidationIssue[];
+  workflowSaveStates: Record<string, WorkflowSaveState>;
   runs: StoredRun[];
   activeRunId: string | null;
   runResults: Record<string, StoredNodeResult[]>;
@@ -74,22 +80,30 @@ interface AppState {
   showRunOverlay: (runId: string | null) => Promise<void>;
   updateActiveWorkflow: (workflow: Workflow) => void;
   saveActiveWorkflow: (definition?: Workflow) => Promise<StoredWorkflow | undefined>;
+  deleteWorkflow: (id: string) => Promise<boolean>;
+  retryWorkflowSave: (id: string) => Promise<StoredWorkflow | undefined>;
   setValidation: (issues: ValidationIssue[]) => void;
   selectRun: (id: string | null) => Promise<void>;
   setError: (message: string | null) => void;
 }
 
 let navigationSequence = 0;
+let runsRefreshSequence = 0;
+let workflowRefreshSequence = 0;
+let runSelectionSequence = 0;
 const workflowSaves = new Map<
   string,
-  { promise: Promise<StoredWorkflow>; token: symbol }
+  { promise: Promise<StoredWorkflow>; token: symbol; definition: Workflow }
 >();
+const workflowSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const deletingWorkflows = new Set<string>();
 export const useAppStore = create<AppState>()((set, get) => ({
   view: 'workflows',
   workflows: [],
   activeWorkflowId: null,
   selectedNodeId: null,
   validation: [],
+  workflowSaveStates: {},
   runs: [],
   activeRunId: null,
   runResults: {},
@@ -141,9 +155,32 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   refreshWorkflows: async () => {
+    const request = ++workflowRefreshSequence;
     const backend = getBackend();
-    const workflows = await backend.listWorkflows();
-    const { activeWorkflowId } = get();
+    const before = new Map(get().workflows.map((w) => [w.id, w.definition]));
+    const listed = await backend.listWorkflows();
+    if (request !== workflowRefreshSequence) return;
+    const current = get();
+    const workflows = listed.map((stored) => {
+      const draft = current.workflows.find((w) => w.id === stored.id);
+      const status = current.workflowSaveStates[stored.id]?.status;
+      return draft &&
+        (status === 'saving' ||
+          status === 'error' ||
+          (before.has(stored.id) && before.get(stored.id) !== draft.definition))
+        ? draft
+        : stored;
+    });
+    // Failed/new local drafts remain available even when absent from a backend list.
+    for (const draft of current.workflows) {
+      const status = current.workflowSaveStates[draft.id]?.status;
+      if (
+        (status === 'saving' || status === 'error') &&
+        !workflows.some((w) => w.id === draft.id)
+      )
+        workflows.push(draft);
+    }
+    const { activeWorkflowId } = current;
     const stillExists = workflows.some((w) => w.id === activeWorkflowId);
     set({
       workflows,
@@ -153,8 +190,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   refreshRuns: async () => {
     const backend = getBackend();
+    const request = ++runsRefreshSequence;
     const runs = await backend.listRuns(100);
-    set({ runs });
+    if (request === runsRefreshSequence) set({ runs });
   },
 
   refreshTools: async () => {
@@ -304,85 +342,106 @@ export const useAppStore = create<AppState>()((set, get) => ({
   updateActiveWorkflow: (workflow) => {
     if (get().overlayRunId !== null) return;
     const { workflows, activeWorkflowId } = get();
+    if (
+      deletingWorkflows.has(workflow.id) ||
+      workflow.id !== activeWorkflowId ||
+      !workflows.some((w) => w.id === workflow.id)
+    )
+      return;
     set({
       workflows: workflows.map((w) =>
-        w.id === activeWorkflowId
-          ? { ...w, name: workflow.name, definition: workflow }
-          : w,
+        w.id === workflow.id ? { ...w, name: workflow.name, definition: workflow } : w,
       ),
+      workflowSaveStates: {
+        ...get().workflowSaveStates,
+        [workflow.id]: { status: 'saving', error: null },
+      },
     });
+    clearTimeout(workflowSaveTimers.get(workflow.id));
+    workflowSaveTimers.set(
+      workflow.id,
+      setTimeout(() => {
+        workflowSaveTimers.delete(workflow.id);
+        void persistWorkflow(workflow.id).catch(() => {});
+      }, 350),
+    );
   },
 
   saveActiveWorkflow: async (definition) => {
-    if (get().overlayRunId !== null) return;
-    const { workflows, activeWorkflowId } = get();
-    const active = workflows.find((w) => w.id === activeWorkflowId);
-    if (active === undefined) return;
-    const backend = getBackend();
-    const workflow = definition ?? active.definition;
-    const navigation = navigationSequence;
-    const pending = workflowSaves.get(workflow.id);
-    const token = Symbol();
-    // Keep writes in request order so an older autosave cannot finish last.
-    const saving: Promise<StoredWorkflow> = (async () => {
-      await pending?.promise.catch(() => {});
-      const previous = await backend.getWorkflow(workflow.id);
-      const before = previous ? structuredClone(previous.definition) : null;
-      const [stored, validation] = await Promise.all([
-        backend.saveWorkflow(workflow),
-        backend.validateWorkflow(workflow),
-      ]);
-      const current = get();
-      const unchanged =
-        current.workflows.find((w) => w.id === active.id)?.definition ===
-        active.definition;
-      if (unchanged && workflowSaves.get(workflow.id)?.token === token) {
-        set({
-          workflows: current.workflows.map((w) => (w.id === stored.id ? stored : w)),
-          ...(navigation === navigationSequence &&
-          current.activeWorkflowId === active.id &&
-          current.overlayRunId === null
-            ? { validation }
-            : {}),
-        });
-      }
-      if (before && stored.definition.defaults?.repoDir?.trim()) {
-        try {
-          const context = await backend.getProjectMemoryContext(
-            stored.definition.defaults.repoDir,
-          );
-          const observations = commandEdits(before, stored.definition, context.scope);
-          if (observations.length) {
-            await backend.observeEdits(observations);
-            await get().refreshLibrary();
-          }
-        } catch (error: unknown) {
-          set({
-            error: 'Workflow saved. Memory observation failed: ' + errorMessage(error),
-          });
-        }
-      }
-      return stored;
-    })();
-    workflowSaves.set(workflow.id, { promise: saving, token });
+    const { activeWorkflowId, overlayRunId } = get();
+    if (overlayRunId !== null || activeWorkflowId === null) return;
+    if (definition !== undefined) {
+      if (definition.id !== activeWorkflowId) return;
+      get().updateActiveWorkflow(definition);
+    }
+    return persistWorkflow(activeWorkflowId);
+  },
+
+  deleteWorkflow: async (id) => {
+    if (deletingWorkflows.has(id)) return false;
+    deletingWorkflows.add(id);
+    clearTimeout(workflowSaveTimers.get(id));
+    workflowSaveTimers.delete(id);
     try {
-      return await saving;
+      // A write already running cannot be cancelled. Wait for the entire queue
+      // before deleting, and block fresh writes while the deletion is pending.
+      await workflowSaves.get(id)?.promise.catch(() => {});
+      const deleted = await getBackend().deleteWorkflow(id);
+      if (!deleted)
+        throw new Error(
+          'Workflow could not be deleted. Check whether it has an active run.',
+        );
+      workflowRefreshSequence++;
+      const current = get();
+      const workflows = current.workflows.filter((w) => w.id !== id);
+      const workflowSaveStates = Object.fromEntries(
+        Object.entries(current.workflowSaveStates).filter(
+          ([workflowId]) => workflowId !== id,
+        ),
+      );
+      set({
+        workflows,
+        workflowSaveStates,
+        ...(current.activeWorkflowId === id
+          ? {
+              activeWorkflowId: workflows[0]?.id ?? null,
+              selectedNodeId: null,
+              selectedEdgeId: null,
+              validation: [],
+            }
+          : {}),
+      });
+      return true;
+    } catch (err: unknown) {
+      set({
+        workflowSaveStates: {
+          ...get().workflowSaveStates,
+          [id]: {
+            status: 'error',
+            error: 'Deletion failed; draft retained. ' + errorMessage(err),
+          },
+        },
+      });
+      throw err;
     } finally {
-      if (workflowSaves.get(workflow.id)?.token === token)
-        workflowSaves.delete(workflow.id);
+      deletingWorkflows.delete(id);
     }
   },
+
+  retryWorkflowSave: async (id) => persistWorkflow(id),
 
   setValidation: (validation) => {
     set({ validation });
   },
 
   selectRun: async (id) => {
+    const request = ++runSelectionSequence;
     set({ activeRunId: id });
     if (id === null) return;
     const backend = getBackend();
     const results = await backend.getRunResults(id);
-    set({ runResults: { ...get().runResults, [id]: results } });
+    if (request === runSelectionSequence && get().activeRunId === id)
+      set({ runResults: { ...get().runResults, [id]: results } });
   },
 
   setError: (error) => {
@@ -392,4 +451,82 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
 export function selectActiveWorkflow(state: AppState): StoredWorkflow | null {
   return state.workflows.find((w) => w.id === state.activeWorkflowId) ?? null;
+}
+
+/** All editor mutations share this queue, including saves after changing views. */
+async function persistWorkflow(id: string): Promise<StoredWorkflow | undefined> {
+  if (deletingWorkflows.has(id)) return;
+  clearTimeout(workflowSaveTimers.get(id));
+  workflowSaveTimers.delete(id);
+  const active = useAppStore.getState().workflows.find((w) => w.id === id);
+  if (active === undefined) return;
+  const workflow = active.definition;
+  const pending = workflowSaves.get(id);
+  if (pending?.definition === workflow) return pending.promise;
+  const backend = getBackend();
+  const navigation = navigationSequence;
+  const token = Symbol();
+  const status = (state: WorkflowSaveState): void => {
+    useAppStore.setState((current) => ({
+      workflowSaveStates: { ...current.workflowSaveStates, [id]: state },
+    }));
+  };
+  status({ status: 'saving', error: null });
+  const saving: Promise<StoredWorkflow> = (async () => {
+    await pending?.promise.catch(() => {});
+    const previous = await backend.getWorkflow(id);
+    const before = previous ? structuredClone(previous.definition) : null;
+    const stored = await backend.saveWorkflow(workflow);
+    const validation = await backend.validateWorkflow(workflow).catch((err: unknown) => {
+      useAppStore.setState({
+        error: 'Workflow saved. Validation failed: ' + errorMessage(err),
+      });
+      return null;
+    });
+    const current = useAppStore.getState();
+    const unchanged = current.workflows.find((w) => w.id === id)?.definition === workflow;
+    if (unchanged && workflowSaves.get(id)?.token === token) {
+      useAppStore.setState({
+        workflows: current.workflows.map((w) => (w.id === stored.id ? stored : w)),
+        ...(validation !== null &&
+        navigation === navigationSequence &&
+        current.activeWorkflowId === id &&
+        current.overlayRunId === null
+          ? { validation }
+          : {}),
+      });
+      status({ status: 'saved', error: null });
+    }
+    if (before && stored.definition.defaults?.repoDir?.trim()) {
+      try {
+        const context = await backend.getProjectMemoryContext(
+          stored.definition.defaults.repoDir,
+        );
+        const observations = commandEdits(before, stored.definition, context.scope);
+        if (observations.length) {
+          await backend.observeEdits(observations);
+          await useAppStore.getState().refreshLibrary();
+        }
+      } catch (err: unknown) {
+        useAppStore.setState({
+          error: 'Workflow saved. Memory observation failed: ' + errorMessage(err),
+        });
+      }
+    }
+    return stored;
+  })();
+  workflowSaves.set(id, { promise: saving, token, definition: workflow });
+  try {
+    return await saving;
+  } catch (err: unknown) {
+    if (
+      workflowSaves.get(id)?.token === token &&
+      useAppStore.getState().workflows.find((w) => w.id === id)?.definition === workflow
+    ) {
+      status({ status: 'error', error: errorMessage(err) });
+    }
+    throw err;
+  } finally {
+    if (workflowSaves.get(id)?.token === token) workflowSaves.delete(id);
+  }
 }

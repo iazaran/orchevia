@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
@@ -10,10 +10,14 @@ const originalShowRunOverlay = useAppStore.getState().showRunOverlay;
 afterEach(() => {
   useAppStore.setState({ showRunOverlay: originalShowRunOverlay });
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 it('opens finished runs on the canvas through exact snapshot navigation', async () => {
-  __setMockBackendForTests();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
   const showRunOverlay = vi.fn().mockResolvedValue(undefined);
   useAppStore.setState({
     runs: [
@@ -38,6 +42,12 @@ it('opens finished runs on the canvas through exact snapshot navigation', async 
 
 it('disables duplicate decisions and displays approval failures', async () => {
   const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(useAppStore.getState().runResults[id] ?? []),
+  );
   let rejectRequest: (reason: Error) => void = () => {};
   const approve = vi.spyOn(backend, 'approveRun').mockImplementation(
     () =>
@@ -120,6 +130,7 @@ it('promotes the successful snapshot command with run evidence only', async () =
     stderr: '',
     startedAt: run.startedAt,
   };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
   vi.spyOn(backend, 'getRun').mockResolvedValue(run);
   vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
   vi.spyOn(backend, 'getRunResults').mockResolvedValue([result]);
@@ -142,4 +153,97 @@ it('promotes the successful snapshot command with run evidence only', async () =
   expect(context.text).not.toContain('private log');
   act(() => useAppStore.setState({ runs: [{ ...run, status: 'failed' }] }));
   expect(screen.queryByRole('button', { name: 'Save command to playbook' })).toBeNull();
+});
+
+it('refreshes on every Runs entry and preserves the selected run with current results', async () => {
+  const backend = __setMockBackendForTests();
+  const oldRun = {
+    id: 'selected',
+    workflowId: 'wf',
+    status: 'succeeded' as const,
+    startedAt: '2026-10-05T13:00:00Z',
+  };
+  const nextRun = { ...oldRun, id: 'new-run' };
+  const list = vi.spyOn(backend, 'listRuns').mockResolvedValue([oldRun]);
+  const recorded = vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  useAppStore.setState({
+    runs: [],
+    activeRunId: oldRun.id,
+    runResults: {},
+    workflows: [],
+    profiles: [],
+  });
+  const first = render(<RunsView />);
+  await waitFor(() => expect(useAppStore.getState().runs).toEqual([oldRun]));
+  await waitFor(() => expect(recorded).toHaveBeenCalledWith(oldRun.id));
+  first.unmount();
+  list.mockResolvedValue([nextRun, oldRun]);
+  render(<RunsView />);
+  await waitFor(() => expect(useAppStore.getState().runs).toEqual([nextRun, oldRun]));
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(useAppStore.getState().activeRunId).toBe(oldRun.id);
+});
+
+it('reports a failed entry refresh without discarding cached runs', async () => {
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'listRuns').mockRejectedValue(new Error('Cannot load current runs'));
+  const cached = {
+    id: 'cached',
+    workflowId: 'wf',
+    status: 'succeeded' as const,
+    startedAt: '2026-10-05T13:00:00Z',
+  };
+  useAppStore.setState({
+    runs: [cached],
+    activeRunId: null,
+    runResults: {},
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Cannot load current runs');
+  expect(useAppStore.getState().runs).toEqual([cached]);
+});
+
+it('keeps one polling request in flight while an entry refresh is pending', async () => {
+  vi.useFakeTimers();
+  const backend = __setMockBackendForTests();
+  const running = {
+    id: 'live',
+    workflowId: 'wf',
+    status: 'running' as const,
+    startedAt: '2026-10-05T13:00:00Z',
+  };
+  let finish: (runs: (typeof running)[]) => void = () => {};
+  const list = vi.spyOn(backend, 'listRuns').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  useAppStore.setState({
+    runs: [running],
+    activeRunId: null,
+    runResults: {},
+    workflows: [],
+    profiles: [],
+  });
+  const view = render(<RunsView />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(4500);
+  });
+  expect(list).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    finish([running]);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1500);
+  });
+  expect(list).toHaveBeenCalledTimes(2);
+  view.unmount();
+  await act(async () => {
+    finish([running]);
+    await Promise.resolve();
+  });
 });

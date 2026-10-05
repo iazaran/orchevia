@@ -191,25 +191,72 @@ pub fn import_developer_template(
     json: &str,
     profiles: &[crate::agents::AgentProfile],
 ) -> Result<Template, String> {
-    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    if value
-        .get("workflow")
-        .and_then(|w| w.get("schemaVersion"))
-        .is_some()
-    {
-        return import_template(json);
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("Invalid template or workflow JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("Template or workflow JSON must be an object.".into());
     }
-    let workflow = value.get("workflow").ok_or("Template needs a workflow.")?;
-    let workflow = crate::workflow_document::import_document(
-        &workflow.to_string(),
+    let envelope = value.get("workflow").is_some();
+    let document = value.get("workflow").unwrap_or(&value);
+    let mut workflow = crate::workflow_document::import_document(
+        &document.to_string(),
         None,
         &HashMap::new(),
         profiles,
         &HashMap::new(),
         "template-workflow",
     )?;
-    value["workflow"] = serde_json::to_value(workflow).map_err(|e| e.to_string())?;
-    import_template(&value.to_string())
+    for node in &mut workflow.nodes {
+        if node.kind != NodeKind::Agent {
+            continue;
+        }
+        let Some(id) = node.config.agent_profile_id.as_ref() else {
+            continue;
+        };
+        if profiles.iter().any(|profile| &profile.id == id) {
+            continue;
+        }
+        if node
+            .config
+            .agent_role
+            .as_deref()
+            .is_some_and(|role| !role.trim().is_empty())
+        {
+            node.config.agent_profile_id = None;
+        } else {
+            return Err(format!("Agent Profile '{id}' is missing. Set a portable agentRole or configure the profile in Agents."));
+        }
+    }
+    if workflow.nodes.is_empty() {
+        return Err("Template workflow has no nodes.".into());
+    }
+    let blocking: Vec<String> = validate_workflow(&workflow)
+        .into_iter()
+        .filter(|issue| {
+            issue.severity == crate::workflow::ValidationSeverity::Error
+                && !matches!(
+                    issue.code.as_str(),
+                    "git-dir-required" | "ticket-server-required" | "mcp-server-required"
+                )
+        })
+        .map(|issue| issue.message)
+        .collect();
+    if !blocking.is_empty() {
+        return Err(blocking.join("; "));
+    }
+    let mut metadata = if envelope {
+        value
+    } else {
+        serde_json::json!({})
+    };
+    if metadata.get("id").is_none() {
+        metadata["id"] = serde_json::json!(format!("user-{}", uuid::Uuid::new_v4().simple()));
+    }
+    if metadata.get("name").is_none() {
+        metadata["name"] = serde_json::json!(&workflow.name);
+    }
+    metadata["workflow"] = serde_json::to_value(workflow).map_err(|e| e.to_string())?;
+    import_template(&metadata.to_string())
 }
 
 // -- Built-ins ---------------------------------------------------------------
@@ -1038,6 +1085,73 @@ mod tests {
                 template
             );
         }
+    }
+
+    #[test]
+    fn direct_workflow_import_creates_portable_template() {
+        let original = builtin_templates().remove(0);
+        let simple = crate::workflow_document::export_document(&original.workflow, &[]).unwrap();
+        for json in [simple.json, original.workflow.to_json().unwrap()] {
+            let imported = import_developer_template(&json, &[]).unwrap();
+            assert_eq!(imported.name, original.workflow.name);
+            assert_eq!(imported.category, "general");
+            assert_eq!(imported.workflow.nodes.len(), original.workflow.nodes.len());
+            for (a, b) in imported.workflow.nodes.iter().zip(&original.workflow.nodes) {
+                assert_eq!(a.config, b.config);
+            }
+            assert!(export_developer_template(&imported, &[]).is_ok());
+        }
+    }
+
+    #[test]
+    fn direct_template_import_rejects_malformed_and_semantically_broken_workflows() {
+        for json in [
+            "null",
+            "[]",
+            "{}",
+            r#"{"version":1,"name":"Broken","nodes":[],"edges":[]}"#,
+        ] {
+            assert!(import_developer_template(json, &[]).is_err());
+        }
+        let mut template = builtin_templates().remove(0);
+        template.workflow.edges[0].target = "missing".into();
+        assert!(
+            import_developer_template(&serde_json::to_string(&template).unwrap(), &[]).is_err()
+        );
+    }
+
+    #[test]
+    fn direct_template_import_requires_portable_agent_bindings() {
+        let mut template = builtin_templates().remove(0);
+        let reviewer = template
+            .workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == NodeKind::Agent)
+            .unwrap();
+        reviewer.config.agent_profile_id = Some("foreign-profile".into());
+        reviewer.config.agent_role = None;
+        let error =
+            import_developer_template(&template.workflow.to_json().unwrap(), &[]).unwrap_err();
+        assert!(error.contains("missing"));
+        let reviewer = template
+            .workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == NodeKind::Agent)
+            .unwrap();
+        reviewer.config.agent_role = Some("deepReview".into());
+        let imported =
+            import_developer_template(&template.workflow.to_json().unwrap(), &[]).unwrap();
+        let reviewer = imported
+            .workflow
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Agent)
+            .unwrap();
+        assert_eq!(reviewer.config.agent_role.as_deref(), Some("deepReview"));
+        assert!(reviewer.config.agent_profile_id.is_none());
+        assert!(export_developer_template(&imported, &[]).is_ok());
     }
 
     #[test]
