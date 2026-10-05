@@ -695,6 +695,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "scheduler.intervalSecs",
     "ui.theme",
     "onboarding.completed",
+    "workflow.assistanceProfileId",
 ];
 
 /// User-taught model names per adapter ("claude" | "codex" | "custom").
@@ -762,15 +763,23 @@ pub fn save_custom_models(
 
 #[tauri::command]
 pub fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, String> {
-    if !ALLOWED_SETTINGS.contains(&key.as_str()) {
+    get_setting_for_db(&state.db, &key)
+}
+
+fn get_setting_for_db(db: &SqliteDb, key: &str) -> Result<Option<String>, String> {
+    if !ALLOWED_SETTINGS.contains(&key) {
         return Err(format!("Setting '{key}' is not user-configurable."));
     }
-    state.db.get_setting(&key).map_err(|e| e.to_string())
+    db.get_setting(key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
-    if !ALLOWED_SETTINGS.contains(&key.as_str()) {
+    set_setting_for_db(&state.db, &key, &value)
+}
+
+fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), String> {
+    if !ALLOWED_SETTINGS.contains(&key) {
         return Err(format!("Setting '{key}' is not user-configurable."));
     }
     if key == "scheduler.intervalSecs" {
@@ -784,10 +793,7 @@ pub fn set_setting(state: State<AppState>, key: String, value: String) -> Result
     if value.len() > 200 {
         return Err("Setting value too long.".to_string());
     }
-    state
-        .db
-        .set_setting(&key, &value)
-        .map_err(|e| e.to_string())
+    db.set_setting(key, value).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1725,6 +1731,25 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn assistance_setting_round_trips_and_unknown_keys_are_rejected() {
+        let db = orchevia_core::db::SqliteDb::open_in_memory().expect("db");
+        assert_eq!(
+            super::get_setting_for_db(&db, "workflow.assistanceProfileId").unwrap(),
+            None
+        );
+        super::set_setting_for_db(&db, "workflow.assistanceProfileId", "assistant").unwrap();
+        assert_eq!(
+            super::get_setting_for_db(&db, "workflow.assistanceProfileId")
+                .unwrap()
+                .as_deref(),
+            Some("assistant")
+        );
+        assert!(super::get_setting_for_db(&db, "private.setting").is_err());
+        assert!(super::set_setting_for_db(&db, "private.setting", "value").is_err());
+        assert_eq!(db.get_setting("private.setting").unwrap(), None);
+    }
+
     use super::{custom_models_key, parse_custom_models, role_map_for_db, AppState};
 
     #[cfg(unix)]

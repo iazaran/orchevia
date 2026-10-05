@@ -9,7 +9,7 @@ import {
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 import { Modal } from './Modal';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 
 interface InstallHint {
   id: string;
@@ -88,7 +88,7 @@ export function OnboardingWizard({
   const profiles = useAppStore((s) => s.profiles);
   const refreshAll = useAppStore((s) => s.refreshAll);
   const [step, setStep] = useState(0);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [busy, setBusy] = useState(false);
   const [assistanceProfileId, setAssistanceProfileId] = useState('');
   const [assistanceAdapter, setAssistanceAdapter] = useState<AdapterKind>('claude');
@@ -104,12 +104,12 @@ export function OnboardingWizard({
           setAssistanceProfileId(id);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setMessage(errorMessage(err));
+        if (!cancelled) setMessage(errorMessage(err), 'error');
       });
     return () => {
       cancelled = true;
     };
-  }, [profiles]);
+  }, [profiles, setMessage]);
 
   const existingAssistant =
     assistanceProfileId !== ''
@@ -135,7 +135,7 @@ export function OnboardingWizard({
         await getBackend().setSetting('onboarding.completed', '1');
         onClose();
       } catch (err) {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       }
     })();
   };
@@ -168,7 +168,7 @@ export function OnboardingWizard({
             : `Created ${missing.map((m) => m.name).join(', ')}. Tune model/effort in Agents anytime.`,
         );
       } catch (err) {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       } finally {
         setBusy(false);
       }
@@ -427,7 +427,15 @@ export function OnboardingWizard({
           </p>
         )}
 
-        {message !== null && <Notice style={{ marginTop: 12 }}>{message}</Notice>}
+        {message !== null && (
+          <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
+            onDismiss={() => setMessage(null)}
+          >
+            {message}
+          </Notice>
+        )}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
           <button

@@ -436,3 +436,39 @@ it('mock rejects blank required project commands before creating a run', async (
   );
   expect(await backend.listRuns()).toEqual([]);
 });
+
+it('mirrors desktop settings access and validation', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  expect(await backend.getSetting('workflow.assistanceProfileId')).toBeNull();
+  await backend.setSetting('workflow.assistanceProfileId', 'assistant');
+  expect(await backend.getSetting('workflow.assistanceProfileId')).toBe('assistant');
+  expect(
+    await __setMockBackendForTests().getSetting('workflow.assistanceProfileId'),
+  ).toBe('assistant');
+  await expect(backend.getSetting('private.setting')).rejects.toThrow(
+    'not user-configurable',
+  );
+  await expect(backend.setSetting('private.setting', 'x')).rejects.toThrow(
+    'not user-configurable',
+  );
+  await expect(backend.setSetting('scheduler.intervalSecs', '2')).rejects.toThrow(
+    '30–3600',
+  );
+});
+
+it('resolves same-role profiles in native binary name order', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveAgentProfile({
+    ...createDefaultProfile('claude'),
+    name: 'a reviewer',
+    role: 'fastReview',
+  });
+  const nativeFirst = await backend.saveAgentProfile({
+    ...createDefaultProfile('codex'),
+    name: 'Z reviewer',
+    role: 'fastReview',
+  });
+  expect((await backend.roleMapDefault()).fastReview).toBe(nativeFirst.id);
+});

@@ -1663,8 +1663,22 @@ details[open] > .gen-summary::after {
 
 /* Leave the shared dismiss control its own space on automation cards. */
 .automation-card .profile-head {
-  padding-right: 28px;
-  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.automation-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.automation-head-actions .status-pill {
+  margin-top: 0;
+}
+
+.automation-head-actions .card-dismiss {
+  position: static;
 }
 
 /* Editor actions retain their right edge when the header wraps. */
@@ -1673,22 +1687,51 @@ details[open] > .gen-summary::after {
   flex: 1 1 auto;
 }
 
-.workflow-save-status {
-  max-width: 230px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-2);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.workflow-save-status.save-error {
-  color: var(--danger);
-}
-
 @media (max-width: 1000px) {
   .workflow-topbar .topbar-actions {
     flex-basis: 100%;
     margin-left: 0;
+  }
+}
+
+/* Feedback floats above every application layer without moving view content. */
+.notice-stack {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.notice-stack .floating-notice {
+  flex-shrink: 0;
+  margin: 0;
+  max-width: 100%;
+  max-height: min(320px, calc(100vh - 32px));
+  overflow: auto;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+  animation: notice-enter 200ms ease-out;
+  transition: opacity 200ms ease-out;
+}
+
+.notice-stack .notice-exiting {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes notice-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }

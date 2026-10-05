@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { getBackend } from '../lib/backend';
-import { referencedVariables } from '../lib/agents';
+import { ADAPTER_LABELS, referencedVariables } from '../lib/agents';
 import { parseCondition, renderCondition, type ConditionOp } from '../lib/conditions';
 import { NODE_KIND_META, setWorkflowDefaults, type Workflow } from '../lib/workflow';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 
@@ -562,7 +562,7 @@ export function ConditionEditor({
   nodeId: string;
 }): React.JSX.Element {
   const updateActiveWorkflow = useAppStore((s) => s.updateActiveWorkflow);
-  const [textError, setTextError] = useState<string | null>(null);
+  const [textError, setTextError, , textErrorEvent] = useNoticeMessage('error');
   const [textDraft, setTextDraft] = useState<{
     condition: string;
     text: string;
@@ -710,7 +710,11 @@ export function ConditionEditor({
             }
           }}
         />
-        {textError !== null && <Notice variant="error">{textError}</Notice>}
+        {textError !== null && (
+          <Notice variant="error" eventId={textErrorEvent}>
+            {textError}
+          </Notice>
+        )}
         <span className="field-hint">
           Outgoing edges need <code>true</code> and <code>false</code> labels — click an
           edge on the canvas to set them.
@@ -820,7 +824,8 @@ export function NodeInspector(): React.JSX.Element | null {
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
   const [detectingBranch, setDetectingBranch] = useState(false);
-  const [branchDetectMsg, setBranchDetectMsg] = useState<string | null>(null);
+  const [branchDetectMsg, setBranchDetectMsg, , branchDetectMsgEvent] =
+    useNoticeMessage('warn');
 
   const detectBranch = (repoDir: string): void => {
     if (workflow === null) return;
@@ -943,8 +948,8 @@ export function NodeInspector(): React.JSX.Element | null {
         </div>
         <p className="field-hint">
           Select a node on the canvas to edit its configuration. Changes save
-          automatically as you edit, including graph changes. The toolbar shows saving
-          progress and offers a retry if saving fails.
+          automatically as you edit, including graph changes. Save confirmations appear in
+          the bottom-left message stack. If saving fails, use Retry save in the toolbar.
         </p>
         <div className="field">
           <span className="field-label">Repository defaults</span>
@@ -965,9 +970,9 @@ export function NodeInspector(): React.JSX.Element | null {
           />
 
           {branchDetectMsg !== null && (
-            <p className="field-hint" style={{ marginTop: 4 }}>
+            <Notice variant="warn" eventId={branchDetectMsgEvent}>
               {branchDetectMsg}
-            </p>
+            </Notice>
           )}
           <BranchPicker
             id="wf-default-branch"
@@ -1249,10 +1254,24 @@ export function NodeInspector(): React.JSX.Element | null {
               className="input"
               value={node.config.agentProfileId ?? ''}
               onChange={(e) => {
-                patch({ ...node.config, agentProfileId: e.target.value }, node.label);
+                const config = { ...node.config };
+                delete config.agentRole;
+                if (e.target.value) config.agentProfileId = e.target.value;
+                else delete config.agentProfileId;
+                patch(config, node.label);
               }}
             >
-              <option value="">— Select a profile —</option>
+              <option value="">
+                {node.config.agentRole
+                  ? `— Unresolved role: ${node.config.agentRole} —`
+                  : '— Select a profile —'}
+              </option>
+              {node.config.agentProfileId &&
+                !profiles.some((p) => p.id === node.config.agentProfileId) && (
+                  <option value={node.config.agentProfileId}>
+                    Missing profile: {node.config.agentProfileId}
+                  </option>
+                )}
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} ({p.adapter})
@@ -1260,9 +1279,18 @@ export function NodeInspector(): React.JSX.Element | null {
               ))}
             </select>
             <span className="field-hint">
-              {profiles.length === 0
-                ? 'No profiles yet — create one in the Agents tab.'
-                : 'The profile decides which local CLI, model, and working directory are used.'}
+              {(() => {
+                const profile = profiles.find((p) => p.id === node.config.agentProfileId);
+                if (profile)
+                  return `Uses ${profile.name} · ${ADAPTER_LABELS[profile.adapter]} · model: ${profile.model || 'CLI default'} · effort: ${profile.effort || 'CLI default'}.`;
+                if (node.config.agentProfileId)
+                  return 'The selected profile is missing. Choose an existing profile before running.';
+                if (node.config.agentRole)
+                  return `Role '${node.config.agentRole}' is unresolved. Select an Agent Profile before running; no default is active.`;
+                return profiles.length === 0
+                  ? 'No profile selected — create one in Agents before running.'
+                  : 'No profile selected. Choose an Agent Profile before running; no default is active.';
+              })()}
             </span>
           </div>
           <div className="field">
@@ -1376,7 +1404,10 @@ export function NodeInspector(): React.JSX.Element | null {
                     setAgentPreview(p.preview);
                   })
                   .catch((err: unknown) => {
-                    setAgentPreview(errorMessage(err));
+                    setAgentPreview(null);
+                    useAppStore
+                      .getState()
+                      .pushUiNotice({ content: errorMessage(err), variant: 'error' });
                   });
               }}
             >
@@ -1394,7 +1425,7 @@ export function NodeInspector(): React.JSX.Element | null {
               </>
             )}
           </div>
-          <Notice>
+          <Notice inline>
             This node runs a third-party AI CLI that may send prompt and repository
             content to its own provider. Nothing runs until you press ▶ Run.
           </Notice>

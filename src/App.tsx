@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ViewErrorBoundary } from './components/ErrorBoundary';
-import { Notice } from './components/Notice';
+import { Notice, NoticeHost } from './components/Notice';
 import { AgentsView } from './components/AgentsView';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { InboxView } from './components/InboxView';
@@ -70,6 +70,13 @@ export function App(): React.JSX.Element {
       setError(errorMessage(err));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void useAppStore.getState().refreshNotifications();
+    }, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   return (
@@ -155,18 +162,17 @@ export function App(): React.JSX.Element {
       </nav>
       <main className="main" id="main-content" tabIndex={-1} aria-busy={loading}>
         {error !== null && (
-          <div style={{ padding: '12px 20px 0' }}>
-            <Notice
-              variant="error"
-              onDismiss={() => {
-                setError(null);
-              }}
-              dismissLabel="Dismiss error"
-            >
-              {error}
-            </Notice>
-          </div>
+          <Notice
+            variant="error"
+            onDismiss={() => {
+              setError(null);
+            }}
+            dismissLabel="Dismiss error"
+          >
+            {error}
+          </Notice>
         )}
+        <NoticeHost />
         <ConfirmHost />
         {wizardOpen && (
           <OnboardingWizard

@@ -6,6 +6,21 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Notifications, warnings, errors and workflow save feedback stack at the bottom-left
+  above dialogs without shifting content. Information fades after five seconds;
+  warnings and errors stay until dismissed. New Inbox events use the same feedback.
+- AI Agent inspectors show the configured profile, CLI, model and effort, and explain
+  missing profiles or unresolved imported roles. Using a template reports its selected
+  profiles; manually selecting a profile clears the unresolved role.
+
+### Fixed
+
+- Setup wizard and workflow assistance can read and save the default assistance
+  profile in the desktop app. Browser settings now mirror desktop access/validation.
+- Watcher and schedule badges align vertically with their shared delete controls.
+
 ## [0.1.8] - 2026-10-05
 
 ### Added

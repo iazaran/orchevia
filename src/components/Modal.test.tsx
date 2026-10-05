@@ -9,7 +9,7 @@ describe('notice banner', () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();
     const { rerender } = render(
-      <Notice variant="error" onDismiss={onDismiss}>
+      <Notice inline variant="error" onDismiss={onDismiss}>
         <span>broken</span>
       </Notice>,
     );
@@ -20,7 +20,7 @@ describe('notice banner', () => {
     await user.click(screen.getByRole('button', { name: 'Dismiss message' }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
     rerender(
-      <Notice>
+      <Notice inline>
         <span>plain</span>
       </Notice>,
     );
@@ -93,4 +93,22 @@ describe('modal shell', () => {
     );
     expect(screen.queryByRole('button')).toBeNull();
   });
+});
+
+it('allows keyboard access to message dismiss buttons above a modal', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Modal label="Notification access">
+        <input aria-label="Name" />
+        <Notice variant="warn">Needs setup</Notice>
+      </Modal>
+      <button>Background action</button>
+    </>,
+  );
+  expect(screen.getByLabelText('Name')).toHaveFocus();
+  await user.tab();
+  expect(screen.getByRole('button', { name: 'Dismiss message' })).toHaveFocus();
+  await user.tab();
+  expect(screen.getByLabelText('Name')).toHaveFocus();
 });

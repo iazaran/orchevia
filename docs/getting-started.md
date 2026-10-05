@@ -109,3 +109,19 @@ Output stays in the local database and can contain sensitive data. Read
 Continue with [execution](./execution.md), [agents](./agents.md),
 [workflow JSON](./workflow-schema.md), [memory](./memory.md), or
 [development and releases](./development.md).
+
+## Messages and saving feedback
+
+Workflow and node edits save automatically. A successful save briefly shows
+**Saved** in the bottom-left message stack; the toolbar does not keep a permanent
+Saved label. A failed save shows an error and keeps the **Retry save** action.
+
+Notifications float above the canvas and dialogs without moving content. Ordinary
+information and success messages fade out after five seconds. Warnings and errors
+remain until you close them. Multiple messages stack, with long content capped and
+scrollable; reduced-motion settings disable fades. New Inbox events also appear
+in this stack. Dismissing a popup does not mark its Inbox record read, and existing
+Inbox history is not replayed as popups when the app opens.
+
+Structured workflow previews, historical run error details and reference help stay
+with their relevant content; action feedback and validation messages use the stack.

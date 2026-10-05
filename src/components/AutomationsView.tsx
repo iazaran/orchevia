@@ -21,7 +21,7 @@ import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
 
@@ -68,7 +68,7 @@ function oneHourFromNow(): string {
 function SchedulerInterval({
   onMessage,
 }: {
-  onMessage: (message: string | null) => void;
+  onMessage: (message: string | null, variant?: 'info' | 'warn' | 'error') => void;
 }): React.JSX.Element {
   const [value, setValue] = useState('60');
   const [loaded, setLoaded] = useState(false);
@@ -91,7 +91,7 @@ function SchedulerInterval({
         onMessage(`Scheduler checks every ${trimmed} s from now on.`);
       })
       .catch((err: unknown) => {
-        onMessage(errorMessage(err));
+        onMessage(errorMessage(err), 'error');
       });
   };
   return (
@@ -143,7 +143,7 @@ export function AutomationsView(): React.JSX.Element {
 
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
   const [editingWatcher, setEditingWatcher] = useState<Watcher | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [hintDismissed, setHintDismissed] = useState<boolean>(
     () => readLocal('orchevia.automationsHint.v1') === 'dismissed',
   );
@@ -179,7 +179,7 @@ export function AutomationsView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -196,7 +196,7 @@ export function AutomationsView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -221,7 +221,7 @@ export function AutomationsView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -230,7 +230,7 @@ export function AutomationsView(): React.JSX.Element {
       .setSetting('background.mode', on ? '1' : '0')
       .then(() => refreshAutomations())
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -268,6 +268,8 @@ export function AutomationsView(): React.JSX.Element {
       <div className="view">
         {message !== null && (
           <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
             style={{ marginBottom: 12 }}
             onDismiss={() => {
               setMessage(null);
@@ -277,7 +279,7 @@ export function AutomationsView(): React.JSX.Element {
           </Notice>
         )}
         {!hintDismissed && (
-          <Notice style={{ marginBottom: 16 }} onDismiss={dismissHint}>
+          <Notice inline style={{ marginBottom: 16 }} onDismiss={dismissHint}>
             <span>
               Orchevia must be running for schedules and watchers to fire (background mode
               keeps it in the tray when windows close). New automations start{' '}
@@ -352,27 +354,6 @@ export function AutomationsView(): React.JSX.Element {
               className="tool-card profile-card has-dismiss automation-card"
               style={{ position: 'relative' }}
             >
-              <CloseButton
-                variant="card"
-                label={`Delete schedule '${s.name}'`}
-                title={`Delete schedule '${s.name}'`}
-                onClose={() => {
-                  void confirmDialog({
-                    title: `Delete schedule '${s.name}'?`,
-                    message: 'The workflow is kept; only this schedule is removed.',
-                    confirmLabel: 'Delete',
-                    danger: true,
-                  }).then((ok) => {
-                    if (!ok) return;
-                    return getBackend()
-                      .deleteSchedule(s.id)
-                      .then(() => refreshAutomations())
-                      .catch((err: unknown) => {
-                        setMessage(errorMessage(err));
-                      });
-                  });
-                }}
-              />
               <div className="profile-head">
                 <div style={{ minWidth: 0 }}>
                   <h3 style={{ margin: 0 }}>{s.name}</h3>
@@ -380,11 +361,34 @@ export function AutomationsView(): React.JSX.Element {
                     {workflowName(workflows, s.workflowId)}
                   </div>
                 </div>
-                <span
-                  className={`status-pill ${s.enabled ? 'status-succeeded' : 'status-paused'}`}
-                >
-                  {s.enabled ? 'Enabled' : 'Disabled'}
-                </span>
+                <div className="automation-head-actions">
+                  <span
+                    className={`status-pill ${s.enabled ? 'status-succeeded' : 'status-paused'}`}
+                  >
+                    {s.enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                  <CloseButton
+                    variant="card"
+                    label={`Delete schedule '${s.name}'`}
+                    title={`Delete schedule '${s.name}'`}
+                    onClose={() => {
+                      void confirmDialog({
+                        title: `Delete schedule '${s.name}'?`,
+                        message: 'The workflow is kept; only this schedule is removed.',
+                        confirmLabel: 'Delete',
+                        danger: true,
+                      }).then((ok) => {
+                        if (!ok) return;
+                        return getBackend()
+                          .deleteSchedule(s.id)
+                          .then(() => refreshAutomations())
+                          .catch((err: unknown) => {
+                            setMessage(errorMessage(err), 'error');
+                          });
+                      });
+                    }}
+                  />
+                </div>
               </div>
               {s.trusted && (
                 <div>
@@ -461,27 +465,6 @@ export function AutomationsView(): React.JSX.Element {
               className="tool-card profile-card has-dismiss automation-card"
               style={{ position: 'relative' }}
             >
-              <CloseButton
-                variant="card"
-                label={`Delete watcher '${w.name}'`}
-                title={`Delete watcher '${w.name}'`}
-                onClose={() => {
-                  void confirmDialog({
-                    title: `Delete watcher '${w.name}'?`,
-                    message: 'The workflow is kept; only this watcher is removed.',
-                    confirmLabel: 'Delete',
-                    danger: true,
-                  }).then((ok) => {
-                    if (!ok) return;
-                    return getBackend()
-                      .deleteWatcher(w.id)
-                      .then(() => refreshAutomations())
-                      .catch((err: unknown) => {
-                        setMessage(errorMessage(err));
-                      });
-                  });
-                }}
-              />
               <div className="profile-head">
                 <div style={{ minWidth: 0 }}>
                   <h3 style={{ margin: 0 }}>{w.name}</h3>
@@ -489,11 +472,34 @@ export function AutomationsView(): React.JSX.Element {
                     {workflowName(workflows, w.workflowId)}
                   </div>
                 </div>
-                <span
-                  className={`status-pill ${w.enabled ? 'status-succeeded' : 'status-paused'}`}
-                >
-                  {w.enabled ? 'Enabled' : 'Disabled'}
-                </span>
+                <div className="automation-head-actions">
+                  <span
+                    className={`status-pill ${w.enabled ? 'status-succeeded' : 'status-paused'}`}
+                  >
+                    {w.enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                  <CloseButton
+                    variant="card"
+                    label={`Delete watcher '${w.name}'`}
+                    title={`Delete watcher '${w.name}'`}
+                    onClose={() => {
+                      void confirmDialog({
+                        title: `Delete watcher '${w.name}'?`,
+                        message: 'The workflow is kept; only this watcher is removed.',
+                        confirmLabel: 'Delete',
+                        danger: true,
+                      }).then((ok) => {
+                        if (!ok) return;
+                        return getBackend()
+                          .deleteWatcher(w.id)
+                          .then(() => refreshAutomations())
+                          .catch((err: unknown) => {
+                            setMessage(errorMessage(err), 'error');
+                          });
+                      });
+                    }}
+                  />
+                </div>
               </div>
               <dl className="profile-facts">
                 <div>
@@ -553,7 +559,7 @@ export function AutomationsView(): React.JSX.Element {
         </div>
 
         {risks !== null && (
-          <Notice style={{ marginTop: 12 }}>
+          <Notice inline style={{ marginTop: 12 }}>
             <strong>Risk summary:</strong>{' '}
             {risks.risks.map((r) => RISK_LABELS[r]).join(' · ') || 'none'}
           </Notice>

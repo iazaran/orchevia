@@ -1,11 +1,12 @@
 import { useState } from 'react';
+import { ADAPTER_LABELS } from '../lib/agents';
 import { getBackend } from '../lib/backend';
 import type { WorkflowTemplate } from '../lib/generation';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
-import { Notice } from './Notice';
+import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
 
 export function TemplatesView(): React.JSX.Element {
@@ -16,7 +17,7 @@ export function TemplatesView(): React.JSX.Element {
   const selectWorkflow = useAppStore((s) => s.selectWorkflow);
   const setView = useAppStore((s) => s.setView);
 
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [setupNeeded, setSetupNeeded] = useState<{
     name: string;
     items: string[];
@@ -38,7 +39,29 @@ export function TemplatesView(): React.JSX.Element {
         if (preview.setupNeeded.length > 0) {
           setSetupNeeded({ name: template.name, items: preview.setupNeeded });
         }
-        return getBackend().saveWorkflow(preview.workflow);
+        const profiles = useAppStore.getState().profiles;
+        const chosen = [
+          ...new Set(
+            preview.workflow.nodes
+              .filter((n) => n.type === 'agent')
+              .map((n) => n.config.agentProfileId),
+          ),
+        ];
+        const details = chosen.map((id) => {
+          const profile = profiles.find((p) => p.id === id);
+          return profile
+            ? `${profile.name} (${ADAPTER_LABELS[profile.adapter]}, ${profile.model || 'CLI default'})`
+            : `Missing profile: ${id ?? 'none'}`;
+        });
+        return getBackend()
+          .saveWorkflow(preview.workflow)
+          .then((stored) => {
+            if (details.length)
+              useAppStore.getState().pushUiNotice({
+                content: `Template '${template.name}' uses Agent Profiles: ${details.join('; ')}.`,
+              });
+            return stored;
+          });
       })
       .then((stored) => {
         void refreshWorkflows().then(() => {
@@ -47,7 +70,7 @@ export function TemplatesView(): React.JSX.Element {
         });
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -59,13 +82,13 @@ export function TemplatesView(): React.JSX.Element {
         setIoModal({ mode: 'export', name: template.name, json });
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
   const doImport = (): void => {
     if (importText.trim() === '') {
-      setMessage('Paste workflow or template JSON first, then Import.');
+      setMessage('Paste workflow or template JSON first, then Import.', 'warn');
       return;
     }
     void getBackend()
@@ -77,7 +100,7 @@ export function TemplatesView(): React.JSX.Element {
         reload();
       })
       .catch((err: unknown) => {
-        setMessage(errorMessage(err));
+        setMessage(errorMessage(err), 'error');
       });
   };
 
@@ -93,7 +116,7 @@ export function TemplatesView(): React.JSX.Element {
         .deleteUserTemplate(id)
         .then(() => reload())
         .catch((err: unknown) => {
-          setMessage(errorMessage(err));
+          setMessage(errorMessage(err), 'error');
         });
     });
   };
@@ -171,6 +194,8 @@ export function TemplatesView(): React.JSX.Element {
       <div className="view">
         {message !== null && (
           <Notice
+            variant={messageVariant}
+            eventId={messageEvent}
             style={{ marginBottom: 12 }}
             onDismiss={() => {
               setMessage(null);
