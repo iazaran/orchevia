@@ -159,3 +159,20 @@ Simple and Advanced imports reject malformed typed values before saving. Legacy
 preserves placeholder whitespace and escaped tokens; only declared `inputRefs`
 and condition left-hand variables receive bare-reference remapping. Condition
 right-hand operands and ordinary MCP argument values remain literals.
+
+## Editor persistence and layout (v0.1.8)
+
+Workflow names, defaults, inputs, node configuration and graph changes autosave
+through one per-workflow queue after a short debounce. The header shows Saving,
+Saved, or a save error with Retry. Failed drafts remain in memory through
+navigation and refresh. Save controls remain on JSON import/edit and other
+explicit forms. Close/reload only after Saved; failed drafts are not durable
+until a retry succeeds. Deletion waits for queued saves so a late save cannot
+recreate a deleted workflow.
+
+Arrange supports vertical and horizontal dependency layers. It centers forks
+and joins, orders guarded loops from their entry, uses measured node bounds and
+packs disconnected islands separately. It changes positions only. The initial
+view and Arrange reserve room beneath the translucent toolbar; long graphs
+open their leading steps at a readable zoom, with Fit View and the minimap
+available for the whole graph.
