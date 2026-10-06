@@ -2,8 +2,83 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
 import { createEmptyWorkflow } from './workflow';
+import { builtinTemplates, instantiateTemplateLocal } from './templates';
 
 describe('mock backend (browser dev)', () => {
+  it('simulates grouped sessions across approval, rotates and bounds handoffs', async () => {
+    const backend = __setMockBackendForTests();
+    const profile = createDefaultProfile('claude');
+    await backend.saveAgentProfile(profile);
+    const workflow = createEmptyWorkflow('Context');
+    workflow.inputs = [{ name: 'item', required: true }];
+    const start = workflow.nodes[0]!;
+    const end = workflow.nodes[1]!;
+    workflow.nodes.splice(
+      1,
+      0,
+      ...['a', 'gate', 'b', 'c'].map((id) => ({
+        id,
+        type: id === 'gate' ? ('approval' as const) : ('agent' as const),
+        position: { x: 0, y: 0 },
+        config:
+          id === 'gate'
+            ? {}
+            : {
+                agentProfileId: profile.id,
+                prompt:
+                  id === 'b'
+                    ? 'Handle {{input.item}}; prior visits {{node.a.visits}}, severity {{node.a.severity}}'
+                    : 'Handle {{input.item}} P2',
+                sessionGroup: 'dev-{{input.item}}',
+                sessionMaxTurns: 2,
+                ...(id === 'b' ? { contextRefs: ['a'], contextMaxChars: 256 } : {}),
+              },
+      })),
+    );
+    const ids = [start.id, 'a', 'gate', 'b', 'c', end.id];
+    workflow.edges = ids
+      .slice(1)
+      .map((id, i) => ({ id: `e${String(i)}`, source: ids[i]!, target: id }));
+    await backend.saveWorkflow(workflow);
+    const { runId } = await backend.runWorkflow(workflow.id, { item: 'X' });
+    await vi.waitFor(
+      async () => expect((await backend.getRun(runId))?.status).toBe('paused'),
+      { timeout: 2000 },
+    );
+    await backend.approveRun(runId, true);
+    await vi.waitFor(
+      async () => expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+      { timeout: 3000 },
+    );
+    const rows = (await backend.getRunResults(runId)).filter((row) =>
+      ['a', 'b', 'c'].includes(row.nodeId),
+    );
+    const metadata = rows.map(
+      (row) =>
+        JSON.parse(row.structuredJson ?? '{}') as {
+          simulated: boolean;
+          agentSession: { id: string; turn: number; reused: boolean };
+          agentUsage?: unknown;
+        },
+    );
+    expect(metadata.map((m) => m.agentSession.reused)).toEqual([false, true, false]);
+    expect(metadata[0]?.agentSession.id).toBe(metadata[1]?.agentSession.id);
+    expect(metadata[2]?.agentSession.id).not.toBe(metadata[0]?.agentSession.id);
+    expect(metadata.every((m) => m.simulated && m.agentUsage === undefined)).toBe(true);
+    expect(rows[1]?.stdout).toContain('Workflow handoff excerpts');
+    expect(rows[1]?.stdout).toContain('Handle X');
+    expect(rows[1]?.stdout).toContain('prior visits 1, severity P2');
+    const custom = {
+      ...profile,
+      adapter: 'custom' as const,
+      executable: '/usr/bin/custom',
+    };
+    await backend.saveAgentProfile(custom);
+    await expect(backend.runWorkflow(workflow.id, { item: 'X' })).rejects.toThrow(
+      'Custom CLI',
+    );
+  });
+
   it('records unreachable skips once, including after approval replay', async () => {
     const backend = __setMockBackendForTests();
     const workflow = createEmptyWorkflow('Unreachable nodes');
@@ -471,4 +546,35 @@ it('resolves same-role profiles in native binary name order', async () => {
     role: 'fastReview',
   });
   expect((await backend.roleMapDefault()).fastReview).toBe(nativeFirst.id);
+});
+
+it('runs the built-in ticket implementation with simulated ticket aliases', async () => {
+  const backend = __setMockBackendForTests();
+  const profile = createDefaultProfile('claude');
+  await backend.saveAgentProfile(profile);
+  const template = builtinTemplates().find((t) => t.id === 'ticket-to-pr')!;
+  const workflow = instantiateTemplateLocal(template, {
+    implementation: profile.id,
+    fastReview: profile.id,
+    deepReview: profile.id,
+  }).workflow;
+  // Stop after implementation to exercise the real built-in prompt without review-loop simulation.
+  const implement = workflow.nodes.find((n) => n.label === 'Implement')!;
+  const end = workflow.nodes.find((n) => n.type === 'end')!;
+  workflow.edges = workflow.edges.filter((e) => e.source !== implement.id);
+  workflow.edges.push({ id: 'stop-after-impl', source: implement.id, target: end.id });
+  await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow(workflow.id, {
+    ticket: 'DEV-1',
+    branch: 'fix/dev-1',
+  });
+  await vi.waitFor(
+    async () => expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+    { timeout: 3500 },
+  );
+  const result = (await backend.getRunResults(runId)).find(
+    (row) => row.nodeId === implement.id,
+  )!;
+  expect(result.stdout).toContain('Implement DEV-1:');
+  expect(result.stdout).toContain('Mock ticket DEV-1');
 });

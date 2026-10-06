@@ -82,7 +82,7 @@ impl AdapterKind {
                 display_name: "Codex".to_string(),
                 default_executable: "codex".to_string(),
                 supports_model_flag: true,
-                supports_session_resume: false,
+                supports_session_resume: true,
                 notes: "Uses `codex exec <prompt>`. Model via `--model`. Non-interactive."
                     .to_string(),
             },
@@ -224,6 +224,7 @@ impl AgentRole {
             "deepReview".to_string(),
             "workflowGenerator".to_string(),
             "workflowAssistance".to_string(),
+            "generalPurpose".to_string(),
         ]
     }
 }
@@ -520,6 +521,126 @@ pub fn build_agent_command(
     })
 }
 
+/// Managed conversations require explicit ids and structured output. Conflicting
+/// user flags are rejected before invoking the CLI rather than overriding them.
+pub fn validate_session_profile(profile: &AgentProfile) -> Result<(), String> {
+    if profile.adapter == AdapterKind::Custom {
+        return Err("Custom CLI profiles do not support session groups.".into());
+    }
+    let flags: &[&str] = match profile.adapter {
+        AdapterKind::Claude => &[
+            "--from-pr",
+            "--teleport",
+            "--resume",
+            "-r",
+            "--continue",
+            "-c",
+            "--session-id",
+            "--fork-session",
+            "--no-session-persistence",
+            "--output-format",
+            "--input-format",
+            "--include-partial-messages",
+            "--forward-subagent-text",
+            "--worktree",
+            "-w",
+            "--cloud",
+            "--remote",
+        ],
+        _ => &[
+            "resume",
+            "fork",
+            "review",
+            "--last",
+            "--ephemeral",
+            "--json",
+            "--experimental-json",
+            "--output-last-message",
+            "-o",
+            "--output-schema",
+            "--cd",
+            "-C",
+            "--worktree",
+        ],
+    };
+    for arg in &profile.extra_args {
+        if flags.iter().any(|flag| {
+            arg == flag
+                || arg.starts_with(&format!("{flag}="))
+                || (flag.len() == 2 && flag.starts_with('-') && arg.starts_with(flag))
+        }) {
+            return Err(format!("Extra argument '{arg}' conflicts with managed session groups. Remove it or use a fresh-session node."));
+        }
+    }
+    Ok(())
+}
+
+pub fn build_session_command(
+    profile: &AgentProfile,
+    prompt: &str,
+    node_dir: Option<&str>,
+    resume_id: Option<&str>,
+) -> Result<CommandSpec, String> {
+    validate_session_profile(profile)?;
+    if resume_id.is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) {
+        return Err("Invalid recorded session id.".into());
+    }
+    let mut spec = build_agent_command(profile, prompt, node_dir)?;
+    let prompt = if profile.skills.is_empty() {
+        prompt.to_string()
+    } else {
+        let prefix = if profile.adapter == AdapterKind::Claude {
+            "/"
+        } else {
+            "$"
+        };
+        format!(
+            "{}\n\n{prompt}",
+            profile
+                .skills
+                .iter()
+                .map(|s| format!("{prefix}{s}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    let mut args = if profile.adapter == AdapterKind::Claude {
+        vec![
+            "-p".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+        ]
+    } else {
+        vec!["exec".into(), "--json".into()]
+    };
+    if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
+        args.extend(["--model".into(), model.trim().into()]);
+    }
+    if let Some(effort) = profile.effort.as_deref().filter(|e| !e.trim().is_empty()) {
+        let effort = effort.trim().to_ascii_lowercase();
+        if profile.adapter == AdapterKind::Claude {
+            args.extend(["--effort".into(), effort]);
+        } else {
+            args.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
+        }
+    }
+    args.extend(profile.extra_args.iter().cloned());
+    if let Some(id) = resume_id {
+        args.extend([
+            if profile.adapter == AdapterKind::Claude {
+                "--resume".into()
+            } else {
+                "resume".into()
+            },
+            id.into(),
+        ]);
+    }
+    args.extend(["--".into(), prompt]);
+    spec.args = args;
+    Ok(spec)
+}
+
 /// Safe display preview (shell-escaped, display only).
 pub fn preview_agent_command(profile: &AgentProfile, rendered_prompt: &str) -> String {
     match build_agent_command(profile, rendered_prompt, None) {
@@ -557,6 +678,50 @@ mod tests {
         assert!(spec.args.contains(&"hello".to_string()));
         assert!(spec.args.contains(&"--model".to_string()));
         assert!(spec.args.contains(&"opus".to_string()));
+    }
+
+    #[test]
+    fn managed_commands_keep_session_flags_and_prompt_separate() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        for adapter in [AdapterKind::Claude, AdapterKind::Codex] {
+            let mut p = claude_profile();
+            p.adapter = adapter;
+            p.effort = Some("medium".into());
+            let spec = build_session_command(&p, "--last is task text", None, Some(id)).unwrap();
+            assert_eq!(spec.args.last().unwrap(), "--last is task text");
+            assert_eq!(spec.args[spec.args.len() - 2], "--");
+            assert!(spec.args.windows(2).any(|pair| pair
+                == [
+                    if adapter == AdapterKind::Claude {
+                        "--resume"
+                    } else {
+                        "resume"
+                    },
+                    id
+                ]));
+            assert!(spec.args.contains(&"opus".into()));
+            for flag in if adapter == AdapterKind::Claude {
+                vec![
+                    "--from-pr",
+                    "--from-pr=123",
+                    "--teleport",
+                    "--teleport=other",
+                    "--resume=other",
+                    "-rOTHER",
+                    "--output-format=text",
+                    "--no-session-persistence",
+                    "--worktree",
+                ]
+            } else {
+                vec!["--last", "--ephemeral", "--json", "--cd=/other", "resume"]
+            } {
+                p.extra_args = vec![flag.into()];
+                assert!(
+                    build_session_command(&p, "Work", None, None).is_err(),
+                    "{flag}"
+                );
+            }
+        }
     }
 
     #[test]

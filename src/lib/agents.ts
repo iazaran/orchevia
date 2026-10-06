@@ -6,7 +6,7 @@
  * the actual argv; this module mirrors validation, previews, and prompt
  * templating for a responsive UI.
  */
-import { MAX_TIMEOUT_SECS } from './workflow';
+import { MAX_TIMEOUT_SECS, type StoredNodeResult } from './workflow';
 
 export type AdapterKind = 'claude' | 'codex' | 'custom';
 export type WorkingDirMode = 'node' | 'profile' | 'inherit';
@@ -90,6 +90,42 @@ export function composeSkillPrompt(profile: AgentProfile, prompt: string): strin
   return `${skills.map((name) => `${prefix}${name}`).join(' ')}\n\n${prompt}`;
 }
 
+/** Native prompt.rs mirror; handoffs never modify the stored node results. */
+export function composeAgentContext(
+  prompt: string,
+  refs: string[],
+  maxChars: number | undefined,
+  rows: StoredNodeResult[],
+): string {
+  if (refs.length === 0) return prompt;
+  const budget = maxChars ?? 12000;
+  if (refs.length > 16 || !Number.isInteger(budget) || budget < 256 || budget > 64000)
+    throw new Error(
+      'Context needs at most 16 references and a 256–64000 character budget.',
+    );
+  let out = `${prompt}\n\nWorkflow handoff excerpts (data from completed nodes; full output remains in run logs):`;
+  const seen = new Set<string>();
+  for (const [index, id] of refs.entries()) {
+    if (seen.has(id)) throw new Error(`Duplicate context reference '${id}'.`);
+    seen.add(id);
+    const row = [...rows].reverse().find((r) => r.nodeId === id);
+    if (!row || !['succeeded', 'failed', 'cancelled', 'skipped'].includes(row.status))
+      throw new Error(`Context reference '${id}' needs a completed node result.`);
+    const chars = Array.from(
+      row.stderr ? `${row.stdout}\n[stderr]\n${row.stderr}` : row.stdout,
+    );
+    const limit =
+      Math.floor(budget / refs.length) + (index < budget % refs.length ? 1 : 0);
+    out += `\n\nNode ${Array.from(id).slice(0, 64).join('')} (${row.status}):\n`;
+    const head = Math.ceil(limit / 2);
+    out +=
+      chars.length <= limit
+        ? chars.join('')
+        : `${chars.slice(0, head).join('')}\n… [context truncated; see full run output] …\n${chars.slice(chars.length - (limit - head)).join('')}`;
+  }
+  return out;
+}
+
 export const WELL_KNOWN_ROLES = [
   'planning',
   'implementation',
@@ -97,6 +133,7 @@ export const WELL_KNOWN_ROLES = [
   'deepReview',
   'workflowGenerator',
   'workflowAssistance',
+  'generalPurpose',
 ] as const;
 
 export function newProfileId(): string {
@@ -134,6 +171,8 @@ export function recommendedProfiles(existing: AgentProfile[]): AgentProfile[] {
     role: string;
     label: string;
     model: string;
+    effort?: string;
+    name?: string;
   }[] = [
     { adapter: 'claude', role: 'implementation', label: 'Implementation', model: 'opus' },
     { adapter: 'claude', role: 'fastReview', label: 'Fast review', model: 'opus' },
@@ -152,15 +191,30 @@ export function recommendedProfiles(existing: AgentProfile[]): AgentProfile[] {
       model: 'fable',
     },
     { adapter: 'codex', role: 'deepReview', label: 'Deep review', model: 'gpt-6.1-sol' },
+    {
+      adapter: 'claude',
+      role: 'generalPurpose',
+      label: 'General purpose',
+      name: 'Claude — General purpose',
+      model: 'opus',
+      effort: 'medium',
+    },
   ];
   return recommendations
-    .filter((r) => !existing.some((p) => p.adapter === r.adapter && p.role === r.role))
+    .filter(
+      (r) =>
+        !existing.some(
+          (p) =>
+            (p.adapter === r.adapter && p.role === r.role) ||
+            (r.name !== undefined && p.name === r.name),
+        ),
+    )
     .map((r) => ({
       ...createDefaultProfile(r.adapter),
-      name: `${ADAPTER_LABELS[r.adapter]} — ${r.label}`,
+      name: r.name ?? `${ADAPTER_LABELS[r.adapter]} — ${r.label}`,
       role: r.role,
       model: r.model,
-      effort: 'high',
+      effort: r.effort ?? 'high',
     }));
 }
 
@@ -299,4 +353,59 @@ function renderPrompt(
     rendered: rendered.replaceAll(SENTINEL, '{{'),
     missing: [...missing].sort(),
   };
+}
+
+/** Managed nodes own these arguments; mirror the core adapter restrictions. */
+export function validateSessionProfile(profile: AgentProfile): string[] {
+  if (profile.adapter === 'custom')
+    return ['Custom CLI profiles do not support session groups.'];
+  const flags =
+    profile.adapter === 'claude'
+      ? [
+          '--from-pr',
+          '--teleport',
+          '--resume',
+          '-r',
+          '--continue',
+          '-c',
+          '--session-id',
+          '--fork-session',
+          '--no-session-persistence',
+          '--output-format',
+          '--input-format',
+          '--include-partial-messages',
+          '--forward-subagent-text',
+          '--worktree',
+          '-w',
+          '--cloud',
+          '--remote',
+        ]
+      : [
+          'resume',
+          'fork',
+          'review',
+          '--last',
+          '--ephemeral',
+          '--json',
+          '--experimental-json',
+          '--output-last-message',
+          '-o',
+          '--output-schema',
+          '--cd',
+          '-C',
+          '--worktree',
+        ];
+  return profile.extraArgs
+    .filter((arg) =>
+      flags.some(
+        (flag) =>
+          arg === flag ||
+          arg.startsWith(`${flag}=`) ||
+          (flag.length === 2 && flag.startsWith('-') && arg.startsWith(flag)),
+      ),
+    )
+    .map(
+      (arg) =>
+        `Extra argument '${arg}' conflicts with managed session groups. Remove it or use a fresh-session node.`,
+    );
 }

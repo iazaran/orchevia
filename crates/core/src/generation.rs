@@ -92,6 +92,14 @@ pub struct ProposalNodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_refs: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_max_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<ConditionConfig>,
     /// Existing native Git operation selected by the generator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -700,6 +708,10 @@ fn compile_node_config(
                 return Err("Agent prompt is too long (max 20000 chars).".to_string());
             }
             out.prompt = Some(prompt.to_string());
+            out.session_group = config.session_group.clone();
+            out.session_max_turns = config.session_max_turns;
+            out.context_refs = config.context_refs.clone().unwrap_or_default();
+            out.context_max_chars = config.context_max_chars;
             out.working_dir = config.working_dir.clone();
         }
         NodeKind::Condition => {
@@ -944,6 +956,27 @@ pub fn compile_assistance_proposal(
                     }
                 }
                 node.config.input_refs = old.config.input_refs.clone();
+                if patch.config.session_group.is_none() {
+                    node.config.session_group = old.config.session_group.clone();
+                }
+                if patch.config.session_max_turns.is_none() {
+                    node.config.session_max_turns = old.config.session_max_turns;
+                }
+                if patch.config.context_refs.is_none() {
+                    node.config.context_refs = old.config.context_refs.clone();
+                    if patch.config.context_max_chars.is_none() {
+                        node.config.context_max_chars = old.config.context_max_chars;
+                    }
+                }
+                if patch
+                    .config
+                    .context_refs
+                    .as_ref()
+                    .is_some_and(Vec::is_empty)
+                    && patch.config.context_max_chars.is_none()
+                {
+                    node.config.context_max_chars = None;
+                }
                 node.config.extend_on_output = old.config.extend_on_output;
                 node.config.mcp_server_id = old.config.mcp_server_id.clone();
                 if let Some(mut retry) = old.config.retry.clone() {
@@ -1151,6 +1184,8 @@ Rules (violations are rejected, be precise):
 - Emit COMPACT JSON: no indentation, short labels, no duplicated text — long pretty-printed proposals get truncated mid-string. Compact output is an efficiency aid, never a reason to omit material steps.
 - Honor stated timeouts: "timeout 15m" means "timeoutSecs": 900, "timeout 40m" means 2400. Long AI steps routinely need 3600-14400; never invent a small default when the goal states one.
 - Agent nodes: config needs "role" (one of: {roles}) and "prompt" (concrete instructions using {{{{workflow.name}}}}, {{{{input.*}}}}, {{{{node.<key>.output}}}} variables). Add config.profileName with an exact unique configured name when a provider/model or a specific reviewer is requested; this takes precedence over role fallback and can select two different reviewers with the same role. Missing or ambiguous names need setup. Never hardcode profile ids.
+- Agent cost controls are optional: config.sessionGroup (a short name or template, max 256 characters) reuses context only within this run, exact profile and directory; sessionMaxTurns is 1-20, default 4. Share a group between an implementer and later fixes, with a short follow-up prompt. Keep independent reviewers fresh or in separate groups. In multi-item loops include an item key in the group so unrelated items do not share context. Never duplicate a full earlier prompt/output when the session already knows it.
+- For cross-agent handoffs use config.contextRefs ["<completed-node-key>"] (max 16) and contextMaxChars (256-64000, default 12000 combined excerpt characters). These append marked head/tail excerpts and retain full run logs. Include only relevant predecessors; do not also inline the same outputs in the prompt. This is truncation, not semantic summarization; choose a sufficient budget when exact detail matters. Longer sessions may cost more; no guaranteed savings. Preserve existing cost settings when assisting unless the user requests a change. Custom CLI profiles cannot use session groups.
 - Prompts are task instructions, never CLI invocations: no bare `-p`/`--model`/binary names/permission flags inside prompts. Those belong to Agent Profiles, not to the text the agent reads.
 - Labels are short canvas titles: imperative, at most ~60 characters, no file paths, no $VARIABLES, no ticket keys. Details go in the prompt/config, not the label.
 - Condition nodes: config needs "condition" like {{"logic":"or","clauses":[{{"left":"node.<key>.severity","op":"contains","right":"P0"}}]}} plus true/false labeled edges. "op" must be EXACTLY one of (camelCase, no underscores): equals, notEquals, contains, notContains, greater, less, greaterOrEqual, lessOrEqual.
@@ -1265,6 +1300,45 @@ fn snippet(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn proposals_keep_context_controls_after_compile() {
+        let proposal = super::parse_proposal(r#"{"name":"Context","nodes":[{"key":"start","type":"start"},{"key":"work","type":"agent","config":{"role":"implementation","prompt":"Work","sessionGroup":"dev-{{node.start.output}}","sessionMaxTurns":3,"contextRefs":["start"],"contextMaxChars":1000}},{"key":"end","type":"end"}],"edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]}"#).unwrap();
+        let compiled = super::compile_proposal(
+            &proposal,
+            &std::collections::HashMap::from([("implementation".into(), "p".into())]),
+            "w",
+            None,
+        )
+        .unwrap();
+        let config = serde_json::to_value(&compiled.workflow.nodes[1].config).unwrap();
+        assert_eq!(config["sessionGroup"], "dev-{{node.start.output}}");
+        assert_eq!(config["contextRefs"], serde_json::json!(["start"]));
+        assert_eq!(config["contextMaxChars"], 1000);
+        assert_eq!(config["sessionMaxTurns"], 3);
+    }
+    #[test]
+    fn assistance_preserves_cost_controls_and_can_clear_handoffs() {
+        let mut proposal = parse_proposal(r#"{"name":"Context","nodes":[{"key":"start","type":"start"},{"key":"work","type":"agent","config":{"role":"implementation","prompt":"Work","sessionGroup":"dev","sessionMaxTurns":3,"contextRefs":["start"],"contextMaxChars":1000}},{"key":"end","type":"end"}],"edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]}"#).unwrap();
+        let roles = HashMap::from([("implementation".into(), "p".into())]);
+        let base = compile_proposal(&proposal, &roles, "w", None)
+            .unwrap()
+            .workflow;
+        proposal.nodes[1].config = ProposalNodeConfig::default();
+        let kept =
+            compile_assistance_proposal(&proposal, &base, AssistanceMode::Optimize, &roles, &[])
+                .unwrap();
+        assert_eq!(kept.workflow.nodes[1].config, base.nodes[1].config);
+        proposal.nodes[1].config.context_refs = Some(Vec::new());
+        let cleared =
+            compile_assistance_proposal(&proposal, &base, AssistanceMode::Optimize, &roles, &[])
+                .unwrap();
+        assert!(cleared.workflow.nodes[1].config.context_refs.is_empty());
+        assert!(cleared.workflow.nodes[1].config.context_max_chars.is_none());
+        assert!(!cleared
+            .issues
+            .iter()
+            .any(|i| i.code == "agent-context-limit-invalid"));
+    }
     use super::*;
 
     #[test]

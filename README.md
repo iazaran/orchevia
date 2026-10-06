@@ -42,22 +42,22 @@ writes. CLI usage costs and remote-provider behavior remain with your chosen too
 
 ## Install
 
-Release v0.1.9 is being prepared. The permanent installer links below target this
+Release v0.1.10 is being prepared. The permanent installer links below target this
 version; they become available after the matching tag's release workflow succeeds.
-See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.9).
+See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.10).
 Until then, use the [published v0.1.8 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.8).
 A merged PR alone does not build installers.
 
 The repository and release files are **private for now**: sign in to GitHub with an
 account that has repository access. The repository and downloads will be public soon.
 
-| Platform                    | Installer                                                                                                                                                                                                |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.9/Orchevia-macos-arm64.dmg)                                                                                                            |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.9/Orchevia-macos-x86_64.dmg)                                                                                                           |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.9/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.9/Orchevia-linux-x86_64.deb) |
+| Platform                    | Installer                                                                                                                                                                                                  |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-macos-arm64.dmg)                                                                                                             |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-macos-x86_64.dmg)                                                                                                            |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.9/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.10/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -205,7 +205,7 @@ not a guarantee that every requested integration operation is supported.
 
 ## Current limits
 
-- **Beta:** source version 0.1.9 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** source version 0.1.10 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.
@@ -261,3 +261,7 @@ Questions? See [SUPPORT.md](./SUPPORT.md) for where to ask and how to file usefu
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).
+
+Agent nodes can [reuse context and pass bounded handoffs](docs/workflow-costs.md)
+within a run. New AI samples/templates and workflow generation use these optional
+controls while preserving independent reviews.

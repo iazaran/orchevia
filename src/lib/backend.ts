@@ -30,6 +30,9 @@ import {
    async Backend interface with synchronous logic by design. */
 import {
   composeSkillPrompt,
+  composeAgentContext,
+  renderPromptStrict,
+  validateSessionProfile,
   effectiveExecutable,
   referencedVariables,
   validateProfile,
@@ -662,6 +665,21 @@ class MockBackend implements Backend {
       if (input.required && !(effectiveInputs[input.name] ?? '').trim())
         throw new Error(`Workflow input '${input.name}' is required.`);
     }
+    const contextIssues = validateWorkflowLocal(wf.definition).filter(
+      (issue) =>
+        issue.severity === 'error' &&
+        issue.code.startsWith('agent-') &&
+        /session|context/.test(issue.code),
+    );
+    if (contextIssues.length)
+      throw new Error(contextIssues.map((issue) => issue.message).join(' '));
+    for (const node of wf.definition.nodes) {
+      if (node.type !== 'agent' || node.config.sessionGroup === undefined) continue;
+      const profile = this.profiles.get(node.config.agentProfileId ?? '');
+      if (!profile) throw new Error('Unknown Agent Profile.');
+      const errors = validateSessionProfile(profile);
+      if (errors.length) throw new Error(errors.join(' '));
+    }
     const runId = `run-mock-${String(this.counter++)}`;
     const run: StoredRun = {
       id: runId,
@@ -742,12 +760,43 @@ class MockBackend implements Backend {
         });
         const stillRunning = this.runs.find((r) => r.id === runId)?.status === 'running';
         if (!stillRunning) return;
-        this.pushResult(
-          runId,
-          nodeId,
-          'succeeded',
-          `mock-integration$ ${node.type} node (browser mock, no processes spawned).`,
-        );
+        if (node.type === 'ticket') {
+          const key = renderPromptStrict(
+            node.config.ticketKey ?? '',
+            mockVariables(workflow, results, run.inputs ?? {}),
+          );
+          if ('error' in key) {
+            const row = this.pushResult(runId, nodeId, 'failed', '');
+            row.error = key.error;
+            run.status = 'failed';
+            run.finishedAt = new Date().toISOString();
+            return;
+          }
+          const row = this.pushResult(
+            runId,
+            nodeId,
+            'succeeded',
+            `Mock ticket ${key.rendered} (browser mock, no remote lookup).`,
+          );
+          row.structuredJson = JSON.stringify({
+            simulated: true,
+            ticket: {
+              key: key.rendered,
+              title: `Mock ticket ${key.rendered}`,
+              description: 'Simulated ticket details.',
+              status: 'Mock',
+              url: '',
+              acceptanceCriteria: [],
+            },
+          });
+        } else {
+          this.pushResult(
+            runId,
+            nodeId,
+            'succeeded',
+            `mock-integration$ ${node.type} node (browser mock, no processes spawned).`,
+          );
+        }
         continue;
       }
       if (node.type === 'agent') {
@@ -772,11 +821,105 @@ class MockBackend implements Backend {
           }
           return;
         }
-        this.completeResult(
-          live,
-          'succeeded',
-          `mock-agent$ ${profile.adapter} "${node.config.prompt ?? ''}"\nHello from Orchevia (browser mock, profile '${profile.name}').`,
-        );
+        try {
+          const rows = this.results.get(runId) ?? [];
+          const run = this.runs.find((r) => r.id === runId);
+          const vars = mockVariables(
+            workflow,
+            rows.filter((row) => row.id !== live.id),
+            run?.inputs ?? {},
+          );
+          const rendered = renderPromptStrict(node.config.prompt ?? '', vars);
+          if ('error' in rendered) throw new Error(rendered.error);
+          const prompt = composeAgentContext(
+            rendered.rendered,
+            node.config.contextRefs ?? [],
+            node.config.contextMaxChars,
+            rows,
+          );
+          if (node.config.sessionGroup !== undefined) {
+            const errors = validateSessionProfile(profile);
+            if (errors.length) throw new Error(errors.join(' '));
+            const group = renderPromptStrict(node.config.sessionGroup, vars);
+            if ('error' in group) throw new Error(group.error);
+            if (
+              !group.rendered.trim() ||
+              Array.from(group.rendered).length > 256 ||
+              /[\0\r\n]/.test(group.rendered)
+            )
+              throw new Error(
+                'Session group must be 1-256 characters without line breaks.',
+              );
+            // Browser-only approximation: normalize path components, not filesystem symlinks.
+            const dir =
+              profile.workingDirMode === 'profile'
+                ? profile.workingDir
+                : profile.workingDirMode === 'inherit'
+                  ? ''
+                  : (node.config.workingDir ?? workflow.defaults?.repoDir);
+            const key = JSON.stringify([
+              Object.fromEntries(
+                Object.entries(profile).sort(([a], [b]) => a.localeCompare(b)),
+              ),
+              mockDirectory(dir ?? ''),
+              group.rendered,
+            ]);
+            const previous = rows
+              .filter((row) => row.id !== live.id)
+              .slice()
+              .reverse()
+              .map((row) => {
+                try {
+                  return {
+                    row,
+                    data: JSON.parse(row.structuredJson ?? '{}') as {
+                      agentSession?: {
+                        key: string;
+                        id: string;
+                        usable: boolean;
+                        turn: number;
+                      };
+                    },
+                  };
+                } catch {
+                  return { row, data: {} };
+                }
+              })
+              .find((entry) => entry.data.agentSession?.key === key);
+            const prior = previous?.data.agentSession;
+            const reused =
+              previous?.row.status === 'succeeded' &&
+              prior?.usable === true &&
+              prior.turn > 0 &&
+              prior.turn < (node.config.sessionMaxTurns ?? 4);
+            live.structuredJson = JSON.stringify({
+              simulated: true,
+              agentSession: {
+                key,
+                group: group.rendered,
+                id: reused ? prior.id : `mock-session-${String(this.counter++)}`,
+                turn: reused ? prior.turn + 1 : 1,
+                reused,
+                usable: true,
+              },
+            });
+          }
+          this.completeResult(
+            live,
+            'succeeded',
+            `mock-agent$ ${profile.adapter} "${prompt}"\nHello from Orchevia (browser mock, profile '${profile.name}').`,
+          );
+        } catch (error) {
+          this.completeResult(live, 'failed', '');
+          live.error = errorMessage(error);
+          const run = this.runs.find((r) => r.id === runId);
+          if (run) {
+            run.status = 'failed';
+            run.finishedAt = new Date().toISOString();
+          }
+          this.persist();
+          return;
+        }
         continue;
       }
       if (node.type === 'command') {
@@ -829,6 +972,16 @@ class MockBackend implements Backend {
     result.stdout = stdout;
     result.finishedAt = new Date().toISOString();
     if (status === 'succeeded') result.exitCode = 0;
+    const severity = ['P0', 'P1', 'P2', 'P3'].find((level) =>
+      new RegExp(`(?<![a-zA-Z0-9_])${level}(?![a-zA-Z0-9_])`).test(stdout),
+    );
+    if (severity) {
+      const data: unknown = JSON.parse(result.structuredJson ?? '{}');
+      result.structuredJson = JSON.stringify({
+        ...(typeof data === 'object' && data !== null ? data : {}),
+        severity,
+      });
+    }
   }
 
   private pushResult(
@@ -836,7 +989,7 @@ class MockBackend implements Backend {
     nodeId: string,
     status: string,
     stdout: string,
-  ): void {
+  ): StoredNodeResult {
     const list = this.results.get(runId) ?? [];
     const result: StoredNodeResult = {
       id: list.length + 1,
@@ -853,6 +1006,7 @@ class MockBackend implements Backend {
     }
     list.push(result);
     this.results.set(runId, list);
+    return result;
   }
 
   async cancelRun(runId: string): Promise<boolean> {
@@ -969,7 +1123,7 @@ class MockBackend implements Backend {
         displayName: 'Codex',
         defaultExecutable: 'codex',
         supportsModelFlag: true,
-        supportsSessionResume: false,
+        supportsSessionResume: true,
         notes: 'Uses `codex exec <prompt>`.',
       },
       {
@@ -1478,12 +1632,42 @@ function mockVariables(
     if (input.default !== undefined) vars[`input.${input.name}`] = input.default;
   }
   for (const [name, value] of Object.entries(inputs)) vars[`input.${name}`] = value;
+  const visits = new Map<string, number>();
   for (const r of priorResults) {
     vars[`node.${r.nodeId}`] = r.stdout;
     vars[`node.${r.nodeId}.output`] = r.stdout;
     vars[`node.${r.nodeId}.status`] = r.status;
     if (r.exitCode !== undefined) vars[`node.${r.nodeId}.exitCode`] = String(r.exitCode);
+    if (['succeeded', 'failed', 'approved', 'rejected'].includes(r.status))
+      visits.set(r.nodeId, (visits.get(r.nodeId) ?? 0) + 1);
+    try {
+      const data = JSON.parse(r.structuredJson ?? '{}') as {
+        severity?: unknown;
+        ticket?: Record<string, unknown>;
+      };
+      if (typeof data.severity === 'string')
+        vars[`node.${r.nodeId}.severity`] = data.severity;
+      if (r.status === 'succeeded' && data.ticket) {
+        for (const field of ['key', 'title', 'description', 'status'])
+          vars[`ticket.${field}`] =
+            typeof data.ticket[field] === 'string' ? data.ticket[field] : '';
+        vars['ticket.url'] =
+          typeof data.ticket.browseUrl === 'string'
+            ? data.ticket.browseUrl
+            : typeof data.ticket.url === 'string'
+              ? data.ticket.url
+              : '';
+        vars['ticket.acceptanceCriteria'] = Array.isArray(data.ticket.acceptanceCriteria)
+          ? data.ticket.acceptanceCriteria
+              .filter((item: unknown) => typeof item === 'string')
+              .join('\n')
+          : '';
+      }
+    } catch {
+      /* Malformed metadata supplies no structured aliases. */
+    }
   }
+  for (const [id, count] of visits) vars[`node.${id}.visits`] = String(count);
   return vars;
 }
 
@@ -1540,4 +1724,14 @@ export function __setMockBackendForTests(): MockBackend {
   const mock = new MockBackend();
   cached = mock;
   return mock;
+}
+
+function mockDirectory(dir: string): string {
+  const parts: string[] = [];
+  for (const part of dir.replaceAll('\\', '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop();
+    else if (part !== '..' || !dir.startsWith('/')) parts.push(part);
+  }
+  return `${dir.startsWith('/') ? '/' : ''}${parts.join('/')}`;
 }

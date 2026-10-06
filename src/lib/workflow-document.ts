@@ -34,6 +34,10 @@ const configKeys = [
   'workingDir',
   'message',
   'prompt',
+  'sessionGroup',
+  'sessionMaxTurns',
+  'contextRefs',
+  'contextMaxChars',
   'inputRefs',
   'timeoutSecs',
   'extendOnOutput',
@@ -96,6 +100,7 @@ function configShape(value: unknown, raw = false): void {
     'workingDir',
     'message',
     'prompt',
+    'sessionGroup',
     'ticketKey',
     'mcpServerId',
     'mcpTool',
@@ -105,6 +110,9 @@ function configShape(value: unknown, raw = false): void {
     stringField(config, key);
   stringsField(config, 'args');
   stringsField(config, 'inputRefs');
+  stringsField(config, 'contextRefs');
+  uintField(config, 'sessionMaxTurns', false, 4294967295);
+  uintField(config, 'contextMaxChars', false, 4294967295);
   uintField(config, 'timeoutSecs');
   uintField(config, 'maxVisits', false, 4294967295);
   boolField(config, 'extendOnOutput');
@@ -260,7 +268,7 @@ export function remapConfigReferences(
   config: NodeConfig,
   map: Record<string, string>,
 ): NodeConfig {
-  const { inputRefs, condition, ...ordinary } = config;
+  const { inputRefs, contextRefs, condition, ...ordinary } = config;
   const mapped = rewrite(ordinary, map) as NodeConfig;
   if (inputRefs !== undefined) {
     if (!Array.isArray(inputRefs)) throw new Error('inputRefs must be an array.');
@@ -276,6 +284,12 @@ export function remapConfigReferences(
     for (const clause of mapped.condition.clauses) {
       if (clause.left.startsWith('node.')) clause.left = reference(clause.left, map);
     }
+  }
+  if (contextRefs !== undefined) {
+    mapped.contextRefs = contextRefs.map((id) => {
+      if (!Object.hasOwn(map, id)) throw new Error(`Unknown contextRefs node '${id}'.`);
+      return map[id] ?? '';
+    });
   }
   return mapped;
 }

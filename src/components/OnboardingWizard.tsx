@@ -399,11 +399,12 @@ export function OnboardingWizard({
               )}
             </div>
             <p className="field-hint" style={{ marginTop: 8 }}>
-              One click creates missing Claude and Codex recommendations with configured
-              models (missing CLIs show as unavailable, never break). In Agents you can
-              set models and effort (low/medium/high/xhigh) per profile. Using another
-              coding CLI (aichat, sgpt, mods, …)? Add it manually in Agents → New profile
-              → Custom CLI with the full binary path.
+              One click creates missing Claude and Codex recommendations, including Claude
+              — General purpose (Opus, medium effort), with configured models (missing
+              CLIs show as unavailable, never break). In Agents you can set models and
+              effort (low/medium/high/xhigh) per profile. Using another coding CLI
+              (aichat, sgpt, mods, …)? Add it manually in Agents → New profile → Custom
+              CLI with the full binary path.
             </p>
           </>
         )}

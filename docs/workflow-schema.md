@@ -176,3 +176,12 @@ packs disconnected islands separately. It changes positions only. The initial
 view and Arrange reserve room beneath the translucent toolbar; long graphs
 open their leading steps at a readable zoom, with Fit View and the minimap
 available for the whole graph.
+
+## Optional Agent context fields
+
+`sessionGroup?: string`, `sessionMaxTurns?: number` (1–20, default 4),
+`contextRefs?: string[]` (up to 16 completed other nodes), and
+`contextMaxChars?: number` (256–64000, default 12000) are mirrored in the core,
+inspector and Simple JSON. They require no schema migration. Session variables
+and handoff IDs are validated/remapped with existing workflow references.
+See [workflow cost controls](workflow-costs.md) for execution semantics.

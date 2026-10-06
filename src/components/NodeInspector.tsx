@@ -1320,6 +1320,123 @@ export function NodeInspector(): React.JSX.Element | null {
             </span>
           </div>
           <div className="field">
+            <label className="field-label" htmlFor="node-session-group">
+              Session group
+            </label>
+            <input
+              id="node-session-group"
+              className="input"
+              placeholder="Blank = fresh; e.g. implement-{{input.ticket}}"
+              value={node.config.sessionGroup ?? ''}
+              onChange={(e) => {
+                const config = { ...node.config };
+                if (!e.target.value.trim()) {
+                  delete config.sessionGroup;
+                  delete config.sessionMaxTurns;
+                } else config.sessionGroup = e.target.value;
+                patch(config, node.label);
+              }}
+            />
+            <span className="field-hint">
+              Reuse context within one run, with the same profile and directory. Use
+              separate groups for independent reviewers and an item key in loops.
+            </span>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="node-session-turns">
+              Maximum turns per session
+            </label>
+            <input
+              id="node-session-turns"
+              className="input"
+              type="number"
+              min={1}
+              max={20}
+              placeholder="4"
+              disabled={!node.config.sessionGroup}
+              value={node.config.sessionMaxTurns ?? ''}
+              onChange={(e) => {
+                const config = { ...node.config };
+                if (!e.target.value) delete config.sessionMaxTurns;
+                else config.sessionMaxTurns = Number(e.target.value);
+                patch(config, node.label);
+              }}
+            />
+            <span className="field-hint">
+              Starts fresh after this many successful turns (default 4). Longer histories
+              can increase cost.
+            </span>
+          </div>
+          <details>
+            <summary>
+              Context from completed nodes ({String(node.config.contextRefs?.length ?? 0)}{' '}
+              selected)
+            </summary>
+            <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+              {workflow.nodes
+                .filter((other) => other.id !== node.id)
+                .map((other) => (
+                  <label
+                    key={other.id}
+                    className="field-hint"
+                    style={{ display: 'block', margin: '8px 0' }}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Context from ${other.label ?? other.id}`}
+                      checked={node.config.contextRefs?.includes(other.id) ?? false}
+                      disabled={
+                        !node.config.contextRefs?.includes(other.id) &&
+                        (node.config.contextRefs?.length ?? 0) >= 16
+                      }
+                      onChange={(e) => {
+                        const config = { ...node.config };
+                        const refs = config.contextRefs ?? [];
+                        config.contextRefs = e.target.checked
+                          ? [...refs, other.id]
+                          : refs.filter((id) => id !== other.id);
+                        if (!config.contextRefs.length) {
+                          delete config.contextRefs;
+                          delete config.contextMaxChars;
+                        }
+                        patch(config, node.label);
+                      }}
+                    />{' '}
+                    {other.label ?? other.id}
+                  </label>
+                ))}
+            </div>
+            <span className="field-hint">
+              Select relevant predecessors (up to 16). They must have completed when this
+              node runs. Avoid also inlining their outputs in the prompt.
+            </span>
+          </details>
+          <div className="field">
+            <label className="field-label" htmlFor="node-context-budget">
+              Context character budget
+            </label>
+            <input
+              id="node-context-budget"
+              className="input"
+              type="number"
+              min={256}
+              max={64000}
+              placeholder="12000"
+              disabled={!node.config.contextRefs?.length}
+              value={node.config.contextMaxChars ?? ''}
+              onChange={(e) => {
+                const config = { ...node.config };
+                if (!e.target.value) delete config.contextMaxChars;
+                else config.contextMaxChars = Number(e.target.value);
+                patch(config, node.label);
+              }}
+            />
+            <span className="field-hint">
+              Combined excerpt characters, excluding headers (default 12000). Longer
+              outputs keep a marked beginning and end; full output stays in run logs.
+            </span>
+          </div>
+          <div className="field">
             <DirPicker
               id="node-agent-cwd"
               label="Working directory (optional, overrides profile)"
@@ -1419,8 +1536,9 @@ export function NodeInspector(): React.JSX.Element | null {
                   {agentPreview}
                 </div>
                 <span className="field-hint">
-                  Display only — execution re-validates the profile and never uses a
-                  shell.
+                  Shows the fresh profile command. Session IDs and selected handoff
+                  excerpts are resolved during execution. Execution re-validates the
+                  profile.
                 </span>
               </>
             )}

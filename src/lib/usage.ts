@@ -105,3 +105,52 @@ export function formatDurationMs(ms: number): string {
   const rest = secs % 60;
   return rest === 0 ? `${String(mins)}m` : `${String(mins)}m ${String(rest)}s`;
 }
+
+/** Structured CLI facts only; no quota, spend estimates or mock token counts. */
+export function agentContextDetails(structuredJson?: string): {
+  sessionLabel: string | null;
+  group: string;
+  usageHints: string[];
+  activity: string;
+  simulated: boolean;
+} | null {
+  if (!structuredJson) return null;
+  try {
+    const data: unknown = JSON.parse(structuredJson);
+    if (!isRecord(data)) return null;
+    const session = isRecord(data.agentSession) ? data.agentSession : null;
+    const usage = isRecord(data.agentUsage) ? data.agentUsage : null;
+    if (!session && !usage && typeof data.agentActivity !== 'string') return null;
+    const hints: string[] = [];
+    for (const [key, label] of [
+      ['input_tokens', 'input'],
+      ['cached_input_tokens', 'cached input'],
+      ['cache_read_input_tokens', 'cache read'],
+      ['cache_creation_input_tokens', 'cache creation'],
+      ['output_tokens', 'output'],
+      ['reported_cost_usd', 'CLI reported USD'],
+    ]) {
+      if (!key || !label) continue;
+      const value: unknown = usage?.[key];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+        hints.push(`${label}: ${String(value)}`);
+    }
+    const turn: unknown = session?.turn;
+    const simulated = data.simulated === true;
+    return {
+      sessionLabel:
+        session && typeof turn === 'number' && Number.isInteger(turn) && turn > 0
+          ? `${session.reused === true ? 'Resumed' : 'Fresh'} context · turn ${String(turn)}${simulated ? ' (simulated)' : ''}`
+          : null,
+      group: typeof session?.group === 'string' ? session.group : '',
+      usageHints: hints,
+      activity: typeof data.agentActivity === 'string' ? data.agentActivity : '',
+      simulated,
+    };
+  } catch {
+    return null;
+  }
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

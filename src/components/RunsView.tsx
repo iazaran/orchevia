@@ -5,7 +5,7 @@ import { getBackend } from '../lib/backend';
 import type { GroupedFinding } from '../lib/scheduler';
 import { isMarkdown } from '../lib/markdown';
 import { formatTime } from '../lib/time';
-import { extractUsageHints, formatDurationMs } from '../lib/usage';
+import { agentContextDetails, extractUsageHints, formatDurationMs } from '../lib/usage';
 import { useAppStore } from '../store';
 import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
@@ -758,6 +758,7 @@ export function RunsView(): React.JSX.Element {
                 )}
                 {results.map((r, index) => {
                   const node = nodeFor(r.nodeId);
+                  const context = agentContextDetails(r.structuredJson);
                   // The last step (usually the report) opens expanded; the rest
                   // collapse long logs behind a toggle.
                   const isLast = index === results.length - 1;
@@ -839,6 +840,16 @@ export function RunsView(): React.JSX.Element {
                             {formatDurationMs(r.durationMs ?? 0)}
                           </span>
                         )}
+                        {context?.sessionLabel && (
+                          <span className="field-hint" title={context.group}>
+                            {context.sessionLabel}
+                          </span>
+                        )}
+                        {(context?.usageHints.length ?? 0) > 0 && (
+                          <span className="field-hint">
+                            CLI usage: {context?.usageHints.join(' · ')}
+                          </span>
+                        )}
                         {extractUsageHints(r.stdout, r.stderr).length > 0 && (
                           <span className="field-hint">
                             usage: {extractUsageHints(r.stdout, r.stderr).join(' · ')}
@@ -860,6 +871,20 @@ export function RunsView(): React.JSX.Element {
                           toggleOutput('out');
                         }}
                       />
+                      {context?.activity &&
+                        context.activity.trim() !== r.stdout.trim() && (
+                          <div style={{ marginTop: 6 }}>
+                            <OutputBlock
+                              text={context.activity}
+                              label="Agent activity"
+                              defaultOpen={false}
+                              expanded={expandedOutputs[`${String(r.id)}:activity`]}
+                              onToggle={() => {
+                                toggleOutput('activity');
+                              }}
+                            />
+                          </div>
+                        )}
                       <div style={{ marginTop: 6 }}>
                         <OutputBlock
                           text={r.stderr}

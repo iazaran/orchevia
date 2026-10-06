@@ -5,6 +5,7 @@
 //! graph (nodes + edges), never on coordinates.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Current workflow schema version. Bump when making breaking changes and
 /// add a migration in [`migrate_workflow_json`].
@@ -122,6 +123,16 @@ pub struct NodeConfig {
     pub agent_role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Explicit conversation group within this run; absent keeps fresh sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_max_turns: Option<u32>,
+    /// Completed outputs appended as bounded, marked handoffs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_max_chars: Option<u32>,
     /// Node ids whose outputs are exposed as `{{node.<id>.output}}` plus
     /// their raw stdout under `{{node.<id>}}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -503,6 +514,7 @@ pub fn well_known_roles() -> Vec<String> {
         "deepReview".to_string(),
         "workflowGenerator".to_string(),
         "workflowAssistance".to_string(),
+        "generalPurpose".to_string(),
     ]
 }
 
@@ -692,6 +704,65 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 validate_max_visits(node, &mut issues);
             }
             NodeKind::Agent => {
+                if let Some(group) = node.config.session_group.as_deref() {
+                    if group.trim().is_empty()
+                        || group.chars().count() > 256
+                        || group.contains(['\0', '\n', '\r'])
+                    {
+                        push_error(
+                            &mut issues,
+                            "agent-session-group-invalid",
+                            "Session group must be 1–256 characters with no line breaks.".into(),
+                            Some(node.id.clone()),
+                        );
+                    }
+                    for name in crate::prompt::render_prompt(group, &HashMap::new()).1 {
+                        let checked = if name.contains('.') {
+                            check_variable_ref(wf, &name, &node_ids)
+                        } else {
+                            Err(format!("Session variable '{name}' needs a namespace; use node.{name}.output for a node output."))
+                        };
+                        if let Err(message) = checked {
+                            push_error(
+                                &mut issues,
+                                "agent-session-variable-invalid",
+                                message,
+                                Some(node.id.clone()),
+                            );
+                        }
+                    }
+                }
+                if node
+                    .config
+                    .session_max_turns
+                    .is_some_and(|n| !(1..=20).contains(&n) || node.config.session_group.is_none())
+                {
+                    push_error(
+                        &mut issues,
+                        "agent-session-turns-invalid",
+                        "Session max turns must be 1–20 and requires a session group.".into(),
+                        Some(node.id.clone()),
+                    );
+                }
+                if node.config.context_max_chars.is_some_and(|n| {
+                    !(256..=64000).contains(&n) || node.config.context_refs.is_empty()
+                }) {
+                    push_error(&mut issues, "agent-context-limit-invalid", "Context budget must be 256–64000 characters and requires context references.".into(), Some(node.id.clone()));
+                }
+                let mut refs = HashSet::new();
+                if node.config.context_refs.len() > 16 {
+                    push_error(
+                        &mut issues,
+                        "agent-context-ref-invalid",
+                        "Select at most 16 context references.".into(),
+                        Some(node.id.clone()),
+                    );
+                }
+                for id in &node.config.context_refs {
+                    if id == &node.id || !node_ids.contains(id.as_str()) || !refs.insert(id) {
+                        push_error(&mut issues, "agent-context-ref-invalid", format!("Context reference '{id}' must be a unique, existing, different node."), Some(node.id.clone()));
+                    }
+                }
                 let profile = node.config.agent_profile_id.as_deref().unwrap_or("").trim();
                 let role = node.config.agent_role.as_deref().unwrap_or("").trim();
                 if profile.is_empty() && role.is_empty() {

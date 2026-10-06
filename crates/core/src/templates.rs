@@ -280,7 +280,14 @@ fn edge(id: &str, source: &str, target: &str, label: Option<&str>) -> Edge {
     }
 }
 
-fn agent_role(id: &str, y: f64, label: &str, role: &str, prompt: &str) -> Node {
+fn agent_role(
+    id: &str,
+    y: f64,
+    label: &str,
+    role: &str,
+    prompt: &str,
+    context_refs: &[&str],
+) -> Node {
     node(
         id,
         NodeKind::Agent,
@@ -289,6 +296,8 @@ fn agent_role(id: &str, y: f64, label: &str, role: &str, prompt: &str) -> Node {
         NodeConfig {
             agent_role: Some(role.to_string()),
             prompt: Some(format!("Read the repository instructions first. {prompt}")),
+            context_refs: context_refs.iter().map(|id| (*id).to_string()).collect(),
+            context_max_chars: (!context_refs.is_empty()).then_some(12000),
             ..NodeConfig::default()
         },
     )
@@ -382,6 +391,7 @@ fn implement_ticket() -> Template {
                 "Plan",
                 "planning",
                 "Plan {{workflow.name}}: {{ticket.key}} {{ticket.title}}. List files and risks.",
+                &[],
             ),
             node(
                 "gate",
@@ -399,6 +409,7 @@ fn implement_ticket() -> Template {
                 "Implement",
                 "implementation",
                 "Implement the approved plan with tests.",
+                &["plan"],
             ),
             test_command("tests", 480.0),
             agent_role(
@@ -407,6 +418,7 @@ fn implement_ticket() -> Template {
                 "Review",
                 "deepReview",
                 "Review for P0/P1; tag severities.",
+                &["impl", "tests"],
             ),
             node("end", NodeKind::End, 720.0, "End", NodeConfig::default()),
         ],
@@ -451,6 +463,7 @@ fn review_pull_request() -> Template {
                 "Claude Review",
                 "fastReview",
                 "Fast review with ```finding blocks.",
+                &["files"],
             ),
             agent_role(
                 "revB",
@@ -458,6 +471,7 @@ fn review_pull_request() -> Template {
                 "Codex Review",
                 "deepReview",
                 "Deep review with ```finding blocks.",
+                &["files"],
             ),
             node(
                 "cond",
@@ -545,6 +559,7 @@ fn investigate_bug() -> Template {
                 "Reproduce",
                 "implementation",
                 "Reproduce the bug with a failing test first.",
+                &[],
             ),
             node(
                 "gate",
@@ -559,6 +574,7 @@ fn investigate_bug() -> Template {
                 "Fix + verify",
                 "implementation",
                 "Fix the root cause; keep the regression test green.",
+                &["repro"],
             ),
             node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
         ],
@@ -592,6 +608,7 @@ fn refactor() -> Template {
                 "Refactor",
                 "implementation",
                 "Refactor {{workflow.name}} without behavior change.",
+                &["base"],
             ),
             test_command("verify", 360.0),
             node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
@@ -625,6 +642,7 @@ fn dependency_upgrade() -> Template {
                 "Upgrade",
                 "implementation",
                 "Upgrade {{input.dependency}}; keep the lockfile consistent.",
+                &[],
             ),
             test_command("tests", 240.0),
             agent_role(
@@ -633,6 +651,7 @@ fn dependency_upgrade() -> Template {
                 "Review diff",
                 "fastReview",
                 "Review the upgrade diff for breaking changes.",
+                &["up", "tests"],
             ),
             node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
         ],
@@ -675,6 +694,7 @@ fn multi_agent_review() -> Template {
                 "Claude Review",
                 "fastReview",
                 "Fast review with ```finding blocks.",
+                &[],
             ),
             agent_role(
                 "revB",
@@ -682,6 +702,7 @@ fn multi_agent_review() -> Template {
                 "Codex Review",
                 "deepReview",
                 "Deep review with ```finding blocks.",
+                &[],
             ),
             node(
                 "join",
@@ -773,6 +794,7 @@ fn create_draft_pr() -> Template {
                 "Final review",
                 "fastReview",
                 "Final pass with ```finding blocks.",
+                &["tests"],
             ),
             node(
                 "pr",
@@ -835,7 +857,9 @@ fn watch_feedback() -> Template {
                 position: Position { x: 80.0, y: 120.0 },
                 config: visits(NodeConfig {
                     agent_role: Some("implementation".into()),
-                    prompt: Some("Address the latest review feedback with tests.".into()),
+                    prompt: Some("Address the latest review feedback with tests. Inspect current PR feedback each turn; do not assume the previous findings are still current.".into()),
+                    session_group: Some("feedback-fixes".into()),
+                    session_max_turns: Some(4),
                     ..NodeConfig::default()
                 }),
                 label: Some("Address feedback".into()),
@@ -850,7 +874,9 @@ fn watch_feedback() -> Template {
                 position: Position { x: 80.0, y: 360.0 },
                 config: visits(NodeConfig {
                     agent_role: Some("fastReview".into()),
-                    prompt: Some("Re-review with ```finding blocks.".into()),
+                    prompt: Some("Re-review the current diff with ```finding blocks.".into()),
+                    context_refs: vec!["fix".into(), "tests".into()],
+                    context_max_chars: Some(12000),
                     ..NodeConfig::default()
                 }),
                 label: Some("Re-review".into()),
@@ -930,6 +956,7 @@ fn ticket_to_pr() -> Template {
                 "Implement",
                 "implementation",
                 "Implement {{ticket.key}}: {{ticket.title}}. Keep commits small with short messages; run the project's tests before finishing.",
+                &["ticket"],
             ),
             Node {
                 id: "rev_fast".into(),
@@ -937,6 +964,8 @@ fn ticket_to_pr() -> Template {
                 position: Position { x: 80.0, y: 480.0 },
                 config: loop_bound(NodeConfig {
                     agent_role: Some("fastReview".into()),
+                    context_refs: vec!["impl".into()],
+                    context_max_chars: Some(12000),
                     prompt: Some(
                         "Fast review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.".into(),
                     ),
@@ -950,6 +979,8 @@ fn ticket_to_pr() -> Template {
                 position: Position { x: 80.0, y: 600.0 },
                 config: loop_bound(NodeConfig {
                     agent_role: Some("deepReview".into()),
+                    context_refs: vec!["impl".into()],
+                    context_max_chars: Some(12000),
                     prompt: Some(
                         "Deep review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Do not re-run tests that already passed.".into(),
                     ),
@@ -987,6 +1018,7 @@ fn ticket_to_pr() -> Template {
                 "Fix findings",
                 "implementation",
                 "Address the P0/P1 findings above with tests; keep commits small.",
+                &["rev_fast", "rev_deep"],
             ),
             node(
                 "approve",
@@ -1033,6 +1065,12 @@ fn ticket_to_pr() -> Template {
             edge("e11", "pr", "end", None),
         ],
     );
+    for node in &mut template.workflow.nodes {
+        if node.id == "impl" || node.id == "fix" {
+            node.config.session_group = Some("implementation-{{input.ticket}}".into());
+            node.config.session_max_turns = Some(4);
+        }
+    }
     // fix loops back into the reviews: it needs the same visit bound.
     if let Some(fix) = template.workflow.nodes.iter_mut().find(|n| n.id == "fix") {
         fix.config.max_visits = Some(2);

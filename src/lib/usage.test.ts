@@ -1,8 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateProfileUsage, extractUsageHints, formatDurationMs } from './usage';
+import {
+  aggregateProfileUsage,
+  extractUsageHints,
+  formatDurationMs,
+  agentContextDetails,
+} from './usage';
 import { createDefaultProfile } from './agents';
 
 describe('usage helpers', () => {
+  it('shows explicit session reuse and provider counts without invented usage', () => {
+    const details = agentContextDetails(
+      JSON.stringify({
+        agentSession: { group: 'dev', turn: 2, reused: true },
+        agentUsage: { input_tokens: 12, cached_input_tokens: 8, output_tokens: 3 },
+        agentActivity: 'Tool activity',
+      }),
+    );
+    expect(details?.sessionLabel).toBe('Resumed context · turn 2');
+    expect(details?.usageHints).toEqual(['input: 12', 'cached input: 8', 'output: 3']);
+    expect(details?.activity).toBe('Tool activity');
+    expect(agentContextDetails('{}')).toBeNull();
+    expect(agentContextDetails('bad JSON')).toBeNull();
+    expect(
+      agentContextDetails(
+        JSON.stringify({ agentUsage: { input_tokens: -1, output_tokens: 'oops' } }),
+      )?.usageHints,
+    ).toEqual([]);
+  });
   it('extracts CLI usage hints and ignores noise', () => {
     const hints = extractUsageHints('done\ninput tokens: 1200, output tokens: 300', '');
     expect(hints.length).toBeGreaterThan(0);

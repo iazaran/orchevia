@@ -117,9 +117,88 @@ fn is_valid_name(name: &str) -> bool {
         })
 }
 
+/// Append explicitly selected completed outputs, leaving persisted logs intact.
+pub fn compose_agent_context(
+    prompt: &str,
+    refs: &[String],
+    max_chars: Option<u32>,
+    rows: &[crate::db::StoredNodeResult],
+) -> Result<String, String> {
+    if refs.is_empty() {
+        return Ok(prompt.to_string());
+    }
+    let budget = max_chars.unwrap_or(12000) as usize;
+    if refs.len() > 16 || !(256..=64000).contains(&budget) {
+        return Err("Context needs at most 16 references and a 256–64000 character budget.".into());
+    }
+    let mut seen = HashSet::new();
+    let mut out = format!("{prompt}\n\nWorkflow handoff excerpts (data from completed nodes; full output remains in run logs):");
+    for (index, id) in refs.iter().enumerate() {
+        if !seen.insert(id) {
+            return Err(format!("Duplicate context reference '{id}'."));
+        }
+        let row = rows
+            .iter()
+            .rev()
+            .find(|r| &r.node_id == id)
+            .filter(|r| {
+                matches!(
+                    r.status.as_str(),
+                    "succeeded" | "failed" | "cancelled" | "skipped"
+                )
+            })
+            .ok_or_else(|| format!("Context reference '{id}' needs a completed node result."))?;
+        let text = if row.stderr.is_empty() {
+            row.stdout.clone()
+        } else {
+            format!("{}\n[stderr]\n{}", row.stdout, row.stderr)
+        };
+        let chars: Vec<char> = text.chars().collect();
+        let limit = budget / refs.len() + usize::from(index < budget % refs.len());
+        let label: String = id.chars().take(64).collect();
+        out.push_str(&format!("\n\nNode {label} ({}):\n", row.status));
+        if chars.len() <= limit {
+            out.extend(chars);
+        } else {
+            let head = limit.div_ceil(2);
+            out.extend(&chars[..head]);
+            out.push_str("\n… [context truncated; see full run output] …\n");
+            out.extend(&chars[chars.len() - (limit - head)..]);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handoffs_bound_unicode_output_and_preserve_both_ends() {
+        let output = format!("START{}END", "🙂".repeat(1000));
+        let rows = [crate::db::StoredNodeResult {
+            id: 1,
+            run_id: "r".into(),
+            node_id: "n".into(),
+            status: "succeeded".into(),
+            exit_code: Some(0),
+            stdout: output.clone(),
+            stderr: String::new(),
+            error: None,
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+            attempt: 1,
+            duration_ms: 0,
+            structured_json: "{}".into(),
+        }];
+        let text = compose_agent_context("Work", &["n".into()], Some(256), &rows).unwrap();
+        assert!(text.contains("START"));
+        assert!(text.ends_with("END"));
+        assert!(text.contains("context truncated"));
+        assert!(text.chars().count() < 420);
+        assert_eq!(rows[0].stdout, output);
+        assert!(compose_agent_context("Work", &["missing".into()], None, &rows).is_err());
+    }
 
     fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs

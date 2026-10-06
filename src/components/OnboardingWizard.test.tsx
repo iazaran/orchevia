@@ -18,7 +18,15 @@ it('creates both reviewers even when their CLIs are unavailable', async () => {
   for (let i = 0; i < 3; i++)
     await user.click(screen.getByRole('button', { name: 'Next' }));
   await user.click(screen.getByRole('button', { name: 'Create recommended profiles' }));
-  await waitFor(() => expect(save).toHaveBeenCalledTimes(7));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(8));
+  expect(save.mock.calls.map(([profile]) => profile)).toContainEqual(
+    expect.objectContaining({
+      name: 'Claude — General purpose',
+      adapter: 'claude',
+      model: 'opus',
+      effort: 'medium',
+    }),
+  );
   expect(
     save.mock.calls
       .filter(([profile]) => profile.role === 'deepReview')
