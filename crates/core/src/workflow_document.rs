@@ -54,6 +54,10 @@ const CONFIG_KEYS: &[&str] = &[
     "workingDir",
     "message",
     "prompt",
+    "sessionGroup",
+    "sessionMaxTurns",
+    "contextRefs",
+    "contextMaxChars",
     "inputRefs",
     "timeoutSecs",
     "extendOnOutput",
@@ -162,6 +166,7 @@ fn rewrite_config(value: &mut Value, map: &HashMap<String, String>) -> Result<()
         .as_object_mut()
         .ok_or("Node config must be an object.")?;
     let mut refs = object.remove("inputRefs");
+    let mut context_refs = object.remove("contextRefs");
     let mut condition = object.remove("condition");
     rewrite(value, map)?;
     if let Some(refs) = refs.as_mut() {
@@ -172,6 +177,18 @@ fn rewrite_config(value: &mut Value, map: &HashMap<String, String>) -> Result<()
                 .ok_or_else(|| format!("Unknown inputRefs node '{id}'."))?
                 .clone();
             *item = Value::String(mapped);
+        }
+    }
+    if let Some(refs) = context_refs.as_mut() {
+        for item in refs.as_array_mut().ok_or("contextRefs must be an array.")? {
+            let id = item
+                .as_str()
+                .ok_or("contextRefs entries must be strings.")?;
+            *item = Value::String(
+                map.get(id)
+                    .ok_or_else(|| format!("Unknown contextRefs node '{id}'."))?
+                    .clone(),
+            );
         }
     }
     if let Some(clauses) = condition
@@ -192,6 +209,9 @@ fn rewrite_config(value: &mut Value, map: &HashMap<String, String>) -> Result<()
         if let Some(refs) = refs {
             object.insert("inputRefs".into(), refs);
         }
+        if let Some(refs) = context_refs {
+            object.insert("contextRefs".into(), refs);
+        }
         if let Some(condition) = condition {
             object.insert("condition".into(), condition);
         }
@@ -206,6 +226,56 @@ pub fn remap_config_references(
     rewrite_config(&mut value, map)?;
     *config = serde_json::from_value(value).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod context_contract_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_cost_controls_have_actionable_validation_codes() {
+        let wf: Workflow = serde_json::from_value(serde_json::json!({
+            "schemaVersion":6,"id":"w","name":"W","nodes":[
+                {"id":"s","type":"start","position":{"x":0,"y":0},"config":{}},
+                {"id":"a","type":"agent","position":{"x":0,"y":0},"config":{
+                    "agentProfileId":"p","prompt":"Work","sessionGroup":"","sessionMaxTurns":0,
+                    "contextRefs":["missing","missing","a"],"contextMaxChars":0}},
+                {"id":"e","type":"end","position":{"x":0,"y":0},"config":{}}
+            ],"edges":[{"id":"1","source":"s","target":"a"},{"id":"2","source":"a","target":"e"}]
+        }))
+        .unwrap();
+        let codes: Vec<_> = crate::workflow::validate_workflow(&wf)
+            .into_iter()
+            .map(|i| i.code)
+            .collect();
+        for code in [
+            "agent-session-group-invalid",
+            "agent-session-turns-invalid",
+            "agent-context-limit-invalid",
+            "agent-context-ref-invalid",
+        ] {
+            assert!(codes.iter().any(|c| c == code), "{code}: {codes:?}");
+        }
+    }
+
+    #[test]
+    fn cost_controls_survive_config_and_reference_remapping() {
+        let mut config: NodeConfig = serde_json::from_value(serde_json::json!({
+            "sessionGroup": "item-{{ node.old.output }}", "sessionMaxTurns": 3,
+            "contextRefs": ["old"], "contextMaxChars": 1000
+        }))
+        .unwrap();
+        remap_config_references(
+            &mut config,
+            &HashMap::from([("old".into(), "fresh".into())]),
+        )
+        .unwrap();
+        let value = serde_json::to_value(config).unwrap();
+        assert_eq!(value["sessionGroup"], "item-{{ node.fresh.output }}");
+        assert_eq!(value["sessionMaxTurns"], 3);
+        assert_eq!(value["contextRefs"], serde_json::json!(["fresh"]));
+        assert_eq!(value["contextMaxChars"], 1000);
+    }
 }
 
 pub fn export_document(

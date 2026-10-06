@@ -13,7 +13,8 @@
 //!   directory; executable + args are passed separately (no shell).
 
 use crate::{
-    agents::{build_agent_command, AgentProfile},
+    agent_output::AgentOutput,
+    agents::{build_agent_command, build_session_command, validate_session_profile, AgentProfile},
     conditions::eval_condition,
     db::{DbError, NewNodeResult, RunStatus, SqliteDb, StoredNodeResult},
     prompt::render_prompt,
@@ -121,10 +122,20 @@ struct Capture {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     last_output: Instant,
+    agent_output: Option<Arc<Mutex<AgentOutput>>>,
 }
 
 impl Capture {
     fn append(&mut self, bytes: &[u8], is_stdout: bool) {
+        if is_stdout {
+            if let Some(output) = &self.agent_output {
+                if let Ok(mut output) = output.lock() {
+                    output.push(bytes);
+                }
+                self.last_output = Instant::now();
+                return;
+            }
+        }
         let stream = if is_stdout {
             &mut self.stdout
         } else {
@@ -340,6 +351,16 @@ impl Engine {
             let profile_id = node.config.agent_profile_id.as_deref().unwrap_or("");
             match self.db.get_agent_profile(profile_id) {
                 Ok(Some(profile)) => {
+                    if node.config.session_group.is_some() {
+                        if let Err(message) = validate_session_profile(&profile) {
+                            issues.push(crate::workflow::ValidationIssue {
+                                code: "agent-session-profile-invalid".into(),
+                                message,
+                                severity: ValidationSeverity::Error,
+                                node_id: Some(node.id.clone()),
+                            });
+                        }
+                    }
                     let exe = profile.effective_executable();
                     if !is_executable_available(&exe) {
                         issues.push(crate::workflow::ValidationIssue {
@@ -575,6 +596,7 @@ impl Engine {
             .get_run(run_id)?
             .ok_or_else(|| EngineError::UnknownRun(run_id.to_string()))?;
         let graph = Graph::build(workflow)?;
+        let session_locks: SessionLocks = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let mut state = RunState::default();
         for node in workflow.nodes.iter() {
             state
@@ -698,6 +720,7 @@ impl Engine {
                     let db = Arc::clone(&self.db);
                     let task_flag = Arc::clone(flag);
                     let owned = TaskInput {
+                        session_locks: Arc::clone(&session_locks),
                         node,
                         workflow_id: workflow.id.clone(),
                         workflow_name: workflow.name.clone(),
@@ -1048,12 +1071,25 @@ enum RunOutcome {
 
 /// Owned inputs for a spawned node task.
 struct TaskInput {
+    session_locks: SessionLocks,
     node: Node,
     workflow_id: String,
     workflow_name: String,
     workflow_defaults: Option<crate::workflow::WorkflowDefaults>,
     run_id: String,
     inputs: HashMap<String, String>,
+}
+
+type SessionLocks = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
+
+struct ManagedAgent {
+    profile: AgentProfile,
+    prompt: String,
+    node_dir: Option<String>,
+    key: String,
+    group: String,
+    resume_id: Option<String>,
+    turn: u32,
 }
 
 /// Execute one node (Start/End/Command/Agent/Condition) with retries.
@@ -1149,6 +1185,7 @@ async fn execute_node_task(
                 working_dir,
                 timeout: Duration::from_secs(timeout),
                 retry,
+                agent: None,
                 extend_on_output: task.node.config.extend_on_output,
                 flag: &flag,
             })
@@ -1300,7 +1337,20 @@ async fn execute_agent_task(
         ));
         return TaskOutcome::Failed;
     }
-    let spec =
+    let context_rows = match db.list_node_results(&task.run_id) {
+        Ok(rows) => rows,
+        Err(e) => return agent_failure(db, task, node_id, &e.to_string()),
+    };
+    let rendered = match crate::prompt::compose_agent_context(
+        &rendered,
+        &task.node.config.context_refs,
+        task.node.config.context_max_chars,
+        &context_rows,
+    ) {
+        Ok(prompt) => prompt,
+        Err(e) => return agent_failure(db, task, node_id, &e),
+    };
+    let mut spec =
         match build_agent_command(&profile, &rendered, task.node.config.working_dir.as_deref()) {
             Ok(spec) => spec,
             Err(e) => {
@@ -1314,6 +1364,114 @@ async fn execute_agent_task(
                 return TaskOutcome::Failed;
             }
         };
+    let mut managed = None;
+    let mut group_guard = None;
+    if let Some(template) = task.node.config.session_group.as_deref() {
+        let group = match crate::prompt::render_prompt_strict(template, &vars) {
+            Ok(group)
+                if !group.trim().is_empty()
+                    && group.chars().count() <= 256
+                    && !group.contains(['\0', '\n', '\r']) =>
+            {
+                group
+            }
+            Ok(_) => {
+                return agent_failure(
+                    db,
+                    task,
+                    node_id,
+                    "Rendered session group must be 1–256 characters with no line breaks.",
+                )
+            }
+            Err(e) => return agent_failure(db, task, node_id, &e),
+        };
+        let cwd = match spec
+            .working_dir
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(std::env::current_dir)
+            .and_then(std::fs::canonicalize)
+        {
+            Ok(dir) => dir.to_string_lossy().into_owned(),
+            Err(e) => {
+                return agent_failure(
+                    db,
+                    task,
+                    node_id,
+                    &format!("Cannot resolve session working directory: {e}"),
+                )
+            }
+        };
+        let key = match serde_json::to_string(&(&profile, &cwd, &group)) {
+            Ok(key) => key,
+            Err(e) => return agent_failure(db, task, node_id, &e.to_string()),
+        };
+        let lock = task
+            .session_locks
+            .lock()
+            .await
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        group_guard = Some(lock.lock_owned().await);
+        if flag.load(Ordering::SeqCst) {
+            let _ = db.record_node_result(NewNodeResult::simple(
+                &task.run_id,
+                node_id,
+                "cancelled",
+                None,
+                Some("Cancelled by user."),
+            ));
+            return TaskOutcome::Cancelled;
+        }
+        let rows = match db.list_node_results(&task.run_id) {
+            Ok(rows) => rows,
+            Err(e) => return agent_failure(db, task, node_id, &e.to_string()),
+        };
+        let previous = rows.iter().rev().find_map(|row| {
+            let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).ok()?;
+            (metadata["agentSession"]["key"].as_str() == Some(&key)).then_some((row, metadata))
+        });
+        let mut resume_id = None;
+        let mut turn = 1;
+        if let Some((row, value)) = previous {
+            let session = &value["agentSession"];
+            let count = session["turn"].as_u64().unwrap_or(0);
+            if row.status == "succeeded"
+                && session["usable"].as_bool() == Some(true)
+                && count > 0
+                && count < u64::from(task.node.config.session_max_turns.unwrap_or(4))
+            {
+                if let Some(id) = session["id"]
+                    .as_str()
+                    .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                {
+                    resume_id = Some(id.to_string());
+                    turn = count as u32 + 1;
+                }
+            }
+        }
+        spec = match build_session_command(
+            &profile,
+            &rendered,
+            task.node.config.working_dir.as_deref(),
+            resume_id.as_deref(),
+        ) {
+            Ok(spec) => spec,
+            Err(e) => return agent_failure(db, task, node_id, &e),
+        };
+        spec.working_dir = Some(cwd);
+        managed = Some(ManagedAgent {
+            profile: profile.clone(),
+            prompt: rendered.clone(),
+            node_dir: task.node.config.working_dir.clone(),
+            key,
+            group,
+            resume_id,
+            turn,
+        });
+    }
     if let Some(dir) = spec.working_dir.as_deref() {
         let _ = db.touch_known_folder(dir);
     }
@@ -1324,7 +1482,7 @@ async fn execute_agent_task(
         .unwrap_or(profile.default_timeout_secs)
         .clamp(1, MAX_TIMEOUT_SECS);
     let retry = task.node.config.retry.clone();
-    run_with_retries(RetryRequest {
+    let outcome = run_with_retries(RetryRequest {
         db,
         run_id: &task.run_id,
         node_id,
@@ -1333,10 +1491,24 @@ async fn execute_agent_task(
         working_dir: spec.working_dir.as_deref(),
         timeout: Duration::from_secs(timeout),
         retry,
+        agent: managed.as_ref(),
         extend_on_output: task.node.config.extend_on_output,
         flag,
     })
-    .await
+    .await;
+    drop(group_guard);
+    outcome
+}
+
+fn agent_failure(db: &SqliteDb, task: &TaskInput, node_id: &str, error: &str) -> TaskOutcome {
+    let _ = db.record_node_result(NewNodeResult::simple(
+        &task.run_id,
+        node_id,
+        "failed",
+        None,
+        Some(error),
+    ));
+    TaskOutcome::Failed
 }
 
 /// Resolve the repository root for integration nodes: explicit node
@@ -2356,6 +2528,7 @@ struct RetryRequest<'a> {
     working_dir: Option<&'a str>,
     timeout: Duration,
     retry: Option<crate::workflow::RetryPolicy>,
+    agent: Option<&'a ManagedAgent>,
     extend_on_output: bool,
     flag: &'a Arc<AtomicBool>,
 }
@@ -2370,13 +2543,18 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         working_dir,
         timeout,
         retry,
+        agent,
         extend_on_output,
         flag,
     } = request;
-    let max_attempts = retry
-        .as_ref()
-        .map(|r| r.max_attempts.clamp(1, 10))
-        .unwrap_or(1);
+    let max_attempts = if agent.is_some_and(|a| a.resume_id.is_some()) {
+        1
+    } else {
+        retry
+            .as_ref()
+            .map(|r| r.max_attempts.clamp(1, 10))
+            .unwrap_or(1)
+    };
     let delay_ms = retry.as_ref().map(|r| r.delay_ms.min(60_000)).unwrap_or(0);
     let backoff = retry.as_ref().map(|r| r.backoff).unwrap_or(false);
     if let Some(dir) = working_dir {
@@ -2395,26 +2573,80 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         }
         let started = Instant::now();
         let live_id = db.start_node_result(run_id, node_id, attempt).ok();
-        let outcome = run_command_cancellable(
+        let stream = agent.map(|a| Arc::new(Mutex::new(AgentOutput::new(a.profile.adapter))));
+        let retry_spec = if attempt > 1 {
+            match agent
+                .map(|a| build_session_command(&a.profile, &a.prompt, a.node_dir.as_deref(), None))
+                .transpose()
+            {
+                Ok(spec) => spec,
+                Err(e) => {
+                    let _ = db.record_node_result(NewNodeResult::simple(
+                        run_id,
+                        node_id,
+                        "failed",
+                        None,
+                        Some(&e),
+                    ));
+                    return TaskOutcome::Failed;
+                }
+            }
+        } else {
+            None
+        };
+        let outcome = run_command_with_output(
             executable,
-            args,
+            retry_spec
+                .as_ref()
+                .map(|s| s.args.as_slice())
+                .unwrap_or(args),
             working_dir,
             timeout,
             extend_on_output,
             flag,
             live_id.map(|id| (db.as_ref(), id)),
+            stream.clone(),
         )
         .await;
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         match outcome {
             CommandOutcome::Completed {
                 code,
-                stdout,
-                stderr,
+                mut stdout,
+                mut stderr,
             } => {
-                let structured = severity_scan(&stdout)
-                    .map(|sev| format!("{{\"severity\":\"{sev}\"}}"))
-                    .unwrap_or_else(|| "{}".to_string());
+                let mut code = code;
+                let mut metadata = serde_json::json!({});
+                if let (Some(a), Some(stream)) = (agent, &stream) {
+                    if let Ok(mut decoded) = stream.lock() {
+                        decoded.finish();
+                        stdout = decoded
+                            .text
+                            .clone()
+                            .unwrap_or_else(|| decoded.activity.clone());
+                        let expected_id = if attempt == 1 {
+                            a.resume_id.as_deref()
+                        } else {
+                            None
+                        };
+                        if expected_id.is_some() && decoded.session_id.as_deref() != expected_id {
+                            decoded.error = Some("CLI returned a different session id; the conversation will not be reused.".into());
+                        }
+                        if !decoded.success() && code == Some(0) {
+                            code = Some(1);
+                        }
+                        if let Some(error) = &decoded.error {
+                            stderr.push_str(&format!("\n{error}"));
+                        }
+                        metadata["agentSession"] = serde_json::json!({"key":a.key,"group":a.group,"id":decoded.session_id,"turn":if attempt == 1 {a.turn}else{1},"reused":expected_id.is_some(),"usable":code == Some(0) && decoded.success() && decoded.session_id.is_some()});
+                        metadata["agentUsage"] = decoded.usage.clone();
+                        metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    }
+                }
+                if let Some(severity) = severity_scan(&stdout) {
+                    metadata["severity"] = serde_json::json!(severity);
+                }
+                let structured = metadata.to_string();
                 if code == Some(0) {
                     persist_command_result(
                         db,
@@ -2436,7 +2668,11 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 }
                 let last = attempt == max_attempts;
                 let error = if last {
-                    format!("Command exited with status {}.", code.unwrap_or(-1))
+                    if agent.is_some_and(|a| a.resume_id.is_some()) {
+                        format!("Resumed agent exited with status {}. Automatic retries are disabled for resumed turns; the next node in this group starts fresh.", code.unwrap_or(-1))
+                    } else {
+                        format!("Command exited with status {}.", code.unwrap_or(-1))
+                    }
                 } else {
                     let wait = retry_delay(delay_ms, backoff, attempt);
                     format!(
@@ -2476,6 +2712,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 }
             }
             CommandOutcome::Cancelled { stdout, stderr } => {
+                let metadata = agent.map(|a|serde_json::json!({"agentSession":{"key":a.key,"group":a.group,"usable":false},"agentActivity":stream.as_ref().and_then(|s|s.lock().ok()).map(|s|s.activity.clone()).unwrap_or_default()})).unwrap_or_else(||serde_json::json!({})).to_string();
                 persist_command_result(
                     db,
                     live_id,
@@ -2489,7 +2726,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                         error: Some("Cancelled by user."),
                         attempt,
                         duration_ms,
-                        structured_json: "{}",
+                        structured_json: &metadata,
                     },
                 );
                 return TaskOutcome::Cancelled;
@@ -2569,9 +2806,14 @@ fn contains_token(text: &str, token: &str) -> bool {
 }
 
 fn severity_from_json(structured_json: &str) -> Option<String> {
-    serde_json::from_str::<HashMap<String, String>>(structured_json)
+    serde_json::from_str::<serde_json::Value>(structured_json)
         .ok()
-        .and_then(|map| map.get("severity").cloned())
+        .and_then(|value| {
+            value
+                .get("severity")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
 }
 
 fn branch_of_row(row: &StoredNodeResult) -> Option<bool> {
@@ -2720,6 +2962,7 @@ enum CommandOutcome {
 /// ("AI is working, not hanging"): every stdout/stderr chunk restarts the
 /// countdown, up to MAX_TIMEOUT_SECS total. Partial output is always kept, so
 /// a killed run still shows what the process produced.
+#[cfg(test)]
 async fn run_command_cancellable(
     executable: &str,
     args: &[String],
@@ -2728,6 +2971,30 @@ async fn run_command_cancellable(
     extend_on_output: bool,
     cancel: &Arc<AtomicBool>,
     progress: Option<(&SqliteDb, i64)>,
+) -> CommandOutcome {
+    run_command_with_output(
+        executable,
+        args,
+        working_dir,
+        timeout,
+        extend_on_output,
+        cancel,
+        progress,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_command_with_output(
+    executable: &str,
+    args: &[String],
+    working_dir: Option<&str>,
+    timeout: Duration,
+    extend_on_output: bool,
+    cancel: &Arc<AtomicBool>,
+    progress: Option<(&SqliteDb, i64)>,
+    agent_output: Option<Arc<Mutex<AgentOutput>>>,
 ) -> CommandOutcome {
     if executable.trim().is_empty() {
         return CommandOutcome::Completed {
@@ -2785,6 +3052,7 @@ async fn run_command_cancellable(
         stdout: Vec::new(),
         stderr: Vec::new(),
         last_output: started,
+        agent_output: agent_output.clone(),
     }));
     async fn pump_pipe<R>(
         pipe: Option<R>,
@@ -2821,13 +3089,16 @@ async fn run_command_cancellable(
     ));
     let take_output = |ceiling_hit: bool| {
         let guard = capture.lock().ok();
-        let (stdout, mut stderr) = match guard.as_deref() {
+        let (mut stdout, mut stderr) = match guard.as_deref() {
             Some(c) => (
                 String::from_utf8_lossy(&c.stdout).into_owned(),
                 String::from_utf8_lossy(&c.stderr).into_owned(),
             ),
             None => (String::new(), String::new()),
         };
+        if let Some(output) = agent_output.as_ref().and_then(|s| s.lock().ok()) {
+            stdout = output.activity.clone();
+        }
         if ceiling_hit {
             stderr.push_str(&format!(
                 "\nStopped after {}s (extend-on-output ceiling of 12 h).",
@@ -2851,10 +3122,22 @@ async fn run_command_cancellable(
         if now.duration_since(last_flush) >= Duration::from_millis(250) {
             if let Some((db, id)) = progress {
                 if let Ok(guard) = capture.lock() {
-                    let current = (guard.stdout.len(), guard.stderr.len());
+                    let current = (
+                        agent_output
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|s| s.activity.len())
+                            .unwrap_or(guard.stdout.len()),
+                        guard.stderr.len(),
+                    );
                     if current != last_persisted {
-                        let stdout =
-                            truncate_chars(String::from_utf8_lossy(&guard.stdout).into_owned());
+                        let stdout = agent_output
+                            .as_ref()
+                            .and_then(|s| s.lock().ok())
+                            .map(|s| s.activity.clone())
+                            .unwrap_or_else(|| {
+                                truncate_chars(String::from_utf8_lossy(&guard.stdout).into_owned())
+                            });
                         let stderr =
                             truncate_chars(String::from_utf8_lossy(&guard.stderr).into_owned());
                         let _ = db.update_node_output(id, &stdout, &stderr);
@@ -2991,6 +3274,7 @@ mod tests {
             stdout: Vec::new(),
             stderr: Vec::new(),
             last_output: Instant::now() - Duration::from_secs(10),
+            agent_output: None,
         };
         let chunk = vec![b'a'; 8192];
         for _ in 0..200 {
@@ -3046,6 +3330,7 @@ mod tests {
 
     fn task_with_defaults(node: Node, defaults: Option<WorkflowDefaults>) -> TaskInput {
         TaskInput {
+            session_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             node,
             workflow_id: "wf".to_string(),
             workflow_name: "W".to_string(),
@@ -3679,6 +3964,317 @@ mod tests {
             nodes,
             edges,
         }
+    }
+
+    #[cfg(unix)]
+    fn fake_session_profile(
+        dir: &std::path::Path,
+        adapter: crate::agents::AdapterKind,
+    ) -> AgentProfile {
+        use std::os::unix::fs::PermissionsExt;
+        let cli = dir.join("fake-cli");
+        let state = shell_escape::escape(dir.join("count").to_string_lossy()).into_owned();
+        let argv = shell_escape::escape(dir.join("argv").to_string_lossy()).into_owned();
+        let output = match adapter {
+            crate::agents::AdapterKind::Claude => "printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"%s\"}\\n' \"$sid\"\nprintf '{\"type\":\"result\",\"is_error\":false,\"session_id\":\"%s\",\"result\":\"FINAL MATERIAL=no\",\"usage\":{\"input_tokens\":11,\"output_tokens\":2}}\\n' \"$sid\"",
+            _ => "printf '{\"type\":\"thread.started\",\"thread_id\":\"%s\"}\\n' \"$sid\"\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"FINAL MATERIAL=no\"}}' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":11,\"cached_input_tokens\":8,\"output_tokens\":2}}'",
+        };
+        let script = format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" >> {argv}\nsid=\nnext=0\nfor arg in \"$@\"; do\n if [ \"$next\" = 1 ]; then sid=$arg; next=0; fi\n case \"$arg\" in --resume|resume) next=1;; esac\ndone\nif [ -z \"$sid\" ]; then\n count=$(cat {state} 2>/dev/null || printf 0)\n count=$((count+1))\n printf '%s' \"$count\" > {state}\n sid=$(printf '00000000-0000-4000-8000-%012d' \"$count\")\nfi\n{output}\n");
+        std::fs::write(&cli, script).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut p = echo_profile("session-profile");
+        p.adapter = adapter;
+        p.executable = Some(cli.to_string_lossy().into_owned());
+        p.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        p
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_timeout_keeps_activity_and_starts_next_turn_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = fake_session_profile(dir.path(), crate::agents::AdapterKind::Claude);
+        let cli = profile.executable.as_deref().unwrap();
+        let script = std::fs::read_to_string(cli).unwrap().replace(
+            "\nprintf '{\"type\":\"system\"",
+            "\nif [ \"${count:-0}\" = 1 ]; then printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Partial progress\"}]}}'; exec sleep 5; fi\nprintf '{\"type\":\"system\"",
+        );
+        std::fs::write(cli, script).unwrap();
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.session_group = Some("dev".into());
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        wf.nodes[1].config.timeout_secs = Some(1);
+        let mut next = wf.nodes[1].clone();
+        next.id = "next".into();
+        next.config.timeout_secs = Some(60);
+        wf.nodes.push(next);
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "agent1", "next", Some("failure")),
+            edge("3", "next", "end", None),
+        ];
+        run_to_end(&db, &engine, wf, "timed-context").await;
+        let rows = db.list_node_results("timed-context").unwrap();
+        let first = rows.iter().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(first.status, "failed");
+        assert!(first.stdout.contains("Partial progress"));
+        let metadata: serde_json::Value = serde_json::from_str(&first.structured_json).unwrap();
+        assert_eq!(metadata["agentSession"]["usable"], false);
+        let next = rows.iter().find(|r| r.node_id == "next").unwrap();
+        assert_eq!(next.status, "succeeded");
+        let metadata: serde_json::Value = serde_json::from_str(&next.structured_json).unwrap();
+        assert_eq!(metadata["agentSession"]["reused"], false);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_groups_are_isolated_by_effective_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = fake_session_profile(dir.path(), crate::agents::AdapterKind::Codex);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.session_group = Some("dev".into());
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        let mut next = wf.nodes[1].clone();
+        next.id = "next".into();
+        next.config.working_dir = Some(other.path().to_string_lossy().into_owned());
+        wf.nodes.push(next);
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "agent1", "next", None),
+            edge("3", "next", "end", None),
+        ];
+        run_to_end(&db, &engine, wf, "dir-context").await;
+        let rows = db.list_node_results("dir-context").unwrap();
+        for row in rows
+            .iter()
+            .filter(|r| r.node_id == "agent1" || r.node_id == "next")
+        {
+            assert_eq!(row.status, "succeeded");
+            let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+            assert_eq!(metadata["agentSession"]["reused"], false);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_sessions_resume_after_approval_rotate_and_keep_conditions_readable() {
+        for adapter in [
+            crate::agents::AdapterKind::Claude,
+            crate::agents::AdapterKind::Codex,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (db, engine) = harness();
+            db.upsert_agent_profile(&fake_session_profile(dir.path(), adapter))
+                .unwrap();
+            let mut wf = agent_workflow("session-profile");
+            let mut first = wf.nodes[1].clone();
+            first.config.session_group = Some("dev".into());
+            first.config.session_max_turns = Some(2);
+            first.config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+            wf.nodes[1] = first.clone();
+            let mut second = first.clone();
+            second.id = "agent2".into();
+            second.config.prompt = Some("Fix using {{node.agent1.output}}".into());
+            second.config.context_refs = vec!["agent1".into()];
+            let mut third = first;
+            third.id = "agent3".into();
+            wf.nodes.push(simple_node("gate", NodeKind::Approval, 1.0));
+            wf.nodes.extend([second, third]);
+            wf.edges = vec![
+                edge("1", "start", "agent1", None),
+                edge("2", "agent1", "gate", None),
+                edge("3", "gate", "agent2", None),
+                edge("4", "agent2", "agent3", None),
+                edge("5", "agent3", "end", None),
+            ];
+            run_to_end(&db, &engine, wf.clone(), "session-run").await;
+            assert_eq!(
+                db.get_run("session-run").unwrap().unwrap().status,
+                RunStatus::Paused
+            );
+            engine
+                .approve_run("session-run", true, None, wf.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                db.get_run("session-run").unwrap().unwrap().status,
+                RunStatus::Succeeded
+            );
+            let rows = db.list_node_results("session-run").unwrap();
+            let agents: Vec<_> = rows
+                .iter()
+                .filter(|r| r.node_id.starts_with("agent"))
+                .collect();
+            for row in &agents {
+                assert_eq!(row.stdout, "FINAL MATERIAL=no");
+            }
+            let metadata: Vec<serde_json::Value> = agents
+                .iter()
+                .map(|r| serde_json::from_str(&r.structured_json).unwrap())
+                .collect();
+            assert_eq!(metadata[1]["agentSession"]["reused"], true);
+            assert_eq!(metadata[1]["agentSession"]["turn"], 2);
+            assert_eq!(metadata[2]["agentSession"]["reused"], false);
+            assert_ne!(
+                metadata[0]["agentSession"]["id"],
+                metadata[2]["agentSession"]["id"]
+            );
+            assert_eq!(metadata[1]["agentUsage"]["input_tokens"], 11);
+            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+            assert!(argv.contains("Workflow handoff excerpts"));
+            assert!(
+                argv.contains(if adapter == crate::agents::AdapterKind::Claude {
+                    "--resume\n"
+                } else {
+                    "resume\n"
+                })
+            );
+            // A separate run with the same group cannot pick this run's session.
+            engine.start_run(&wf, "other-run", &empty_inputs()).unwrap();
+            engine.execute(wf, "other-run".into()).await;
+            let other = db.list_node_results("other-run").unwrap();
+            let first = other.iter().find(|r| r.node_id == "agent1").unwrap();
+            let value: serde_json::Value = serde_json::from_str(&first.structured_json).unwrap();
+            assert_eq!(value["agentSession"]["reused"], false);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn parallel_group_members_serialize_and_profile_edits_start_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = fake_session_profile(dir.path(), crate::agents::AdapterKind::Claude);
+        let cli = dir.path().join("fake-cli");
+        let script = std::fs::read_to_string(&cli).unwrap();
+        let active = shell_escape::escape(dir.path().join("active").to_string_lossy()).into_owned();
+        std::fs::write(
+            &cli,
+            script.replace(
+                "set -eu",
+                &format!(
+                    "set -eu\nmkdir {active} || exit 9\ntrap 'rmdir {active}' EXIT\nsleep 0.1"
+                ),
+            ),
+        )
+        .unwrap();
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.session_group = Some("dev".into());
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        let mut second = wf.nodes[1].clone();
+        second.id = "agent2".into();
+        // Canonical directory aliases still address the same group.
+        second.config.working_dir = Some(dir.path().join(".").to_string_lossy().into_owned());
+        wf.nodes.push(second);
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "start", "agent2", None),
+            edge("3", "agent1", "end", None),
+            edge("4", "agent2", "end", None),
+        ];
+        run_to_end(&db, &engine, wf.clone(), "parallel-session").await;
+        assert_eq!(
+            db.get_run("parallel-session").unwrap().unwrap().status,
+            RunStatus::Succeeded
+        );
+        let rows = db.list_node_results("parallel-session").unwrap();
+        let resumed = rows
+            .iter()
+            .filter(|r| {
+                serde_json::from_str::<serde_json::Value>(&r.structured_json).unwrap()
+                    ["agentSession"]["reused"]
+                    == true
+            })
+            .count();
+        assert_eq!(resumed, 1);
+
+        // Pause, edit the profile, resume: old conversation must be ignored.
+        wf.nodes.push(simple_node("gate", NodeKind::Approval, 1.0));
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "agent1", "gate", None),
+            edge("3", "gate", "agent2", None),
+            edge("4", "agent2", "end", None),
+        ];
+        run_to_end(&db, &engine, wf.clone(), "edited-profile").await;
+        let mut changed = profile;
+        changed.model = Some("different".into());
+        db.upsert_agent_profile(&changed).unwrap();
+        engine
+            .approve_run("edited-profile", true, None, wf)
+            .await
+            .unwrap();
+        let rows = db.list_node_results("edited-profile").unwrap();
+        let second = rows.iter().find(|r| r.node_id == "agent2").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&second.structured_json).unwrap()
+                ["agentSession"]["reused"],
+            false
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_resume_is_not_retried_and_invalidates_the_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = fake_session_profile(dir.path(), crate::agents::AdapterKind::Claude);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.session_group = Some("dev".into());
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        let mut second = wf.nodes[1].clone();
+        second.id = "agent2".into();
+        second.config.retry = Some(RetryPolicy {
+            max_attempts: 3,
+            delay_ms: 0,
+            backoff: false,
+        });
+        let mut third = wf.nodes[1].clone();
+        third.id = "agent3".into();
+        wf.nodes
+            .extend([simple_node("gate", NodeKind::Approval, 1.0), second, third]);
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "agent1", "gate", None),
+            edge("3", "gate", "agent2", None),
+            edge("4", "agent2", "agent3", Some("failure")),
+            edge("5", "agent3", "end", None),
+        ];
+        run_to_end(&db, &engine, wf.clone(), "failed-session").await;
+        let cli = dir.path().join("fake-cli");
+        let script = std::fs::read_to_string(&cli).unwrap();
+        let fail="if [ -n \"$sid\" ]; then printf '{\"type\":\"result\",\"session_id\":\"%s\",\"is_error\":true,\"errors\":[\"resume failed\"]}\\n' \"$sid\"; exit 0; fi\n";
+        std::fs::write(
+            &cli,
+            script.replace(
+                "if [ -z \"$sid\" ]; then",
+                &format!("{fail}if [ -z \"$sid\" ]; then"),
+            ),
+        )
+        .unwrap();
+        engine
+            .approve_run("failed-session", true, None, wf)
+            .await
+            .unwrap();
+        let rows = db.list_node_results("failed-session").unwrap();
+        assert_eq!(rows.iter().filter(|r| r.node_id == "agent2").count(), 1);
+        let failed = rows.iter().find(|r| r.node_id == "agent2").unwrap();
+        assert_eq!(failed.status, "failed");
+        assert!(failed.stderr.contains("resume failed"));
+        let fresh = rows.iter().find(|r| r.node_id == "agent3").unwrap();
+        assert_eq!(fresh.status, "succeeded");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fresh.structured_json).unwrap()
+                ["agentSession"]["reused"],
+            false
+        );
     }
 
     #[tokio::test]

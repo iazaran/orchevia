@@ -3,6 +3,28 @@ import { createEmptyWorkflow } from './workflow';
 import { encodeDocument, decodeDocument } from './workflow-document';
 import { remapConfigReferences } from './workflow-document';
 
+it('keeps cost controls portable and remaps their node references', () => {
+  const config = {
+    sessionGroup: 'item-{{ node.old.output }}',
+    sessionMaxTurns: 3,
+    contextRefs: ['old'],
+    contextMaxChars: 1000,
+  };
+  expect(remapConfigReferences(config, { old: 'fresh' })).toEqual({
+    ...config,
+    sessionGroup: 'item-{{ node.fresh.output }}',
+    contextRefs: ['fresh'],
+  });
+  const wf = createEmptyWorkflow('Context');
+  wf.nodes[1]!.config = {
+    ...config,
+    contextRefs: [wf.nodes[0]!.id],
+    sessionGroup: 'work',
+  };
+  const encoded = encodeDocument(wf, []);
+  expect(decodeDocument(encoded.json, [], {}, wf, encoded.nodeIds)).toEqual(wf);
+});
+
 it('keeps condition right operands literal as required by the runtime evaluator', () => {
   const condition = {
     logic: 'and' as const,

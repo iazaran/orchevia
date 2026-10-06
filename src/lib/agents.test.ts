@@ -10,6 +10,7 @@ import {
   validateProfile,
   type AgentProfile,
   mergeModelSuggestions,
+  composeAgentContext,
   type AdapterKind,
 } from './agents';
 
@@ -95,6 +96,29 @@ describe('agent profiles', () => {
 });
 
 describe('prompt composition', () => {
+  it('bounds Unicode handoffs without changing stored output and refuses incomplete context', () => {
+    const stdout = `START${'🙂'.repeat(1000)}END`;
+    const rows = [
+      {
+        id: 1,
+        runId: 'r',
+        nodeId: 'n',
+        status: 'succeeded',
+        stdout,
+        stderr: '',
+        startedAt: '',
+      },
+    ];
+    const text = composeAgentContext('Work', ['n'], 256, rows);
+    expect(text).toContain('START');
+    expect(text.endsWith('END')).toBe(true);
+    expect(text).toContain('context truncated');
+    expect(Array.from(text).length).toBeLessThan(420);
+    expect(rows[0]!.stdout).toBe(stdout);
+    expect(() =>
+      composeAgentContext('Work', ['n'], 256, [{ ...rows[0]!, status: 'running' }]),
+    ).toThrow('completed');
+  });
   it('substitutes workflow and node variables', () => {
     const out = renderPromptLenient('Implement {{ticket.key}} for {{workflow.name}}', {
       'ticket.key': 'DEV-1',
@@ -142,7 +166,7 @@ describe('prompt composition', () => {
 });
 
 describe('recommendations', () => {
-  it('matches the seven configured models and preserves custom profiles', () => {
+  it('matches the eight configured models and preserves custom profiles', () => {
     const profiles = recommendedProfiles([]);
     expect(profiles.map((p) => p.model)).toEqual([
       'opus',
@@ -152,17 +176,32 @@ describe('recommendations', () => {
       'fable',
       'fable',
       'gpt-6.1-sol',
+      'opus',
     ]);
     expect(profiles.filter((p) => p.role === 'deepReview')).toHaveLength(2);
     expect(
       profiles.every(
         (p) =>
-          p.effort === 'high' &&
+          p.effort === (p.role === 'generalPurpose' ? 'medium' : 'high') &&
           p.defaultTimeoutSecs === 3600 &&
           p.workingDirMode === 'node' &&
           p.skills?.length === 0,
       ),
     ).toBe(true);
+    expect(profiles.find((p) => p.role === 'generalPurpose')).toMatchObject({
+      name: 'Claude — General purpose',
+      model: 'opus',
+      effort: 'medium',
+    });
+    expect(
+      recommendedProfiles([
+        {
+          ...createDefaultProfile('claude'),
+          name: 'Claude — General purpose',
+          role: undefined,
+        },
+      ]).some((p) => p.role === 'generalPurpose'),
+    ).toBe(false);
     expect(recommendedProfiles(profiles)).toEqual([]);
     const custom = {
       ...createDefaultProfile('claude'),

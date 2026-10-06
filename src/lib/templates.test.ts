@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
+import type { NodeConfig } from './workflow';
 
 it('creates independent workflow clones on repeated template use', () => {
   const template = builtinTemplates()[0];
@@ -172,4 +173,32 @@ it('refuses machine-only profile bindings while allowing a portable role fallbac
   expect(await backend.exportTemplate(imported.id, false)).toContain(
     '"role": "deepReview"',
   );
+});
+
+it('ships bounded handoffs and implementation sessions in portable built-ins', () => {
+  const templates = builtinTemplates();
+  const ticket = templates.find((t) => t.id === 'ticket-to-pr')!;
+  const config = (id: string): NodeConfig =>
+    ticket.workflow.nodes.find((n) => n.id === id)!.config;
+  expect(config('impl').sessionGroup).toBe('implementation-{{input.ticket}}');
+  expect(config('fix').sessionGroup).toBe(config('impl').sessionGroup);
+  expect(config('fix').contextRefs).toEqual(['rev_fast', 'rev_deep']);
+  expect(config('rev_fast').sessionGroup).toBeUndefined();
+  const preview = instantiateTemplateLocal(ticket, {
+    implementation: 'impl-profile',
+    fastReview: 'fast-profile',
+    deepReview: 'deep-profile',
+  });
+  const fix = preview.workflow.nodes.find((n) => n.label === 'Fix findings')!;
+  expect(fix.config.contextRefs).toEqual(
+    preview.workflow.nodes
+      .filter((n) => ['Claude Review', 'Codex Review'].includes(n.label ?? ''))
+      .map((n) => n.id),
+  );
+  for (const template of templates) {
+    for (const node of template.workflow.nodes.filter(
+      (n) => n.config.contextRefs?.length,
+    ))
+      expect(node.config.contextMaxChars).toBe(12000);
+  }
 });

@@ -252,3 +252,56 @@ it('shows the profile chosen from a template role default', async () => {
     screen.getByText(/Uses A reviewer.*Claude Code.*chosen-model/),
   ).toBeInTheDocument();
 });
+
+it('edits optional session and bounded context settings without blur', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Context inspector');
+  workflow.nodes.push({
+    id: 'agent',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { prompt: 'Task' },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'agent',
+    selectedEdgeId: null,
+    overlayRunId: null,
+    profiles: [],
+  });
+  render(<NodeInspector />);
+  fireEvent.change(screen.getByLabelText('Session group'), { target: { value: 'dev' } });
+  fireEvent.change(screen.getByLabelText('Maximum turns per session'), {
+    target: { value: '3' },
+  });
+  fireEvent.click(
+    screen.getByLabelText(
+      `Context from ${workflow.nodes[0]!.label ?? workflow.nodes[0]!.id}`,
+    ),
+  );
+  fireEvent.change(screen.getByLabelText('Context character budget'), {
+    target: { value: '512' },
+  });
+  await waitFor(async () =>
+    expect(
+      (await backend.getWorkflow(stored.id))?.definition.nodes.find(
+        (n) => n.id === 'agent',
+      )?.config,
+    ).toMatchObject({
+      sessionGroup: 'dev',
+      sessionMaxTurns: 3,
+      contextRefs: [workflow.nodes[0]!.id],
+      contextMaxChars: 512,
+    }),
+  );
+  fireEvent.change(screen.getByLabelText('Session group'), { target: { value: '' } });
+  await waitFor(async () =>
+    expect(
+      (await backend.getWorkflow(stored.id))?.definition.nodes.find(
+        (n) => n.id === 'agent',
+      )?.config.sessionMaxTurns,
+    ).toBeUndefined(),
+  );
+});

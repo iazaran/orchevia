@@ -30,6 +30,9 @@ import {
    async Backend interface with synchronous logic by design. */
 import {
   composeSkillPrompt,
+  composeAgentContext,
+  renderPromptStrict,
+  validateSessionProfile,
   effectiveExecutable,
   referencedVariables,
   validateProfile,
@@ -662,6 +665,21 @@ class MockBackend implements Backend {
       if (input.required && !(effectiveInputs[input.name] ?? '').trim())
         throw new Error(`Workflow input '${input.name}' is required.`);
     }
+    const contextIssues = validateWorkflowLocal(wf.definition).filter(
+      (issue) =>
+        issue.severity === 'error' &&
+        issue.code.startsWith('agent-') &&
+        /session|context/.test(issue.code),
+    );
+    if (contextIssues.length)
+      throw new Error(contextIssues.map((issue) => issue.message).join(' '));
+    for (const node of wf.definition.nodes) {
+      if (node.type !== 'agent' || node.config.sessionGroup === undefined) continue;
+      const profile = this.profiles.get(node.config.agentProfileId ?? '');
+      if (!profile) throw new Error('Unknown Agent Profile.');
+      const errors = validateSessionProfile(profile);
+      if (errors.length) throw new Error(errors.join(' '));
+    }
     const runId = `run-mock-${String(this.counter++)}`;
     const run: StoredRun = {
       id: runId,
@@ -772,11 +790,105 @@ class MockBackend implements Backend {
           }
           return;
         }
-        this.completeResult(
-          live,
-          'succeeded',
-          `mock-agent$ ${profile.adapter} "${node.config.prompt ?? ''}"\nHello from Orchevia (browser mock, profile '${profile.name}').`,
-        );
+        try {
+          const rows = this.results.get(runId) ?? [];
+          const run = this.runs.find((r) => r.id === runId);
+          const vars = mockVariables(
+            workflow,
+            rows.filter((row) => row.id !== live.id),
+            run?.inputs ?? {},
+          );
+          const rendered = renderPromptStrict(node.config.prompt ?? '', vars);
+          if ('error' in rendered) throw new Error(rendered.error);
+          const prompt = composeAgentContext(
+            rendered.rendered,
+            node.config.contextRefs ?? [],
+            node.config.contextMaxChars,
+            rows,
+          );
+          if (node.config.sessionGroup !== undefined) {
+            const errors = validateSessionProfile(profile);
+            if (errors.length) throw new Error(errors.join(' '));
+            const group = renderPromptStrict(node.config.sessionGroup, vars);
+            if ('error' in group) throw new Error(group.error);
+            if (
+              !group.rendered.trim() ||
+              Array.from(group.rendered).length > 256 ||
+              /[\0\r\n]/.test(group.rendered)
+            )
+              throw new Error(
+                'Session group must be 1-256 characters without line breaks.',
+              );
+            // Browser-only approximation: normalize path components, not filesystem symlinks.
+            const dir =
+              profile.workingDirMode === 'profile'
+                ? profile.workingDir
+                : profile.workingDirMode === 'inherit'
+                  ? ''
+                  : (node.config.workingDir ?? workflow.defaults?.repoDir);
+            const key = JSON.stringify([
+              Object.fromEntries(
+                Object.entries(profile).sort(([a], [b]) => a.localeCompare(b)),
+              ),
+              mockDirectory(dir ?? ''),
+              group.rendered,
+            ]);
+            const previous = rows
+              .filter((row) => row.id !== live.id)
+              .slice()
+              .reverse()
+              .map((row) => {
+                try {
+                  return {
+                    row,
+                    data: JSON.parse(row.structuredJson ?? '{}') as {
+                      agentSession?: {
+                        key: string;
+                        id: string;
+                        usable: boolean;
+                        turn: number;
+                      };
+                    },
+                  };
+                } catch {
+                  return { row, data: {} };
+                }
+              })
+              .find((entry) => entry.data.agentSession?.key === key);
+            const prior = previous?.data.agentSession;
+            const reused =
+              previous?.row.status === 'succeeded' &&
+              prior?.usable === true &&
+              prior.turn > 0 &&
+              prior.turn < (node.config.sessionMaxTurns ?? 4);
+            live.structuredJson = JSON.stringify({
+              simulated: true,
+              agentSession: {
+                key,
+                group: group.rendered,
+                id: reused ? prior.id : `mock-session-${String(this.counter++)}`,
+                turn: reused ? prior.turn + 1 : 1,
+                reused,
+                usable: true,
+              },
+            });
+          }
+          this.completeResult(
+            live,
+            'succeeded',
+            `mock-agent$ ${profile.adapter} "${prompt}"\nHello from Orchevia (browser mock, profile '${profile.name}').`,
+          );
+        } catch (error) {
+          this.completeResult(live, 'failed', '');
+          live.error = errorMessage(error);
+          const run = this.runs.find((r) => r.id === runId);
+          if (run) {
+            run.status = 'failed';
+            run.finishedAt = new Date().toISOString();
+          }
+          this.persist();
+          return;
+        }
         continue;
       }
       if (node.type === 'command') {
@@ -969,7 +1081,7 @@ class MockBackend implements Backend {
         displayName: 'Codex',
         defaultExecutable: 'codex',
         supportsModelFlag: true,
-        supportsSessionResume: false,
+        supportsSessionResume: true,
         notes: 'Uses `codex exec <prompt>`.',
       },
       {
@@ -1540,4 +1652,14 @@ export function __setMockBackendForTests(): MockBackend {
   const mock = new MockBackend();
   cached = mock;
   return mock;
+}
+
+function mockDirectory(dir: string): string {
+  const parts: string[] = [];
+  for (const part of dir.replaceAll('\\', '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop();
+    else if (part !== '..' || !dir.startsWith('/')) parts.push(part);
+  }
+  return `${dir.startsWith('/') ? '/' : ''}${parts.join('/')}`;
 }

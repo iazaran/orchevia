@@ -63,7 +63,9 @@
             "args": [],
             "agentRole": "implementation",
             "prompt": "Read the repository instructions first. Implement the approved plan with tests.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["plan"],
+            "contextMaxChars": 12000
           },
           "label": "Implement"
         },
@@ -92,7 +94,9 @@
             "args": [],
             "agentRole": "deepReview",
             "prompt": "Read the repository instructions first. Review for P0/P1; tag severities.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["impl", "tests"],
+            "contextMaxChars": 12000
           },
           "label": "Review"
         },
@@ -203,7 +207,9 @@
             "args": [],
             "agentRole": "fastReview",
             "prompt": "Read the repository instructions first. Fast review with ```finding blocks.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["files"],
+            "contextMaxChars": 12000
           },
           "label": "Claude Review"
         },
@@ -218,7 +224,9 @@
             "args": [],
             "agentRole": "deepReview",
             "prompt": "Read the repository instructions first. Deep review with ```finding blocks.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["files"],
+            "contextMaxChars": 12000
           },
           "label": "Codex Review"
         },
@@ -410,7 +418,9 @@
             "args": [],
             "agentRole": "implementation",
             "prompt": "Read the repository instructions first. Fix the root cause; keep the regression test green.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["repro"],
+            "contextMaxChars": 12000
           },
           "label": "Fix + verify"
         },
@@ -501,7 +511,9 @@
             "args": [],
             "agentRole": "implementation",
             "prompt": "Read the repository instructions first. Refactor {{workflow.name}} without behavior change.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["base"],
+            "contextMaxChars": 12000
           },
           "label": "Refactor"
         },
@@ -628,7 +640,9 @@
             "args": [],
             "agentRole": "fastReview",
             "prompt": "Read the repository instructions first. Review the upgrade diff for breaking changes.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["up", "tests"],
+            "contextMaxChars": 12000
           },
           "label": "Review diff"
         },
@@ -919,7 +933,9 @@
             "args": [],
             "agentRole": "fastReview",
             "prompt": "Read the repository instructions first. Final pass with ```finding blocks.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["tests"],
+            "contextMaxChars": 12000
           },
           "label": "Final review"
         },
@@ -1028,9 +1044,11 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Address the latest review feedback with tests.",
+            "prompt": "Address the latest review feedback with tests. Inspect current PR feedback each turn; do not assume the previous findings are still current.",
             "extendOnOutput": false,
-            "maxVisits": 3
+            "maxVisits": 3,
+            "sessionGroup": "feedback-fixes",
+            "sessionMaxTurns": 4
           },
           "label": "Address feedback"
         },
@@ -1059,9 +1077,11 @@
           "config": {
             "args": [],
             "agentRole": "fastReview",
-            "prompt": "Re-review with ```finding blocks.",
+            "prompt": "Re-review the current diff with ```finding blocks.",
             "extendOnOutput": false,
-            "maxVisits": 3
+            "maxVisits": 3,
+            "contextRefs": ["fix", "tests"],
+            "contextMaxChars": 12000
           },
           "label": "Re-review"
         },
@@ -1212,7 +1232,11 @@
             "args": [],
             "agentRole": "implementation",
             "prompt": "Read the repository instructions first. Implement {{ticket.key}}: {{ticket.title}}. Keep commits small with short messages; run the project's tests before finishing.",
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "contextRefs": ["ticket"],
+            "contextMaxChars": 12000,
+            "sessionGroup": "implementation-{{input.ticket}}",
+            "sessionMaxTurns": 4
           },
           "label": "Implement"
         },
@@ -1228,7 +1252,9 @@
             "agentRole": "fastReview",
             "prompt": "Fast review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.",
             "extendOnOutput": false,
-            "maxVisits": 2
+            "maxVisits": 2,
+            "contextRefs": ["impl"],
+            "contextMaxChars": 12000
           },
           "label": "Claude Review"
         },
@@ -1244,7 +1270,9 @@
             "agentRole": "deepReview",
             "prompt": "Deep review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Do not re-run tests that already passed.",
             "extendOnOutput": false,
-            "maxVisits": 2
+            "maxVisits": 2,
+            "contextRefs": ["impl"],
+            "contextMaxChars": 12000
           },
           "label": "Codex Review"
         },
@@ -1289,7 +1317,11 @@
             "agentRole": "implementation",
             "prompt": "Read the repository instructions first. Address the P0/P1 findings above with tests; keep commits small.",
             "extendOnOutput": false,
-            "maxVisits": 2
+            "maxVisits": 2,
+            "contextRefs": ["rev_fast", "rev_deep"],
+            "contextMaxChars": 12000,
+            "sessionGroup": "implementation-{{input.ticket}}",
+            "sessionMaxTurns": 4
           },
           "label": "Fix findings"
         },

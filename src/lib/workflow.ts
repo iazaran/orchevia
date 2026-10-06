@@ -6,6 +6,8 @@
  * `crates/core/src/workflow.rs`.
  */
 
+import { referencedVariables } from './agents';
+
 export const CURRENT_SCHEMA_VERSION = 6;
 
 /** Upper bound for any node/profile timeout (12 h). Mirrors Rust MAX_TIMEOUT_SECS. */
@@ -100,6 +102,10 @@ export interface NodeConfig {
   agentRole?: string;
   prompt?: string;
   inputRefs?: string[];
+  sessionGroup?: string;
+  sessionMaxTurns?: number;
+  contextRefs?: string[];
+  contextMaxChars?: number;
   timeoutSecs?: number;
   extendOnOutput?: boolean;
   retry?: RetryPolicy;
@@ -589,6 +595,77 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
       });
     }
     if (node.type === 'agent') {
+      const invalid = (code: string, message: string): void => {
+        issues.push({ code, message, severity: 'error', nodeId: node.id });
+      };
+      const group = node.config.sessionGroup;
+      if (group !== undefined) {
+        if (!group.trim() || Array.from(group).length > 256 || /[\0\n\r]/.test(group))
+          invalid(
+            'agent-session-group-invalid',
+            'Session group must be 1–256 characters with no line breaks.',
+          );
+        for (const name of referencedVariables(group.replace(/\\\{\{/g, ''))) {
+          const [kind, id, field] = name.split('.');
+          const known =
+            (kind === 'workflow' && ['id', 'name'].includes(id ?? '')) ||
+            (kind === 'input' && (wf.inputs ?? []).some((i) => i.name === id)) ||
+            (kind === 'ticket' &&
+              [
+                'key',
+                'title',
+                'description',
+                'acceptanceCriteria',
+                'status',
+                'url',
+              ].includes(id ?? '')) ||
+            (kind === 'node' &&
+              ids.has(id ?? '') &&
+              (field === undefined ||
+                ['output', 'status', 'exitCode', 'severity', 'visits'].includes(
+                  field,
+                ))) ||
+            (!name.includes('.') && ids.has(name));
+          if (!known)
+            invalid(
+              'agent-session-variable-invalid',
+              `Session group references unknown variable '${name}'.`,
+            );
+        }
+      }
+      const turns = node.config.sessionMaxTurns;
+      if (
+        turns !== undefined &&
+        (!Number.isInteger(turns) || turns < 1 || turns > 20 || group === undefined)
+      )
+        invalid(
+          'agent-session-turns-invalid',
+          'Session max turns must be 1–20 and requires a session group.',
+        );
+      const contextRefs = node.config.contextRefs ?? [];
+      const chars = node.config.contextMaxChars;
+      if (
+        chars !== undefined &&
+        (!Number.isInteger(chars) ||
+          chars < 256 ||
+          chars > 64000 ||
+          contextRefs.length === 0)
+      )
+        invalid(
+          'agent-context-limit-invalid',
+          'Context budget must be 256–64000 characters and requires context references.',
+        );
+      const seen = new Set<string>();
+      if (contextRefs.length > 16)
+        invalid('agent-context-ref-invalid', 'Select at most 16 context references.');
+      for (const id of contextRefs) {
+        if (id === node.id || !ids.has(id) || seen.has(id))
+          invalid(
+            'agent-context-ref-invalid',
+            `Context reference '${id}' must be a unique, existing, different node.`,
+          );
+        seen.add(id);
+      }
       const hasProfile = (node.config.agentProfileId ?? '').trim() !== '';
       const hasRole = (node.config.agentRole ?? '').trim() !== '';
       if (!hasProfile && !hasRole) {
@@ -947,19 +1024,27 @@ export function createAgentDemoWorkflow(profileIds: {
       420,
       'Claude — Implement',
       profileIds.implement,
-      'Implement the approved plan.\n\nPlan output:\n{{node.' + ids.plan + '.output}}',
+      'Implement the approved plan supplied in the handoff. Verify details in the repository and run tests.',
     ),
     agentNode(
       ids.review,
       540,
       'Codex — Review',
       profileIds.review,
-      'Review the implementation diff for correctness and regressions.\n\nImplementation output:\n{{node.' +
-        ids.impl +
-        '.output}}',
+      'Review the current implementation diff for correctness and regressions. Use the handoff as orientation and inspect the full diff.',
     ),
     { id: ids.end, type: 'end', position: { x: 80, y: 660 }, config: {}, label: 'End' },
   ];
+  for (const node of nodes) {
+    if (node.id === ids.impl) {
+      node.config.contextRefs = [ids.plan];
+      node.config.contextMaxChars = 12000;
+    }
+    if (node.id === ids.review) {
+      node.config.contextRefs = [ids.impl];
+      node.config.contextMaxChars = 12000;
+    }
+  }
   const chain = [ids.start, ids.plan, ids.gate, ids.impl, ids.review, ids.end];
   const edges: WorkflowEdge[] = chain.slice(0, -1).map((source, i) => {
     const target = chain[i + 1];
@@ -1021,9 +1106,9 @@ export function createReviewWorkflow(profileIds: {
       config: {
         agentProfileId: profileIds.fastReview,
         prompt:
-          'Fast review: report findings as ```finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.\n\nPR files:\n{{node.' +
-          ids.files +
-          '.output}}',
+          'Fast review of the current PR diff: report findings as ```finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Inspect the full diff; the handoff is an excerpt.',
+        contextRefs: [ids.details, ids.files],
+        contextMaxChars: 12000,
       },
       label: 'Claude Review',
     },
@@ -1034,9 +1119,9 @@ export function createReviewWorkflow(profileIds: {
       config: {
         agentProfileId: profileIds.deepReview,
         prompt:
-          'Deep review: report findings as ```finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.\n\nPR files:\n{{node.' +
-          ids.files +
-          '.output}}',
+          'Deep review of the current PR diff: report findings as ```finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Inspect the full diff; the handoff is an excerpt.',
+        contextRefs: [ids.details, ids.files],
+        contextMaxChars: 12000,
       },
       label: 'Codex Review',
     },
@@ -1136,6 +1221,8 @@ export function createReviewLoopDemoWorkflow(profileIds: {
       config: {
         agentProfileId: profileIds.implement,
         prompt: 'Implement {{workflow.name}} with tests.',
+        sessionGroup: 'implementation',
+        sessionMaxTurns: 4,
         maxVisits: 2,
       },
       label: 'Implement',
@@ -1147,9 +1234,9 @@ export function createReviewLoopDemoWorkflow(profileIds: {
       config: {
         agentProfileId: profileIds.reviewA,
         prompt:
-          'Review for P0/P1 defects. Tag severe findings with P0/P1.\n\nImplementation output:\n{{node.' +
-          ids.impl +
-          '.output}}',
+          'Review the current diff for P0/P1 defects independently. Tag severe findings with P0/P1. Inspect full source; the handoff is an excerpt.',
+        contextRefs: [ids.impl],
+        contextMaxChars: 12000,
         maxVisits: 2,
       },
       label: 'Claude Review',
@@ -1161,9 +1248,9 @@ export function createReviewLoopDemoWorkflow(profileIds: {
       config: {
         agentProfileId: profileIds.reviewB,
         prompt:
-          'Review for P0/P1 defects. Tag severe findings with P0/P1.\n\nImplementation output:\n{{node.' +
-          ids.impl +
-          '.output}}',
+          'Review the current diff for P0/P1 defects independently. Tag severe findings with P0/P1. Inspect full source; the handoff is an excerpt.',
+        contextRefs: [ids.impl],
+        contextMaxChars: 12000,
         maxVisits: 2,
       },
       label: 'Codex Review',
@@ -1197,7 +1284,12 @@ export function createReviewLoopDemoWorkflow(profileIds: {
       position: at(660),
       config: {
         agentProfileId: profileIds.implement,
-        prompt: 'Fix the P0/P1 findings above.',
+        prompt:
+          'Fix the current P0/P1 findings supplied in the handoff, then run relevant tests. Verify findings against the current code.',
+        sessionGroup: 'implementation',
+        sessionMaxTurns: 4,
+        contextRefs: [ids.revA, ids.revB],
+        contextMaxChars: 12000,
         maxVisits: 2,
       },
       label: 'Fix',

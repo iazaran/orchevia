@@ -88,6 +88,27 @@ describe('workflow domain', () => {
 });
 
 describe('validation coverage', () => {
+  it('rejects invalid session controls and ambiguous handoff references', () => {
+    const wf = createEmptyWorkflow('Context validation');
+    wf.nodes.push({
+      id: 'agent',
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: {
+        agentProfileId: 'p',
+        prompt: 'Do work',
+        sessionGroup: '',
+        sessionMaxTurns: 0,
+        contextRefs: ['missing', 'missing', 'agent'],
+        contextMaxChars: 0,
+      },
+    });
+    const codes = validateWorkflowLocal(wf).map((i) => i.code);
+    expect(codes).toContain('agent-session-group-invalid');
+    expect(codes).toContain('agent-session-turns-invalid');
+    expect(codes).toContain('agent-context-limit-invalid');
+    expect(codes).toContain('agent-context-ref-invalid');
+  });
   function linearWith(node: Partial<WorkflowNode> & { id: string }): Workflow {
     const wf = createEmptyWorkflow('Coverage flow');
     const start = wf.nodes.find((n) => n.type === 'start');
@@ -454,4 +475,32 @@ it('orders a review loop from its entry along dependencies instead of definition
   expect(positions['review']!.y).toBeLessThan(positions['condition']!.y);
   expect(positions['condition']!.y).toBeLessThan(positions['fix']!.y);
   expect(positions['fix']!.y).toBeLessThan(positions['end']!.y);
+});
+
+it('demo agents use bounded handoffs and reuse only implementation context', () => {
+  const demo = createAgentDemoWorkflow({
+    plan: 'plan',
+    implement: 'impl',
+    review: 'review',
+  });
+  const impl = demo.nodes.find((n) => n.label === 'Claude — Implement')!;
+  expect(impl.config.contextRefs).toEqual([
+    demo.nodes.find((n) => n.label === 'Claude — Plan')!.id,
+  ]);
+  expect(impl.config.prompt).not.toContain('.output}}');
+  const loop = createReviewLoopDemoWorkflow({
+    implement: 'impl',
+    reviewA: 'review-a',
+    reviewB: 'review-b',
+  });
+  const implement = loop.nodes.find((n) => n.label === 'Implement')!;
+  const fix = loop.nodes.find((n) => n.label === 'Fix')!;
+  expect(fix.config.sessionGroup).toBe(implement.config.sessionGroup);
+  expect(fix.config.sessionGroup).toBeTruthy();
+  expect(fix.config.contextRefs).toHaveLength(2);
+  expect(
+    loop.nodes
+      .filter((n) => n.label?.endsWith('Review'))
+      .every((n) => n.config.sessionGroup === undefined),
+  ).toBe(true);
 });

@@ -128,6 +128,7 @@ export const WELL_KNOWN_ROLES = [
   'deepReview',
   'workflowGenerator',
   'workflowAssistance',
+  'generalPurpose',
 ] as const;
 
 /**
