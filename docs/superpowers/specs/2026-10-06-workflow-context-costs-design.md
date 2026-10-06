@@ -94,3 +94,13 @@ New built-in definitions therefore use safe bounded predecessor handoffs and rel
 implementation/fix sessions where appropriate. Existing saved copies remain opt-in.
 Generator and assistant instructions carry the same guidance without assuming that
 fewer tokens alone produce a better workflow.
+
+## Final review clarification
+
+Session variables use the supported workflow/input/ticket/node namespaces. Bare
+legacy node aliases are rejected for session groups with guidance to use
+`{{node.<id>.output}}`; the legacy prompt contract is unchanged. This prevents
+validation from accepting an expression that execution and cloning cannot resolve.
+Managed Claude profiles also reject alternative session selectors (`--from-pr`,
+`--teleport`). The browser mock supplies simulated ticket/result aliases for
+strict rendering of the shipped templates.

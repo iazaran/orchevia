@@ -504,3 +504,21 @@ it('demo agents use bounded handoffs and reuse only implementation context', () 
       .every((n) => n.config.sessionGroup === undefined),
   ).toBe(true);
 });
+
+it('requires namespaced session variables and keeps escaped placeholders literal', () => {
+  const wf = createEmptyWorkflow('Group variables');
+  const id = wf.nodes[0]!.id;
+  wf.nodes.push({
+    id: 'a',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: 'p', prompt: 'Work', sessionGroup: `item-{{${id}}}` },
+  });
+  expect(
+    validateWorkflowLocal(wf).some((i) => i.code === 'agent-session-variable-invalid'),
+  ).toBe(true);
+  wf.nodes[2]!.config.sessionGroup = `item-\\{{${id}}}`;
+  expect(
+    validateWorkflowLocal(wf).some((i) => i.code === 'agent-session-variable-invalid'),
+  ).toBe(false);
+});

@@ -8,6 +8,7 @@ import {
   renderPromptLenient,
   renderPromptStrict,
   validateProfile,
+  validateSessionProfile,
   type AgentProfile,
   mergeModelSuggestions,
   composeAgentContext,
@@ -214,4 +215,9 @@ describe('recommendations', () => {
       recommendedProfiles([profiles[4]!]).filter((p) => p.role === 'deepReview'),
     ).toHaveLength(1);
   });
+});
+
+it('rejects alternative Claude session selectors on managed nodes', () => {
+  for (const flag of ['--from-pr', '--from-pr=123', '--teleport', '--teleport=other'])
+    expect(validateSessionProfile(profile({ extraArgs: [flag] }))).toHaveLength(1);
 });

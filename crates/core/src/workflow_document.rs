@@ -259,6 +259,23 @@ mod context_contract_tests {
     }
 
     #[test]
+    fn session_group_requires_namespaced_variables() {
+        let mut wf = crate::workflow::sample_workflow();
+        let id = wf.nodes[0].id.clone();
+        wf.nodes[1].kind = crate::workflow::NodeKind::Agent;
+        wf.nodes[1].config.agent_profile_id = Some("p".into());
+        wf.nodes[1].config.prompt = Some("Work".into());
+        wf.nodes[1].config.session_group = Some(format!("item-{{{{{id}}}}}"));
+        assert!(crate::workflow::validate_workflow(&wf)
+            .iter()
+            .any(|i| i.code == "agent-session-variable-invalid"));
+        wf.nodes[1].config.session_group = Some(format!("item-\\{{{{{id}}}}}"));
+        assert!(!crate::workflow::validate_workflow(&wf)
+            .iter()
+            .any(|i| i.code == "agent-session-variable-invalid"));
+    }
+
+    #[test]
     fn cost_controls_survive_config_and_reference_remapping() {
         let mut config: NodeConfig = serde_json::from_value(serde_json::json!({
             "sessionGroup": "item-{{ node.old.output }}", "sessionMaxTurns": 3,

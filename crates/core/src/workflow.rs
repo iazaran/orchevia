@@ -717,7 +717,12 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         );
                     }
                     for name in crate::prompt::render_prompt(group, &HashMap::new()).1 {
-                        if let Err(message) = check_variable_ref(wf, &name, &node_ids) {
+                        let checked = if name.contains('.') {
+                            check_variable_ref(wf, &name, &node_ids)
+                        } else {
+                            Err(format!("Session variable '{name}' needs a namespace; use node.{name}.output for a node output."))
+                        };
+                        if let Err(message) = checked {
                             push_error(
                                 &mut issues,
                                 "agent-session-variable-invalid",

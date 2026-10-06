@@ -622,14 +622,11 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
             (kind === 'node' &&
               ids.has(id ?? '') &&
               (field === undefined ||
-                ['output', 'status', 'exitCode', 'severity', 'visits'].includes(
-                  field,
-                ))) ||
-            (!name.includes('.') && ids.has(name));
+                ['output', 'status', 'exitCode', 'severity', 'visits'].includes(field)));
           if (!known)
             invalid(
               'agent-session-variable-invalid',
-              `Session group references unknown variable '${name}'.`,
+              `Session group references unknown variable '${name}'. Use workflow.*, input.*, ticket.* or node.<id>.output namespaces.`,
             );
         }
       }

@@ -19,6 +19,9 @@ implementation output again. Profile skills still apply each turn. Keep independ
 reviewers fresh, or give each reviewer a separate group when continuity is explicitly
 wanted. Include an item key when processing multiple tickets or PRs within one run.
 A rendered group must be nonempty, at most 256 characters, with no line breaks.
+Use documented namespaces (`workflow.*`, `input.*`, `ticket.*`, `node.<id>.output`
+or other supported node fields). Bare `{{nodeId}}` group variables are rejected;
+write `{{node.nodeId.output}}` so validation, rendering and reference remapping agree.
 
 **Maximum turns per session** defaults to 4 (range 1–20). The next node starts a
 fresh session when this limit is reached. Editing any profile setting or changing
@@ -32,7 +35,8 @@ fresh turn start new sessions, subject to the existing retry bounds.
 Custom CLI profiles cannot join a session group. Managed nodes own stream and
 resume arguments: remove conflicting `--resume`, `--continue`, `--last`, output
 format, session persistence, or CLI directory/worktree flags from the profile's
-extra arguments. Validation explains conflicts before execution. Profiles without
+extra arguments, including alternative Claude selectors `--from-pr` and `--teleport`.
+Validation explains conflicts before execution. Profiles without
 a group keep the existing invocation behavior.
 
 ## Pass only relevant outputs between agents

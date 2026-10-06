@@ -529,6 +529,8 @@ pub fn validate_session_profile(profile: &AgentProfile) -> Result<(), String> {
     }
     let flags: &[&str] = match profile.adapter {
         AdapterKind::Claude => &[
+            "--from-pr",
+            "--teleport",
             "--resume",
             "-r",
             "--continue",
@@ -700,6 +702,10 @@ mod tests {
             assert!(spec.args.contains(&"opus".into()));
             for flag in if adapter == AdapterKind::Claude {
                 vec![
+                    "--from-pr",
+                    "--from-pr=123",
+                    "--teleport",
+                    "--teleport=other",
                     "--resume=other",
                     "-rOTHER",
                     "--output-format=text",

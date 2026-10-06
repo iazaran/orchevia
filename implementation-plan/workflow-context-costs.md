@@ -96,12 +96,22 @@ Files: CHANGELOG, README, area docs, application/Tauri/core manifests and Cargo.
 
 ## Verification so far
 
-- `pnpm check`: formatting, lint, type checking, 15 delivery tests and 228 frontend tests pass.
+- `pnpm check`: formatting, lint, type checking, 15 delivery tests and 231 frontend tests pass.
 - `pnpm build`: passes; existing bundle-size advisory remains.
-- `cargo test -p orchevia-core`: 315 pass, including explicit resume, approval recovery,
+- `cargo test -p orchevia-core`: 316 pass, including explicit resume, approval recovery,
   profile/directory/run isolation, turn rotation, serialized parallel nodes, timeout
   partial output, failed-resume retry suppression and stream capture limits.
 - Core Clippy with warnings denied, Rust formatting, desktop check and 4 desktop tests pass.
 - `pnpm version:check v0.1.10` and `git diff --check` pass.
 - Browser preview confirms sample session settings and selected bounded context sources.
 - Real provider calls, measured billing savings, native GUI and installers were not exercised.
+
+## Independent review and fixes
+
+One fresh whole-branch review identified three issues. Regression tests failed
+before each fix and passed afterward: reject alternative Claude session selectors;
+provide simulated ticket, severity and visit variables for strict mock rendering;
+and reject unsupported bare session aliases in both validators while preserving
+escaped placeholders. No Critical or Minor findings remain. The pre-existing mock
+parallel/loop scheduling approximation and existing template severity routing were
+kept within their current scope; the desktop engine remains authoritative.

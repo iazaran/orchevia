@@ -362,6 +362,8 @@ export function validateSessionProfile(profile: AgentProfile): string[] {
   const flags =
     profile.adapter === 'claude'
       ? [
+          '--from-pr',
+          '--teleport',
           '--resume',
           '-r',
           '--continue',

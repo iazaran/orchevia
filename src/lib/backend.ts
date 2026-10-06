@@ -760,12 +760,43 @@ class MockBackend implements Backend {
         });
         const stillRunning = this.runs.find((r) => r.id === runId)?.status === 'running';
         if (!stillRunning) return;
-        this.pushResult(
-          runId,
-          nodeId,
-          'succeeded',
-          `mock-integration$ ${node.type} node (browser mock, no processes spawned).`,
-        );
+        if (node.type === 'ticket') {
+          const key = renderPromptStrict(
+            node.config.ticketKey ?? '',
+            mockVariables(workflow, results, run.inputs ?? {}),
+          );
+          if ('error' in key) {
+            const row = this.pushResult(runId, nodeId, 'failed', '');
+            row.error = key.error;
+            run.status = 'failed';
+            run.finishedAt = new Date().toISOString();
+            return;
+          }
+          const row = this.pushResult(
+            runId,
+            nodeId,
+            'succeeded',
+            `Mock ticket ${key.rendered} (browser mock, no remote lookup).`,
+          );
+          row.structuredJson = JSON.stringify({
+            simulated: true,
+            ticket: {
+              key: key.rendered,
+              title: `Mock ticket ${key.rendered}`,
+              description: 'Simulated ticket details.',
+              status: 'Mock',
+              url: '',
+              acceptanceCriteria: [],
+            },
+          });
+        } else {
+          this.pushResult(
+            runId,
+            nodeId,
+            'succeeded',
+            `mock-integration$ ${node.type} node (browser mock, no processes spawned).`,
+          );
+        }
         continue;
       }
       if (node.type === 'agent') {
@@ -941,6 +972,16 @@ class MockBackend implements Backend {
     result.stdout = stdout;
     result.finishedAt = new Date().toISOString();
     if (status === 'succeeded') result.exitCode = 0;
+    const severity = ['P0', 'P1', 'P2', 'P3'].find((level) =>
+      new RegExp(`(?<![a-zA-Z0-9_])${level}(?![a-zA-Z0-9_])`).test(stdout),
+    );
+    if (severity) {
+      const data: unknown = JSON.parse(result.structuredJson ?? '{}');
+      result.structuredJson = JSON.stringify({
+        ...(typeof data === 'object' && data !== null ? data : {}),
+        severity,
+      });
+    }
   }
 
   private pushResult(
@@ -948,7 +989,7 @@ class MockBackend implements Backend {
     nodeId: string,
     status: string,
     stdout: string,
-  ): void {
+  ): StoredNodeResult {
     const list = this.results.get(runId) ?? [];
     const result: StoredNodeResult = {
       id: list.length + 1,
@@ -965,6 +1006,7 @@ class MockBackend implements Backend {
     }
     list.push(result);
     this.results.set(runId, list);
+    return result;
   }
 
   async cancelRun(runId: string): Promise<boolean> {
@@ -1590,12 +1632,42 @@ function mockVariables(
     if (input.default !== undefined) vars[`input.${input.name}`] = input.default;
   }
   for (const [name, value] of Object.entries(inputs)) vars[`input.${name}`] = value;
+  const visits = new Map<string, number>();
   for (const r of priorResults) {
     vars[`node.${r.nodeId}`] = r.stdout;
     vars[`node.${r.nodeId}.output`] = r.stdout;
     vars[`node.${r.nodeId}.status`] = r.status;
     if (r.exitCode !== undefined) vars[`node.${r.nodeId}.exitCode`] = String(r.exitCode);
+    if (['succeeded', 'failed', 'approved', 'rejected'].includes(r.status))
+      visits.set(r.nodeId, (visits.get(r.nodeId) ?? 0) + 1);
+    try {
+      const data = JSON.parse(r.structuredJson ?? '{}') as {
+        severity?: unknown;
+        ticket?: Record<string, unknown>;
+      };
+      if (typeof data.severity === 'string')
+        vars[`node.${r.nodeId}.severity`] = data.severity;
+      if (r.status === 'succeeded' && data.ticket) {
+        for (const field of ['key', 'title', 'description', 'status'])
+          vars[`ticket.${field}`] =
+            typeof data.ticket[field] === 'string' ? data.ticket[field] : '';
+        vars['ticket.url'] =
+          typeof data.ticket.browseUrl === 'string'
+            ? data.ticket.browseUrl
+            : typeof data.ticket.url === 'string'
+              ? data.ticket.url
+              : '';
+        vars['ticket.acceptanceCriteria'] = Array.isArray(data.ticket.acceptanceCriteria)
+          ? data.ticket.acceptanceCriteria
+              .filter((item: unknown) => typeof item === 'string')
+              .join('\n')
+          : '';
+      }
+    } catch {
+      /* Malformed metadata supplies no structured aliases. */
+    }
   }
+  for (const [id, count] of visits) vars[`node.${id}.visits`] = String(count);
   return vars;
 }
 
