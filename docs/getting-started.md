@@ -125,3 +125,9 @@ Inbox history is not replayed as popups when the app opens.
 
 Structured workflow previews, historical run error details and reference help stay
 with their relevant content; action feedback and validation messages use the stack.
+
+## Keep related AI work efficient
+
+New AI samples and templates use bounded handoffs and implementation/fix session
+groups where useful. Inspect the Agent controls before running and keep independent
+reviewers fresh. Existing saved workflows opt in. See [workflow cost controls](workflow-costs.md).

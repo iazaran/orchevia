@@ -139,3 +139,11 @@ remain visible and leave it unread. Show on canvas in Runs uses the same path.
 Run graphs are read-only snapshots and refresh their outputs while displayed.
 Use Edit saved workflow to return to the editable definition. Historical runs
 created before snapshots use the saved definition as their existing fallback.
+
+## Agent context controls
+
+Optional session groups serialize related Agent turns within a run and exact
+profile/directory. Only completed successful explicit CLI sessions are reused.
+Failed resumed turns bypass automatic retries; later group members start fresh.
+Selected completed-node handoffs have a combined excerpt budget; stored logs remain
+available. See [workflow cost controls](workflow-costs.md) for limits and examples.

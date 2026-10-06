@@ -17,17 +17,17 @@ in Orchevia itself.
 
 A profile is a persisted, inspectable recipe for invoking one CLI:
 
-| Field                  | Meaning                                                                                                                       |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Name                   | Human label, e.g. “Claude — Implementation”                                                                                   |
-| Provider/CLI           | `claude`, `codex`, or a custom CLI with an explicit executable                                                                |
-| Executable             | Blank = auto-detect the adapter default on `PATH`; or pin an explicit path                                                    |
-| Model                  | Free-form, adapter-specific (e.g. `opus`); validated lightly since names evolve                                               |
-| Additional arguments   | Passed verbatim as argv (no shell); credential-like flags are rejected                                                        |
-| Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                                                     |
-| Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                               |
-| Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                    |
-| Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator`, `workflowAssistance` |
+| Field                  | Meaning                                                                                                                                         |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Name                   | Human label, e.g. “Claude — Implementation”                                                                                                     |
+| Provider/CLI           | `claude`, `codex`, or a custom CLI with an explicit executable                                                                                  |
+| Executable             | Blank = auto-detect the adapter default on `PATH`; or pin an explicit path                                                                      |
+| Model                  | Free-form, adapter-specific (e.g. `opus`); validated lightly since names evolve                                                                 |
+| Additional arguments   | Passed verbatim as argv (no shell); credential-like flags are rejected                                                                          |
+| Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                                                                       |
+| Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                                                 |
+| Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                                      |
+| Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator`, `workflowAssistance`, `generalPurpose` |
 
 Manage profiles in the **Agents** tab: create, rename, reconfigure, **Test** (probes the
 CLI without running a workflow), or delete (workflows referencing it fail validation
@@ -115,3 +115,11 @@ see its effective profile, CLI, model and effort in the inspector. A blank model
 or effort means the CLI default for that setting. A missing profile or unresolved
 role is shown explicitly; there is no hidden runtime profile fallback. Selecting a
 profile manually removes the unresolved role before autosaving.
+
+## Context reuse and handoffs
+
+Agent nodes optionally reuse Claude/Codex context using named session groups and
+pass selected bounded outputs to other agents. See [workflow cost controls](workflow-costs.md)
+for isolation, retries, CLI constraints and measurement. The wizard also recommends
+**Claude — General purpose** (Opus, medium effort, `generalPurpose` role), preserving
+existing profiles.

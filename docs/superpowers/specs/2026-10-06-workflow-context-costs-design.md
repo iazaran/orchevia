@@ -86,3 +86,11 @@ Commit and open a PR; the user retains merge and release decisions.
 CLI references: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference), and
 [Claude cost guidance](https://code.claude.com/docs/en/costs).
+
+## Approved scope extension
+
+The user requested these controls in ready-to-use samples and templates for everyone.
+New built-in definitions therefore use safe bounded predecessor handoffs and related
+implementation/fix sessions where appropriate. Existing saved copies remain opt-in.
+Generator and assistant instructions carry the same guidance without assuming that
+fewer tokens alone produce a better workflow.

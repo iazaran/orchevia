@@ -6,6 +6,31 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-06
+
+### Added
+
+- Optional Claude/Codex session groups for related Agent nodes within a run,
+  isolated by exact profile and working directory, serialized and bounded by a
+  configurable turn limit. Successful sessions survive approval pauses.
+- Selected context handoffs with a combined character budget and marked head/tail
+  excerpts. Stored run logs retain their existing capture limits.
+- Inspector and Simple JSON controls; generation and workflow assistance guidance
+  for short follow-ups, independent reviews and per-item loop context.
+- Runs show fresh/resumed context, CLI-reported token/cache/cost fields when
+  supplied, and separate captured agent activity. Browser execution is simulated.
+- Wizard recommendation **Claude — General purpose**, Opus with medium effort,
+  preserving existing profiles with that name or role.
+
+### Changed
+
+- New built-in templates and AI workflow samples use bounded predecessor handoffs
+  and implementation/fix session groups where useful; independent reviewers stay
+  fresh. Existing saved workflows opt in without a schema migration.
+- Managed nodes decode structured CLI streams into clean final output for conditions.
+  Failed resumed turns are never automatically retried; later group members start
+  fresh. Fresh attempts retain explicitly configured retry policies.
+
 ## [0.1.9] - 2026-10-05
 
 ### Changed

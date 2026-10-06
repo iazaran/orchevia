@@ -38,10 +38,10 @@ Files: workflow.rs, prompt.rs, workflow_document.rs, corresponding src/lib mirro
 Interfaces: optional sessionGroup/sessionMaxTurns/contextRefs/contextMaxChars on
 NodeConfig; deterministic bounded handoff composition from completed results.
 
-- [ ] Add failing tests for limits, references, Unicode truncation and JSON round trips.
-- [ ] Run targeted Rust/frontend tests and confirm the new assertions fail.
-- [ ] Mirror fields/validation and reference remapping; compose marked excerpts.
-- [ ] Run targeted suites and resolve regressions.
+- [x] Add failing tests for limits, references, Unicode truncation and JSON round trips.
+- [x] Run targeted Rust/frontend tests and confirm the new assertions fail.
+- [x] Mirror fields/validation and reference remapping; compose marked excerpts.
+- [x] Run targeted suites and resolve regressions.
 
 ### 2. Adapter streaming and reusable execution
 
@@ -49,12 +49,12 @@ Files: agents.rs and engine.rs (focused adjacent module if needed), existing res
 Interfaces: explicit session command builder; incremental decoder with readable text,
 session id, provider errors and usage; per-run group locks and persisted session identity.
 
-- [ ] Add failing argv/decoder and fake-CLI engine tests for isolation, concurrency,
+- [x] Add failing argv/decoder and fake-CLI engine tests for isolation, concurrency,
   turn rotation, error/timeout/retry and approval continuation.
-- [ ] Run focused tests, confirming the expected feature failures.
-- [ ] Add managed JSONL invocation, decode live/final output and persist metadata.
-- [ ] Acquire group locks before lookup, rotate at limits and invalidate failed attempts.
-- [ ] Run engine/adapter suites and preserve legacy text/custom command behavior.
+- [x] Run focused tests, confirming the expected feature failures.
+- [x] Add managed JSONL invocation, decode live/final output and persist metadata.
+- [x] Acquire group locks before lookup, rotate at limits and invalidate failed attempts.
+- [x] Run engine/adapter suites and preserve legacy text/custom command behavior.
 
 ### 3. Portable generation and browser mock
 
@@ -62,27 +62,46 @@ Files: generation.rs, src/lib/generation.ts, backend.ts, templates mirrors.
 Interfaces: proposal fields survive compile/assistance; mock output/status/context/session
 semantics match native, with simulated ids and no provider-spend claims.
 
-- [ ] Add failing remapping/proposal/mock regression tests.
-- [ ] Run targeted suites; then extend existing compilation and mock execution paths.
-- [ ] Update generator/assistance guidance for compact handoffs and per-item grouping.
-- [ ] Run native/frontend generation, template and backend suites.
+- [x] Add failing remapping/proposal/mock regression tests.
+- [x] Run targeted suites; then extend existing compilation and mock execution paths.
+- [x] Update generator/assistance guidance for compact handoffs and per-item grouping.
+- [x] Run native/frontend generation, template and backend suites.
 
 ### 4. Inspector and wizard profiles
 
 Files: NodeInspector.tsx, agents.rs/agents.ts, OnboardingWizard and colocated tests.
 Interfaces: editable group/turn/context controls; exact recommended general profile.
 
-- [ ] Add failing inspector editing and recommendation/preservation tests.
-- [ ] Run targeted tests; implement controls using existing inputs and patch helpers.
-- [ ] Add generalPurpose role and Opus/medium recommendation, preserving existing names.
-- [ ] Run component/profile tests and inspect browser mock presentation.
+- [x] Add failing inspector editing and recommendation/preservation tests.
+- [x] Run targeted tests; implement controls using existing inputs and patch helpers.
+- [x] Add generalPurpose role and Opus/medium recommendation, preserving existing names.
+- [x] Run component/profile tests and inspect browser mock presentation.
+
+### 4a. Built-in context defaults (user-requested extension)
+
+- [x] Add sample/template regressions before changing defaults.
+- [x] Use bounded relevant predecessor handoffs in new samples/templates.
+- [x] Share only related implementation/fix groups; preserve independent reviewers.
+- [x] Pin browser built-in definitions to core constructors and verify remapping.
 
 ### 5. Release and complete review
 
 Files: CHANGELOG, README, area docs, application/Tauri/core manifests and Cargo.lock.
 
-- [ ] Document controls, examples, reset/retry behavior and cost measurement limits.
-- [ ] Synchronize 0.1.10 and run pnpm version:check v0.1.10.
-- [ ] Run pnpm check/build, core tests/Clippy/fmt, desktop check/tests and diff check.
-- [ ] Self-review whole diff for correctness, privacy, parity and existing behavior.
+- [x] Document controls, examples, reset/retry behavior and cost measurement limits.
+- [x] Synchronize 0.1.10 and run pnpm version:check v0.1.10.
+- [x] Run pnpm check/build, core tests/Clippy/fmt, desktop check/tests and diff check.
+- [x] Self-review whole diff for correctness, privacy, parity and existing behavior.
 - [ ] Commit logical changes, push only after local gates, open and attach the PR.
+
+## Verification so far
+
+- `pnpm check`: formatting, lint, type checking, 15 delivery tests and 228 frontend tests pass.
+- `pnpm build`: passes; existing bundle-size advisory remains.
+- `cargo test -p orchevia-core`: 315 pass, including explicit resume, approval recovery,
+  profile/directory/run isolation, turn rotation, serialized parallel nodes, timeout
+  partial output, failed-resume retry suppression and stream capture limits.
+- Core Clippy with warnings denied, Rust formatting, desktop check and 4 desktop tests pass.
+- `pnpm version:check v0.1.10` and `git diff --check` pass.
+- Browser preview confirms sample session settings and selected bounded context sources.
+- Real provider calls, measured billing savings, native GUI and installers were not exercised.
