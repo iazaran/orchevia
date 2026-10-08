@@ -173,8 +173,7 @@ fn spawn_server(config: &McpServerConfig) -> Result<SpawnedServer, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::process::isolate_process_group(&mut cmd);
-    let mut child = cmd
-        .spawn()
+    let mut child = crate::process::spawn_retrying(|| cmd.spawn())
         .map_err(|e| format!("Failed to spawn MCP server '{}': {e}", config.command))?;
     let group = ProcessGroup::new(Some(child.id()));
     let stdin = child.stdin.take().ok_or("MCP server has no stdin.")?;

@@ -3583,7 +3583,7 @@ async fn run_command_with_output(
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let mut child = match cmd.spawn() {
+    let mut child = match crate::process::spawn_retrying(|| cmd.spawn()) {
         Ok(child) => child,
         Err(e) => {
             return CommandOutcome::Completed {

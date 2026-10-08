@@ -22,8 +22,9 @@ All notable changes are recorded here, following
   limit, safe fallback) and give it to every CLI, Git, GitHub, MCP, generation and
   probe process, so nvm/fnm installs and their `node` interpreter are found. More
   install locations are checked, files must be executable, lookups are cached and
-  Environment/Agents **Refresh** re-resolves. Only `PATH` is imported. Tool detection
-  and profile tests no longer block the window.
+  Environment/Agents **Refresh** re-resolves. Only `PATH` is imported; a launch from a
+  terminal keeps that terminal's `PATH`. Tool detection and profile tests no longer
+  block the window.
 - Claude and Codex prompts travel on stdin instead of one command-line argument,
   avoiding the 128 KiB argument limit and process-list exposure. Previews show
   `<prompt via stdin, N chars>`; Custom CLI profiles are unchanged.

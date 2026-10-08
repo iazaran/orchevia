@@ -209,6 +209,38 @@ fn terminate_groups(groups: &[u32]) {
     }
 }
 
+/// Spawn, retrying briefly on `ETXTBSY`. Linux refuses to execute a file that
+/// is still open for writing; a just-written script hits this when another
+/// thread's freshly forked child still holds the descriptor until its own
+/// `exec`. Other errors return immediately; at most about 310 ms is added.
+pub(crate) fn spawn_retrying<T>(
+    mut spawn: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut delay = Duration::from_millis(10);
+    for _ in 0..5 {
+        match spawn() {
+            Err(error) if is_text_busy(&error) => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            result => return result,
+        }
+    }
+    spawn()
+}
+
+fn is_text_busy(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ETXTBSY)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
 /// Write `input` to a child's stdin on a detached thread, then close it (EOF).
 /// A child that exits without reading produces `EPIPE`, which is ignored; the
 /// writer never delays result collection.
@@ -294,8 +326,7 @@ fn run_with_timeout(
     input: Option<String>,
     started: Instant,
 ) -> Result<ProcessResult, ProcessError> {
-    let mut child = cmd
-        .spawn()
+    let mut child = spawn_retrying(|| cmd.spawn())
         .map_err(|e| ProcessError::Spawn(executable.to_string(), e))?;
     let mut group = ProcessGroup::new(Some(child.id()));
     if let (Some(input), Some(pipe)) = (input, child.stdin.take()) {
@@ -654,5 +685,28 @@ mod tests {
         assert!(wait_until_group_gone(child.id()));
         group.release();
         assert!(!LIVE_GROUPS.lock().expect("registry").contains(&child.id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_retries_only_text_file_busy_errors() {
+        let mut calls = 0;
+        let result: std::io::Result<u8> = spawn_retrying(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls, 3);
+        let mut other = 0;
+        let failed: std::io::Result<u8> = spawn_retrying(|| {
+            other += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        assert!(failed.is_err());
+        assert_eq!(other, 1);
     }
 }

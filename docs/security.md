@@ -58,9 +58,10 @@ the boundaries, and the limits of the current application.
 5. **Explicit working directory.** Node or profile directories must exist before
    execution; the engine records used folders locally (paths only) for convenience.
    Agent runs inherit the process environment (needed by the CLIs) but Orchevia never
-   persists it. The one change is `PATH`: Orchevia asks your login shell for it once
-   (`$SHELL -i -l -c`, no terminal, 5 s limit, falling back to its own `PATH` plus
-   common install directories) and uses that value for lookups and every child. Your
+   persists it. The one change is `PATH`: when started from the desktop, Orchevia asks
+   your login shell for it once (`$SHELL -i -l -c`, no terminal, 5 s limit, falling
+   back to its own `PATH` plus common install directories) and uses that value for
+   lookups and every child. Started from a terminal, it keeps that terminal's `PATH`. Your
    rc files run during that probe exactly as they do when you open a terminal; no
    other variable is read or imported.
 6. **Bounded + cancellable.** Node-or-profile timeout (1–43200 s) kills hung agents;

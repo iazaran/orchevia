@@ -39,8 +39,9 @@ until remapped).
    `codex` from Codex CLI) and verify they work in a terminal. Orchevia reads your
    login shell's `PATH` once at startup (and on **Refresh** in Environment or
    Agents), so CLIs installed through nvm, fnm, Homebrew or `~/.local/bin` are found
-   even when the app is launched from the desktop menu. Set the profile's executable
-   to a full path to bypass lookup.
+   even when the app is launched from the desktop menu. When Orchevia is started from
+   a terminal it keeps that terminal's `PATH` (including `nvm use` changes). Set the
+   profile's executable to a full path to bypass lookup.
 2. In Orchevia: Agents → + New profile → pick the CLI → optionally set model,
    working-directory mode, and timeout.
 3. Add an **AI Agent** node in a workflow, pick the profile, write the prompt, and

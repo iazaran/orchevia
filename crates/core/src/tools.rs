@@ -144,6 +144,9 @@ const MAX_SHELL_OUTPUT: usize = 256 * 1024;
 pub enum SearchPathSource {
     /// The user's login shell reported its `PATH`.
     LoginShell,
+    /// Orchevia was started from a terminal and already has that shell's
+    /// `PATH` (including per-terminal changes such as `nvm use`).
+    Terminal,
     /// Orchevia's own `PATH` plus well-known install directories.
     Fallback,
 }
@@ -419,8 +422,7 @@ pub fn login_shell_path(shell: &Path, timeout: Duration) -> Result<OsString, Str
             });
         }
     }
-    let mut child = cmd
-        .spawn()
+    let mut child = crate::process::spawn_retrying(|| cmd.spawn())
         .map_err(|e| format!("Could not start login shell {}: {e}", shell.display()))?;
     // Dropping the group stops whatever the probe shell left running.
     let group = crate::process::ProcessGroup::new(Some(child.id()));
@@ -608,6 +610,12 @@ pub fn refresh_search_environment() -> Arc<SearchEnvironment> {
         }
     }
     install_search_environment(|| {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            let mut env = process_fallback();
+            env.source = SearchPathSource::Terminal;
+            return env;
+        }
         resolve_search_environment(
             login_shell().as_deref(),
             home_dir().as_deref(),
@@ -619,7 +627,7 @@ pub fn refresh_search_environment() -> Arc<SearchEnvironment> {
 fn install_search_environment(
     resolve: impl FnOnce() -> SearchEnvironment,
 ) -> Arc<SearchEnvironment> {
-    let (lock, changed) = search_state();
+    let (lock, _) = search_state();
     match lock.lock() {
         Ok(mut guard) if !guard.resolving => guard.resolving = true,
         Ok(guard) => {
@@ -628,14 +636,26 @@ fn install_search_environment(
         }
         Err(_) => return Arc::new(resolve()),
     }
+    /// Clears `resolving` even if `resolve` unwinds, so lookups never wait on
+    /// a resolution that can no longer finish.
+    struct Resolving<'a>(&'a (Mutex<SearchState>, Condvar));
+    impl Drop for Resolving<'_> {
+        fn drop(&mut self) {
+            let (lock, changed) = self.0;
+            if let Ok(mut guard) = lock.lock() {
+                guard.resolving = false;
+            }
+            changed.notify_all();
+        }
+    }
+    let resolving = Resolving(search_state());
     let env = Arc::new(resolve());
     if let Ok(mut guard) = lock.lock() {
         guard.env = Some(Arc::clone(&env));
-        guard.resolving = false;
         guard.resolved_at = Some(Instant::now());
         guard.cache.clear();
     }
-    changed.notify_all();
+    drop(resolving);
     env
 }
 
@@ -1019,5 +1039,17 @@ mod tests {
         .expect("run");
         assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
         assert_eq!(result.stdout, "fake-node ran fake-claude");
+    }
+
+    #[test]
+    fn a_failed_resolution_never_leaves_lookups_waiting() {
+        let result = std::panic::catch_unwind(|| {
+            install_search_environment(|| panic!("resolver failed"));
+        });
+        assert!(result.is_err());
+        let started = Instant::now();
+        let _ = search_environment();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!search_state().0.lock().expect("state").resolving);
     }
 }
