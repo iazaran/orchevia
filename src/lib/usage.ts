@@ -38,6 +38,7 @@ export function aggregateProfileUsage(
     { runs: Set<string>; totalMs: number; last: string | null }
   >();
   for (const run of runs) {
+    if (run.execution?.options.dryRun) continue;
     const results = runResults[run.id] ?? [];
     const def = byWorkflow.get(run.workflowId);
     const profileOf = (nodeId: string): string | null => {
@@ -47,6 +48,16 @@ export function aggregateProfileUsage(
     };
     const seen = new Set<string>();
     for (const r of results) {
+      try {
+        const metadata: unknown = JSON.parse(r.structuredJson ?? '{}');
+        if (
+          isRecord(metadata) &&
+          (metadata.reusedFrom !== undefined || metadata.simulated === true)
+        )
+          continue;
+      } catch {
+        /* Old plain results retain local timing. */
+      }
       const pid = profileOf(r.nodeId);
       if (pid === null) continue;
       const entry = stats.get(pid) ?? { runs: new Set<string>(), totalMs: 0, last: null };

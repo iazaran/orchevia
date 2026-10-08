@@ -7,16 +7,16 @@ private while public access is prepared.
 
 ## Implemented
 
-| Area            | Current capabilities                                                                                                |
-| --------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays                |
-| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, command previews                        |
-| Execution       | Parallel paths and joins, conditions, retries, bounded loops, approval gates, timeouts, cancellation, live output   |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                         |
-| Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history   |
-| Automation      | Bounded local schedules/watchers, requested-review scope, revision tracking, check outcomes, inbox, background mode |
-| Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                       |
-| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, private-beta project page                   |
+| Area            | Current capabilities                                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays                  |
+| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, command previews                          |
+| Execution       | Parallel paths/joins, bounded loops/retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard |
+| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                           |
+| Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history     |
+| Automation      | Bounded local schedules/watchers, requested-review scope, revision tracking, check outcomes, inbox, background mode   |
+| Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                         |
+| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, private-beta project page                     |
 
 ## Current priorities
 
@@ -33,8 +33,8 @@ concrete use case, fit the existing architecture, and include tests and document
 - Clearer per-profile and MCP setup diagnostics, with small real-tool smoke tests.
 - Workflow recipes exercised in different languages, using each project's test
   command and accepted project knowledge.
-- Recovery from a failed step with explicit handling of prior side effects;
-  never silently repeat commits, pushes, comments or other writes.
+- Exercise dry-run fixtures, deliberate recovery and reported-spend guards against
+  real project feedback; verify native parallel timing and provider-report coverage.
 - Process-tree lifecycle handling for tools that spawn descendants. Current
   cancellation stops the direct child and preserves output; descendant cleanup
   requires platform-specific verification.

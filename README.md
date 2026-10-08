@@ -42,10 +42,10 @@ writes. CLI usage costs and remote-provider behavior remain with your chosen too
 
 ## Install
 
-Release v0.1.10 is being prepared. The permanent installer links below target this
+Release v0.1.11 is being prepared. The permanent installer links below target this
 version; they become available after the matching tag's release workflow succeeds.
-See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.10).
-Until then, use the [published v0.1.8 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.8).
+See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.11).
+Until then, use the [published v0.1.10 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.10).
 A merged PR alone does not build installers.
 
 The repository and release files are **private for now**: sign in to GitHub with an
@@ -53,11 +53,11 @@ account that has repository access. The repository and downloads will be public 
 
 | Platform                    | Installer                                                                                                                                                                                                  |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-macos-arm64.dmg)                                                                                                             |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-macos-x86_64.dmg)                                                                                                            |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.10/Orchevia-linux-x86_64.deb) |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-macos-arm64.dmg)                                                                                                             |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-macos-x86_64.dmg)                                                                                                            |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.10/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.11/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -203,9 +203,21 @@ Review the preview's setup checklist, assign the intended profiles, and inspect
 write operations before accepting. A goal is a draft specification; generation is
 not a guarantee that every requested integration operation is supported.
 
+## Workflow testing and run controls
+
+Use **Dry run** to supply successive node-result fixtures and test routing without
+executing tools. **Run options** adds an optional CLI-reported USD guard. Runs show
+parallel timing and cost-report coverage; failed runs offer deliberate recovery
+using the original workflow and inputs. Reused output and simulated tests stay
+separate from actual execution/spend and verified project knowledge.
+
+See [execution semantics](docs/execution.md#dry-run-workflow-tests),
+[reported-spend controls](docs/workflow-costs.md#reported-spend-guard) and
+[the run-control contract](docs/workflow-schema.md#run-controls).
+
 ## Current limits
 
-- **Beta:** source version 0.1.10 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** source version 0.1.11 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Jira and
   other MCP servers may need credentials in their inherited environment.

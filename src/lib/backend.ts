@@ -1,3 +1,15 @@
+import {
+  validateRunOptions,
+  recoveryPlan,
+  recoveryInvalidated,
+  isEffectful,
+  resultMetadata,
+  replayGraph,
+  reportedSpend,
+  type RunOptions,
+  type RecoveryChoice,
+  type RecoveryPlan,
+} from './run-controls';
 import { errorMessage } from './errors';
 import {
   projectScope,
@@ -89,7 +101,16 @@ export interface Backend {
   runWorkflow(
     workflowId: string,
     inputs?: Record<string, string>,
+    options?: RunOptions,
   ): Promise<{ runId: string }>;
+  previewRecovery(runId: string): Promise<RecoveryPlan>;
+  recoverRun(
+    runId: string,
+    choices: Record<string, RecoveryChoice>,
+    fingerprint: string,
+    requestId: string,
+  ): Promise<{ runId: string }>;
+  continueSpendRun(runId: string, expectedPauseId: number, limit?: number): Promise<void>;
   cancelRun(runId: string): Promise<boolean>;
   approveRun(
     runId: string,
@@ -238,8 +259,35 @@ class TauriBackend implements Backend {
   runWorkflow(
     workflowId: string,
     inputs?: Record<string, string>,
+    options?: RunOptions,
   ): Promise<{ runId: string }> {
-    return this.invoke('run_workflow', { workflowId, inputs: inputs ?? {} });
+    return this.invoke('run_workflow', {
+      workflowId,
+      inputs: inputs ?? {},
+      options: options ?? {},
+    });
+  }
+  previewRecovery(runId: string): Promise<RecoveryPlan> {
+    return this.invoke('preview_recovery', { runId });
+  }
+  recoverRun(
+    runId: string,
+    choices: Record<string, RecoveryChoice>,
+    fingerprint: string,
+    requestId: string,
+  ): Promise<{ runId: string }> {
+    return this.invoke('recover_run', { runId, choices, fingerprint, requestId });
+  }
+  continueSpendRun(
+    runId: string,
+    expectedPauseId: number,
+    limit?: number,
+  ): Promise<void> {
+    return this.invoke('continue_spend_run', {
+      runId,
+      expectedPauseId,
+      limit: limit ?? null,
+    });
   }
   cancelRun(runId: string): Promise<boolean> {
     return this.invoke('cancel_run', { runId });
@@ -500,6 +548,11 @@ class MockBackend implements Backend {
   private runs: StoredRun[] = [];
   private results = new Map<string, StoredNodeResult[]>();
   private runWorkflows = new Map<string, Workflow>();
+  private recoverySeeds = new Map<string, StoredNodeResult[]>();
+  private recoveryRequests = new Map<
+    string,
+    { source: string; choices: Record<string, RecoveryChoice>; runId: string }
+  >();
   private profiles = new Map<string, AgentProfile>();
   private mcpServers = new Map<string, McpServerConfig>();
   private schedules = new Map<string, Schedule>();
@@ -549,6 +602,15 @@ class MockBackend implements Backend {
       if (raw === null) return;
       const data = JSON.parse(raw) as {
         workflows: StoredWorkflow[];
+        runs?: StoredRun[];
+        results?: [string, StoredNodeResult[]][];
+        runWorkflows?: [string, Workflow][];
+        recoverySeeds?: [string, StoredNodeResult[]][];
+        recoveryRequests?: [
+          string,
+          { source: string; choices: Record<string, RecoveryChoice>; runId: string },
+        ][];
+        counter?: number;
         profiles?: AgentProfile[];
         settings?: [string, string][];
         mcpServers?: McpServerConfig[];
@@ -556,6 +618,27 @@ class MockBackend implements Backend {
         preferences?: Preference[];
         observations?: [string, number][];
       };
+      this.runs = data.runs ?? [];
+      this.results = new Map(data.results ?? []);
+      this.runWorkflows = new Map(data.runWorkflows ?? []);
+      this.recoverySeeds = new Map(data.recoverySeeds ?? []);
+      this.recoveryRequests = new Map(data.recoveryRequests ?? []);
+      this.counter = data.counter ?? this.runs.length + 1;
+      for (const run of this.runs)
+        if (run.status === 'running') {
+          run.status = 'failed';
+          run.finishedAt = new Date().toISOString();
+          for (const row of this.results.get(run.id) ?? []) {
+            if (row.status !== 'running') continue;
+            row.status = 'failed';
+            row.finishedAt = run.finishedAt;
+            row.error = 'Application restarted before this attempt completed.';
+            row.durationMs = Math.max(
+              0,
+              Date.parse(row.finishedAt) - Date.parse(row.startedAt),
+            );
+          }
+        }
       for (const p of data.preferences ?? []) {
         validatePreference(p);
         this.preferences.set(p.key, p);
@@ -576,6 +659,12 @@ class MockBackend implements Backend {
       writeLocal(
         this.storageKey(),
         JSON.stringify({
+          runs: this.runs,
+          results: [...this.results.entries()],
+          runWorkflows: [...this.runWorkflows.entries()],
+          recoverySeeds: [...this.recoverySeeds.entries()],
+          recoveryRequests: [...this.recoveryRequests.entries()],
+          counter: this.counter,
           preferences: [...this.preferences.values()],
           observations: [...this.observations.entries()],
           templates: [...this.userTemplates.values()],
@@ -628,8 +717,7 @@ class MockBackend implements Backend {
     }
     const removed = this.workflows.delete(id);
     for (const run of this.runs.filter((run) => run.workflowId === id)) {
-      this.results.delete(run.id);
-      this.runWorkflows.delete(run.id);
+      this.removeRunHistory(run.id);
     }
     this.runs = this.runs.filter((run) => run.workflowId !== id);
     this.persist();
@@ -657,9 +745,20 @@ class MockBackend implements Backend {
   async runWorkflow(
     workflowId: string,
     inputs?: Record<string, string>,
+    options?: RunOptions,
   ): Promise<{ runId: string }> {
     const wf = this.workflows.get(workflowId);
     if (wf === undefined) throw new Error(`Unknown workflow '${workflowId}'.`);
+    const runOptions = options ?? {};
+    validateRunOptions(wf.definition, runOptions);
+    const structural = validateWorkflowLocal(wf.definition).filter(
+      (i) => i.severity === 'error',
+    );
+    if (
+      (runOptions.dryRun || typeof runOptions.spendLimitUsd === 'number') &&
+      structural.length
+    )
+      throw new Error(structural.map((i) => i.message).join(' '));
     const effectiveInputs = { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) };
     for (const input of wf.definition.inputs ?? []) {
       if (input.required && !(effectiveInputs[input.name] ?? '').trim())
@@ -674,7 +773,12 @@ class MockBackend implements Backend {
     if (contextIssues.length)
       throw new Error(contextIssues.map((issue) => issue.message).join(' '));
     for (const node of wf.definition.nodes) {
-      if (node.type !== 'agent' || node.config.sessionGroup === undefined) continue;
+      if (
+        runOptions.dryRun ||
+        node.type !== 'agent' ||
+        node.config.sessionGroup === undefined
+      )
+        continue;
       const profile = this.profiles.get(node.config.agentProfileId ?? '');
       if (!profile) throw new Error('Unknown Agent Profile.');
       const errors = validateSessionProfile(profile);
@@ -684,6 +788,7 @@ class MockBackend implements Backend {
     const run: StoredRun = {
       id: runId,
       workflowId,
+      execution: { options: structuredClone(runOptions) },
       status: 'running',
       startedAt: new Date().toISOString(),
       inputs: { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) },
@@ -693,11 +798,26 @@ class MockBackend implements Backend {
     const snapshot = structuredClone(wf.definition);
     this.runWorkflows.set(runId, snapshot);
     // Simulate async execution node by node.
+    this.persist();
     void this.simulate(snapshot, runId);
     return { runId };
   }
 
   private async simulate(workflow: Workflow, runId: string): Promise<void> {
+    try {
+      await this.simulateInner(workflow, runId);
+    } catch (error) {
+      const run = this.runs.find((r) => r.id === runId);
+      if (run?.status === 'running') {
+        run.status = 'failed';
+        run.finishedAt = new Date().toISOString();
+        this.pushResult(runId, 'run', 'failed', errorMessage(error));
+      }
+    } finally {
+      this.persist();
+    }
+  }
+  private async simulateInner(workflow: Workflow, runId: string): Promise<void> {
     // Static reachability includes every condition branch. Only disconnected
     // nodes are skipped here; approval replay preserves their existing rows.
     const reachable = new Set<string>();
@@ -723,18 +843,113 @@ class MockBackend implements Backend {
       const run = this.runs.find((r) => r.id === runId);
       if (run === undefined || run.status !== 'running') return;
       const results = this.results.get(runId) ?? [];
-      const completed = new Set(
-        results
-          .filter((r) => r.status === 'succeeded' || r.status === 'approved')
-          .map((r) => r.nodeId),
-      );
-      const nodeId = orderOf(workflow, results, run.inputs ?? {}).find(
-        (id) => !completed.has(id),
-      );
+      const graph = replayGraph(workflow, results);
+      if (graph.error) throw new Error(graph.error);
+      for (const id of graph.skipped) this.pushResult(runId, id, 'skipped', '');
+      const nodeId = graph.ready[0];
       if (nodeId === undefined) break;
       const node = workflow.nodes.find((n) => n.id === nodeId);
-      if (node === undefined) continue;
+      if (!node) continue;
+      const execution = run.execution;
+      const choice = execution?.recoveryChoices?.[nodeId];
+      const spend = reportedSpend(workflow, results, execution?.options.dryRun);
+      if (
+        typeof execution?.options.spendLimitUsd === 'number' &&
+        spend.reportedUsd >= execution.options.spendLimitUsd &&
+        isEffectful(node.type) &&
+        choice !== 'reuse' &&
+        choice !== 'skip'
+      ) {
+        const pause = this.pushResult(runId, '__spend_guard', 'guardPaused', '');
+        execution.spendPause = { id: pause.id, reportedUsd: spend.reportedUsd };
+        run.status = 'paused';
+        this.persist();
+        return;
+      }
+      if (isEffectful(node.type) && choice === 'skip') {
+        this.pushResult(runId, nodeId, 'skipped', '');
+        continue;
+      }
+      if (isEffectful(node.type) && choice === 'reuse') {
+        const visit = graph.visits.get(nodeId) ?? 0;
+        const seed = this.recoverySeeds.get(runId)?.filter((r) => r.nodeId === nodeId)[
+          visit
+        ];
+        if (!seed)
+          throw new Error('No reusable result for this visit; choose replay instead.');
+        const row = this.pushResult(runId, nodeId, 'succeeded', seed.stdout);
+        row.stderr = seed.stderr;
+        row.durationMs = 0;
+        const metadata = resultMetadata(seed);
+        delete metadata.agentSession;
+        delete metadata.agentUsage;
+        delete metadata.agentActivity;
+        row.structuredJson = JSON.stringify({
+          ...metadata,
+          reusedFrom: { runId: seed.runId, resultId: seed.id },
+        });
+        continue;
+      }
+      if (isEffectful(node.type) && execution?.options.dryRun) {
+        const offset = results.filter(
+          (r) =>
+            r.nodeId === nodeId && ['succeeded', 'failed', 'retrying'].includes(r.status),
+        ).length;
+        const policy = node.config.retry;
+        const attempts = Math.min(10, Math.max(1, policy?.maxAttempts ?? 1));
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const fixture = execution.options.fixtures?.[nodeId]?.[offset + attempt - 1];
+          if (!fixture) {
+            const row = this.pushResult(runId, nodeId, 'failed', '');
+            row.error =
+              'Missing fixture for this visit/attempt. No real tool was executed.';
+            break;
+          }
+          const status =
+            fixture.status === 'succeeded'
+              ? 'succeeded'
+              : attempt === attempts
+                ? 'failed'
+                : 'retrying';
+          const row = this.pushResult(runId, nodeId, status, fixture.stdout ?? '');
+          row.stderr = fixture.stderr ?? '';
+          row.attempt = attempt;
+          row.durationMs = 0;
+          row.exitCode = fixture.exitCode ?? (status === 'succeeded' ? 0 : 1);
+          row.structuredJson = JSON.stringify({ ...fixture.structured, simulated: true });
+          if (status !== 'retrying') break;
+          const delay = Math.min(
+            60000,
+            (policy?.delayMs ?? 0) * (policy?.backoff ? 2 ** (attempt - 1) : 1),
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          if (this.runs.find((r) => r.id === runId)?.status !== 'running') return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        continue;
+      }
       if (node.type === 'approval') {
+        const seed = this.recoverySeeds.get(runId)?.filter((r) => r.nodeId === nodeId)[
+          graph.visits.get(nodeId) ?? 0
+        ];
+        if (seed) {
+          const row = this.pushResult(runId, nodeId, 'approved', seed.stdout);
+          row.structuredJson = JSON.stringify({
+            reusedFrom: { runId: seed.runId, resultId: seed.id },
+          });
+          continue;
+        }
+        const fixtures = execution?.options.dryRun
+          ? execution.options.fixtures?.[nodeId]
+          : undefined;
+        if (fixtures) {
+          const fixture = fixtures[graph.visits.get(nodeId) ?? 0];
+          if (!fixture) throw new Error('Missing approval fixture for this visit.');
+          if (fixture.status !== 'paused') {
+            this.pushResult(runId, nodeId, fixture.status, fixture.stdout ?? '');
+            continue;
+          }
+        }
         run.status = 'paused';
         this.pushResult(runId, nodeId, 'paused', 'Waiting for human approval (mock).');
         return;
@@ -964,6 +1179,7 @@ class MockBackend implements Backend {
     };
     list.push(result);
     this.results.set(runId, list);
+    this.persist();
     return result;
   }
 
@@ -1006,7 +1222,116 @@ class MockBackend implements Backend {
     }
     list.push(result);
     this.results.set(runId, list);
+    this.persist();
     return result;
+  }
+
+  async previewRecovery(runId: string): Promise<RecoveryPlan> {
+    const run = this.runs.find((r) => r.id === runId);
+    if (!run || run.status !== 'failed')
+      throw new Error('Only failed runs can be recovered.');
+    const workflow = this.runWorkflows.get(runId);
+    if (!workflow) throw new Error('Run snapshot is unavailable.');
+    return recoveryPlan(run, workflow, this.results.get(runId) ?? []);
+  }
+  async recoverRun(
+    runId: string,
+    choices: Record<string, RecoveryChoice>,
+    fingerprint: string,
+    requestId: string,
+  ): Promise<{ runId: string }> {
+    if (!requestId.trim() || requestId.length > 200)
+      throw new Error('Recovery request id is required (up to 200 characters).');
+    const plan = await this.previewRecovery(runId);
+    if (
+      plan.fingerprint !== fingerprint ||
+      Object.keys(choices).length !== plan.nodes.length
+    )
+      throw new Error('Recovery plan changed or a step decision is missing.');
+    for (const node of plan.nodes)
+      if (!node.choices.includes(choices[node.nodeId] ?? ('invalid' as RecoveryChoice)))
+        throw new Error(`Invalid recovery decision for '${node.label}'.`);
+    const source = this.runs.find((r) => r.id === runId);
+    const workflow = this.runWorkflows.get(runId);
+    if (!source || source.status !== 'failed' || !workflow)
+      throw new Error('Source run is unavailable.');
+    const rows = this.results.get(runId) ?? [];
+    const changed = Object.entries(choices)
+      .filter(([, choice]) => choice !== 'reuse')
+      .map(([id]) => id);
+    const expanded = recoveryPlan(source, workflow, rows, changed);
+    if (expanded.nodes.some((n) => n.affected && choices[n.nodeId] === 'reuse'))
+      throw new Error('Cannot reuse output that depends on replayed or skipped work.');
+    const existing = this.recoveryRequests.get(requestId);
+    if (existing) {
+      if (
+        existing.source !== runId ||
+        Object.keys(existing.choices).length !== Object.keys(choices).length ||
+        Object.entries(choices).some(([id, choice]) => existing.choices[id] !== choice)
+      )
+        throw new Error('Recovery request already used with different decisions.');
+      return { runId: existing.runId };
+    }
+    const childId = `run-mock-${String(this.counter++)}`;
+    const execution = {
+      options: structuredClone(source.execution?.options ?? {}),
+      recoveredFrom: runId,
+      recoveryChoices: { ...choices },
+    };
+    this.runs.unshift({
+      id: childId,
+      workflowId: source.workflowId,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      inputs: { ...source.inputs },
+      execution,
+    });
+    this.results.set(childId, []);
+    this.runWorkflows.set(childId, structuredClone(workflow));
+    const invalidated = recoveryInvalidated(workflow, rows, changed);
+    this.recoverySeeds.set(
+      childId,
+      structuredClone(
+        rows.filter(
+          (r) =>
+            (r.status === 'succeeded' && choices[r.nodeId] === 'reuse') ||
+            (r.status === 'approved' &&
+              !invalidated.has(r.nodeId) &&
+              workflow.nodes.some((n) => n.id === r.nodeId && n.type === 'approval')),
+        ),
+      ),
+    );
+    this.recoveryRequests.set(requestId, {
+      source: runId,
+      choices: { ...choices },
+      runId: childId,
+    });
+    this.persist();
+    void this.simulate(workflow, childId);
+    return { runId: childId };
+  }
+  async continueSpendRun(
+    runId: string,
+    expectedPauseId: number,
+    limit?: number,
+  ): Promise<void> {
+    const run = this.runs.find((r) => r.id === runId);
+    const execution = run?.execution;
+    const pause = execution?.spendPause;
+    if (run?.status !== 'paused' || !pause || pause.id !== expectedPauseId)
+      throw new Error('Run is not paused at this spend guard.');
+    if (limit !== undefined && (!Number.isFinite(limit) || limit <= pause.reportedUsd))
+      throw new Error('New spend limit must exceed the current reported total.');
+    const workflow = this.runWorkflows.get(runId);
+    if (!workflow) throw new Error('Run snapshot is unavailable.');
+    if (limit === undefined) delete execution.options.spendLimitUsd;
+    else execution.options.spendLimitUsd = limit;
+    delete execution.spendPause;
+    run.status = 'running';
+    delete run.finishedAt;
+    this.pushResult(runId, '__spend_guard', 'guardContinued', '');
+    this.persist();
+    void this.simulate(workflow, runId);
   }
 
   async cancelRun(runId: string): Promise<boolean> {
@@ -1023,6 +1348,7 @@ class MockBackend implements Backend {
     }
     run.status = 'cancelled';
     run.finishedAt = new Date().toISOString();
+    this.persist();
     return true;
   }
 
@@ -1033,7 +1359,11 @@ class MockBackend implements Backend {
     expectedApprovalId?: number,
   ): Promise<void> {
     const run = this.runs.find((r) => r.id === runId);
-    if (run === undefined || run.status !== 'paused') {
+    if (
+      run === undefined ||
+      run.status !== 'paused' ||
+      run.execution?.spendPause !== undefined
+    ) {
       throw new Error(`Run '${runId}' is not paused.`);
     }
     const list = this.results.get(runId) ?? [];
@@ -1042,8 +1372,7 @@ class MockBackend implements Backend {
     if (expectedApprovalId !== undefined && paused.id !== expectedApprovalId) {
       throw new Error('Approval changed. Refresh the run before deciding.');
     }
-    paused.status = approved ? 'approved' : 'rejected';
-    if (note !== undefined && note !== '') paused.stdout = note;
+    this.pushResult(runId, paused.nodeId, approved ? 'approved' : 'rejected', note ?? '');
     if (!approved) {
       run.status = 'failed';
       run.finishedAt = new Date().toISOString();
@@ -1085,9 +1414,18 @@ class MockBackend implements Backend {
       );
     }
     this.runs = this.runs.filter((r) => r.id !== runId);
+    this.removeRunHistory(runId);
+    this.persist();
+    return true;
+  }
+
+  private removeRunHistory(runId: string): void {
     this.results.delete(runId);
     this.runWorkflows.delete(runId);
-    return true;
+    this.recoverySeeds.delete(runId);
+    for (const [requestId, request] of this.recoveryRequests) {
+      if (request.runId === runId) this.recoveryRequests.delete(requestId);
+    }
   }
 
   async clearFinishedRuns(): Promise<{ removed: number; kept: number }> {
@@ -1096,11 +1434,11 @@ class MockBackend implements Backend {
     const keepIds = new Set(kept.map((r) => r.id));
     for (const id of [...this.results.keys()]) {
       if (!keepIds.has(id)) {
-        this.results.delete(id);
-        this.runWorkflows.delete(id);
+        this.removeRunHistory(id);
       }
     }
     this.runs = kept;
+    this.persist();
     return { removed, kept: kept.length };
   }
 
@@ -1669,45 +2007,6 @@ function mockVariables(
   }
   for (const [id, count] of visits) vars[`node.${id}.visits`] = String(count);
   return vars;
-}
-
-function orderOf(
-  workflow: Workflow,
-  priorResults: StoredNodeResult[],
-  inputs: Record<string, string>,
-): string[] {
-  const start = workflow.nodes.find((n) => n.type === 'start');
-  if (start === undefined) return [];
-  const vars = mockVariables(workflow, priorResults, inputs);
-  const order: string[] = [];
-  const visited = new Set<string>();
-  let current: string | undefined = start.id;
-  while (current !== undefined && !visited.has(current)) {
-    visited.add(current);
-    order.push(current);
-    const node = workflow.nodes.find((n) => n.id === current);
-    if (node?.type === 'end') break;
-    const outgoing = workflow.edges.filter((e) => e.source === current);
-    if (node?.type === 'condition' && node.config.condition !== undefined) {
-      let branch = 'false';
-      try {
-        branch = evalCondition(node.config.condition, vars) ? 'true' : 'false';
-      } catch {
-        /* Upstream results may not exist yet; the path is recomputed after each node. */
-      }
-      const norm = (label?: string): string => (label ?? '').trim().toLowerCase();
-      const aliases: Record<string, string[]> = {
-        true: ['true', 'yes', 'on true'],
-        false: ['false', 'no', 'on false'],
-      };
-      current =
-        outgoing.find((e) => (aliases[branch] ?? []).includes(norm(e.label)))?.target ??
-        outgoing[0]?.target;
-      continue;
-    }
-    current = outgoing[0]?.target;
-  }
-  return order;
 }
 
 let cached: Backend | null = null;

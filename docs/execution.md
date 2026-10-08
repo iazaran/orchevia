@@ -147,3 +147,72 @@ profile/directory. Only completed successful explicit CLI sessions are reused.
 Failed resumed turns bypass automatic retries; later group members start fresh.
 Selected completed-node handoffs have a combined excerpt budget; stored logs remain
 available. See [workflow cost controls](workflow-costs.md) for limits and examples.
+
+## Dry-run workflow tests
+
+Select **Dry run** in Workflows, review the inputs and edit the fixture JSON.
+Fixtures are keyed by node id; each array supplies successive attempts/visits:
+
+```json
+{
+  "review": [
+    {
+      "status": "succeeded",
+      "stdout": "needs fixes",
+      "structured": { "severity": "P1" }
+    },
+    { "status": "succeeded", "stdout": "ready", "structured": { "severity": "P2" } }
+  ],
+  "approval": [{ "status": "paused" }],
+  "fix": [{ "status": "succeeded", "stdout": "fixed" }]
+}
+```
+
+Commands, Agents, Git, GitHub, Ticket and MCP nodes use fixtures before any tool,
+profile or directory lookup. Start/End/Condition nodes use the ordinary scheduler.
+Every reached effectful attempt needs a fixture; exhaustion records a failure and
+never invokes a real tool. A missing Approval fixture pauses for a human decision;
+provided Approval fixtures use `approved`, `rejected` or `paused`. Each effectful
+fixture uses `succeeded` or `failed`; stdout/stderr, exitCode and structured output
+are optional. Reserved session/usage/provenance metadata is rejected. Bounds:
+1000 fixture attempts per node, 800000 output/structured bytes per fixture.
+
+Normal structural validation, required inputs, failure routing, retry policies,
+joins and loop limits apply. Supplied fixtures and execution mode persist through
+approval/restart continuation. Test runs are labeled **DRY RUN** and remain
+inspectable, but cannot supply actual spend, actionable findings or verified
+playbook commands. Fixtures verify the supplied scenario, not real tool behavior.
+The browser follows these routing scenarios but does not prove native concurrency.
+
+## Recovering failed runs
+
+Select a failed run and choose **Recover failed run**. Review a choice for every
+potential tool step, including dormant branches: **Reuse successful output**,
+**Execute again**, or **Skip this step**. Failed/cancelled invocations may have
+partially written files or external state; explicit replay is your decision to
+execute again. Skips supply no successful output and can skip downstream work.
+
+Recovery creates a linked run from the original snapshot and input values. The
+source is unchanged. Legacy history without an original snapshot cannot be recovered.
+Failed/cancelled work invalidates graph and data dependents,
+including context/input handoffs and loop cycles. Changing an upstream choice to
+replay or skip also prohibits dependent reuse. Retained results enter routing
+when ready, so joins still wait correctly; unaffected completed approvals are
+historical reuse, while affected approvals ask again. Reused Agents never import
+source provider-session metadata. Unavailable additional visits fail instead of
+silently replaying a tool. Repeated requests with the same recovery request id
+return the existing child; conflicting decisions are rejected.
+
+## Timeline and spend pauses
+
+Runs places attempts and repeated visits on a common timestamp axis. Concurrent
+bars overlap; elapsed time comes from run start/end instead of summed durations.
+Approval and spend waiting extend to the decision or terminal run timestamp.
+Unknown timing is labeled, and reused outputs appear as historical reuse with no
+new duration. Older integration rows with only measured duration show that duration
+with an unknown axis position. Output links scroll to the existing result details.
+
+The optional [reported-spend guard](workflow-costs.md#reported-spend-guard) creates
+a distinct durable pause. Ordinary Approve cannot bypass it. Review the spend
+pause to increase the threshold or explicitly continue without it; Cancel remains
+available. Pure graph completion after the final tool can finish without a pause.

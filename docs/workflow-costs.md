@@ -117,3 +117,26 @@ its directory normalization cannot resolve filesystem symlinks.
 Provider references: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference),
 [Claude cost guidance](https://code.claude.com/docs/en/costs).
+
+## Reported-spend guard
+
+Open **Run options** and enter a positive USD threshold, or leave it blank for
+ordinary execution. The guard adds up finite, nonnegative structured
+`agentUsage.reported_cost_usd` for newly executed Agent attempts. It does not
+estimate dollars from tokens or text patterns. Reused and simulated results do
+not contribute. Runs reports the number of priced attempts and attempts missing
+USD reports; unknown coverage means the displayed total is partial.
+
+Claude managed result streams can report USD. Codex/custom and legacy plain-text
+calls may not report any USD. A missing report cannot trigger a dollar guard;
+unsupported calls can therefore continue. This is neither a provider quota meter
+nor a universal hard billing cap. Provider-native budget flags are not configured
+by this feature.
+
+Once known spend reaches the threshold, no further effectful work is dispatched.
+Already running siblings finish and may increase spend further. The engine then
+pauses if more tools are ready; pure graph completion may finish the run. Choose
+**Review spend pause**, then enter a threshold above the reported total or choose
+**Continue without the spend guard**. Decisions are atomic, identify the exact
+pause, persist across restart, and reject stale/duplicate continuation. Ordinary
+workflow approvals cannot authorize a spend pause. Cancel keeps partial output.

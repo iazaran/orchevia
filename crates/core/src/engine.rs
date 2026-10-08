@@ -12,6 +12,7 @@
 //! - Commands run with inherited environment but a fixed, explicit working
 //!   directory; executable + args are passed separately (no shell).
 
+use crate::run_controls::{self, RecoveryChoice, RecoveryPlan, RunExecution, RunOptions};
 use crate::{
     agent_output::AgentOutput,
     agents::{build_agent_command, build_session_command, validate_session_profile, AgentProfile},
@@ -171,6 +172,7 @@ enum NodeOutcome {
 
 /// What a spawned node task reports (rows are recorded inside the task).
 enum TaskOutcome {
+    Skipped,
     Succeeded,
     Failed,
     ConditionBranch(bool),
@@ -271,13 +273,149 @@ struct RunState {
 }
 
 impl Engine {
+    pub fn preview_recovery(&self, run_id: &str) -> Result<RecoveryPlan, EngineError> {
+        let run = self
+            .db
+            .get_run(run_id)?
+            .ok_or_else(|| EngineError::UnknownRun(run_id.into()))?;
+        if run.status != RunStatus::Failed {
+            return Err(EngineError::Validation(
+                "Only failed runs can be recovered.".into(),
+            ));
+        }
+        let workflow = self.db.get_run_snapshot(run_id)?.ok_or_else(|| {
+            EngineError::Validation(
+                "Original run snapshot is unavailable; this legacy run cannot be recovered.".into(),
+            )
+        })?;
+        Ok(run_controls::recovery_plan(
+            &run,
+            &workflow,
+            &self.db.list_node_results(run_id)?,
+        ))
+    }
+
+    pub fn recover_run(
+        &self,
+        source_id: &str,
+        new_id: &str,
+        choices: &HashMap<String, RecoveryChoice>,
+        fingerprint: &str,
+        request_id: &str,
+    ) -> Result<String, EngineError> {
+        if request_id.trim().is_empty() || request_id.len() > 200 {
+            return Err(EngineError::Validation(
+                "Recovery request id is required (up to 200 characters).".into(),
+            ));
+        }
+        let source = self
+            .db
+            .get_run(source_id)?
+            .ok_or_else(|| EngineError::UnknownRun(source_id.into()))?;
+        let workflow = self.db.get_run_snapshot(source_id)?.ok_or_else(|| {
+            EngineError::Validation(
+                "Original run snapshot is unavailable; this legacy run cannot be recovered.".into(),
+            )
+        })?;
+        let rows = self.db.list_node_results(source_id)?;
+        let plan = self.preview_recovery(source_id)?;
+        if plan.fingerprint != fingerprint || choices.len() != plan.nodes.len() {
+            return Err(EngineError::Validation(
+                "Recovery plan changed or a step decision is missing.".into(),
+            ));
+        }
+        for node in &plan.nodes {
+            if !choices
+                .get(&node.node_id)
+                .is_some_and(|c| node.choices.contains(c))
+            {
+                return Err(EngineError::Validation(format!(
+                    "Invalid recovery decision for '{}'.",
+                    node.label
+                )));
+            }
+        }
+        // Replay/skip choices invalidate dependent reuse, even upstream of the original failure.
+        let mut changed_rows = rows.clone();
+        for (id, choice) in choices {
+            if *choice != RecoveryChoice::Reuse {
+                let mut row = rows.last().cloned().ok_or_else(|| {
+                    EngineError::Validation("Run has no recorded history.".into())
+                })?;
+                row.node_id = id.clone();
+                row.status = "failed".into();
+                changed_rows.push(row);
+            }
+        }
+        let expanded = run_controls::recovery_plan(&source, &workflow, &changed_rows);
+        for node in &expanded.nodes {
+            if node.affected && choices.get(&node.node_id) == Some(&RecoveryChoice::Reuse) {
+                return Err(EngineError::Validation(format!(
+                    "'{}' depends on replayed or skipped work and cannot be reused.",
+                    node.label
+                )));
+            }
+        }
+        let invalidated = run_controls::invalidated_nodes(&workflow, &changed_rows);
+        let seeds: Vec<_> = rows
+            .iter()
+            .filter(|r| {
+                (r.status == "succeeded" && choices.get(&r.node_id) == Some(&RecoveryChoice::Reuse))
+                    || (r.status == "approved"
+                        && !invalidated.contains(&r.node_id)
+                        && workflow
+                            .nodes
+                            .iter()
+                            .any(|n| n.id == r.node_id && n.kind == NodeKind::Approval))
+            })
+            .cloned()
+            .collect();
+        let execution = RunExecution {
+            options: source.execution.options.clone(),
+            recovered_from: Some(source_id.into()),
+            recovery_choices: choices.clone(),
+            spend_pause: None,
+        };
+        self.db
+            .create_recovery_run(new_id, &source, &workflow, &execution, &seeds, request_id)
+            .map_err(EngineError::from)
+    }
+
+    pub async fn continue_spend_run(
+        &self,
+        run_id: &str,
+        pause_id: i64,
+        limit: Option<f64>,
+    ) -> Result<(), EngineError> {
+        let workflow = self
+            .db
+            .get_run_workflow(run_id)?
+            .ok_or_else(|| EngineError::UnknownRun(run_id.into()))?;
+        // Register before claiming, as with approval resumption; cancellation cannot miss it.
+        {
+            let mut flags = self.cancel.flags();
+            if !self.db.continue_spend_run(run_id, pause_id, limit)? {
+                return Err(EngineError::NotPaused(run_id.into()));
+            }
+            flags.insert(run_id.into(), Arc::new(AtomicBool::new(false)));
+        }
+        self.execute(workflow, run_id.into()).await;
+        Ok(())
+    }
+
     pub fn new(db: Arc<SqliteDb>, cancel: CancellationRegistry) -> Self {
         Self { db, cancel }
     }
 
     pub fn cancel_run(&self, run_id: &str) -> Result<bool, EngineError> {
+        // Use the same lifecycle lock as finalization and pause continuation.
+        let flags = self.cancel.flags();
         let paused = self.db.cancel_paused_run(run_id)?;
-        Ok(self.cancel.cancel(run_id) || paused)
+        let active = flags.get(run_id).is_some_and(|flag| {
+            flag.store(true, Ordering::SeqCst);
+            true
+        });
+        Ok(active || paused)
     }
 
     /// Record a node result without captured output.
@@ -304,6 +442,19 @@ impl Engine {
         run_id: &str,
         inputs: &HashMap<String, String>,
     ) -> Result<(), EngineError> {
+        self.start_run_with_options(workflow, run_id, inputs, &RunOptions::default())
+    }
+
+    pub fn start_run_with_options(
+        &self,
+        workflow: &Workflow,
+        run_id: &str,
+        inputs: &HashMap<String, String>,
+        options: &RunOptions,
+    ) -> Result<(), EngineError> {
+        options
+            .validate(workflow)
+            .map_err(EngineError::Validation)?;
         // Merge defaults under caller-supplied values.
         let mut merged: HashMap<String, String> = workflow
             .inputs
@@ -330,117 +481,121 @@ impl Engine {
                 });
             }
         }
-        // Availability checks that need the DB: every Agent node must
-        // reference an existing profile whose CLI is installed.
-        for node in workflow.nodes.iter().filter(|n| n.kind == NodeKind::Agent) {
-            if node
-                .config
-                .agent_role
-                .as_deref()
-                .map(|r| !r.trim().is_empty())
-                .unwrap_or(false)
-            {
-                issues.push(crate::workflow::ValidationIssue {
+        if !options.dry_run {
+            // Availability checks that need the DB: every Agent node must
+            // reference an existing profile whose CLI is installed.
+            for node in workflow.nodes.iter().filter(|n| n.kind == NodeKind::Agent) {
+                if node
+                    .config
+                    .agent_role
+                    .as_deref()
+                    .map(|r| !r.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    issues.push(crate::workflow::ValidationIssue {
                     code: "agent-role-unresolved".to_string(),
                     message: "AI Agent node still references a role; resolve roles to profiles before running.".to_string(),
                     severity: ValidationSeverity::Error,
                     node_id: Some(node.id.clone()),
                 });
-                continue;
-            }
-            let profile_id = node.config.agent_profile_id.as_deref().unwrap_or("");
-            match self.db.get_agent_profile(profile_id) {
-                Ok(Some(profile)) => {
-                    if node.config.session_group.is_some() {
-                        if let Err(message) = validate_session_profile(&profile) {
+                    continue;
+                }
+                let profile_id = node.config.agent_profile_id.as_deref().unwrap_or("");
+                match self.db.get_agent_profile(profile_id) {
+                    Ok(Some(profile)) => {
+                        if node.config.session_group.is_some() {
+                            if let Err(message) = validate_session_profile(&profile) {
+                                issues.push(crate::workflow::ValidationIssue {
+                                    code: "agent-session-profile-invalid".into(),
+                                    message,
+                                    severity: ValidationSeverity::Error,
+                                    node_id: Some(node.id.clone()),
+                                });
+                            }
+                        }
+                        let exe = profile.effective_executable();
+                        if !is_executable_available(&exe) {
                             issues.push(crate::workflow::ValidationIssue {
-                                code: "agent-session-profile-invalid".into(),
-                                message,
+                                code: "agent-cli-unavailable".to_string(),
+                                message: format!(
+                                    "Agent Profile '{}' needs '{}', which was not found on PATH.",
+                                    profile.name, exe
+                                ),
                                 severity: ValidationSeverity::Error,
                                 node_id: Some(node.id.clone()),
                             });
                         }
                     }
-                    let exe = profile.effective_executable();
-                    if !is_executable_available(&exe) {
-                        issues.push(crate::workflow::ValidationIssue {
-                            code: "agent-cli-unavailable".to_string(),
-                            message: format!(
-                                "Agent Profile '{}' needs '{}', which was not found on PATH.",
-                                profile.name, exe
-                            ),
-                            severity: ValidationSeverity::Error,
-                            node_id: Some(node.id.clone()),
-                        });
+                    Ok(None) => issues.push(crate::workflow::ValidationIssue {
+                        code: "agent-profile-missing".to_string(),
+                        message: format!(
+                            "AI Agent node references unknown Agent Profile '{profile_id}'."
+                        ),
+                        severity: ValidationSeverity::Error,
+                        node_id: Some(node.id.clone()),
+                    }),
+                    Err(e) => {
+                        return Err(EngineError::Db(e.to_string()));
                     }
-                }
-                Ok(None) => issues.push(crate::workflow::ValidationIssue {
-                    code: "agent-profile-missing".to_string(),
-                    message: format!(
-                        "AI Agent node references unknown Agent Profile '{profile_id}'."
-                    ),
-                    severity: ValidationSeverity::Error,
-                    node_id: Some(node.id.clone()),
-                }),
-                Err(e) => {
-                    return Err(EngineError::Db(e.to_string()));
                 }
             }
-        }
-        // Integration availability: git/gh binaries and MCP servers.
-        let needs_git = workflow.nodes.iter().any(|n| n.kind == NodeKind::Git);
-        let needs_gh = workflow.nodes.iter().any(|n| n.kind == NodeKind::GitHub);
-        if needs_git && !is_executable_available("git") {
-            issues.push(crate::workflow::ValidationIssue {
-                code: "git-cli-unavailable".to_string(),
-                message: "Git nodes need the 'git' CLI, which was not found on PATH.".to_string(),
-                severity: ValidationSeverity::Error,
-                node_id: None,
-            });
-        }
-        if needs_gh && !crate::github::cli_available() {
-            issues.push(crate::workflow::ValidationIssue {
-                code: "gh-cli-unavailable".to_string(),
-                message: "GitHub nodes need the 'gh' CLI, which was not found on PATH.".to_string(),
-                severity: ValidationSeverity::Error,
-                node_id: None,
-            });
-        }
-        for node in workflow
-            .nodes
-            .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Mcp | NodeKind::Ticket))
-        {
-            let server_id = node.config.mcp_server_id.as_deref().unwrap_or("");
-            match self.db.get_mcp_server(server_id) {
-                Ok(Some(server)) => {
-                    if !server.enabled {
-                        issues.push(crate::workflow::ValidationIssue {
-                            code: "mcp-server-disabled".to_string(),
-                            message: format!("MCP server '{}' is disabled.", server.name),
-                            severity: ValidationSeverity::Error,
-                            node_id: Some(node.id.clone()),
-                        });
-                    } else if !crate::mcp::server_command_available(&server) {
-                        issues.push(crate::workflow::ValidationIssue {
-                            code: "mcp-server-unavailable".to_string(),
-                            message: format!(
-                                "MCP server '{}' needs '{}', which was not found.",
-                                server.name, server.command
-                            ),
-                            severity: ValidationSeverity::Error,
-                            node_id: Some(node.id.clone()),
-                        });
-                    }
-                }
-                Ok(None) => issues.push(crate::workflow::ValidationIssue {
-                    code: "mcp-server-missing".to_string(),
-                    message: format!("Node references unknown MCP server '{server_id}'."),
+            // Integration availability: git/gh binaries and MCP servers.
+            let needs_git = workflow.nodes.iter().any(|n| n.kind == NodeKind::Git);
+            let needs_gh = workflow.nodes.iter().any(|n| n.kind == NodeKind::GitHub);
+            if needs_git && !is_executable_available("git") {
+                issues.push(crate::workflow::ValidationIssue {
+                    code: "git-cli-unavailable".to_string(),
+                    message: "Git nodes need the 'git' CLI, which was not found on PATH."
+                        .to_string(),
                     severity: ValidationSeverity::Error,
-                    node_id: Some(node.id.clone()),
-                }),
-                Err(e) => {
-                    return Err(EngineError::Db(e.to_string()));
+                    node_id: None,
+                });
+            }
+            if needs_gh && !crate::github::cli_available() {
+                issues.push(crate::workflow::ValidationIssue {
+                    code: "gh-cli-unavailable".to_string(),
+                    message: "GitHub nodes need the 'gh' CLI, which was not found on PATH."
+                        .to_string(),
+                    severity: ValidationSeverity::Error,
+                    node_id: None,
+                });
+            }
+            for node in workflow
+                .nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::Mcp | NodeKind::Ticket))
+            {
+                let server_id = node.config.mcp_server_id.as_deref().unwrap_or("");
+                match self.db.get_mcp_server(server_id) {
+                    Ok(Some(server)) => {
+                        if !server.enabled {
+                            issues.push(crate::workflow::ValidationIssue {
+                                code: "mcp-server-disabled".to_string(),
+                                message: format!("MCP server '{}' is disabled.", server.name),
+                                severity: ValidationSeverity::Error,
+                                node_id: Some(node.id.clone()),
+                            });
+                        } else if !crate::mcp::server_command_available(&server) {
+                            issues.push(crate::workflow::ValidationIssue {
+                                code: "mcp-server-unavailable".to_string(),
+                                message: format!(
+                                    "MCP server '{}' needs '{}', which was not found.",
+                                    server.name, server.command
+                                ),
+                                severity: ValidationSeverity::Error,
+                                node_id: Some(node.id.clone()),
+                            });
+                        }
+                    }
+                    Ok(None) => issues.push(crate::workflow::ValidationIssue {
+                        code: "mcp-server-missing".to_string(),
+                        message: format!("Node references unknown MCP server '{server_id}'."),
+                        severity: ValidationSeverity::Error,
+                        node_id: Some(node.id.clone()),
+                    }),
+                    Err(e) => {
+                        return Err(EngineError::Db(e.to_string()));
+                    }
                 }
             }
         }
@@ -455,8 +610,15 @@ impl Engine {
                 .collect();
             return Err(EngineError::Validation(msgs.join("; ")));
         }
-        self.db
-            .create_run_with_workflow(run_id, workflow, &merged)?;
+        self.db.create_run_with_execution(
+            run_id,
+            workflow,
+            &merged,
+            &RunExecution {
+                options: options.clone(),
+                ..RunExecution::default()
+            },
+        )?;
         Ok(())
     }
 
@@ -469,37 +631,76 @@ impl Engine {
         let scheduled = run_id.starts_with("run-sched-");
         let workflow_name = workflow.name.clone();
         let flag = self.cancel.flag_for(&run_id);
+        let simulated = self
+            .db
+            .get_run(&run_id)
+            .ok()
+            .flatten()
+            .map(|r| r.execution.options.dry_run)
+            .unwrap_or(true);
         let result = self.execute_inner(&workflow, &run_id, &flag).await;
-        // Remove the old execution flag before publishing a paused status.
-        // Resumption then registers its own flag without this task removing it.
-        self.cancel.remove(&run_id);
+        let result = {
+            // Publishing a pause, removing this execution's flag, and cancellation
+            // share one lock with all continuations. No successor can be overwritten.
+            let mut flags = self.cancel.flags();
+            let result = if flag.load(Ordering::SeqCst)
+                && matches!(
+                    result,
+                    Ok(RunOutcome::Paused
+                        | RunOutcome::SpendPaused(_)
+                        | RunOutcome::Finished(RunStatus::Succeeded))
+                ) {
+                Ok(RunOutcome::Finished(RunStatus::Cancelled))
+            } else {
+                result
+            };
+            flags.remove(&run_id);
+            match &result {
+                Ok(RunOutcome::Finished(status)) => {
+                    let _ = self.db.finish_run(&run_id, *status);
+                }
+                Ok(RunOutcome::Paused) => {
+                    let _ = self.db.finish_run(&run_id, RunStatus::Paused);
+                }
+                Ok(RunOutcome::SpendPaused(total)) => {
+                    let _ = self.db.pause_for_spend(&run_id, *total);
+                }
+                Err(e) => {
+                    let _ =
+                        self.record_simple(&run_id, "run", "failed", None, Some(&e.to_string()));
+                    let _ = self.db.finish_run(&run_id, RunStatus::Failed);
+                }
+            }
+            result
+        };
         match result {
             Ok(RunOutcome::Finished(status)) => {
-                let _ = self.db.finish_run(&run_id, status);
-                self.emit_terminal(&workflow, &run_id, &workflow_name, scheduled, status);
+                if !simulated {
+                    self.emit_terminal(&workflow, &run_id, &workflow_name, scheduled, status);
+                }
             }
-            Ok(RunOutcome::Paused) => {
-                let _ = self.db.finish_run(&run_id, RunStatus::Paused);
-                crate::notify::emit_event(
-                    &self.db,
-                    &crate::notify::NotifyEvent::ApprovalNeeded {
-                        run_id: run_id.clone(),
-                        workflow: workflow_name,
-                    },
-                );
+            Ok(RunOutcome::Paused | RunOutcome::SpendPaused(_)) => {
+                if !simulated {
+                    crate::notify::emit_event(
+                        &self.db,
+                        &crate::notify::NotifyEvent::ApprovalNeeded {
+                            run_id: run_id.clone(),
+                            workflow: workflow_name,
+                        },
+                    );
+                }
             }
-            Err(e) => {
-                let message = e.to_string();
-                let _ = self.record_simple(&run_id, "run", "failed", None, Some(&message));
-                let _ = self.db.finish_run(&run_id, RunStatus::Failed);
-                crate::notify::emit_event(
-                    &self.db,
-                    &crate::notify::NotifyEvent::WorkflowFailed {
-                        run_id: run_id.clone(),
-                        workflow: workflow_name,
-                        scheduled,
-                    },
-                );
+            Err(_) => {
+                if !simulated {
+                    crate::notify::emit_event(
+                        &self.db,
+                        &crate::notify::NotifyEvent::WorkflowFailed {
+                            run_id: run_id.clone(),
+                            workflow: workflow_name,
+                            scheduled,
+                        },
+                    );
+                }
             }
         }
     }
@@ -574,7 +775,9 @@ impl Engine {
                 .rev()
                 .find(|r| r.node_id == node.id && r.status == "succeeded")
             {
-                outputs.push((node.id.clone(), profile_label, row.stdout.clone()));
+                if run_controls::is_new_execution(row) {
+                    outputs.push((node.id.clone(), profile_label, row.stdout.clone()));
+                }
             }
         }
         crate::review::grouped_findings(&outputs)
@@ -667,7 +870,7 @@ impl Engine {
         let mut set: JoinSet<(String, TaskOutcome)> = JoinSet::new();
         let mut fail_fast: Option<FailFast> = None;
 
-        loop {
+        'schedule: loop {
             if flag.load(Ordering::SeqCst) && fail_fast.is_none() {
                 fail_fast = Some(FailFast::Cancelled);
             }
@@ -686,6 +889,40 @@ impl Engine {
                 .collect();
             ready.sort_by_key(|id| graph.def_order.get(id).copied().unwrap_or(usize::MAX));
 
+            let spend = run_controls::reported_spend(
+                workflow,
+                &self.db.list_node_results(run_id)?,
+                run.execution.options.dry_run,
+            );
+            let guarded = run
+                .execution
+                .options
+                .spend_limit_usd
+                .is_some_and(|limit| spend.reported_usd >= limit);
+            if fail_fast.is_none() && guarded {
+                let executable_work = ready.iter().any(|id| {
+                    graph.nodes.get(id).is_some_and(|n| {
+                        run_controls::effectful(n.kind)
+                            && !matches!(
+                                run.execution.recovery_choices.get(id),
+                                Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                            )
+                    })
+                });
+                if in_flight.is_empty() && executable_work {
+                    return Ok(RunOutcome::SpendPaused(spend.reported_usd));
+                }
+                ready.retain(|id| {
+                    graph.nodes.get(id).is_some_and(|n| {
+                        !run_controls::effectful(n.kind)
+                            || matches!(
+                                run.execution.recovery_choices.get(id),
+                                Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                            )
+                    })
+                });
+            }
+
             // Approval gates engage only when nothing else is in flight, so a
             // pause never strands running siblings mid-branch.
             if fail_fast.is_none() && in_flight.is_empty() {
@@ -693,6 +930,84 @@ impl Engine {
                     .iter()
                     .find(|id| graph.nodes.get(*id).map(|n| n.kind) == Some(NodeKind::Approval))
                 {
+                    let approval_visit = state.visits.get(approval).copied().unwrap_or(0) + 1;
+                    if let Some(seed) = self.db.recovery_result(run_id, approval, approval_visit)? {
+                        let metadata=serde_json::json!({"reusedFrom":{"runId":seed.run_id,"resultId":seed.id}}).to_string();
+                        self.db.record_node_result(NewNodeResult {
+                            run_id,
+                            node_id: approval,
+                            status: "approved",
+                            exit_code: Some(0),
+                            stdout: &seed.stdout,
+                            stderr: "",
+                            error: None,
+                            attempt: 1,
+                            duration_ms: 0,
+                            structured_json: &metadata,
+                        })?;
+                        state.visits.insert(approval.clone(), approval_visit);
+                        state
+                            .terminal
+                            .insert(approval.clone(), NodeOutcome::Succeeded);
+                        self.apply_completion(
+                            &graph,
+                            &mut state,
+                            run_id,
+                            &Completion {
+                                node_id: approval,
+                                outcome: NodeOutcome::Succeeded,
+                                branch: None,
+                                record: true,
+                            },
+                        )?;
+                        continue 'schedule;
+                    }
+                    if run.execution.options.dry_run {
+                        if let Some(fixtures) = run.execution.options.fixtures.get(approval) {
+                            let visit = state.visits.get(approval).copied().unwrap_or(0) as usize;
+                            let Some(fixture) = fixtures.get(visit) else {
+                                self.record_simple(
+                                    run_id,
+                                    approval,
+                                    "failed",
+                                    None,
+                                    Some("Missing approval fixture for this visit."),
+                                )?;
+                                return Ok(RunOutcome::Finished(RunStatus::Failed));
+                            };
+                            if fixture.status != "paused" {
+                                self.record_simple(
+                                    run_id,
+                                    approval,
+                                    &fixture.status,
+                                    Some(if fixture.status == "approved" { 0 } else { 1 }),
+                                    None,
+                                )?;
+                                let outcome = if fixture.status == "approved" {
+                                    NodeOutcome::Succeeded
+                                } else {
+                                    NodeOutcome::Failed
+                                };
+                                *state.visits.entry(approval.clone()).or_insert(0) += 1;
+                                state.terminal.insert(approval.clone(), outcome);
+                                let effect = self.apply_completion(
+                                    &graph,
+                                    &mut state,
+                                    run_id,
+                                    &Completion {
+                                        node_id: approval,
+                                        outcome,
+                                        branch: None,
+                                        record: true,
+                                    },
+                                )?;
+                                if effect.run_failed.is_some() {
+                                    return Ok(RunOutcome::Finished(RunStatus::Failed));
+                                }
+                                continue 'schedule;
+                            }
+                        }
+                    }
                     let message = graph
                         .nodes
                         .get(approval)
@@ -727,6 +1042,7 @@ impl Engine {
                         workflow_defaults: workflow.defaults.clone(),
                         run_id: run_id.to_string(),
                         inputs: run.inputs.clone(),
+                        execution: run.execution.clone(),
                     };
                     set.spawn(async move {
                         let outcome = execute_node_task(db, owned, task_flag).await;
@@ -783,6 +1099,7 @@ impl Engine {
             in_flight.remove(&node_id);
 
             let (outcome, branch) = match task_outcome {
+                TaskOutcome::Skipped => (NodeOutcome::Skipped, None),
                 TaskOutcome::Succeeded => (NodeOutcome::Succeeded, None),
                 TaskOutcome::Failed => (NodeOutcome::Failed, None),
                 TaskOutcome::ConditionBranch(branch) => (NodeOutcome::Succeeded, Some(branch)),
@@ -1067,11 +1384,13 @@ struct Completion<'a> {
 enum RunOutcome {
     Finished(RunStatus),
     Paused,
+    SpendPaused(f64),
 }
 
 /// Owned inputs for a spawned node task.
 struct TaskInput {
     session_locks: SessionLocks,
+    execution: RunExecution,
     node: Node,
     workflow_id: String,
     workflow_name: String,
@@ -1081,6 +1400,155 @@ struct TaskInput {
 }
 
 type SessionLocks = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
+
+fn execute_reused_task(db: &SqliteDb, task: &TaskInput) -> TaskOutcome {
+    let visit = db.list_node_results(&task.run_id).map(|rows| {
+        rows.iter()
+            .filter(|r| r.node_id == task.node.id && is_terminal_status(&r.status))
+            .count() as u32
+            + 1
+    });
+    let row = visit.and_then(|v| db.recovery_result(&task.run_id, &task.node.id, v));
+    match row {
+        Ok(Some(row)) => {
+            let mut metadata: serde_json::Value = serde_json::from_str(&row.structured_json)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(object) = metadata.as_object_mut() {
+                object.remove("agentSession");
+                object.remove("agentUsage");
+                object.remove("agentActivity");
+            } else {
+                metadata = serde_json::json!({});
+            }
+            metadata["reusedFrom"] = serde_json::json!({"runId":row.run_id,"resultId":row.id});
+            if task.execution.options.dry_run {
+                metadata["simulated"] = serde_json::json!(true);
+            }
+            let recorded = db.record_node_result(NewNodeResult {
+                run_id: &task.run_id,
+                node_id: &task.node.id,
+                status: "succeeded",
+                exit_code: row.exit_code,
+                stdout: &row.stdout,
+                stderr: &row.stderr,
+                error: None,
+                attempt: 1,
+                duration_ms: 0,
+                structured_json: &metadata.to_string(),
+            });
+            if recorded.is_ok() {
+                TaskOutcome::Succeeded
+            } else {
+                TaskOutcome::Failed
+            }
+        }
+        _ => {
+            let _ = db.record_node_result(NewNodeResult::simple(
+                &task.run_id,
+                &task.node.id,
+                "failed",
+                None,
+                Some("No reusable result for this visit; choose replay instead."),
+            ));
+            TaskOutcome::Failed
+        }
+    }
+}
+
+async fn execute_fixture_task(
+    db: &SqliteDb,
+    task: &TaskInput,
+    flag: &Arc<AtomicBool>,
+) -> TaskOutcome {
+    let fixtures = task.execution.options.fixtures.get(&task.node.id);
+    let offset = match db.list_node_results(&task.run_id) {
+        Ok(rows) => rows
+            .iter()
+            .filter(|r| {
+                r.node_id == task.node.id
+                    && matches!(r.status.as_str(), "succeeded" | "failed" | "retrying")
+            })
+            .count(),
+        Err(_) => return TaskOutcome::Failed,
+    };
+    let retry = task.node.config.retry.as_ref();
+    let max_attempts = retry.map(|r| r.max_attempts.clamp(1, 10)).unwrap_or(1);
+    for attempt in 1..=max_attempts {
+        if flag.load(Ordering::SeqCst) {
+            let _ = db.record_node_result(NewNodeResult::simple(
+                &task.run_id,
+                &task.node.id,
+                "cancelled",
+                None,
+                Some("Dry run cancelled."),
+            ));
+            return TaskOutcome::Cancelled;
+        }
+        let Some(fixture) = fixtures.and_then(|items| items.get(offset + attempt as usize - 1))
+        else {
+            let _ = db.record_node_result(NewNodeResult::simple(
+                &task.run_id,
+                &task.node.id,
+                "failed",
+                None,
+                Some("Missing fixture for this visit/attempt. No real tool was executed."),
+            ));
+            return TaskOutcome::Failed;
+        };
+        let last = attempt == max_attempts;
+        let success = fixture.status == "succeeded";
+        let mut metadata = fixture.structured.clone();
+        if !metadata.is_object() {
+            metadata = serde_json::json!({});
+        }
+        metadata["simulated"] = serde_json::json!(true);
+        let result = db.record_node_result(NewNodeResult {
+            run_id: &task.run_id,
+            node_id: &task.node.id,
+            status: if success {
+                "succeeded"
+            } else if last {
+                "failed"
+            } else {
+                "retrying"
+            },
+            exit_code: fixture.exit_code.or(Some(if success { 0 } else { 1 })),
+            stdout: &fixture.stdout,
+            stderr: &fixture.stderr,
+            error: if success {
+                None
+            } else {
+                Some("Fixture reports failure.")
+            },
+            attempt,
+            duration_ms: 0,
+            structured_json: &metadata.to_string(),
+        });
+        if result.is_err() {
+            return TaskOutcome::Failed;
+        }
+        if success {
+            return TaskOutcome::Succeeded;
+        }
+        if last {
+            return TaskOutcome::Failed;
+        }
+        let delay = retry
+            .map(|r| retry_delay(r.delay_ms.min(60000), r.backoff, attempt))
+            .unwrap_or_default();
+        if !sleep_interruptible(delay, flag).await {
+            let _ = db.record_node_result(NewNodeResult::simple(
+                &task.run_id,
+                &task.node.id,
+                "cancelled",
+                None,
+                Some("Dry run cancelled."),
+            ));
+            return TaskOutcome::Cancelled;
+        }
+    }
+    TaskOutcome::Failed
+}
 
 struct ManagedAgent {
     profile: AgentProfile,
@@ -1100,6 +1568,26 @@ async fn execute_node_task(
     flag: Arc<AtomicBool>,
 ) -> TaskOutcome {
     let node_id = task.node.id.clone();
+    if run_controls::effectful(task.node.kind) {
+        if let Some(choice) = task.execution.recovery_choices.get(&node_id) {
+            if *choice == RecoveryChoice::Skip {
+                let _ = db.record_node_result(NewNodeResult::simple(
+                    &task.run_id,
+                    &node_id,
+                    "skipped",
+                    None,
+                    Some("Explicitly skipped during recovery."),
+                ));
+                return TaskOutcome::Skipped;
+            }
+            if *choice == RecoveryChoice::Reuse {
+                return execute_reused_task(&db, &task);
+            }
+        }
+        if task.execution.options.dry_run {
+            return execute_fixture_task(&db, &task, &flag).await;
+        }
+    }
     match task.node.kind {
         NodeKind::Start | NodeKind::End => {
             let _ = db.record_node_result(NewNodeResult::simple(
@@ -2712,7 +3200,17 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 }
             }
             CommandOutcome::Cancelled { stdout, stderr } => {
-                let metadata = agent.map(|a|serde_json::json!({"agentSession":{"key":a.key,"group":a.group,"usable":false},"agentActivity":stream.as_ref().and_then(|s|s.lock().ok()).map(|s|s.activity.clone()).unwrap_or_default()})).unwrap_or_else(||serde_json::json!({})).to_string();
+                let mut metadata = serde_json::json!({});
+                if let Some(a) = agent {
+                    metadata["agentSession"] =
+                        serde_json::json!({"key":a.key,"group":a.group,"usable":false});
+                    if let Some(mut decoded) = stream.as_ref().and_then(|s| s.lock().ok()) {
+                        decoded.finish();
+                        metadata["agentUsage"] = decoded.usage.clone();
+                        metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    }
+                }
+                let metadata = metadata.to_string();
                 persist_command_result(
                     db,
                     live_id,
@@ -3252,6 +3750,63 @@ fn truncate_chars(s: String) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn v011_review_spend_pause_is_not_published_before_execution_cleanup() {
+        let db = Arc::new(SqliteDb::open_in_memory().unwrap());
+        let wf = Workflow::from_json(&serde_json::json!({"schemaVersion":6,"id":"pause","name":"Pause","nodes":[{"id":"s","type":"start"},{"id":"a","type":"agent"},{"id":"b","type":"command","config":{"executable":"never"}},{"id":"e","type":"end"}],"edges":[{"id":"sa","source":"s","target":"a"},{"id":"ab","source":"a","target":"b"},{"id":"be","source":"b","target":"e"}]}).to_string()).unwrap();
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run_with_execution(
+            "pause",
+            &wf,
+            &Default::default(),
+            &RunExecution {
+                options: RunOptions {
+                    spend_limit_usd: Some(1.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.record_node_result(NewNodeResult {
+            stdout: "done",
+            structured_json: r#"{"agentUsage":{"reported_cost_usd":2}}"#,
+            ..NewNodeResult::simple("pause", "a", "succeeded", Some(0), None)
+        })
+        .unwrap();
+        let engine = Engine::new(db.clone(), Default::default());
+        let flag = engine.cancel.flag_for("pause");
+        engine.execute_inner(&wf, "pause", &flag).await.unwrap();
+        assert_eq!(
+            db.get_run("pause").unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        flag.store(true, Ordering::SeqCst);
+        engine.execute(wf, "pause".into()).await;
+        assert_eq!(
+            db.get_run("pause").unwrap().unwrap().status,
+            RunStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn v011_review_reused_findings_are_not_actionable_in_a_new_run() {
+        let db = Arc::new(SqliteDb::open_in_memory().unwrap());
+        let wf = Workflow::from_json(&serde_json::json!({"schemaVersion":6,"id":"findings","name":"Findings","nodes":[{"id":"a","type":"agent"}],"edges":[]}).to_string()).unwrap();
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run("findings", &wf.id, &Default::default())
+            .unwrap();
+        db.record_node_result(NewNodeResult {
+            stdout:
+                "```finding\nseverity: P1\ntitle: Old finding\nexplanation: Historical result\n```",
+            structured_json: r#"{"reusedFrom":{"runId":"old","resultId":1}}"#,
+            ..NewNodeResult::simple("findings", "a", "succeeded", Some(0), None)
+        })
+        .unwrap();
+        let engine = Engine::new(db, Default::default());
+        assert_eq!(engine.actionable_finding_count(&wf, "findings"), 0);
+    }
+
     #[test]
     fn poisoned_cancellation_registry_recovers_without_losing_flags() {
         let registry = CancellationRegistry::default();
@@ -3330,6 +3885,7 @@ mod tests {
 
     fn task_with_defaults(node: Node, defaults: Option<WorkflowDefaults>) -> TaskInput {
         TaskInput {
+            execution: RunExecution::default(),
             session_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             node,
             workflow_id: "wf".to_string(),
@@ -3987,6 +4543,122 @@ mod tests {
         p.executable = Some(cli.to_string_lossy().into_owned());
         p.working_dir_mode = crate::agents::WorkingDirMode::Node;
         p
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reported_guard_drains_parallel_work_before_pausing_and_continues_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = fake_session_profile(dir.path(), crate::agents::AdapterKind::Claude);
+        let cli = profile.executable.as_deref().unwrap();
+        let script = std::fs::read_to_string(cli)
+            .unwrap()
+            .replace("\"usage\":", "\"total_cost_usd\":2,\"usage\":");
+        std::fs::write(cli, script).unwrap();
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.session_group = Some("cost".into());
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        wf.nodes.push(command_node(
+            "sibling",
+            "sh",
+            &["-c", "sleep 0.2; echo drained"],
+            100.0,
+        ));
+        wf.nodes
+            .push(command_node("next", "echo", &["continued"], 200.0));
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "start", "sibling", None),
+            edge("3", "agent1", "next", None),
+            edge("4", "sibling", "next", None),
+            edge("5", "next", "end", None),
+        ];
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "parallel-guard",
+                &Default::default(),
+                &RunOptions {
+                    spend_limit_usd: Some(1.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf.clone(), "parallel-guard".into()).await;
+        let run = db.get_run("parallel-guard").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(status_of(&db, "parallel-guard", "sibling"), "succeeded");
+        let rows = db.list_node_results("parallel-guard").unwrap();
+        assert!(!rows.iter().any(|r| r.node_id == "next"));
+        let pause = run.execution.spend_pause.unwrap();
+        assert_eq!(pause.reported_usd, 2.0);
+        engine
+            .continue_spend_run("parallel-guard", pause.id, None)
+            .await
+            .unwrap();
+        assert!(engine
+            .continue_spend_run("parallel-guard", pause.id, None)
+            .await
+            .is_err());
+        assert_eq!(
+            db.get_run("parallel-guard").unwrap().unwrap().status,
+            RunStatus::Succeeded
+        );
+        assert_eq!(
+            db.list_node_results("parallel-guard")
+                .unwrap()
+                .iter()
+                .filter(|r| r.node_id == "next")
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_managed_attempt_keeps_already_reported_usd() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = fake_session_profile(dir.path(), crate::agents::AdapterKind::Claude);
+        let cli = profile.executable.as_deref().unwrap();
+        let script = std::fs::read_to_string(cli).unwrap().replace("\"usage\":", "\"total_cost_usd\":2,\"usage\":") + "printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"cost received\"}]}}'\nexec sleep 5\n";
+        std::fs::write(cli, script).unwrap();
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.session_group = Some("cost".into());
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run(&wf, "cancel-cost", &Default::default())
+            .unwrap();
+        let observe = async {
+            for _ in 0..100 {
+                if db
+                    .list_node_results("cancel-cost")
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.stdout.contains("cost received"))
+                {
+                    assert!(engine.cancel_run("cancel-cost").unwrap());
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("CLI report never reached live history");
+        };
+        tokio::join!(engine.execute(wf.clone(), "cancel-cost".into()), observe);
+        let rows = db.list_node_results("cancel-cost").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(row.status, "cancelled");
+        let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+        assert_eq!(metadata["agentSession"]["usable"], false);
+        assert_eq!(
+            run_controls::reported_spend(&wf, &rows, false).reported_usd,
+            2.0
+        );
     }
 
     #[cfg(unix)]

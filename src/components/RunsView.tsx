@@ -1,3 +1,6 @@
+import { RunTimeline } from './RunTimeline';
+import { RecoveryDialog, SpendContinueDialog } from './RunControls';
+import { resultMetadata, type SpendPause } from '../lib/run-controls';
 import { successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -97,6 +100,11 @@ export function RunsView(): React.JSX.Element {
     workflow: Workflow | null;
   } | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [recoveryId, setRecoveryId] = useState<string | null>(null);
+  const [spendDecision, setSpendDecision] = useState<{
+    runId: string;
+    pause: SpendPause;
+  } | null>(null);
   const [memoryMessage, setMemoryMessage, , memoryMessageEvent] =
     useNoticeMessage('info');
   const [memoryFields, setMemoryFields] = useState<Record<string, string>>({});
@@ -156,9 +164,11 @@ export function RunsView(): React.JSX.Element {
         backend.getRunWorkflow(runId),
         backend.getRunResults(runId),
       ]);
-      if (!workflow || run?.status !== 'succeeded')
+      if (!workflow || run?.status !== 'succeeded' || run.execution?.options.dryRun)
         throw new Error('Only commands from a successful run can be promoted.');
       const result = [...recorded].reverse().find((r) => r.nodeId === nodeId);
+      if (result && resultMetadata(result).reusedFrom !== undefined)
+        throw new Error('Reused output cannot be promoted as a newly verified command.');
       const node = workflow.nodes.find((n) => n.id === nodeId);
       const repoDir = workflow.defaults?.repoDir || node?.config.workingDir;
       if (!repoDir)
@@ -355,6 +365,26 @@ export function RunsView(): React.JSX.Element {
 
   return (
     <>
+      {recoveryId !== null && (
+        <RecoveryDialog
+          key={recoveryId}
+          runId={recoveryId}
+          onClose={() => setRecoveryId(null)}
+          onRecovered={async (runId) => {
+            await refreshRuns();
+            await selectRun(runId);
+          }}
+        />
+      )}
+      {spendDecision !== null && (
+        <SpendContinueDialog
+          key={`${spendDecision.runId}-${String(spendDecision.pause.id)}`}
+          runId={spendDecision.runId}
+          pause={spendDecision.pause}
+          onClose={() => setSpendDecision(null)}
+          onContinued={refreshRunData}
+        />
+      )}
       <div className="topbar">
         <h1>Runs</h1>
         <span className="topbar-sub">History of explicit workflow executions.</span>
@@ -424,6 +454,9 @@ export function RunsView(): React.JSX.Element {
                   title={run.id}
                 >
                   <span className={`status-pill status-${run.status}`}>{run.status}</span>
+                  {run.execution?.options.dryRun && (
+                    <span className="status-pill status-paused">DRY RUN</span>
+                  )}
                   {(run.status === 'running' || run.status === 'paused') && (
                     <span className="live-badge" aria-label="Live run">
                       <span className="live-dot" aria-hidden="true" />
@@ -472,7 +505,20 @@ export function RunsView(): React.JSX.Element {
                 <p className="field-hint">
                   {activeRun.id} · started {formatTime(activeRun.startedAt)}
                 </p>
-                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                {activeRun.execution?.options.dryRun && (
+                  <p className="field-hint">
+                    Simulated test — developer CLIs and integrations were not executed.
+                  </p>
+                )}
+                {activeRun.execution?.recoveredFrom && (
+                  <p className="field-hint">
+                    Recovered from {activeRun.execution.recoveredFrom}; reused outputs
+                    remain historical.
+                  </p>
+                )}
+                <div
+                  style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}
+                >
                   {(activeRun.status === 'running' || activeRun.status === 'paused') && (
                     <button
                       className="btn"
@@ -496,48 +542,74 @@ export function RunsView(): React.JSX.Element {
                   >
                     Show on canvas
                   </button>
-                  {activeRun.status === 'paused' && (
-                    <>
-                      <button
-                        className="btn btn-primary"
-                        disabled={
-                          pendingApproval === undefined ||
-                          pendingRuns.includes(`decision:${activeRun.id}`)
-                        }
-                        onClick={() => void approve(activeRun.id, true)}
-                      >
-                        Approve & continue
-                      </button>
-                      <button
-                        className="btn btn-danger"
-                        disabled={
-                          pendingApproval === undefined ||
-                          pendingRuns.includes(`decision:${activeRun.id}`)
-                        }
-                        onClick={() => void approve(activeRun.id, false)}
-                      >
-                        Reject
-                      </button>
-                    </>
+                  {activeRun.status === 'failed' && (
+                    <button className="btn" onClick={() => setRecoveryId(activeRun.id)}>
+                      Recover failed run
+                    </button>
                   )}
-                </div>
-                {activeRun.status === 'paused' && (
-                  <div className="field" style={{ maxWidth: 560 }}>
-                    <label className="field-label" htmlFor="approve-note">
-                      Note (optional, stored with the decision)
-                    </label>
-                    <textarea
-                      id="approve-note"
-                      className="textarea"
-                      rows={2}
-                      placeholder="e.g. Plan looks good, proceed with tests after."
-                      value={note}
-                      onChange={(e) => {
-                        setNote(e.target.value);
+                  {activeRun.status === 'paused' && activeRun.execution?.spendPause && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const pause = activeRun.execution?.spendPause;
+                        if (pause) setSpendDecision({ runId: activeRun.id, pause });
                       }}
-                    />
-                  </div>
+                    >
+                      Review spend pause
+                    </button>
+                  )}
+                  {activeRun.status === 'paused' &&
+                    activeRun.execution?.spendPause === undefined && (
+                      <>
+                        <button
+                          className="btn btn-primary"
+                          disabled={
+                            pendingApproval === undefined ||
+                            pendingRuns.includes(`decision:${activeRun.id}`)
+                          }
+                          onClick={() => void approve(activeRun.id, true)}
+                        >
+                          Approve & continue
+                        </button>
+                        <button
+                          className="btn btn-danger"
+                          disabled={
+                            pendingApproval === undefined ||
+                            pendingRuns.includes(`decision:${activeRun.id}`)
+                          }
+                          onClick={() => void approve(activeRun.id, false)}
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                </div>
+                {runWorkflow && (
+                  <RunTimeline
+                    run={activeRun}
+                    workflow={runWorkflow}
+                    results={results}
+                    now={now}
+                  />
                 )}
+                {activeRun.status === 'paused' &&
+                  activeRun.execution?.spendPause === undefined && (
+                    <div className="field" style={{ maxWidth: 560 }}>
+                      <label className="field-label" htmlFor="approve-note">
+                        Note (optional, stored with the decision)
+                      </label>
+                      <textarea
+                        id="approve-note"
+                        className="textarea"
+                        rows={2}
+                        placeholder="e.g. Plan looks good, proceed with tests after."
+                        value={note}
+                        onChange={(e) => {
+                          setNote(e.target.value);
+                        }}
+                      />
+                    </div>
+                  )}
                 {results.length === 0 && (
                   <p className="field-hint">No node results yet.</p>
                 )}
@@ -773,7 +845,11 @@ export function RunsView(): React.JSX.Element {
                     });
                   };
                   return (
-                    <div key={r.id} className="run-step">
+                    <div
+                      id={`run-result-${String(r.id)}`}
+                      key={r.id}
+                      className="run-step"
+                    >
                       <div className="run-step-head">
                         <span className="step-index" aria-hidden="true">
                           {index + 1}
@@ -785,6 +861,8 @@ export function RunsView(): React.JSX.Element {
                         {activeRun.status === 'succeeded' &&
                           node?.type === 'command' &&
                           r.status === 'succeeded' &&
+                          !activeRun.execution?.options.dryRun &&
+                          resultMetadata(r).reusedFrom === undefined &&
                           [...results]
                             .reverse()
                             .find((result) => result.nodeId === r.nodeId)?.id ===

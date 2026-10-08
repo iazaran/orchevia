@@ -18,6 +18,7 @@ pub mod notify;
 pub mod process;
 pub mod prompt;
 pub mod review;
+pub mod run_controls;
 pub mod schedule;
 pub mod scheduler;
 pub mod templates;
@@ -34,3 +35,6 @@ pub use workflow::{
 };
 
 pub mod workflow_document;
+
+#[cfg(test)]
+mod run_control_tests;
