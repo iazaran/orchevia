@@ -1,10 +1,14 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { getBackend } from '../lib/backend';
 
+/** Wait for typing in the repository path to pause before asking git. */
+const BRANCH_LOOKUP_DELAY_MS = 250;
+
 /**
  * Branch text field with repo branch suggestions. Typing anything is always
  * allowed (new branches included); when the repo directory is known the
- * existing branches appear as suggestions.
+ * existing branches appear as suggestions. Repository path edits are
+ * debounced; branch edits never query.
  */
 export function BranchPicker({
   id,
@@ -33,16 +37,19 @@ export function BranchPicker({
   useEffect(() => {
     if (dir === '') return;
     let alive = true;
-    void getBackend()
-      .gitBranches(dir)
-      .then((b) => {
-        if (alive) setBranchResult({ dir, branches: b.branches });
-      })
-      .catch(() => {
-        if (alive) setBranchResult({ dir, branches: [] });
-      });
+    const timer = setTimeout(() => {
+      void getBackend()
+        .gitBranches(dir)
+        .then((b) => {
+          if (alive) setBranchResult({ dir, branches: b.branches });
+        })
+        .catch(() => {
+          if (alive) setBranchResult({ dir, branches: [] });
+        });
+    }, BRANCH_LOOKUP_DELAY_MS);
     return () => {
       alive = false;
+      clearTimeout(timer);
     };
   }, [dir]);
   return (

@@ -194,20 +194,37 @@ export function RunsView(): React.JSX.Element {
       .finally(() => setMemoryBusy(false));
   };
 
-  const refreshRunData = useCallback(async (): Promise<void> => {
-    if (refreshBusy.current) return;
-    refreshBusy.current = true;
-    try {
-      await refreshRuns();
-      if (!mounted.current) return;
-      const selected = useAppStore.getState().activeRunId;
-      if (selected !== null) await selectRun(selected);
-    } catch (error: unknown) {
-      if (mounted.current) setActionError(errorMessage(error));
-    } finally {
-      refreshBusy.current = false;
-    }
-  }, [refreshRuns, selectRun, setActionError]);
+  /** Reload the run list and the selected run's results. Polling skips a
+   * finished selected run whose final results are already cached, so other
+   * active runs do not make it reload; its terminal transition still fetches
+   * the final results once (the cached status no longer matches). */
+  const refreshRunData = useCallback(
+    async (options?: { poll?: boolean }): Promise<void> => {
+      if (refreshBusy.current) return;
+      refreshBusy.current = true;
+      try {
+        await refreshRuns();
+        if (!mounted.current) return;
+        const state = useAppStore.getState();
+        const selected = state.activeRunId;
+        if (selected === null) return;
+        const status = state.runs.find((r) => r.id === selected)?.status;
+        const settled =
+          status !== undefined &&
+          status !== 'running' &&
+          status !== 'paused' &&
+          state.runResultStatus[selected] === status &&
+          state.runResults[selected] !== undefined;
+        if (options?.poll === true && settled) return;
+        await selectRun(selected);
+      } catch (error: unknown) {
+        if (mounted.current) setActionError(errorMessage(error));
+      } finally {
+        refreshBusy.current = false;
+      }
+    },
+    [refreshRuns, selectRun, setActionError],
+  );
 
   // Each navigation mounts this view again, including a return after a prior visit.
   useEffect(() => {
@@ -224,7 +241,7 @@ export function RunsView(): React.JSX.Element {
     if (!hasActiveRuns) return;
     const timer = setInterval(() => {
       setNow(Date.now());
-      void refreshRunData();
+      void refreshRunData({ poll: true });
     }, 1500);
     return () => clearInterval(timer);
   }, [hasActiveRuns, refreshRunData]);
@@ -271,17 +288,30 @@ export function RunsView(): React.JSX.Element {
   } | null>(null);
   const findings = findingsState?.runId === activeRunId ? findingsState.findings : [];
 
+  // Findings follow the selected run's own results; other runs' cache updates
+  // and unchanged polls keep the same array and do not refetch.
+  const selectedResults = activeRunId !== null ? runResults[activeRunId] : undefined;
   useEffect(() => {
-    if (activeRunId === null) return;
+    if (activeRunId === null || selectedResults === undefined) return;
+    let current = true;
     void getBackend()
       .getRunFindings(activeRunId)
       .then((next) => {
-        setFindingsState({ runId: activeRunId, findings: next });
+        if (current) setFindingsState({ runId: activeRunId, findings: next });
       })
       .catch(() => {
-        setFindingsState({ runId: activeRunId, findings: [] });
+        // Keep findings already shown for this run; never show another run's.
+        if (current)
+          setFindingsState((previous) =>
+            previous?.runId === activeRunId
+              ? previous
+              : { runId: activeRunId, findings: [] },
+          );
       });
-  }, [activeRunId, runResults]);
+    return () => {
+      current = false;
+    };
+  }, [activeRunId, selectedResults]);
 
   const approve = (runId: string, approved: boolean): void => {
     if (pendingApproval === undefined) return;
@@ -382,7 +412,7 @@ export function RunsView(): React.JSX.Element {
           runId={spendDecision.runId}
           pause={spendDecision.pause}
           onClose={() => setSpendDecision(null)}
-          onContinued={refreshRunData}
+          onContinued={() => refreshRunData()}
         />
       )}
       <div className="topbar">

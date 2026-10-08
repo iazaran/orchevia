@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { __setMockBackendForTests } from './lib/backend';
 import { createEmptyWorkflow } from './lib/workflow';
-import type { StoredWorkflow, ValidationIssue } from './lib/workflow';
-import { useAppStore } from './store';
+import type { StoredNodeResult, StoredWorkflow, ValidationIssue } from './lib/workflow';
+import { sameNodeResults, useAppStore } from './store';
 afterEach(() => vi.restoreAllMocks());
 
 it('keeps edits made while an older save is pending', async () => {
@@ -487,4 +487,94 @@ it('shows new inbox notifications once with their severity and preserves inbox h
   await useAppStore.getState().refreshNotifications();
   expect(useAppStore.getState().uiNotices).toEqual([]);
   expect(useAppStore.getState().notifications).toEqual([success, failure, old]);
+});
+
+function resultRow(
+  runId: string,
+  overrides: Partial<StoredNodeResult> = {},
+): StoredNodeResult {
+  return {
+    id: 1,
+    runId,
+    nodeId: 'review',
+    status: 'succeeded',
+    stdout: 'same output',
+    stderr: '',
+    startedAt: '2026-10-08T10:00:00Z',
+    attempt: 1,
+    durationMs: 40,
+    structuredJson: '{"agentUsage":{"input_tokens":3}}',
+    ...overrides,
+  };
+}
+
+it('compares every result field, never just output length', () => {
+  const row = resultRow('r');
+  expect(sameNodeResults([row], [{ ...row }])).toBe(true);
+  for (const change of [
+    { stdout: 'same outpuT' },
+    { attempt: 2 },
+    { durationMs: 41 },
+    { structuredJson: '{"agentUsage":{"input_tokens":4}}' },
+    { finishedAt: '2026-10-08T10:01:00Z' },
+    { status: 'failed' },
+  ]) {
+    expect(sameNodeResults([row], [{ ...row, ...change }])).toBe(false);
+  }
+  expect(sameNodeResults([row], [row, { ...row, id: 2 }])).toBe(false);
+});
+
+it('keeps identical results, records the fetched status and replaces changed metadata', async () => {
+  const backend = __setMockBackendForTests();
+  const first = resultRow('kept');
+  const results = vi.spyOn(backend, 'getRunResults').mockResolvedValue([{ ...first }]);
+  useAppStore.setState({
+    runs: [
+      { id: 'kept', workflowId: 'wf', status: 'running', startedAt: first.startedAt },
+    ],
+    activeRunId: null,
+    runResults: {},
+    runResultStatus: {},
+  });
+  await useAppStore.getState().selectRun('kept');
+  const cached = useAppStore.getState().runResults.kept;
+  expect(useAppStore.getState().runResultStatus.kept).toBe('running');
+  await useAppStore.getState().selectRun('kept');
+  expect(useAppStore.getState().runResults.kept).toBe(cached);
+  useAppStore.setState({
+    runs: [
+      { id: 'kept', workflowId: 'wf', status: 'succeeded', startedAt: first.startedAt },
+    ],
+  });
+  results.mockResolvedValue([{ ...first, attempt: 2 }]);
+  await useAppStore.getState().selectRun('kept');
+  expect(useAppStore.getState().runResults.kept).not.toBe(cached);
+  expect(useAppStore.getState().runResults.kept?.[0]?.attempt).toBe(2);
+  expect(useAppStore.getState().runResultStatus.kept).toBe('succeeded');
+});
+
+it('rapid run selection keeps the newest selection and ignores late responses', async () => {
+  const backend = __setMockBackendForTests();
+  const pending = new Map<string, (rows: ReturnType<typeof resultRow>[]) => void>();
+  vi.spyOn(backend, 'getRunResults').mockImplementation(
+    (id) =>
+      new Promise((resolve) => {
+        pending.set(id, resolve);
+      }),
+  );
+  useAppStore.setState({
+    runs: [],
+    activeRunId: null,
+    runResults: {},
+    runResultStatus: {},
+  });
+  const first = useAppStore.getState().selectRun('first');
+  const second = useAppStore.getState().selectRun('second');
+  pending.get('second')?.([resultRow('second')]);
+  await second;
+  pending.get('first')?.([resultRow('first')]);
+  await first;
+  expect(useAppStore.getState().activeRunId).toBe('second');
+  expect(useAppStore.getState().runResults.first).toBeUndefined();
+  expect(useAppStore.getState().runResults.second?.[0]?.runId).toBe('second');
 });
