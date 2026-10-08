@@ -1,3 +1,4 @@
+import { RunOptionsDialog } from './RunControls';
 import { useEffect, useState } from 'react';
 import { ADAPTER_LABELS, createDefaultProfile, type AdapterKind } from '../lib/agents';
 import { getBackend } from '../lib/backend';
@@ -84,6 +85,7 @@ export function WorkflowsView(): React.JSX.Element {
   const setValidation = useAppStore((s) => s.setValidation);
   const profiles = useAppStore((s) => s.profiles);
   const overlayRunId = useAppStore((s) => s.overlayRunId);
+  const overlayRun = useAppStore((s) => s.runs.find((run) => run.id === s.overlayRunId));
   const overlayWorkflow = useAppStore((s) => s.overlayWorkflow);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const refreshRunOverlay = useAppStore((s) => s.refreshRunOverlay);
@@ -102,6 +104,7 @@ export function WorkflowsView(): React.JSX.Element {
     return () => clearInterval(timer);
   }, [overlayRunId, refreshRunOverlay, setRunMessage]);
   const [starting, setStarting] = useState(false);
+  const [runOptionsMode, setRunOptionsMode] = useState<'dry' | 'live' | null>(null);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   const [inputState, setInputState] = useState<{
     workflowId: string | null;
@@ -896,6 +899,20 @@ export function WorkflowsView(): React.JSX.Element {
             JSON
           </button>
           <button
+            className="btn"
+            disabled={active === null || starting}
+            onClick={() => setRunOptionsMode('dry')}
+          >
+            Dry run
+          </button>
+          <button
+            className="btn btn-ghost"
+            disabled={active === null || starting}
+            onClick={() => setRunOptionsMode('live')}
+          >
+            Run options
+          </button>
+          <button
             className="btn btn-primary"
             onClick={runActive}
             disabled={active === null || starting}
@@ -912,6 +929,30 @@ export function WorkflowsView(): React.JSX.Element {
           </button>
         </fieldset>
       </div>
+      {runOptionsMode !== null && active !== null && (
+        <RunOptionsDialog
+          key={`${active.id}-${runOptionsMode}`}
+          workflow={active.definition}
+          dryRun={runOptionsMode === 'dry'}
+          onClose={() => setRunOptionsMode(null)}
+          onStart={async (inputs, options) => {
+            setStarting(true);
+            try {
+              await saveActiveWorkflow();
+              const { runId } = await getBackend().runWorkflow(
+                active.id,
+                inputs,
+                options,
+              );
+              await refreshRuns();
+              await selectRun(runId);
+              setView('runs');
+            } finally {
+              setStarting(false);
+            }
+          }}
+        />
+      )}
       {runMessage !== null && (
         <Notice
           variant={runMessageVariant}
@@ -1022,6 +1063,7 @@ export function WorkflowsView(): React.JSX.Element {
       {overlayRunId !== null && (
         <div style={{ padding: '12px 20px 0' }}>
           <Notice inline>
+            {overlayRun?.execution?.options.dryRun ? 'DRY RUN · Simulated test. ' : ''}
             Read-only snapshot of run {overlayRunId} on canvas ({overlayResults.length}{' '}
             results).{' '}
             <button

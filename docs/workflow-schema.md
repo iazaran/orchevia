@@ -185,3 +185,25 @@ available for the whole graph.
 inspector and Simple JSON. They require no schema migration. Session variables
 and handoff IDs are validated/remapped with existing workflow references.
 See [workflow cost controls](workflow-costs.md) for execution semantics.
+
+## Run controls
+
+Workflow schema remains v6. Controls belong to run history rather than exported
+workflow definitions. `runWorkflow(workflowId, inputs, options)` accepts optional:
+
+- `dryRun`: boolean, default false.
+- `fixtures`: node-id map of ordered fixture results; allowed only for dry-runs.
+- `spendLimitUsd`: positive finite number; ordinary execution only, default absent.
+
+Stored runs include `execution.options`, optional `execution.recoveredFrom`,
+per-node `execution.recoveryChoices`, and an optional `execution.spendPause`
+containing its unique `id` and `reportedUsd`. Existing SQLite databases migrate
+additively with ordinary execution defaults. Fixtures cannot set reserved execution
+metadata. New commands remain thin Backend → Tauri → core calls:
+`previewRecovery`, `recoverRun`, and `continueSpendRun`.
+
+Recovery previews include a source fingerprint and per-node allowed choices.
+Submission requires those decisions and a request id for idempotence. Retained
+result rows carry `reusedFrom: {runId, resultId}` when consumed by the scheduler;
+source session/usage metadata is stripped. Spend pauses have distinct
+`guardPaused`/`guardContinued` history rows and do not fabricate workflow node success.

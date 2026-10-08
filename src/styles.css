@@ -1735,3 +1735,60 @@ details[open] > .gen-summary::after {
     opacity: 1;
   }
 }
+
+/* Runs use one timestamp axis, so concurrent execution remains visible. */
+.run-timeline {
+  margin-bottom: 16px;
+}
+.timeline-rows,
+.recovery-steps {
+  max-height: 420px;
+  overflow: auto;
+}
+.timeline-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(100px, 2fr) minmax(120px, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+}
+.timeline-row a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-track {
+  position: relative;
+  height: 16px;
+  background: var(--bg-2);
+  overflow: hidden;
+  border-radius: 4px;
+}
+.timeline-bar {
+  position: absolute;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.timeline-bar.status-failed {
+  background: var(--danger);
+}
+.timeline-bar.status-paused {
+  background: var(--warning);
+}
+.fixture-editor {
+  width: 100%;
+  min-height: 240px;
+  max-height: 420px;
+  resize: vertical;
+  font-family: var(--font-mono);
+}
+.recovery-step {
+  padding: 8px 0;
+}
+@media (max-width: 720px) {
+  .timeline-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}

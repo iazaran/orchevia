@@ -6,6 +6,30 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-08
+
+### Added
+
+- Fixture-driven Dry run uses the native scheduler to exercise branches, joins,
+  bounded loops, retries and approvals without running developer CLIs or integrations.
+  Missing fixtures fail explicitly; test history is labeled and excluded from spend,
+  actionable findings and verified project knowledge.
+- Failed-run recovery previews the original snapshot and requires an explicit
+  reuse, replay or skip choice for every tool step. Linked runs preserve inputs,
+  invalidate graph/data/context dependents and retain unaffected approval decisions.
+- Runs include a common-axis timeline for overlapping attempts, visits and approval
+  waits, with CLI-reported USD and unknown/partial coverage.
+- Optional reported-USD spend guard pauses further tool dispatch after in-flight
+  work drains. Continue with a higher threshold, disable the guard explicitly or
+  cancel; decisions survive restart and reject stale requests.
+
+### Changed
+
+- Browser execution covers branch/join/loop routing for the new controls and
+  persists snapshots, fixtures and recovery provenance. It remains simulated.
+- Reused results are attributed to their source and do not resume source agent
+  conversations or count as new execution time/spend.
+
 ## [0.1.10] - 2026-10-06
 
 ### Added

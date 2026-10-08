@@ -1,7 +1,7 @@
 # Workflow testing, recovery and observability — v0.1.11 design
 
-Status: proposed for review. The user selected all four saved ideas on
-2026-10-08. Implementation has not started.
+Status: approved on 2026-10-08. The user selected all four saved ideas and
+authorized inline implementation with routine decisions made autonomously.
 
 ## Intent and constraints
 
