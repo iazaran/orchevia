@@ -85,7 +85,7 @@ Files: version manifests/lock, CHANGELOG, README, execution/cost/schema docs, RO
 - [x] Run pnpm check/build, core tests/Clippy/fmt, desktop check, diff check.
 - [x] Self-review the whole branch and obtain a fresh independent review.
 - [x] Fix actionable findings with regression tests; rerun affected checks.
-- [ ] Commit logical changes, push the feature branch, open and attach the PR.
+- [x] Commit logical changes, push the feature branch, open and attach the PR.
 
 ## Execution ledger
 
@@ -119,3 +119,6 @@ Files: version manifests/lock, CHANGELOG, README, execution/cost/schema docs, RO
 - Compatibility ruling: ordinary browser sample execution preserves its existing
   lenient availability behavior; the new dry-run/guard entry points perform the
   mirrored structural validation. Browser simulation is not native concurrency proof.
+
+- Handoff: PR #27 opened against main and attached to this task. The user owns
+  merging. The prior merged branch was removed; no extra worktree existed.
