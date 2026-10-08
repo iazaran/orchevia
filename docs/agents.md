@@ -36,7 +36,12 @@ until remapped).
 ## How to configure Claude / Codex
 
 1. Install and authenticate the CLIs yourself (e.g. `claude` from Claude Code,
-   `codex` from Codex CLI) and verify they work in a terminal.
+   `codex` from Codex CLI) and verify they work in a terminal. Orchevia reads your
+   login shell's `PATH` once at startup (and on **Refresh** in Environment or
+   Agents), so CLIs installed through nvm, fnm, Homebrew or `~/.local/bin` are found
+   even when the app is launched from the desktop menu. When Orchevia is started from
+   a terminal it keeps that terminal's `PATH` (including `nvm use` changes). Set the
+   profile's executable to a full path to bypass lookup.
 2. In Orchevia: Agents → + New profile → pick the CLI → optionally set model,
    working-directory mode, and timeout.
 3. Add an **AI Agent** node in a workflow, pick the profile, write the prompt, and
@@ -44,18 +49,33 @@ until remapped).
 
 Command shapes (built by the adapter, never by the engine or UI):
 
-- Claude: `claude -p <prompt> --output-format text [--model <model>] [extra args…]`
-- Codex: `codex exec [--model <model>] [-c model_reasoning_effort="high"] <prompt> [extra args…]`
+- Claude: `claude -p --output-format stream-json --verbose [--model <model>] [--effort <level>] [extra args…]`, prompt on stdin
+- Codex: `codex exec --json [--model <model>] [-c model_reasoning_effort="high"] [extra args…] -`, prompt on stdin
 - Custom: `<executable> [--model <model>] [extra args…] <prompt>`
+
+Claude and Codex nodes decode the structured stream into the final response
+(conditions, handoffs and templates see only that text), the readable activity log,
+and CLI-reported usage (tokens; USD for Claude). If a profile's extra arguments set
+the output format themselves (`--output-format` for Claude, `--json` for Codex), the
+node uses the text form instead (`claude -p --output-format text …`,
+`codex exec … - [extra args…]`) and Runs notes that no usage was reported. A Claude
+profile with its own `--input-format` keeps the previous invocation
+(`claude -p <prompt> --output-format text …`, prompt as an argument). A stray
+non-JSON line (for example from a wrapper script) is kept in the activity log
+instead of failing the node; session-group turns stay strict. Workflow generation
+and assistance always use the text form.
 
 Optional effort maps to `--effort` for Claude and `model_reasoning_effort` for
 Codex. Custom adapters leave effort to the CLI. Selected skills are prefixed
-to the single prompt as `/skill-name` (Claude) or `$skill-name` (Codex).
+to the prompt as `/skill-name` (Claude) or `$skill-name` (Codex).
 The Test button probes CLI availability; verify a selected skill with a small
 workflow run. Personal and fixed-directory skills are discovered locally;
 plugin, synced, and per-node project skills can be entered by name.
 
-The prompt travels as a **single argv element**, so prompt text can never become flags.
+Claude and Codex receive the prompt on **stdin**, so prompt text can never become
+flags, is not limited by the operating system's argument size (128 KiB per argument
+on Linux), and does not appear in process listings. Previews show
+`<prompt via stdin, N chars>`. Custom CLIs receive it as the final argv element.
 
 ## Prompt composition
 

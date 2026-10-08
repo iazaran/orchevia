@@ -23,8 +23,9 @@ Orchevia executes local commands **on your behalf**. The design principles:
   only. Command nodes can explicitly invoke a shell or interpreter.
 - **Visible commands.** The inspector shows exactly which executable + arguments will run;
   run history records exit codes, stdout/stderr (truncated), and errors.
-- **Cancellation + timeouts.** Runs can be cancelled (in-flight child processes are
-  killed); commands have a bounded timeout.
+- **Cancellation + timeouts.** Runs can be cancelled; in-flight children and, on
+  Linux and macOS, the processes in their process group are stopped. Commands have a
+  bounded timeout.
 - **Authentication stays in your tools.** Orchevia has no credential fields and
   does not persist environment dumps. Workflow text and command output are stored
   locally and may contain sensitive information. Do not paste credentials into

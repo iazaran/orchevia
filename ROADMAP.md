@@ -35,9 +35,10 @@ concrete use case, fit the existing architecture, and include tests and document
   command and accepted project knowledge.
 - Exercise dry-run fixtures, deliberate recovery and reported-spend guards against
   real project feedback; verify native parallel timing and provider-report coverage.
-- Process-tree lifecycle handling for tools that spawn descendants. Current
-  cancellation stops the direct child and preserves output; descendant cleanup
-  requires platform-specific verification.
+- Process-tree cleanup on real systems: cancel, timeout, MCP shutdown and app exit
+  stop a CLI's process group on Linux and macOS (verified with automated tests on
+  Linux). Verify with real CLIs that spawn MCP servers on both macOS architectures;
+  tools that detach into their own session remain out of reach.
 - A maintained desktop smoke-test matrix covering local generation, approvals,
   automation, restart recovery and all installer architectures.
 

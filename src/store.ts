@@ -8,6 +8,7 @@ import type { GitHubState, McpServerConfig } from './lib/integrations';
 import type { Preference, StoredGeneration, WorkflowTemplate } from './lib/generation';
 import type { Notification, NotificationPrefs, Schedule, Watcher } from './lib/scheduler';
 import type {
+  RunStatus,
   StoredNodeResult,
   StoredRun,
   StoredWorkflow,
@@ -52,6 +53,9 @@ interface AppState {
   runs: StoredRun[];
   activeRunId: string | null;
   runResults: Record<string, StoredNodeResult[]>;
+  /** Run status seen when each cached result list was requested. A terminal
+   * status that still matches the run means the cached results are final. */
+  runResultStatus: Record<string, RunStatus>;
   tools: ToolStatus[];
   adapters: AdapterInfo[];
   profiles: AgentProfile[];
@@ -125,6 +129,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   runs: [],
   activeRunId: null,
   runResults: {},
+  runResultStatus: {},
   tools: [],
   adapters: [],
   profiles: [],
@@ -495,15 +500,46 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ activeRunId: id });
     if (id === null) return;
     const backend = getBackend();
+    const status = get().runs.find((run) => run.id === id)?.status;
     const results = await backend.getRunResults(id);
-    if (request === runSelectionSequence && get().activeRunId === id)
-      set({ runResults: { ...get().runResults, [id]: results } });
+    if (request !== runSelectionSequence || get().activeRunId !== id) return;
+    const { runResults, runResultStatus } = get();
+    // Identical results keep their identity so views and findings do not redo work.
+    const cached = runResults[id];
+    set({
+      runResults:
+        cached !== undefined && sameNodeResults(cached, results)
+          ? runResults
+          : { ...runResults, [id]: results },
+      runResultStatus:
+        status === undefined ? runResultStatus : { ...runResultStatus, [id]: status },
+    });
   },
 
   setError: (error) => {
     set({ error });
   },
 }));
+
+/** Every field of every row matches (output, attempts, usage, timing, recovery). */
+export function sameNodeResults(a: StoredNodeResult[], b: StoredNodeResult[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((left, index) => {
+    const right = b[index];
+    if (right === undefined) return false;
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+    for (const key of keys) {
+      if (
+        !Object.is(
+          (left as unknown as Record<string, unknown>)[key],
+          (right as unknown as Record<string, unknown>)[key],
+        )
+      )
+        return false;
+    }
+    return true;
+  });
+}
 
 export function selectActiveWorkflow(state: AppState): StoredWorkflow | null {
   return state.workflows.find((w) => w.id === state.activeWorkflowId) ?? null;

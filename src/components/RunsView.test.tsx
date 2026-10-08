@@ -1,8 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { __setMockBackendForTests } from '../lib/backend';
+import { __setMockBackendForTests, type Backend } from '../lib/backend';
 import { useAppStore } from '../store';
+import type { GroupedFinding } from '../lib/scheduler';
+import type { RunStatus, StoredNodeResult, StoredRun } from '../lib/workflow';
 import { RunsView } from './RunsView';
 
 const originalShowRunOverlay = useAppStore.getState().showRunOverlay;
@@ -246,4 +248,222 @@ it('keeps one polling request in flight while an entry refresh is pending', asyn
     finish([running]);
     await Promise.resolve();
   });
+});
+
+function liveRun(id: string, status: RunStatus): StoredRun {
+  return { id, workflowId: 'wf', status, startedAt: '2026-10-08T10:00:00Z' };
+}
+
+function resultRow(runId: string, id: number, status = 'succeeded'): StoredNodeResult {
+  return {
+    id,
+    runId,
+    nodeId: `step-${String(id)}`,
+    status,
+    stdout: `output ${String(id)}`,
+    stderr: '',
+    startedAt: '2026-10-08T10:00:00Z',
+    attempt: 1,
+  };
+}
+
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+it('does not reload a finished selected run while another run stays active', async () => {
+  vi.useFakeTimers();
+  const backend = __setMockBackendForTests();
+  const runs = [liveRun('finished', 'succeeded'), liveRun('other', 'running')];
+  const list = vi
+    .spyOn(backend, 'listRuns')
+    .mockImplementation(() => Promise.resolve(runs));
+  const results = vi
+    .spyOn(backend, 'getRunResults')
+    .mockImplementation((id) => Promise.resolve([resultRow(id, 1)]));
+  const findings = vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs,
+    activeRunId: 'finished',
+    runResults: {},
+    runResultStatus: {},
+    workflows: [],
+    profiles: [],
+  });
+  const view = render(<RunsView />);
+  await advance(6000);
+  // Entry refresh plus four polls of the run list; the finished run loads once.
+  expect(list).toHaveBeenCalledTimes(5);
+  expect(results).toHaveBeenCalledTimes(1);
+  expect(findings).toHaveBeenCalledTimes(1);
+  // Other runs' cache updates do not refetch the selected run's findings.
+  for (let i = 2; i < 7; i++) {
+    act(() => {
+      useAppStore.setState({
+        runResults: {
+          ...useAppStore.getState().runResults,
+          other: [resultRow('other', i)],
+        },
+      });
+    });
+  }
+  await advance(0);
+  expect(findings).toHaveBeenCalledTimes(1);
+  // An explicit refresh still reloads the selected run.
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await advance(0);
+  expect(results).toHaveBeenCalledTimes(2);
+  view.unmount();
+  await advance(6000);
+  expect(list).toHaveBeenCalledTimes(6);
+});
+
+it('fetches final results and findings on a terminal transition, then stops polling', async () => {
+  vi.useFakeTimers();
+  const backend = __setMockBackendForTests();
+  let runs = [liveRun('live', 'running')];
+  let rows = [resultRow('live', 1, 'running')];
+  const list = vi
+    .spyOn(backend, 'listRuns')
+    .mockImplementation(() => Promise.resolve(runs));
+  const results = vi
+    .spyOn(backend, 'getRunResults')
+    .mockImplementation(() => Promise.resolve(rows));
+  const findings = vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs,
+    activeRunId: 'live',
+    runResults: {},
+    runResultStatus: {},
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await advance(1500);
+  expect(results).toHaveBeenCalledTimes(2);
+  // Unchanged live results keep their identity: no findings refetch per tick.
+  expect(findings).toHaveBeenCalledTimes(1);
+  runs = [liveRun('live', 'succeeded')];
+  rows = [{ ...resultRow('live', 1), stdout: 'final report' }];
+  await advance(1500);
+  expect(results).toHaveBeenCalledTimes(3);
+  expect(findings).toHaveBeenCalledTimes(2);
+  expect(useAppStore.getState().runResults.live?.[0]?.stdout).toBe('final report');
+  expect(screen.getAllByText('final report').length).toBeGreaterThan(0);
+  const calls = list.mock.calls.length;
+  await advance(6000);
+  expect(list).toHaveBeenCalledTimes(calls);
+  expect(results).toHaveBeenCalledTimes(3);
+});
+
+it('keeps paused runs and spend pauses current without refetching unchanged findings', async () => {
+  vi.useFakeTimers();
+  const backend = __setMockBackendForTests();
+  const paused = {
+    ...liveRun('paused', 'paused'),
+    execution: { options: {}, spendPause: { id: 3, reportedUsd: 2 } },
+  };
+  let rows = [resultRow('paused', 1)];
+  vi.spyOn(backend, 'listRuns').mockImplementation(() => Promise.resolve([paused]));
+  const results = vi
+    .spyOn(backend, 'getRunResults')
+    .mockImplementation(() => Promise.resolve(rows));
+  const findings = vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs: [paused],
+    activeRunId: 'paused',
+    runResults: {},
+    runResultStatus: {},
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await advance(4500);
+  expect(results).toHaveBeenCalledTimes(4);
+  expect(findings).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'Review spend pause' })).toBeInTheDocument();
+  rows = [...rows, resultRow('paused', 2)];
+  await advance(1500);
+  expect(findings).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByText('output 2').length).toBeGreaterThan(0);
+});
+
+it('keeps cached results and reports a failed poll', async () => {
+  vi.useFakeTimers();
+  const backend = __setMockBackendForTests();
+  const runs = [liveRun('live', 'running')];
+  vi.spyOn(backend, 'listRuns').mockImplementation(() => Promise.resolve(runs));
+  const results = vi
+    .spyOn(backend, 'getRunResults')
+    .mockResolvedValueOnce([resultRow('live', 1, 'running')])
+    .mockRejectedValue(new Error('Results unavailable'));
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs,
+    activeRunId: 'live',
+    runResults: {},
+    runResultStatus: {},
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await advance(1500);
+  expect(results).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('alert')).toHaveTextContent('Results unavailable');
+  expect(useAppStore.getState().runResults.live?.[0]?.stdout).toBe('output 1');
+});
+
+it("never shows a previous run's late findings after switching runs", async () => {
+  const backend = __setMockBackendForTests();
+  const runs = [liveRun('first', 'succeeded'), liveRun('second', 'succeeded')];
+  vi.spyOn(backend, 'listRuns').mockResolvedValue(runs);
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve([resultRow(id, id === 'first' ? 1 : 2)]),
+  );
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  const pending = new Map<string, (value: GroupedFinding[]) => void>();
+  vi.spyOn(backend as Backend, 'getRunFindings').mockImplementation(
+    (id: string) =>
+      new Promise<GroupedFinding[]>((resolve) => {
+        pending.set(id, resolve);
+      }),
+  );
+  useAppStore.setState({
+    runs,
+    activeRunId: 'first',
+    runResults: {},
+    runResultStatus: {},
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await waitFor(() => expect(pending.has('first')).toBe(true));
+  await act(async () => {
+    await useAppStore.getState().selectRun('second');
+  });
+  await waitFor(() => expect(pending.has('second')).toBe(true));
+  const finding = (title: string): GroupedFinding => ({
+    finding: {
+      fingerprint: title,
+      severity: 'P1',
+      category: 'bug',
+      title,
+      explanation: 'details',
+      source: 'review',
+    },
+    sources: ['review'],
+  });
+  await act(async () => {
+    pending.get('second')?.([finding('Second finding')]);
+    pending.get('first')?.([finding('First finding')]);
+    await Promise.resolve();
+  });
+  expect(await screen.findByText(/Second finding/)).toBeInTheDocument();
+  expect(screen.queryByText(/First finding/)).toBeNull();
 });

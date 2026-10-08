@@ -42,6 +42,8 @@ import {
    async Backend interface with synchronous logic by design. */
 import {
   composeSkillPrompt,
+  structuredOutputConflict,
+  claudeInputFormatArg,
   composeAgentContext,
   renderPromptStrict,
   validateSessionProfile,
@@ -1454,7 +1456,8 @@ class MockBackend implements Backend {
         defaultExecutable: 'claude',
         supportsModelFlag: true,
         supportsSessionResume: true,
-        notes: 'Uses `claude -p <prompt> --output-format text`.',
+        notes:
+          'Uses `claude -p --output-format stream-json --verbose` with the prompt on stdin, so runs report tokens and USD. Model via `--model`.',
       },
       {
         id: 'codex',
@@ -1462,7 +1465,8 @@ class MockBackend implements Backend {
         defaultExecutable: 'codex',
         supportsModelFlag: true,
         supportsSessionResume: true,
-        notes: 'Uses `codex exec <prompt>`.',
+        notes:
+          'Uses `codex exec --json -` with the prompt on stdin, so runs report tokens. Model via `--model`. Non-interactive.',
       },
       {
         id: 'custom',
@@ -1525,11 +1529,24 @@ class MockBackend implements Backend {
     const exe = effectiveExecutable(profile);
     const effectivePrompt = composeSkillPrompt(profile, promptTemplate);
     if (promptTemplate.trim() === '') throw new Error('Prompt must not be empty.');
-    const args =
+    // Mirrors agents.rs build_agent_command: Claude/Codex read the prompt from
+    // stdin, structured unless the profile's own arguments pick a format.
+    const structured =
+      profile.adapter !== 'custom' && structuredOutputConflict(profile) === null;
+    // Claude profiles with their own --input-format keep the argument prompt.
+    const argumentPrompt = claudeInputFormatArg(profile) !== null;
+    const args: string[] =
       profile.adapter === 'claude'
-        ? ['-p', effectivePrompt, '--output-format', 'text']
+        ? [
+            '-p',
+            ...(argumentPrompt ? [effectivePrompt] : []),
+            '--output-format',
+            ...(structured ? ['stream-json', '--verbose'] : ['text']),
+          ]
         : profile.adapter === 'codex'
-          ? ['exec']
+          ? structured
+            ? ['exec', '--json']
+            : ['exec']
           : [];
     if ((profile.model ?? '').trim() !== '') {
       args.push('--model', (profile.model ?? '').trim());
@@ -1539,13 +1556,22 @@ class MockBackend implements Backend {
     if (effort !== '' && profile.adapter === 'codex') {
       args.push('-c', `model_reasoning_effort="${effort}"`);
     }
-    if (profile.adapter === 'codex') args.push(effectivePrompt);
+    if (profile.adapter === 'codex' && !structured) args.push('-');
     args.push(...profile.extraArgs);
+    if (profile.adapter === 'codex' && structured) args.push('-');
     if (profile.adapter === 'custom') args.push(effectivePrompt);
+    const stdinNote =
+      profile.adapter === 'custom' || argumentPrompt
+        ? []
+        : [`<prompt via stdin, ${String(Array.from(effectivePrompt).length)} chars>`];
     return {
       executable: exe,
       args,
-      preview: [exe, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' '),
+      preview: [
+        exe,
+        ...args.map((a) => (a.includes(' ') ? `'${a}'` : a)),
+        ...stdinNote,
+      ].join(' '),
       referencedVariables: referencedVariables(promptTemplate),
     };
   }

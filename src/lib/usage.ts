@@ -123,6 +123,8 @@ export function agentContextDetails(structuredJson?: string): {
   group: string;
   usageHints: string[];
   activity: string;
+  /** Why the CLI ran in text mode and reported no usage, when it did. */
+  outputNote: string;
   simulated: boolean;
 } | null {
   if (!structuredJson) return null;
@@ -131,7 +133,10 @@ export function agentContextDetails(structuredJson?: string): {
     if (!isRecord(data)) return null;
     const session = isRecord(data.agentSession) ? data.agentSession : null;
     const usage = isRecord(data.agentUsage) ? data.agentUsage : null;
-    if (!session && !usage && typeof data.agentActivity !== 'string') return null;
+    const outputNote =
+      typeof data.agentOutputNote === 'string' ? data.agentOutputNote : '';
+    if (!session && !usage && typeof data.agentActivity !== 'string' && outputNote === '')
+      return null;
     const hints: string[] = [];
     for (const [key, label] of [
       ['input_tokens', 'input'],
@@ -156,6 +161,7 @@ export function agentContextDetails(structuredJson?: string): {
       group: typeof session?.group === 'string' ? session.group : '',
       usageHints: hints,
       activity: typeof data.agentActivity === 'string' ? data.agentActivity : '',
+      outputNote,
       simulated,
     };
   } catch {

@@ -348,16 +348,56 @@ describe('mock backend (browser dev)', () => {
     };
     await backend.saveAgentProfile(profile);
     const preview = await backend.previewAgentCommand(profile.id, '{{input.task}}');
+    // The profile's own --json keeps the text invocation; the prompt is stdin.
     expect(preview.args).toEqual([
       'exec',
       '--model',
       'my-model',
       '-c',
       'model_reasoning_effort="high"',
-      '$review\n\n{{input.task}}',
+      '-',
       '--json',
     ]);
+    expect(preview.preview).toContain('<prompt via stdin, 23 chars>');
+    expect(preview.preview).not.toContain('{{input.task}}');
     expect(preview.referencedVariables).toEqual(['input.task']);
+  });
+
+  it('previews structured Claude and Codex invocations with the prompt on stdin', async () => {
+    const backend = __setMockBackendForTests();
+    const claude = { ...createDefaultProfile('claude'), model: 'haiku' };
+    const codex = {
+      ...createDefaultProfile('codex'),
+      extraArgs: ['--sandbox', 'read-only'],
+    };
+    await backend.saveAgentProfile(claude);
+    await backend.saveAgentProfile(codex);
+    const claudePreview = await backend.previewAgentCommand(claude.id, 'Review 🙂');
+    expect(claudePreview.args).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--model',
+      'haiku',
+    ]);
+    expect(claudePreview.preview).toMatch(/<prompt via stdin, 8 chars>$/);
+    const codexPreview = await backend.previewAgentCommand(codex.id, 'Review');
+    expect(codexPreview.args).toEqual(['exec', '--json', '--sandbox', 'read-only', '-']);
+    const ownInput = { ...claude, extraArgs: ['--input-format', 'stream-json'] };
+    await backend.saveAgentProfile(ownInput);
+    const legacy = await backend.previewAgentCommand(ownInput.id, 'Review');
+    expect(legacy.args).toEqual([
+      '-p',
+      'Review',
+      '--output-format',
+      'text',
+      '--model',
+      'haiku',
+      '--input-format',
+      'stream-json',
+    ]);
+    expect(legacy.preview).not.toContain('stdin');
   });
   beforeEach(() => {
     localStorage.clear();
@@ -552,7 +592,9 @@ describe('mock backend (browser dev)', () => {
     profile.skills = ['code-review'];
     await backend.saveAgentProfile(profile);
     const preview = await backend.previewAgentCommand(profile.id, 'Review this');
-    expect(preview.args).toContain('$code-review\n\nReview this');
+    expect(preview.preview).toContain(
+      `<prompt via stdin, ${String('$code-review\n\nReview this'.length)} chars>`,
+    );
     await expect(
       backend.saveAgentProfile({
         ...createDefaultProfile('custom'),

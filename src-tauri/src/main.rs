@@ -49,7 +49,7 @@ fn background_mode(db: &SqliteDb) -> bool {
 }
 
 fn main() {
-    let result = tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let db_path = default_db_path(app.handle());
@@ -97,6 +97,13 @@ fn main() {
             // Background scheduler: schedules + watchers, conservative poll.
             let scheduler_db = Arc::clone(&db);
             tauri::async_runtime::spawn(async move {
+                // Resolve the login shell PATH once, off the main thread, before
+                // automation can start CLIs. Lookups made meanwhile use the
+                // fallback PATH; tool detection waits for this resolution.
+                let _ = tauri::async_runtime::spawn_blocking(
+                    orchevia_core::tools::refresh_search_environment,
+                )
+                .await;
                 let scheduler = orchevia_core::scheduler::Scheduler::new(scheduler_db);
                 loop {
                     // Evaluate persisted due slots before advancing them. This
@@ -254,9 +261,17 @@ fn main() {
             commands::import_memory,
             commands::observe_edits,
         ])
-        .run(tauri::generate_context!());
-    if let Err(error) = result {
-        eprintln!("Failed to start Orchevia: {error}");
-        std::process::exit(1);
+        .build(tauri::generate_context!());
+    match app {
+        Ok(app) => app.run(|_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Stop CLI process trees that are still running on quit.
+                orchevia_core::process::terminate_all_process_groups();
+            }
+        }),
+        Err(error) => {
+            eprintln!("Failed to start Orchevia: {error}");
+            std::process::exit(1);
+        }
     }
 }

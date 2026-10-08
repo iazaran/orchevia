@@ -129,6 +129,7 @@ impl GhRunner {
             executable: self.executable.clone(),
             args: args.iter().map(|s| (*s).to_string()).collect(),
             working_dir: Some(cwd.to_string()),
+            stdin: None,
         };
         run_command(&spec, Some(Duration::from_secs(self.timeout_secs)))
             .map_err(|e| format!("Failed to run '{}': {e}", self.executable))

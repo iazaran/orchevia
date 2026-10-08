@@ -6,6 +6,43 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-10-08
+
+### Added
+
+- Ordinary Claude and Codex Agent nodes use structured CLI output, so Runs, timelines
+  and the reported-spend guard receive CLI token counts (and Claude's USD) without a
+  session group. Node output is the clean final response, as for session groups (the
+  trailing newline of text mode is no longer included). Profiles whose extra arguments
+  choose their own output format keep text mode (Claude profiles with their own
+  `--input-format` also keep the prompt as an argument), and Runs explains the missing
+  usage. Stray non-JSON lines are kept as activity instead of failing the node.
+
+### Changed
+
+- Desktop launches resolve the login shell's `PATH` once in the background (5 s
+  limit, safe fallback) and give it to every CLI, Git, GitHub, MCP, generation and
+  probe process, so nvm/fnm installs and their `node` interpreter are found. More
+  install locations are checked, files must be executable, lookups are cached and
+  Environment/Agents **Refresh** re-resolves. Only `PATH` is imported; a launch from a
+  terminal keeps that terminal's `PATH`. Tool detection and profile tests no longer
+  block the window.
+- Claude and Codex prompts travel on stdin instead of one command-line argument,
+  avoiding the 128 KiB argument limit and process-list exposure. Previews show
+  `<prompt via stdin, N chars>`; Custom CLI profiles are unchanged.
+- Runs reloads a finished selected run only when its results can change, refetches
+  findings only for the selected run's own new results and ignores late findings
+  after a selection change. Markdown output is parsed once per text, and branch
+  suggestions wait 250 ms for repository path typing to pause.
+
+### Fixed
+
+- Cancel, timeouts, MCP shutdown and app exit stop a CLI's whole process group on
+  Linux and macOS (SIGTERM, 2 s grace, SIGKILL), so shells, MCP servers and
+  `npx`/`uvx` descendants no longer survive; a CLI that ignores SIGTERM is stopped
+  after the grace period. MCP calls return on timeout even when a descendant holds the
+  pipe. Partial output is kept.
+
 ## [0.1.11] - 2026-10-08
 
 ### Added

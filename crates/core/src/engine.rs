@@ -15,11 +15,13 @@
 use crate::run_controls::{self, RecoveryChoice, RecoveryPlan, RunExecution, RunOptions};
 use crate::{
     agent_output::AgentOutput,
-    agents::{build_agent_command, build_session_command, validate_session_profile, AgentProfile},
+    agents::{
+        build_agent_command, build_session_command, structured_output, validate_session_profile,
+        AdapterKind, AgentProfile, StructuredOutput,
+    },
     conditions::eval_condition,
     db::{DbError, NewNodeResult, RunStatus, SqliteDb, StoredNodeResult},
     prompt::render_prompt,
-    tools::find_executable,
     workflow::{
         classify_edge_label, find_loop_edges, validate_workflow, Edge, EdgeKind, Node, NodeKind,
         ValidationSeverity, Workflow, MAX_TIMEOUT_SECS,
@@ -113,6 +115,11 @@ impl CancellationRegistry {
         Ok(true)
     }
 }
+
+/// Appended to "not found on PATH" errors. The login shell `PATH` and common
+/// install locations were already searched.
+const PATH_HINT: &str = " Your login shell PATH and common install locations were checked; \
+set the full executable path in the profile or node, or install it and use Refresh in Environment.";
 
 /// Default per-command timeout (generous; AI CLIs can run long).
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
@@ -518,7 +525,7 @@ impl Engine {
                             issues.push(crate::workflow::ValidationIssue {
                                 code: "agent-cli-unavailable".to_string(),
                                 message: format!(
-                                    "Agent Profile '{}' needs '{}', which was not found on PATH.",
+                                    "Agent Profile '{}' needs '{}', which was not found on PATH.{PATH_HINT}",
                                     profile.name, exe
                                 ),
                                 severity: ValidationSeverity::Error,
@@ -545,8 +552,9 @@ impl Engine {
             if needs_git && !is_executable_available("git") {
                 issues.push(crate::workflow::ValidationIssue {
                     code: "git-cli-unavailable".to_string(),
-                    message: "Git nodes need the 'git' CLI, which was not found on PATH."
-                        .to_string(),
+                    message: format!(
+                        "Git nodes need the 'git' CLI, which was not found on PATH.{PATH_HINT}"
+                    ),
                     severity: ValidationSeverity::Error,
                     node_id: None,
                 });
@@ -554,8 +562,9 @@ impl Engine {
             if needs_gh && !crate::github::cli_available() {
                 issues.push(crate::workflow::ValidationIssue {
                     code: "gh-cli-unavailable".to_string(),
-                    message: "GitHub nodes need the 'gh' CLI, which was not found on PATH."
-                        .to_string(),
+                    message: format!(
+                        "GitHub nodes need the 'gh' CLI, which was not found on PATH.{PATH_HINT}"
+                    ),
                     severity: ValidationSeverity::Error,
                     node_id: None,
                 });
@@ -1674,6 +1683,9 @@ async fn execute_node_task(
                 timeout: Duration::from_secs(timeout),
                 retry,
                 agent: None,
+                stdin: None,
+                decode: None,
+                output_note: None,
                 extend_on_output: task.node.config.extend_on_output,
                 flag: &flag,
             })
@@ -1783,7 +1795,7 @@ async fn execute_agent_task(
             "failed",
             None,
             Some(&format!(
-                "Agent Profile '{}' needs '{}', which was not found on PATH.",
+                "Agent Profile '{}' needs '{}', which was not found on PATH.{PATH_HINT}",
                 profile.name,
                 profile.effective_executable()
             )),
@@ -1970,6 +1982,13 @@ async fn execute_agent_task(
         .unwrap_or(profile.default_timeout_secs)
         .clamp(1, MAX_TIMEOUT_SECS);
     let retry = task.node.config.retry.clone();
+    // Ordinary nodes decode structured output for clean text and usage unless
+    // the profile's own arguments pick an output format (kept as text, noted).
+    let (decode, output_note) = match structured_output(&profile) {
+        StructuredOutput::Supported => (Some(profile.adapter), None),
+        StructuredOutput::Unsupported => (None, None),
+        StructuredOutput::Conflict(note) => (None, Some(note)),
+    };
     let outcome = run_with_retries(RetryRequest {
         db,
         run_id: &task.run_id,
@@ -1980,6 +1999,9 @@ async fn execute_agent_task(
         timeout: Duration::from_secs(timeout),
         retry,
         agent: managed.as_ref(),
+        stdin: spec.stdin.as_deref(),
+        decode,
+        output_note: output_note.as_deref(),
         extend_on_output: task.node.config.extend_on_output,
         flag,
     })
@@ -3017,6 +3039,12 @@ struct RetryRequest<'a> {
     timeout: Duration,
     retry: Option<crate::workflow::RetryPolicy>,
     agent: Option<&'a ManagedAgent>,
+    /// Prompt written to the CLI's stdin (Claude/Codex).
+    stdin: Option<&'a str>,
+    /// Structured output decoder for ordinary (non-session) Agent nodes.
+    decode: Option<AdapterKind>,
+    /// Why an Agent node fell back to text output, recorded with each attempt.
+    output_note: Option<&'a str>,
     extend_on_output: bool,
     flag: &'a Arc<AtomicBool>,
 }
@@ -3032,6 +3060,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         timeout,
         retry,
         agent,
+        stdin,
+        decode,
+        output_note,
         extend_on_output,
         flag,
     } = request;
@@ -3061,7 +3092,12 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         }
         let started = Instant::now();
         let live_id = db.start_node_result(run_id, node_id, attempt).ok();
-        let stream = agent.map(|a| Arc::new(Mutex::new(AgentOutput::new(a.profile.adapter))));
+        let stream = match (agent, decode) {
+            (Some(a), _) => Some(AgentOutput::new(a.profile.adapter)),
+            (None, Some(adapter)) => Some(AgentOutput::tolerant(adapter)),
+            (None, None) => None,
+        }
+        .map(|output| Arc::new(Mutex::new(output)));
         let retry_spec = if attempt > 1 {
             match agent
                 .map(|a| build_session_command(&a.profile, &a.prompt, a.node_dir.as_deref(), None))
@@ -3089,6 +3125,10 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 .map(|s| s.args.as_slice())
                 .unwrap_or(args),
             working_dir,
+            retry_spec
+                .as_ref()
+                .and_then(|s| s.stdin.as_deref())
+                .or(stdin),
             timeout,
             extend_on_output,
             flag,
@@ -3105,31 +3145,33 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
             } => {
                 let mut code = code;
                 let mut metadata = serde_json::json!({});
-                if let (Some(a), Some(stream)) = (agent, &stream) {
-                    if let Ok(mut decoded) = stream.lock() {
-                        decoded.finish();
-                        stdout = decoded
-                            .text
-                            .clone()
-                            .unwrap_or_else(|| decoded.activity.clone());
-                        let expected_id = if attempt == 1 {
-                            a.resume_id.as_deref()
-                        } else {
-                            None
-                        };
-                        if expected_id.is_some() && decoded.session_id.as_deref() != expected_id {
-                            decoded.error = Some("CLI returned a different session id; the conversation will not be reused.".into());
-                        }
-                        if !decoded.success() && code == Some(0) {
-                            code = Some(1);
-                        }
-                        if let Some(error) = &decoded.error {
-                            stderr.push_str(&format!("\n{error}"));
-                        }
-                        metadata["agentSession"] = serde_json::json!({"key":a.key,"group":a.group,"id":decoded.session_id,"turn":if attempt == 1 {a.turn}else{1},"reused":expected_id.is_some(),"usable":code == Some(0) && decoded.success() && decoded.session_id.is_some()});
-                        metadata["agentUsage"] = decoded.usage.clone();
-                        metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                if let Some(Ok(mut decoded)) = stream.as_ref().map(|s| s.lock()) {
+                    decoded.finish();
+                    stdout = decoded
+                        .text
+                        .clone()
+                        .unwrap_or_else(|| decoded.activity.clone());
+                    let expected_id = match agent {
+                        Some(a) if attempt == 1 => a.resume_id.as_deref(),
+                        _ => None,
+                    };
+                    if expected_id.is_some() && decoded.session_id.as_deref() != expected_id {
+                        decoded.error = Some("CLI returned a different session id; the conversation will not be reused.".into());
                     }
+                    if !decoded.success() && code == Some(0) {
+                        code = Some(1);
+                    }
+                    if let Some(error) = &decoded.error {
+                        stderr.push_str(&format!("\n{error}"));
+                    }
+                    if let Some(a) = agent {
+                        metadata["agentSession"] = serde_json::json!({"key":a.key,"group":a.group,"id":decoded.session_id,"turn":if attempt == 1 {a.turn}else{1},"reused":expected_id.is_some(),"usable":code == Some(0) && decoded.success() && decoded.session_id.is_some()});
+                    }
+                    metadata["agentUsage"] = decoded.usage.clone();
+                    metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                }
+                if let Some(note) = output_note {
+                    metadata["agentOutputNote"] = serde_json::json!(note);
                 }
                 if let Some(severity) = severity_scan(&stdout) {
                     metadata["severity"] = serde_json::json!(severity);
@@ -3204,11 +3246,14 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(a) = agent {
                     metadata["agentSession"] =
                         serde_json::json!({"key":a.key,"group":a.group,"usable":false});
-                    if let Some(mut decoded) = stream.as_ref().and_then(|s| s.lock().ok()) {
-                        decoded.finish();
-                        metadata["agentUsage"] = decoded.usage.clone();
-                        metadata["agentActivity"] = serde_json::json!(decoded.activity);
-                    }
+                }
+                if let Some(mut decoded) = stream.as_ref().and_then(|s| s.lock().ok()) {
+                    decoded.finish();
+                    metadata["agentUsage"] = decoded.usage.clone();
+                    metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                }
+                if let Some(note) = output_note {
+                    metadata["agentOutputNote"] = serde_json::json!(note);
                 }
                 let metadata = metadata.to_string();
                 persist_command_result(
@@ -3474,6 +3519,7 @@ async fn run_command_cancellable(
         executable,
         args,
         working_dir,
+        None,
         timeout,
         extend_on_output,
         cancel,
@@ -3488,6 +3534,7 @@ async fn run_command_with_output(
     executable: &str,
     args: &[String],
     working_dir: Option<&str>,
+    stdin: Option<&str>,
     timeout: Duration,
     extend_on_output: bool,
     cancel: &Arc<AtomicBool>,
@@ -3522,16 +3569,23 @@ async fn run_command_with_output(
     };
     let mut cmd = tokio::process::Command::new(&resolved);
     cmd.args(args);
+    cmd.env("PATH", crate::tools::child_path());
     if let Some(dir) = working_dir {
         cmd.current_dir(dir);
     }
-    cmd.stdin(std::process::Stdio::null());
+    cmd.stdin(if stdin.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    });
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    // Ensure no orphaned children on drop.
+    // Ensure no orphaned children on drop; the process group covers descendants.
     cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
 
-    let mut child = match cmd.spawn() {
+    let mut child = match crate::process::spawn_retrying(|| cmd.spawn()) {
         Ok(child) => child,
         Err(e) => {
             return CommandOutcome::Completed {
@@ -3539,6 +3593,23 @@ async fn run_command_with_output(
                 stdout: String::new(),
                 stderr: format!("Failed to spawn '{executable}': {e}"),
             };
+        }
+    };
+    let mut group = crate::process::ProcessGroup::new(child.id());
+    // Prompts go to stdin from a separate task, then stdin closes (EOF). A CLI
+    // that exits early yields EPIPE, which is ignored.
+    let stdin_task = match (stdin, child.stdin.take()) {
+        (Some(text), Some(mut pipe)) => {
+            let text = text.to_string();
+            Some(tokio::spawn(async move {
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut pipe, text.as_bytes()).await;
+            }))
+        }
+        _ => None,
+    };
+    let stop_stdin = |task: &Option<tokio::task::JoinHandle<()>>| {
+        if let Some(task) = task {
+            task.abort();
         }
     };
 
@@ -3575,12 +3646,12 @@ async fn run_command_with_output(
             }
         }
     }
-    let out_handle = tokio::spawn(pump_pipe(
+    let mut out_handle = tokio::spawn(pump_pipe(
         child.stdout.take(),
         std::sync::Arc::clone(&capture),
         true,
     ));
-    let err_handle = tokio::spawn(pump_pipe(
+    let mut err_handle = tokio::spawn(pump_pipe(
         child.stderr.take(),
         std::sync::Arc::clone(&capture),
         false,
@@ -3609,8 +3680,14 @@ async fn run_command_with_output(
     let mut last_flush = started;
     loop {
         if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            stop_process_tree(&mut child, &mut group).await;
+            stop_stdin(&stdin_task);
+            // Keep what the stopped tree already wrote; never wait on a pipe
+            // held by a descendant that escaped the process group.
+            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                let _ = tokio::join!(&mut out_handle, &mut err_handle);
+            })
+            .await;
             out_handle.abort();
             err_handle.abort();
             let (stdout, stderr) = take_output(false);
@@ -3656,8 +3733,8 @@ async fn run_command_with_output(
             started + timeout
         };
         if now >= absolute_ceiling && extend_on_output {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            stop_process_tree(&mut child, &mut group).await;
+            stop_stdin(&stdin_task);
             // Bounded drain: grandchildren can hold pipes open after the
             // child dies; never wait on them forever.
             let _ = tokio::time::timeout(Duration::from_secs(2), async {
@@ -3672,8 +3749,8 @@ async fn run_command_with_output(
             };
         }
         if now >= deadline {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            stop_process_tree(&mut child, &mut group).await;
+            stop_stdin(&stdin_task);
             // Bounded drain: grandchildren can hold pipes open after the
             // child dies; never wait on them forever.
             let _ = tokio::time::timeout(Duration::from_secs(2), async {
@@ -3699,6 +3776,9 @@ async fn run_command_with_output(
         match child.try_wait() {
             Ok(Some(status)) => {
                 let _ = child.wait().await;
+                // A normal exit leaves deliberately backgrounded descendants alone.
+                group.release();
+                stop_stdin(&stdin_task);
                 // Bounded drain: grandchildren can hold pipes open after the
                 // child dies; never wait on them forever.
                 let _ = tokio::time::timeout(Duration::from_secs(2), async {
@@ -3714,7 +3794,8 @@ async fn run_command_with_output(
             }
             Ok(None) => tokio::time::sleep(Duration::from_millis(25)).await,
             Err(_) => {
-                let _ = child.kill().await;
+                stop_process_tree(&mut child, &mut group).await;
+                stop_stdin(&stdin_task);
                 return CommandOutcome::Completed {
                     code: None,
                     stdout: String::new(),
@@ -3725,16 +3806,29 @@ async fn run_command_with_output(
     }
 }
 
-/// Check an executable name/path without spawning it.
+/// Stop a child and its process group: `SIGTERM`, up to the grace period
+/// for a clean exit, then `SIGKILL` for anything left. Output readers keep
+/// running meanwhile, so final output written during the grace period is kept.
+async fn stop_process_tree(
+    child: &mut tokio::process::Child,
+    group: &mut crate::process::ProcessGroup,
+) {
+    group.terminate();
+    #[cfg(not(unix))]
+    let _ = child.start_kill();
+    let deadline = Instant::now() + crate::process::TERMINATE_GRACE;
+    while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    group.kill();
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    group.release();
+}
+
+/// Check an executable name/path (exec bit included) without spawning it.
 fn is_executable_available(exe: &str) -> bool {
-    let trimmed = exe.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return std::path::Path::new(trimmed).is_file();
-    }
-    find_executable(trimmed).is_some()
+    crate::tools::find_executable(exe).is_some()
 }
 
 fn truncate_chars(s: String) -> String {
@@ -4531,11 +4625,12 @@ mod tests {
         let cli = dir.join("fake-cli");
         let state = shell_escape::escape(dir.join("count").to_string_lossy()).into_owned();
         let argv = shell_escape::escape(dir.join("argv").to_string_lossy()).into_owned();
+        let input = shell_escape::escape(dir.join("stdin").to_string_lossy()).into_owned();
         let output = match adapter {
             crate::agents::AdapterKind::Claude => "printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"%s\"}\\n' \"$sid\"\nprintf '{\"type\":\"result\",\"is_error\":false,\"session_id\":\"%s\",\"result\":\"FINAL MATERIAL=no\",\"usage\":{\"input_tokens\":11,\"output_tokens\":2}}\\n' \"$sid\"",
             _ => "printf '{\"type\":\"thread.started\",\"thread_id\":\"%s\"}\\n' \"$sid\"\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"FINAL MATERIAL=no\"}}' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":11,\"cached_input_tokens\":8,\"output_tokens\":2}}'",
         };
-        let script = format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" >> {argv}\nsid=\nnext=0\nfor arg in \"$@\"; do\n if [ \"$next\" = 1 ]; then sid=$arg; next=0; fi\n case \"$arg\" in --resume|resume) next=1;; esac\ndone\nif [ -z \"$sid\" ]; then\n count=$(cat {state} 2>/dev/null || printf 0)\n count=$((count+1))\n printf '%s' \"$count\" > {state}\n sid=$(printf '00000000-0000-4000-8000-%012d' \"$count\")\nfi\n{output}\n");
+        let script = format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" >> {argv}\ncat >> {input}\nsid=\nnext=0\nfor arg in \"$@\"; do\n if [ \"$next\" = 1 ]; then sid=$arg; next=0; fi\n case \"$arg\" in --resume|resume) next=1;; esac\ndone\nif [ -z \"$sid\" ]; then\n count=$(cat {state} 2>/dev/null || printf 0)\n count=$((count+1))\n printf '%s' \"$count\" > {state}\n sid=$(printf '00000000-0000-4000-8000-%012d' \"$count\")\nfi\n{output}\n");
         std::fs::write(&cli, script).unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut p = echo_profile("session-profile");
@@ -4798,7 +4893,9 @@ mod tests {
             );
             assert_eq!(metadata[1]["agentUsage"]["input_tokens"], 11);
             let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
-            assert!(argv.contains("Workflow handoff excerpts"));
+            let prompts = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+            assert!(prompts.contains("Workflow handoff excerpts"));
+            assert!(!argv.contains("Workflow handoff excerpts"));
             assert!(
                 argv.contains(if adapter == crate::agents::AdapterKind::Claude {
                     "--resume\n"
@@ -4949,12 +5046,54 @@ mod tests {
         );
     }
 
+    /// Fake Claude/Codex CLI for ordinary (non-session) nodes: records argv
+    /// and stdin, reports how many prompt bytes arrived on stdin, and emits
+    /// the CLI's structured events with usage (`cost` adds Claude's USD).
+    #[cfg(unix)]
+    fn structured_profile(
+        dir: &std::path::Path,
+        adapter: crate::agents::AdapterKind,
+        events: Option<&str>,
+    ) -> AgentProfile {
+        use std::os::unix::fs::PermissionsExt;
+        let cli = dir.join("structured-cli");
+        let default_events = match adapter {
+            crate::agents::AdapterKind::Claude => {
+                r#"printf '%s\n' '{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000009"}' '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading files"}]}}'
+printf '{"type":"result","is_error":false,"result":"FINAL received %s bytes","total_cost_usd":2,"usage":{"input_tokens":7,"output_tokens":3}}\n' "$bytes""#
+            }
+            _ => {
+                r#"printf '%s\n' '{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000009"}' '{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"README.md"}}'
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"FINAL received %s bytes"}}\n' "$bytes"
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_tokens":5,"output_tokens":3}}'"#
+            }
+        };
+        let script = "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > @ARGV@\nbytes=$(tee @INPUT@ | wc -c | tr -d ' ')\n@EVENTS@\n"
+            .replace(
+                "@ARGV@",
+                &shell_escape::escape(dir.join("argv").to_string_lossy()),
+            )
+            .replace(
+                "@INPUT@",
+                &shell_escape::escape(dir.join("stdin").to_string_lossy()),
+            )
+            .replace("@EVENTS@", events.unwrap_or(default_events));
+        std::fs::write(&cli, script).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut p = echo_profile("structured-profile");
+        p.adapter = adapter;
+        p.executable = Some(cli.to_string_lossy().into_owned());
+        p
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn agent_node_renders_prompt_and_succeeds_with_fake_cli() {
+        let dir = tempfile::tempdir().unwrap();
         let (db, engine) = harness();
-        db.upsert_agent_profile(&echo_profile("p-echo"))
-            .expect("profile");
-        let wf = agent_workflow("p-echo");
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).expect("profile");
+        let wf = agent_workflow(&profile.id);
         run_to_end(&db, &engine, wf, "run-agent-1").await;
         let runs = db.list_runs(10).expect("runs");
         assert_eq!(runs[0].status, RunStatus::Succeeded);
@@ -4964,7 +5103,217 @@ mod tests {
             .find(|r| r.node_id == "agent1")
             .expect("agent");
         assert_eq!(agent.status, "succeeded");
-        assert!(agent.stdout.contains("Say hello for Agent slice"));
+        // The rendered prompt arrives on stdin, not argv.
+        let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        assert_eq!(stdin, "Say hello for Agent slice");
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert!(!argv.contains("Say hello"), "{argv}");
+        assert_eq!(
+            agent.stdout,
+            format!("FINAL received {} bytes", stdin.len())
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ordinary_agent_nodes_report_clean_text_and_usage_for_both_clis() {
+        for adapter in [
+            crate::agents::AdapterKind::Claude,
+            crate::agents::AdapterKind::Codex,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (db, engine) = harness();
+            let profile = structured_profile(dir.path(), adapter, None);
+            db.upsert_agent_profile(&profile).unwrap();
+            let mut wf = agent_workflow(&profile.id);
+            // A condition consumes the decoded output exactly as text.
+            wf.nodes[1].config.prompt = Some("Review".into());
+            run_to_end(&db, &engine, wf.clone(), "plain-structured").await;
+            let rows = db.list_node_results("plain-structured").unwrap();
+            let row = rows.iter().find(|r| r.node_id == "agent1").unwrap();
+            assert_eq!(row.status, "succeeded", "{adapter:?}: {}", row.stderr);
+            assert_eq!(row.stdout, "FINAL received 6 bytes");
+            let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+            assert!(
+                metadata.get("agentSession").is_none(),
+                "no session for plain nodes"
+            );
+            assert_eq!(metadata["agentUsage"]["input_tokens"], 7);
+            let activity = metadata["agentActivity"].as_str().unwrap();
+            assert!(
+                activity.contains("Reading files") || activity.contains("README.md"),
+                "{activity}"
+            );
+            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+            let spend = crate::run_controls::reported_spend(&wf, &rows, false);
+            if adapter == crate::agents::AdapterKind::Claude {
+                assert!(argv.contains("stream-json\n--verbose"));
+                assert_eq!(metadata["agentUsage"]["reported_cost_usd"], 2.0);
+                assert_eq!((spend.reported_attempts, spend.unknown_attempts), (1, 0));
+                assert_eq!(spend.reported_usd, 2.0);
+            } else {
+                assert!(argv.starts_with("exec\n--json\n"), "{argv}");
+                assert!(argv.ends_with("-\n"), "{argv}");
+                assert_eq!(metadata["agentUsage"]["cached_input_tokens"], 5);
+                // Codex reports tokens, not USD: coverage stays explicit.
+                assert_eq!((spend.reported_attempts, spend.unknown_attempts), (0, 1));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reported_spend_from_an_ordinary_node_pauses_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes
+            .push(command_node("next", "echo", &["continued"], 150.0));
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "agent1", "next", None),
+            edge("3", "next", "end", None),
+        ];
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "plain-guard",
+                &Default::default(),
+                &RunOptions {
+                    spend_limit_usd: Some(1.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf, "plain-guard".into()).await;
+        let run = db.get_run("plain-guard").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.execution.spend_pause.unwrap().reported_usd, 2.0);
+        assert!(!db
+            .list_node_results("plain-guard")
+            .unwrap()
+            .iter()
+            .any(|r| r.node_id == "next"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompts_larger_than_the_argv_limit_travel_on_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Codex, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        // 300 KB: well above Linux's 128 KiB limit for one argv element.
+        wf.nodes[1].config.prompt = Some("p".repeat(300_000));
+        run_to_end(&db, &engine, wf, "large-prompt").await;
+        let row = db
+            .list_node_results("large-prompt")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "agent1")
+            .unwrap();
+        assert_eq!(row.status, "succeeded", "{}", row.stderr);
+        assert_eq!(row.stdout, "FINAL received 300000 bytes");
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert!(argv.len() < 200, "prompt leaked into argv");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_exiting_before_reading_its_prompt_does_not_hang() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        let cli = profile.executable.clone().unwrap();
+        std::fs::write(
+            &cli,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"done early\",\"usage\":{}}'\n",
+        )
+        .unwrap();
+        profile.default_timeout_secs = 20;
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.prompt = Some("q".repeat(4 * 1024 * 1024));
+        let started = Instant::now();
+        run_to_end(&db, &engine, wf, "early-exit").await;
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let row = db
+            .list_node_results("early-exit")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "agent1")
+            .unwrap();
+        assert_eq!(row.status, "succeeded", "{}", row.stderr);
+        assert_eq!(row.stdout, "done early");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ordinary_nodes_tolerate_a_stray_stdout_line_from_a_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(
+            dir.path(),
+            crate::agents::AdapterKind::Claude,
+            Some(
+                r#"echo 'wrapper: using node from nvm'
+printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_tokens":2}}\n'"#,
+            ),
+        );
+        db.upsert_agent_profile(&profile).unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "stray-line").await;
+        let row = db
+            .list_node_results("stray-line")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "agent1")
+            .unwrap();
+        assert_eq!(row.status, "succeeded", "{}", row.stderr);
+        assert_eq!(row.stdout, "FINAL");
+        let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+        assert!(metadata["agentActivity"]
+            .as_str()
+            .unwrap()
+            .contains("wrapper: using node from nvm"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn profiles_choosing_their_own_output_format_keep_text_mode_with_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut profile = structured_profile(
+            dir.path(),
+            crate::agents::AdapterKind::Claude,
+            Some("printf 'plain answer\\n'"),
+        );
+        profile.extra_args = vec!["--output-format=text".into()];
+        db.upsert_agent_profile(&profile).unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "text-fallback").await;
+        let row = db
+            .list_node_results("text-fallback")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "agent1")
+            .unwrap();
+        assert_eq!(row.status, "succeeded");
+        assert_eq!(row.stdout, "plain answer\n");
+        let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+        assert!(metadata["agentOutputNote"]
+            .as_str()
+            .unwrap()
+            .contains("--output-format=text"));
+        assert!(metadata.get("agentUsage").is_none());
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert_eq!(argv, "-p\n--output-format\ntext\n--output-format=text\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("stdin")).unwrap(),
+            "Say hello for Agent slice"
+        );
     }
 
     #[test]
@@ -5632,6 +5981,80 @@ mod integration_tests {
         assert_eq!(row.status, "succeeded");
         assert!(row.stdout.contains("main"));
         assert!(row.structured_json.contains("clean"));
+    }
+
+    #[cfg(unix)]
+    async fn group_of(file: &std::path::Path) -> u32 {
+        for _ in 0..100 {
+            if let Some(pid) = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("process group id was not recorded");
+    }
+
+    #[cfg(unix)]
+    async fn group_gone(group: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while crate::process::process_group_alive(group) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        !crate::process::process_group_alive(group)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancel_and_timeout_stop_descendants_and_keep_partial_output() {
+        for cancel in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let group_file = dir.path().join("group");
+            let script = format!(
+                "echo $$ > {}; sleep 30 & echo started; wait",
+                shell_escape::escape(group_file.to_string_lossy())
+            );
+            let flag = Arc::new(AtomicBool::new(false));
+            let cancel_flag = Arc::clone(&flag);
+            if cancel {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    cancel_flag.store(true, Ordering::SeqCst);
+                });
+            }
+            let started = Instant::now();
+            let outcome = run_command_cancellable(
+                "sh",
+                &["-c".to_string(), script],
+                None,
+                Duration::from_millis(if cancel { 40_000 } else { 300 }),
+                false,
+                &flag,
+                None,
+            )
+            .await;
+            // SIGTERM stops `sh` and its `sleep` grandchild within the grace period.
+            assert!(started.elapsed() < Duration::from_secs(4));
+            let stdout = match outcome {
+                CommandOutcome::Cancelled { stdout, .. } => {
+                    assert!(cancel);
+                    stdout
+                }
+                CommandOutcome::Completed { stdout, stderr, .. } => {
+                    assert!(!cancel);
+                    assert!(stderr.contains("timed out"));
+                    stdout
+                }
+            };
+            assert!(stdout.contains("started"), "{stdout}");
+            let group = group_of(&group_file).await;
+            assert!(
+                group_gone(group).await,
+                "descendant survived (cancel={cancel})"
+            );
+        }
     }
 
     #[tokio::test]

@@ -46,7 +46,7 @@ function explainGenerationError(raw: string): string {
     );
   }
   if (raw.includes('was not found on PATH')) {
-    return `${raw} Tip: launch Orchevia from a terminal once, or set the full binary path in the Agent Profile.`;
+    return `${raw} Tip: set the full binary path in the Agent Profile, or install the CLI and use Refresh in Environment.`;
   }
   if (/not a model|unrecognized_model|unknown model/i.test(raw)) {
     return (

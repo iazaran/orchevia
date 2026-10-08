@@ -80,10 +80,14 @@ per-iteration work on the cycle with its own bound).
 
 Up to 4 nodes execute concurrently per run (separate processes; SQLite writes
 serialize briefly on the DB mutex). Cancellation and fail-fast propagate via a
-shared flag that kills in-flight children. Command and Agent stdout/stderr
-snapshots are stored in the running node row about every 250 ms when output
-changes. The Runs view polls the stored rows every 1.5 s; canvas overlays show
-status badges rather than log tails.
+shared flag that stops in-flight children. On Linux and macOS every child leads
+its own process group: cancel and timeouts send `SIGTERM` to the group, allow 2 s,
+then `SIGKILL` the rest, so descendants (shells, MCP servers, `npx`/`uvx`) stop
+with it and partial output is kept. A normal exit does not signal the group.
+Command and Agent stdout/stderr snapshots are stored in the running node row about
+every 250 ms when output changes. The Runs view polls while a run is running or
+paused (every 1.5 s); a finished selected run is not reloaded unless its results can
+still change. Canvas overlays show status badges rather than log tails.
 
 Command and Agent output is capped at 200,000 characters per stream; capture
 retains at most 800,004 bytes per stream to accommodate UTF-8. Additional output
@@ -91,8 +95,14 @@ is drained and discarded while still extending an output-sensitive deadline.
 Blocking CLI calls (including workflow generation) drain both streams while the
 child runs and retain at most 256 KiB per stream. Truncated output carries a
 visible marker and never splits a UTF-8 character.
-After the direct child exits or is killed, blocking calls drain for at most two
+After the direct child exits or is stopped, blocking calls drain for at most two
 seconds, preserving captured output even when a descendant holds the pipes open.
+MCP exchanges never wait on such a pipe: a timeout or cancel returns once the
+server's group is stopped.
+
+Claude and Codex prompts are written to the CLI's stdin, which is then closed; a CLI
+that exits without reading it does not delay the node. Children receive the search
+`PATH` resolved from your login shell (see [agents.md](./agents.md)).
 
 ## Approvals, recovery, restarts
 
@@ -124,8 +134,9 @@ seconds, preserving captured output even when a descendant holds the pipes open.
 ## Validation before execution
 
 Errors block `start_run`; warnings don't. Beyond the schema rules, the engine
-checks: required inputs supplied, referenced Agent Profiles exist with CLIs on
-`PATH`, condition/prompt variable references resolve, true+false branches
+checks: required inputs supplied, referenced Agent Profiles exist with executable
+CLIs on the search `PATH` (login shell `PATH`, Orchevia's own `PATH` and common
+install directories), condition/prompt variable references resolve, true+false branches
 present, label placement, cycle guards and bounds, retry/timeout bounds, input
 name validity and uniqueness. See `workflow-schema.md` for the code list.
 

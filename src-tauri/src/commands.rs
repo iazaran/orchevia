@@ -122,9 +122,16 @@ pub fn validate_workflow_cmd(
 
 // -- Environment -------------------------------------------------------------
 
+/// Re-resolve the login shell PATH (dropping cached lookups), then probe the
+/// registered tools. Runs on a blocking thread: never on the UI thread.
 #[tauri::command]
-pub fn detect_tools() -> Result<Vec<ToolStatus>, String> {
-    Ok(discover_tools(&default_tools()))
+pub async fn detect_tools() -> Result<Vec<ToolStatus>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        orchevia_core::tools::refresh_search_environment();
+        discover_tools(&default_tools())
+    })
+    .await
+    .map_err(|e| format!("Tool detection failed to join: {e}"))
 }
 
 // -- Runs --------------------------------------------------------------------
@@ -926,6 +933,7 @@ pub fn preview_command(executable: String, args: Vec<String>) -> Result<String, 
         executable,
         args,
         working_dir: None,
+        stdin: None,
     }
     .preview())
 }
@@ -1020,8 +1028,8 @@ pub fn preview_agent_command(
 }
 
 #[tauri::command]
-pub fn test_agent_profile(
-    state: State<AppState>,
+pub async fn test_agent_profile(
+    state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<ToolStatus, String> {
     let profile = state
@@ -1029,6 +1037,13 @@ pub fn test_agent_profile(
         .get_agent_profile(&profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown Agent Profile '{profile_id}'."))?;
+    // The `--version` probe can take seconds; keep it off the UI thread.
+    tauri::async_runtime::spawn_blocking(move || probe_agent_profile(&profile))
+        .await
+        .map_err(|e| format!("Profile test failed to join: {e}"))
+}
+
+fn probe_agent_profile(profile: &AgentProfile) -> ToolStatus {
     let exe = profile.effective_executable();
     let found =
         orchevia_core::tools::find_executable(&exe).map(|p| p.to_string_lossy().into_owned());
@@ -1038,6 +1053,7 @@ pub fn test_agent_profile(
             executable: path.to_string(),
             args: vec!["--version".to_string()],
             working_dir: None,
+            stdin: None,
         };
         orchevia_core::process::run_command(&spec, Some(std::time::Duration::from_secs(5)))
             .ok()
@@ -1050,13 +1066,13 @@ pub fn test_agent_profile(
                     .map(|l| l.chars().take(120).collect())
             })
     });
-    Ok(ToolStatus {
+    ToolStatus {
         id: profile.id.clone(),
         display_name: format!("{} ({})", profile.name, profile.adapter.as_str()),
         installed: found.is_some(),
         version,
         path: found,
-    })
+    }
 }
 
 // -- Generation, templates, memory (Milestone 6) -------------------------------
@@ -1303,7 +1319,8 @@ pub async fn generate_workflow(
         .ok_or_else(|| format!("Unknown Agent Profile '{profile_id}'."))?;
     if !cli_available(&profile.effective_executable()) {
         return Err(format!(
-            "Profile '{}' needs '{}', which was not found on PATH.",
+            "Profile '{}' needs '{}', which was not found on PATH. Set the full executable \
+             path in the profile, or install it and use Refresh in Environment.",
             profile.name,
             profile.effective_executable()
         ));
@@ -1543,16 +1560,9 @@ fn truncate_for_history(text: &str) -> String {
     text.chars().take(20_000).collect()
 }
 
-/// PATH/file check shared by generator + test flows (no spawning).
+/// PATH/file check (exec bit included) shared by generator + test flows (no spawning).
 fn cli_available(exe: &str) -> bool {
-    let trimmed = exe.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return std::path::Path::new(trimmed).is_file();
-    }
-    orchevia_core::tools::find_executable(trimmed).is_some()
+    orchevia_core::tools::find_executable(exe).is_some()
 }
 
 #[tauri::command]
@@ -1738,6 +1748,7 @@ pub fn observe_edits(
 #[tauri::command]
 pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
     let tools = discover_tools(&default_tools());
+    let search = orchevia_core::tools::search_environment();
     let runs = state.db.list_runs(1000).map_err(|e| e.to_string())?;
     let mut by_status = std::collections::HashMap::new();
     for run in &runs {
@@ -1780,6 +1791,11 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
             "watchers": state.db.list_watchers().map(|v| v.len()).unwrap_or(0),
             "templates": state.db.list_user_templates().map(|v| v.len()).unwrap_or(0),
             "preferences": state.db.list_preferences().map(|v| v.len()).unwrap_or(0),
+        },
+        "searchPath": {
+            "source": search.source(),
+            "directories": search.dirs().len(),
+            "note": search.note(),
         },
         "tools": tools.iter().map(|t| serde_json::json!({
             "id": t.id,

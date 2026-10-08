@@ -21,8 +21,8 @@
 │  orchevia-core     │  Tauri-free library, unit-testable anywhere:
 │  crates/core/      │  workflow.rs (model+validation+planning)
 │                    │  db.rs (SQLite, WAL, migrations)
-│                    │  process.rs (shell-free runner, timeouts)
-│                    │  tools.rs (generic CLI discovery)
+│                    │  process.rs (shell-free runner, timeouts, process groups)
+│                    │  tools.rs (CLI discovery, login-shell PATH)
 └────────────────────┘
 ```
 
@@ -139,7 +139,8 @@
    run id immediately.
 3. The DAG engine schedules ready nodes in definition order (up to 4 concurrent):
    `Start`/`End` record instantly; `Command`/`Agent` run via `tokio::process`
-   (no shell, piped output, timeout, kill-on-cancel) with bounded retries;
+   (no shell, piped output, prompt on stdin, timeout, process-group stop on
+   cancel/timeout) with bounded retries;
    `Condition` evaluates and routes; `Approval` pauses durably when nothing else
    is in flight. Untaken branches record `skipped`.
 4. Command/Agent nodes create a `running` result row and update captured streams
@@ -182,4 +183,5 @@ attempt, duration_ms, structured_json, …)`,
 - Parallel branches are bounded (≤4 concurrent nodes); SQLite writes serialize
   briefly on the DB mutex.
 - Startup work: open one SQLite file, list workflows, recompute schedule slots
-  — no process spawning at launch except on-demand `--version` probes.
+  — at launch, one background login-shell probe for `PATH` (5 s limit) and
+  on-demand `--version` probes; nothing else is spawned.

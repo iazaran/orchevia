@@ -165,7 +165,7 @@ export function AgentsView(): React.JSX.Element {
         setTestResult(
           status.installed
             ? `Found ${status.path ?? ''} ${status.version ?? ''}`.trim()
-            : 'CLI not found on PATH. Install/authenticate it yourself; the profile is kept and shows unavailable.',
+            : 'CLI not found in your login shell PATH or common install locations. Install/authenticate it yourself or set its full path; the profile is kept and shows unavailable.',
           status.installed ? 'info' : 'warn',
         );
       })

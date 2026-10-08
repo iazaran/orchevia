@@ -60,6 +60,7 @@ fn git(dir: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
         executable: "git".to_string(),
         args: args.iter().map(|s| (*s).to_string()).collect(),
         working_dir: Some(dir.to_string()),
+        stdin: None,
     };
     let result = run_command(&spec, Some(Duration::from_secs(timeout_secs)))
         .map_err(|e| format!("Failed to run git: {e}"))?;
@@ -428,6 +429,7 @@ mod tests {
                 executable: "git".into(),
                 args: args.iter().map(|s| (*s).to_string()).collect(),
                 working_dir: Some(root.clone()),
+                stdin: None,
             };
             run_command(&spec, Some(Duration::from_secs(15))).expect("git")
         };

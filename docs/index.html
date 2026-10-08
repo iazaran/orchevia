@@ -544,8 +544,9 @@
               <span class="pill">Available now</span>
               <h3>Real local execution</h3>
               <p>
-                Executables and arguments are passed separately, with live output in Runs,
-                per-node timeouts, cancellation, and persisted run history.
+                Executables and arguments are passed separately, prompts reach Claude and
+                Codex on stdin, with live output in Runs, per-node timeouts, cancellation,
+                and persisted run history.
               </p>
             </div>
             <div class="card">
@@ -699,7 +700,8 @@ and request one independent review. Leave changes uncommitted.</code></pre>
             <li>
               <strong>Install and open Orchevia.</strong> The first-run wizard detects
               <code>git</code>, <code>gh</code>, <code>claude</code>, and
-              <code>codex</code>, and creates your first agent profiles.
+              <code>codex</code>, including CLIs on your login shell's PATH (nvm, fnm,
+              Homebrew), and creates your first agent profiles.
             </li>
             <li>
               <strong>Workflows → Samples… → Plan → Implement → Review → Create.</strong>
@@ -741,9 +743,9 @@ and request one independent review. Leave changes uncommitted.</code></pre>
               <h3>Explicit execution</h3>
               <p>
                 Opening a workflow never executes it. Inspect commands before running;
-                runs are explicit, the active child is stopped on cancel, and
-                authentication stays in your tools. Stored output can contain sensitive
-                data; review it before sharing.
+                runs are explicit, cancel and timeouts stop the step's process group on
+                Linux and macOS, and authentication stays in your tools. Stored output can
+                contain sensitive data; review it before sharing.
               </p>
             </div>
           </div>
@@ -829,8 +831,9 @@ pnpm tauri dev</code></pre>
             <summary>Do I need an Orchevia account or model API key?</summary>
             <p>
               No. Orchevia orchestrates CLIs you install and authenticate yourself. Model
-              access and usage costs belong to those tools and providers. A command-only
-              workflow needs no AI profile.
+              access and usage costs belong to those tools and providers; Runs show the
+              token counts and USD that a CLI reports. A command-only workflow needs no AI
+              profile.
             </p>
           </details>
           <details>
@@ -854,9 +857,11 @@ pnpm tauri dev</code></pre>
             <summary>What happens when a step fails or I cancel?</summary>
             <p>
               Inspect per-step errors and partial output in Runs. Workflows can define
-              explicit retries and failure paths. Cancellation stops the active child; it
-              does not undo earlier file edits, commits or remote writes, and child tools
-              may spawn their own processes. Review side effects before rerunning.
+              explicit retries and failure paths. Cancellation stops the active step and
+              the processes it started in its process group on Linux and macOS; it does
+              not undo earlier file edits, commits or remote writes. A tool that detaches
+              its own processes from that group can leave them running. Review side
+              effects before rerunning.
             </p>
           </details>
           <details>

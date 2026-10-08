@@ -12,10 +12,14 @@ the boundaries, and the limits of the current application.
    The UI preview is shell-escaped for _display only_. A Command node can
    explicitly invoke `bash`, `sh`, or another interpreter; that script then has
    the full permissions of your user.
-3. **Killing is real.** Cancel flips an atomic flag checked between nodes _and_ kills
-   an in-flight child (`kill_on_drop` + explicit kill). Timeouts (default 10 min per
-   command) kill hung processes. Independently spawned descendants are not
-   guaranteed to stop; workflows should keep long-running tools in the foreground.
+3. **Killing is real.** Cancel flips an atomic flag checked between nodes _and_ stops
+   the in-flight child. On Linux and macOS each child leads its own process group;
+   cancel, timeouts (default 10 min per command), MCP shutdown and app exit send
+   `SIGTERM` to the group, wait up to 2 s, then `SIGKILL` whatever remains, so
+   shells, MCP servers and `npx`/`uvx` descendants stop too. A normal exit leaves
+   deliberately backgrounded descendants alone, and a tool that moves its own
+   processes into a new session or group can still detach them. Windows stops only
+   the direct child.
 4. **Output hygiene.** stdout/stderr are truncated (256 KiB Rust core / 200k chars
    engine) to bound memory; environment variables are inherited but never dumped,
    logged, or persisted.
@@ -47,12 +51,19 @@ the boundaries, and the limits of the current application.
 3. **No secrets by design.** Profiles store configuration only — no tokens, keys, or
    environment dumps. Credential-like extra args (`--api-key`, `password`, …) are
    rejected at validation; authenticate in your own CLI instead.
-4. **No shell, no prompt-as-flags.** The prompt is one argv element (`-p` for Claude,
-   positional for Codex); `build_agent_command` is the only place adapter syntax lives.
+4. **No shell, no prompt-as-flags.** Claude and Codex read the prompt from stdin
+   (`claude -p`, `codex exec … -`), so it never becomes flags, never hits argument
+   size limits and does not show up in process listings. Custom CLIs get it as one
+   final argv element. `agents.rs` is the only place adapter syntax lives.
 5. **Explicit working directory.** Node or profile directories must exist before
    execution; the engine records used folders locally (paths only) for convenience.
    Agent runs inherit the process environment (needed by the CLIs) but Orchevia never
-   persists it.
+   persists it. The one change is `PATH`: when started from the desktop, Orchevia asks
+   your login shell for it once (`$SHELL -i -l -c`, no terminal, 5 s limit, falling
+   back to its own `PATH` plus common install directories) and uses that value for
+   lookups and every child. Started from a terminal, it keeps that terminal's `PATH`. Your
+   rc files run during that probe exactly as they do when you open a terminal; no
+   other variable is read or imported.
 6. **Bounded + cancellable.** Node-or-profile timeout (1–43200 s) kills hung agents;
    cancel kills the in-flight child; missing prompt variables fail the node instead of
    sending a half-rendered prompt.

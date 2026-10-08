@@ -42,10 +42,10 @@ writes. CLI usage costs and remote-provider behavior remain with your chosen too
 
 ## Install
 
-Release v0.1.11 is being prepared. The permanent installer links below target this
+Release v0.1.12 is being prepared. The permanent installer links below target this
 version; they become available after the matching tag's release workflow succeeds.
-See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.11).
-Until then, use the [published v0.1.10 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.10).
+See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.12).
+Until then, use the [published v0.1.11 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.11).
 A merged PR alone does not build installers.
 
 The repository and release files are **private for now**: sign in to GitHub with an
@@ -53,11 +53,11 @@ account that has repository access. The repository and downloads will be public 
 
 | Platform                    | Installer                                                                                                                                                                                                  |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-macos-arm64.dmg)                                                                                                             |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-macos-x86_64.dmg)                                                                                                            |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.11/Orchevia-linux-x86_64.deb) |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-macos-arm64.dmg)                                                                                                             |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-macos-x86_64.dmg)                                                                                                            |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.11/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.12/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -90,7 +90,8 @@ You need Node.js 24+, pnpm 10+, Rust stable, and the platform dependencies liste
 [the development guide](./docs/development.md). `pnpm dev` opens a browser demo backed
 by localStorage; it does **not** run real CLI processes. The desktop app does.
 
-Optional tools (`git`, `gh`, `claude`, `codex`) are detected locally; install and
+Optional tools (`git`, `gh`, `claude`, `codex`) are detected locally, including CLIs
+installed through your login shell's `PATH` (nvm, fnm, Homebrew); install and
 authenticate the ones your workflows need.
 
 ## Your first workflow in 5 minutes
@@ -206,7 +207,8 @@ not a guarantee that every requested integration operation is supported.
 ## Workflow testing and run controls
 
 Use **Dry run** to supply successive node-result fixtures and test routing without
-executing tools. **Run options** adds an optional CLI-reported USD guard. Runs show
+executing tools. Claude and Codex Agent nodes report CLI token usage (Claude also
+reports USD). **Run options** adds an optional CLI-reported USD guard. Runs show
 parallel timing and cost-report coverage; failed runs offer deliberate recovery
 using the original workflow and inputs. Reused output and simulated tests stay
 separate from actual execution/spend and verified project knowledge.
@@ -217,10 +219,11 @@ See [execution semantics](docs/execution.md#dry-run-workflow-tests),
 
 ## Current limits
 
-- **Beta:** source version 0.1.11 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** source version 0.1.12 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
-- **Tools and authentication:** install and authenticate CLIs yourself. Jira and
-  other MCP servers may need credentials in their inherited environment.
+- **Tools and authentication:** install and authenticate CLIs yourself. Orchevia reads
+  only `PATH` from your login shell; Jira and other MCP servers may need credentials
+  in the environment the app itself was started with.
 - **Local scheduling:** the app must stay running; enable background mode to keep
   schedules active after closing the window. There is no remote worker service.
 - **Execution permissions:** commands and agents run with your user permissions.
