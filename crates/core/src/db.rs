@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::agents::AgentProfile;
 use crate::mcp::McpServerConfig;
 use crate::notify::{Notification, NotificationPrefs};
+use crate::run_controls::{RunExecution, SpendPause};
 use crate::schedule::Schedule;
 use crate::workflow::Workflow;
 
@@ -79,6 +80,8 @@ impl RunStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredRun {
+    #[serde(default)]
+    pub execution: RunExecution,
     pub id: String,
     pub workflow_id: String,
     pub status: RunStatus,
@@ -302,9 +305,11 @@ impl SqliteDb {
                updated_at TEXT NOT NULL
              );",
         )?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS recovery_requests (request_id TEXT PRIMARY KEY, source_run_id TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, choices TEXT NOT NULL); CREATE TABLE IF NOT EXISTS recovery_results (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, node_id TEXT NOT NULL, visit INTEGER NOT NULL, definition TEXT NOT NULL, PRIMARY KEY(run_id,node_id,visit));")?;
         // Milestone 3 columns (idempotent for existing databases).
         for (table, column, ddl) in [
             ("runs", "inputs", "TEXT NOT NULL DEFAULT '{}'"),
+            ("runs", "execution_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("runs", "workflow_definition", "TEXT"),
             ("node_results", "attempt", "INTEGER NOT NULL DEFAULT 1"),
             ("node_results", "duration_ms", "INTEGER NOT NULL DEFAULT 0"),
@@ -472,26 +477,39 @@ impl SqliteDb {
         workflow: &Workflow,
         inputs: &std::collections::HashMap<String, String>,
     ) -> DbResult<StoredRun> {
+        self.create_run_with_execution(id, workflow, inputs, &RunExecution::default())
+    }
+
+    pub fn create_run_with_execution(
+        &self,
+        id: &str,
+        workflow: &Workflow,
+        inputs: &std::collections::HashMap<String, String>,
+        execution: &RunExecution,
+    ) -> DbResult<StoredRun> {
         let workflow_id = &workflow.id;
         let now = Utc::now();
         let inputs_json = serde_json::to_string(inputs)?;
+        let execution_json = serde_json::to_string(execution)?;
         let definition = serde_json::to_string(workflow)?;
         let conn = self
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         conn.execute(
-            "INSERT INTO runs (id, workflow_id, status, started_at, inputs, workflow_definition) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO runs (id, workflow_id, status, started_at, inputs, workflow_definition, execution_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 id,
                 workflow_id,
                 RunStatus::Running.as_str(),
                 now.to_rfc3339(),
                 inputs_json,
-                definition
+                definition,
+                execution_json
             ],
         )?;
         Ok(StoredRun {
+            execution: execution.clone(),
             id: id.to_string(),
             workflow_id: workflow_id.to_string(),
             status: RunStatus::Running,
@@ -518,6 +536,25 @@ impl SqliteDb {
             .transpose()
     }
 
+    /// Recovery may only use the immutable definition captured when the run started.
+    pub fn get_run_snapshot(&self, id: &str) -> DbResult<Option<Workflow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let definition: Option<String> = conn
+            .query_row(
+                "SELECT workflow_definition FROM runs WHERE id=?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        definition
+            .map(|json| Workflow::from_json(&json).map_err(DbError::from))
+            .transpose()
+    }
+
     pub fn finish_run(&self, id: &str, status: RunStatus) -> DbResult<()> {
         let conn = self
             .conn
@@ -539,6 +576,12 @@ impl SqliteDb {
         note: &str,
         expected_approval_id: Option<i64>,
     ) -> DbResult<bool> {
+        if self
+            .get_run(id)?
+            .is_some_and(|r| r.execution.spend_pause.is_some())
+        {
+            return Ok(false);
+        }
         let now = Utc::now().to_rfc3339();
         let mut conn = self
             .conn
@@ -546,7 +589,7 @@ impl SqliteDb {
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         let tx = conn.transaction()?;
         let changed = tx.execute(
-            "UPDATE runs SET status = ?1, finished_at = ?2 WHERE id = ?3 AND status = 'paused'",
+            "UPDATE runs SET status = ?1, finished_at = ?2 WHERE id = ?3 AND status = 'paused' AND json_extract(execution_json, '$.spendPause') IS NULL",
             params![
                 if approved { "running" } else { "failed" },
                 if approved { None } else { Some(&now) },
@@ -610,7 +653,7 @@ impl SqliteDb {
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         let mut stmt = conn.prepare(
-            "SELECT id, workflow_id, status, started_at, finished_at, inputs FROM runs WHERE (?2 = 0 OR status IN ('pending', 'running', 'paused')) AND (?3 IS NULL OR workflow_id = ?3) ORDER BY started_at DESC LIMIT ?1",
+            "SELECT id, workflow_id, status, started_at, finished_at, inputs, execution_json FROM runs WHERE (?2 = 0 OR status IN ('pending', 'running', 'paused')) AND (?3 IS NULL OR workflow_id = ?3) ORDER BY started_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit, active_only, workflow_id], |row| {
             Ok((
@@ -620,12 +663,14 @@ impl SqliteDb {
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, workflow_id, status, started_at, finished_at, inputs) = row?;
+            let (id, workflow_id, status, started_at, finished_at, inputs, execution) = row?;
             out.push(StoredRun {
+                execution: serde_json::from_str(&execution)?,
                 id,
                 workflow_id,
                 status: RunStatus::parse_status(&status),
@@ -648,6 +693,7 @@ impl SqliteDb {
             String,
             Option<String>,
             Option<String>,
+            String,
         );
         let conn = self
             .conn
@@ -655,7 +701,7 @@ impl SqliteDb {
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         let row: Option<RunRow> = conn
             .query_row(
-                "SELECT id, workflow_id, status, started_at, finished_at, inputs FROM runs WHERE id = ?1",
+                "SELECT id, workflow_id, status, started_at, finished_at, inputs, execution_json FROM runs WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok((
@@ -665,12 +711,14 @@ impl SqliteDb {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
             .optional()?;
-        Ok(row.map(
-            |(id, workflow_id, status, started_at, finished_at, inputs)| StoredRun {
+        row.map(
+            |(id, workflow_id, status, started_at, finished_at, inputs, execution)| -> DbResult<StoredRun> { Ok(StoredRun {
+                execution: serde_json::from_str(&execution)?,
                 id,
                 workflow_id,
                 status: RunStatus::parse_status(&status),
@@ -679,8 +727,149 @@ impl SqliteDb {
                 inputs: inputs
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default(),
-            },
-        ))
+            }) },
+        ).transpose()
+    }
+
+    /// Persist recovery provenance and reusable visit data before dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_recovery_run(
+        &self,
+        id: &str,
+        source: &StoredRun,
+        workflow: &Workflow,
+        execution: &RunExecution,
+        seeds: &[StoredNodeResult],
+        request_id: &str,
+    ) -> DbResult<String> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let choices = serde_json::to_value(&execution.recovery_choices)?;
+        let existing: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT source_run_id,run_id,choices FROM recovery_requests WHERE request_id=?1",
+                params![request_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((prior_source, prior_id, prior_choices)) = existing {
+            if prior_source != source.id
+                || serde_json::from_str::<serde_json::Value>(&prior_choices)? != choices
+            {
+                return Err(DbError::Io(
+                    "Recovery request already used with different decisions.".into(),
+                ));
+            }
+            return Ok(prior_id);
+        }
+        let status: String = tx.query_row(
+            "SELECT status FROM runs WHERE id=?1",
+            params![source.id],
+            |r| r.get(0),
+        )?;
+        if status != "failed" {
+            return Err(DbError::Io("Only failed runs can be recovered.".into()));
+        }
+        tx.execute("INSERT INTO runs (id,workflow_id,status,started_at,inputs,workflow_definition,execution_json) VALUES (?1,?2,'running',?3,?4,?5,?6)",params![id,workflow.id,Utc::now().to_rfc3339(),serde_json::to_string(&source.inputs)?,serde_json::to_string(workflow)?,serde_json::to_string(execution)?])?;
+        let mut visits = std::collections::HashMap::<String, u32>::new();
+        for row in seeds {
+            let visit = visits.entry(row.node_id.clone()).or_default();
+            *visit += 1;
+            tx.execute("INSERT INTO recovery_results (run_id,node_id,visit,definition) VALUES (?1,?2,?3,?4)",params![id,row.node_id,*visit,serde_json::to_string(row)?])?;
+        }
+        tx.execute("INSERT INTO recovery_requests (request_id,source_run_id,run_id,choices) VALUES (?1,?2,?3,?4)",params![request_id,source.id,id,choices.to_string()])?;
+        tx.commit()?;
+        Ok(id.into())
+    }
+
+    pub fn recovery_result(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        visit: u32,
+    ) -> DbResult<Option<StoredNodeResult>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let value:Option<String>=conn.query_row("SELECT definition FROM recovery_results WHERE run_id=?1 AND node_id=?2 AND visit=?3",params![run_id,node_id,visit],|r|r.get(0)).optional()?;
+        value
+            .map(|v| serde_json::from_str(&v).map_err(DbError::from))
+            .transpose()
+    }
+
+    pub fn pause_for_spend(&self, run_id: &str, reported_usd: f64) -> DbResult<()> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let value: String = tx.query_row(
+            "SELECT execution_json FROM runs WHERE id=?1 AND status='running'",
+            params![run_id],
+            |r| r.get(0),
+        )?;
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        let now = Utc::now().to_rfc3339();
+        tx.execute("INSERT INTO node_results (run_id,node_id,status,started_at,finished_at,error) VALUES (?1,'__spend_guard','guardPaused',?2,?2,?3)",params![run_id,now,format!("Reported spend reached USD {reported_usd:.4}. In-flight work and missing reports can exceed the limit.")])?;
+        execution.spend_pause = Some(SpendPause {
+            id: tx.last_insert_rowid(),
+            reported_usd,
+        });
+        tx.execute(
+            "UPDATE runs SET status='paused',finished_at=?1,execution_json=?2 WHERE id=?3",
+            params![now, serde_json::to_string(&execution)?, run_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn continue_spend_run(
+        &self,
+        run_id: &str,
+        expected_pause_id: i64,
+        limit: Option<f64>,
+    ) -> DbResult<bool> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let value: Option<String> = tx
+            .query_row(
+                "SELECT execution_json FROM runs WHERE id=?1 AND status='paused'",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
+            return Ok(false);
+        };
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        let Some(pause) = execution.spend_pause.as_ref() else {
+            return Ok(false);
+        };
+        if pause.id != expected_pause_id {
+            return Ok(false);
+        }
+        if limit.is_some_and(|n| !n.is_finite() || n <= pause.reported_usd) {
+            return Err(DbError::Io(
+                "New spend limit must exceed the current reported total.".into(),
+            ));
+        }
+        execution.options.spend_limit_usd = limit;
+        execution.spend_pause = None;
+        tx.execute(
+            "UPDATE runs SET status='running',finished_at=NULL,execution_json=?1 WHERE id=?2",
+            params![serde_json::to_string(&execution)?, run_id],
+        )?;
+        let now = Utc::now().to_rfc3339();
+        tx.execute("INSERT INTO node_results (run_id,node_id,status,started_at,finished_at) VALUES (?1,'__spend_guard','guardContinued',?2,?2)",params![run_id,now])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Delete one finished run and its node results. Running/paused runs are
@@ -800,7 +989,10 @@ impl SqliteDb {
     }
 
     pub fn record_node_result(&self, input: NewNodeResult<'_>) -> DbResult<()> {
-        let now = Utc::now().to_rfc3339();
+        let finished = Utc::now();
+        let duration =
+            chrono::Duration::milliseconds(input.duration_ms.min(i64::MAX as u64) as i64);
+        let started = finished.checked_sub_signed(duration).unwrap_or(finished);
         let conn = self
             .conn
             .lock()
@@ -816,8 +1008,8 @@ impl SqliteDb {
                 input.stdout,
                 input.stderr,
                 input.error,
-                now,
-                now,
+                started.to_rfc3339(),
+                finished.to_rfc3339(),
                 input.attempt,
                 input.duration_ms as i64,
                 input.structured_json
@@ -1707,6 +1899,48 @@ pub struct StoredGeneration {
 mod tests {
     use super::*;
     use crate::workflow::{Edge, Node, NodeConfig, NodeKind, Position, CURRENT_SCHEMA_VERSION};
+
+    #[test]
+    fn v011_review_recovery_refuses_legacy_runs_without_a_snapshot() {
+        let db = std::sync::Arc::new(SqliteDb::open_in_memory().unwrap());
+        let wf = sample_workflow("legacy-recovery");
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run("legacy", &wf.id, &Default::default())
+            .unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET workflow_definition=NULL WHERE id='legacy'",
+                [],
+            )
+            .unwrap();
+        db.finish_run("legacy", RunStatus::Failed).unwrap();
+        let engine = crate::engine::Engine::new(db, Default::default());
+        assert!(engine.preview_recovery("legacy").is_err());
+        assert!(engine
+            .recover_run("legacy", "child", &Default::default(), "", "legacy-request")
+            .is_err());
+    }
+
+    #[test]
+    fn v011_review_measured_results_have_real_intervals() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let wf = sample_workflow("timing");
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run("timing", &wf.id, &Default::default())
+            .unwrap();
+        db.record_node_result(NewNodeResult {
+            duration_ms: 30_000,
+            ..NewNodeResult::simple("timing", "git", "succeeded", Some(0), None)
+        })
+        .unwrap();
+        let row = db.list_node_results("timing").unwrap().remove(0);
+        assert_eq!(
+            (row.finished_at.unwrap() - row.started_at).num_milliseconds(),
+            30_000
+        );
+    }
 
     fn sample_workflow(id: &str) -> Workflow {
         Workflow {

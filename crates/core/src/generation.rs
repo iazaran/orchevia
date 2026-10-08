@@ -1083,7 +1083,7 @@ pub fn latest_assistance_run_context(
         .list_workflow_runs(&workflow.id, 1000)
         .map_err(|e| e.to_string())?
         .into_iter()
-        .filter(|r| r.workflow_id == workflow.id)
+        .filter(|r| r.workflow_id == workflow.id && !r.execution.options.dry_run)
     {
         let Some(snapshot) = db.get_run_workflow(&run.id).map_err(|e| e.to_string())? else {
             continue;

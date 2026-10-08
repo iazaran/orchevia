@@ -5,6 +5,125 @@ import { createEmptyWorkflow } from './workflow';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
 
 describe('mock backend (browser dev)', () => {
+  it('dry-runs all branches without profiles and recovers with explicit choices', async () => {
+    const backend = __setMockBackendForTests();
+    const workflow = createEmptyWorkflow('Dry');
+    const start = workflow.nodes[0]!;
+    const end = workflow.nodes[1]!;
+    workflow.nodes.splice(
+      1,
+      0,
+      {
+        id: 'a',
+        type: 'agent',
+        position: { x: 0, y: 0 },
+        config: { agentProfileId: 'missing', prompt: 'Test' },
+      },
+      {
+        id: 'b',
+        type: 'command',
+        position: { x: 0, y: 0 },
+        config: { executable: 'must-never-run' },
+      },
+    );
+    workflow.edges = [
+      { id: 'sa', source: start.id, target: 'a' },
+      { id: 'ab', source: 'a', target: 'b' },
+      { id: 'be', source: 'b', target: end.id },
+    ];
+    await backend.saveWorkflow(workflow);
+    const { runId } = await backend.runWorkflow(
+      workflow.id,
+      {},
+      {
+        dryRun: true,
+        fixtures: {
+          a: [{ status: 'succeeded', stdout: 'kept' }],
+          b: [{ status: 'failed' }],
+        },
+      },
+    );
+    await vi.waitFor(async () =>
+      expect((await backend.getRun(runId))?.status).toBe('failed'),
+    );
+    const plan = await backend.previewRecovery(runId);
+    await expect(
+      backend.recoverRun(runId, {}, plan.fingerprint, 'bad'),
+    ).rejects.toThrow();
+    const child = await backend.recoverRun(
+      runId,
+      { a: 'reuse', b: 'skip' },
+      plan.fingerprint,
+      'recovery',
+    );
+    await vi.waitFor(async () =>
+      expect((await backend.getRun(child.runId))?.status).toBe('succeeded'),
+    );
+    expect(
+      (await backend.getRunResults(child.runId)).find((r) => r.nodeId === 'a')?.stdout,
+    ).toBe('kept');
+    expect(
+      await backend.recoverRun(
+        runId,
+        { a: 'reuse', b: 'skip' },
+        plan.fingerprint,
+        'recovery',
+      ),
+    ).toEqual(child);
+    await backend.deleteRun(child.runId);
+    const reopened = __setMockBackendForTests();
+    expect(await reopened.getRun(child.runId)).toBeNull();
+    const replacement = await reopened.recoverRun(
+      runId,
+      { a: 'reuse', b: 'skip' },
+      plan.fingerprint,
+      'recovery',
+    );
+    expect(replacement.runId).not.toBe(child.runId);
+    await vi.waitFor(async () =>
+      expect((await reopened.getRun(replacement.runId))?.status).toBe('succeeded'),
+    );
+  });
+  it('closes interrupted attempt rows when browser history reopens', async () => {
+    const backend = __setMockBackendForTests();
+    const workflows = await backend.listWorkflows();
+    localStorage.setItem(
+      'orchevia.mock-backend.v1',
+      JSON.stringify({
+        workflows,
+        runs: [
+          {
+            id: 'interrupted',
+            workflowId: workflows[0]?.id,
+            status: 'running',
+            startedAt: '2026-10-08T00:00:00Z',
+          },
+        ],
+        results: [
+          [
+            'interrupted',
+            [
+              {
+                id: 1,
+                runId: 'interrupted',
+                nodeId: 'a',
+                status: 'running',
+                stdout: 'partial output',
+                stderr: '',
+                startedAt: '2026-10-08T00:00:00Z',
+              },
+            ],
+          ],
+        ],
+      }),
+    );
+    const reopened = __setMockBackendForTests();
+    const row = (await reopened.getRunResults('interrupted'))[0];
+    expect(row?.status).toBe('failed');
+    expect(row?.stdout).toBe('partial output');
+    expect(row?.finishedAt).toBeDefined();
+    expect((await reopened.getRun('interrupted'))?.status).toBe('failed');
+  });
   it('simulates grouped sessions across approval, rotates and bounds handoffs', async () => {
     const backend = __setMockBackendForTests();
     const profile = createDefaultProfile('claude');

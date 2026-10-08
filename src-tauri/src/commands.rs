@@ -134,6 +134,7 @@ pub async fn run_workflow(
     state: State<'_, AppState>,
     workflow_id: String,
     inputs: Option<std::collections::HashMap<String, String>>,
+    options: Option<orchevia_core::run_controls::RunOptions>,
 ) -> Result<RunStarted, String> {
     let stored = state
         .db
@@ -143,7 +144,12 @@ pub async fn run_workflow(
     let run_id = format!("run-{}", Uuid::new_v4().simple());
     state
         .engine
-        .start_run(&stored.definition, &run_id, &inputs.unwrap_or_default())
+        .start_run_with_options(
+            &stored.definition,
+            &run_id,
+            &inputs.unwrap_or_default(),
+            &options.unwrap_or_default(),
+        )
         .map_err(|e| e.to_string())?;
     // Clone what the background task needs; the command returns immediately.
     let engine_db = Arc::clone(&state.db);
@@ -155,6 +161,58 @@ pub async fn run_workflow(
         engine.execute(workflow, run_id_clone).await;
     });
     Ok(RunStarted { run_id })
+}
+
+#[tauri::command]
+pub fn preview_recovery(
+    state: State<AppState>,
+    run_id: String,
+) -> Result<orchevia_core::run_controls::RecoveryPlan, String> {
+    state
+        .engine
+        .preview_recovery(&run_id)
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn recover_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    choices: std::collections::HashMap<String, orchevia_core::run_controls::RecoveryChoice>,
+    fingerprint: String,
+    request_id: String,
+) -> Result<RunStarted, String> {
+    let new_id = format!("run-{}", Uuid::new_v4().simple());
+    let recovered = state
+        .engine
+        .recover_run(&run_id, &new_id, &choices, &fingerprint, &request_id)
+        .map_err(|e| e.to_string())?;
+    if recovered == new_id {
+        let workflow = state
+            .db
+            .get_run_workflow(&new_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Run snapshot unavailable.")?;
+        let db = Arc::clone(&state.db);
+        let cancel = state.cancel.clone();
+        let child_id = new_id.clone();
+        tokio::spawn(async move {
+            Engine::new(db, cancel).execute(workflow, child_id).await;
+        });
+    }
+    Ok(RunStarted { run_id: recovered })
+}
+#[tauri::command]
+pub async fn continue_spend_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    expected_pause_id: i64,
+    limit: Option<f64>,
+) -> Result<(), String> {
+    state
+        .engine
+        .continue_spend_run(&run_id, expected_pause_id, limit)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -610,6 +668,14 @@ pub fn get_run_findings(
     state: State<AppState>,
     run_id: String,
 ) -> Result<Vec<orchevia_core::review::GroupedFinding>, String> {
+    if state
+        .db
+        .get_run(&run_id)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|r| r.execution.options.dry_run)
+    {
+        return Ok(Vec::new());
+    }
     let workflow = state
         .db
         .get_run_workflow(&run_id)
@@ -637,7 +703,9 @@ pub fn get_run_findings(
             .rev()
             .find(|r| r.node_id == node.id && r.status == "succeeded")
         {
-            outputs.push((node.id.clone(), profile, row.stdout.clone()));
+            if orchevia_core::run_controls::is_new_execution(row) {
+                outputs.push((node.id.clone(), profile, row.stdout.clone()));
+            }
         }
     }
     Ok(orchevia_core::review::grouped_findings(&outputs))

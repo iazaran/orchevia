@@ -1,3 +1,4 @@
+import type { RunExecution } from './run-controls';
 /**
  * Workflow domain model (TypeScript mirror of `orchevia-core`).
  *
@@ -171,6 +172,7 @@ export interface StoredWorkflow {
 }
 
 export interface StoredRun {
+  execution?: RunExecution;
   id: string;
   workflowId: string;
   status: RunStatus;
