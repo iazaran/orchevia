@@ -232,11 +232,10 @@ export function OnboardingWizard({
               ))}
             </div>
             <p className="field-hint" style={{ marginTop: 12 }}>
-              Installed but still “Not found”? Apps launched from the desktop don’t
-              inherit your terminal’s PATH. Orchevia also probes well-known spots
-              (~/.local/bin, /usr/local/bin, mise/asdf/volta shims) — otherwise launch it
-              once from a terminal, or paste the full binary path into the Agent Profile’s
-              Executable field later.
+              Installed but still “Not found”? Orchevia reads your login shell’s PATH and
+              also checks common install locations (nvm, fnm, ~/.local/bin, bun, cargo,
+              pnpm, Homebrew). Otherwise paste the full binary path into the Agent
+              Profile’s Executable field later, then use Refresh in Environment.
             </p>
             <button
               className="btn"

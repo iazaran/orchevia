@@ -939,6 +939,9 @@ export function RunsView(): React.JSX.Element {
                           {r.error}
                         </Notice>
                       )}
+                      {context?.outputNote && (
+                        <p className="field-hint">{context.outputNote}</p>
+                      )}
                       <OutputBlock
                         text={r.stdout}
                         label="stdout"

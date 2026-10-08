@@ -90,6 +90,26 @@ export function composeSkillPrompt(profile: AgentProfile, prompt: string): strin
   return `${skills.map((name) => `${prefix}${name}`).join(' ')}\n\n${prompt}`;
 }
 
+/**
+ * Mirror of Rust `structured_output`: why an ordinary Agent node keeps text
+ * output (no usage reporting), or `null` when Claude stream-json / Codex JSONL
+ * is used. Custom CLIs are never parsed and return `null`.
+ */
+export function structuredOutputConflict(profile: AgentProfile): string | null {
+  const flags =
+    profile.adapter === 'claude'
+      ? ['--output-format']
+      : profile.adapter === 'codex'
+        ? ['--json', '--experimental-json']
+        : [];
+  const arg = profile.extraArgs.find((value) =>
+    flags.some((flag) => value === flag || value.startsWith(`${flag}=`)),
+  );
+  return arg === undefined
+    ? null
+    : `Text output used: the profile's extra argument '${arg}' sets the CLI output format, so this run reports no token or cost data. Remove it to enable usage reporting.`;
+}
+
 /** Native prompt.rs mirror; handoffs never modify the stored node results. */
 export function composeAgentContext(
   prompt: string,

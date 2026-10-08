@@ -2173,6 +2173,7 @@ name = "orchevia-core"
 version = "0.1.11"
 dependencies = [
  "chrono",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

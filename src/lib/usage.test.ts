@@ -27,6 +27,18 @@ describe('usage helpers', () => {
       )?.usageHints,
     ).toEqual([]);
   });
+  it('surfaces why an Agent node ran in text mode without usage', () => {
+    const details = agentContextDetails(
+      JSON.stringify({ agentOutputNote: 'Text output used: --json.' }),
+    );
+    expect(details?.outputNote).toBe('Text output used: --json.');
+    expect(details?.usageHints).toEqual([]);
+    expect(
+      agentContextDetails(JSON.stringify({ agentUsage: { input_tokens: 1 } }))
+        ?.outputNote,
+    ).toBe('');
+  });
+
   it('extracts CLI usage hints and ignores noise', () => {
     const hints = extractUsageHints('done\ninput tokens: 1200, output tokens: 300', '');
     expect(hints.length).toBeGreaterThan(0);

@@ -12,6 +12,7 @@ import {
   type AgentProfile,
   mergeModelSuggestions,
   composeAgentContext,
+  structuredOutputConflict,
   type AdapterKind,
 } from './agents';
 
@@ -220,4 +221,26 @@ describe('recommendations', () => {
 it('rejects alternative Claude session selectors on managed nodes', () => {
   for (const flag of ['--from-pr', '--from-pr=123', '--teleport', '--teleport=other'])
     expect(validateSessionProfile(profile({ extraArgs: [flag] }))).toHaveLength(1);
+});
+
+it('mirrors native structured-output conflicts for ordinary Agent nodes', () => {
+  const claude = createDefaultProfile('claude');
+  expect(structuredOutputConflict(claude)).toBeNull();
+  expect(
+    structuredOutputConflict({ ...claude, extraArgs: ['--output-format', 'json'] }),
+  ).toContain("'--output-format'");
+  expect(
+    structuredOutputConflict({ ...claude, extraArgs: ['--output-format=text'] }),
+  ).toContain('no token or cost data');
+  const codex = createDefaultProfile('codex');
+  expect(
+    structuredOutputConflict({ ...codex, extraArgs: ['--sandbox', 'read-only'] }),
+  ).toBeNull();
+  expect(structuredOutputConflict({ ...codex, extraArgs: ['--json'] })).not.toBeNull();
+  expect(
+    structuredOutputConflict({
+      ...createDefaultProfile('custom'),
+      extraArgs: ['--json'],
+    }),
+  ).toBeNull();
 });

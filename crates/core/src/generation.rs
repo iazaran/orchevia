@@ -1242,7 +1242,8 @@ fn generator_command(
     if prompt.len() > 100_000 {
         return Err("Generation context is too large. Shorten workflow prompts or developer instructions before retrying.".into());
     }
-    let mut spec = crate::agents::build_agent_command(profile, prompt, None)?;
+    // Text mode: the proposal JSON is parsed from the CLI's plain response.
+    let mut spec = crate::agents::build_text_agent_command(profile, prompt, None)?;
     if let Some(dir) = repo_dir {
         if !std::path::Path::new(dir).is_dir() {
             return Err("Repository directory no longer exists.".into());
@@ -1266,11 +1267,7 @@ pub fn run_generator_cli(
     }
     let spec = generator_command(profile, prompt, repo_dir)?;
     let result = crate::process::run_command(
-        &crate::process::CommandSpec {
-            executable: spec.executable,
-            args: spec.args,
-            working_dir: spec.working_dir,
-        },
+        &spec,
         Some(std::time::Duration::from_secs(
             profile.default_timeout_secs.clamp(1, MAX_TIMEOUT_SECS),
         )),

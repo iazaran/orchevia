@@ -19,5 +19,9 @@ thiserror = "2"
 shell-escape = "0.1"
 tokio = { version = "1", features = ["process", "time", "sync", "rt", "macros", "io-util"] }
 
+# Process-group signals so cancellation and timeouts stop CLI descendants.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

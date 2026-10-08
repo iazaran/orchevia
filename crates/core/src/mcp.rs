@@ -9,7 +9,7 @@
 //! Imported workflows never auto-invoke MCP tools: execution is explicit, and
 //! disabled/unknown servers fail closed.
 
-use crate::process::CommandSpec;
+use crate::process::{CommandSpec, ProcessGroup, TERMINATE_GRACE};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -79,14 +79,7 @@ pub struct McpCallResult {
 
 /// Check a server command resolves without spawning it.
 pub fn server_command_available(config: &McpServerConfig) -> bool {
-    let cmd = config.command.trim();
-    if cmd.is_empty() {
-        return false;
-    }
-    if cmd.contains('/') || cmd.contains('\\') {
-        return std::path::Path::new(cmd).is_file();
-    }
-    crate::tools::find_executable(cmd).is_some()
+    crate::tools::find_executable(&config.command).is_some()
 }
 
 /// List tools (handshake + `tools/list`), bounded by `timeout`.
@@ -98,12 +91,17 @@ pub fn list_tools(
     if cancel.load(Ordering::SeqCst) {
         return Err("Cancelled.".to_string());
     }
-    let (mut child, pipes, stderr_log) = spawn_server(config)?;
-    let result = run_bounded(&mut child, pipes, timeout, cancel, |pipes| {
+    let SpawnedServer {
+        mut child,
+        group,
+        pipes,
+        stderr_log,
+    } = spawn_server(config)?;
+    let result = run_bounded(&mut child, &group, pipes, timeout, cancel, |pipes| {
         pipes.initialize()?;
         pipes.list_tools()
     });
-    shutdown(child);
+    shutdown(child, group);
     match result {
         Err(e) => Err(format!("{} Server stderr: {}", e, stderr_tail_wait(&stderr_log))),
         Ok(tools) if tools.is_empty() => Err(format!(
@@ -129,17 +127,22 @@ pub fn call_tool(
     if cancel.load(Ordering::SeqCst) {
         return Err("Cancelled.".to_string());
     }
-    let (mut child, pipes, stderr_log) = spawn_server(config)?;
+    let SpawnedServer {
+        mut child,
+        group,
+        pipes,
+        stderr_log,
+    } = spawn_server(config)?;
     let tool_owned = tool.to_string();
     let tool_name = tool_owned.clone();
     let args_owned = arguments.clone();
     let server_id = config.id.clone();
     let server_name = config.name.clone();
-    let result = run_bounded(&mut child, pipes, timeout, cancel, move |pipes| {
+    let result = run_bounded(&mut child, &group, pipes, timeout, cancel, move |pipes| {
         pipes.initialize()?;
         pipes.call_tool(&tool_owned, &args_owned)
     });
-    shutdown(child);
+    shutdown(child, group);
     let (is_error, text) =
         result.map_err(|e| format!("{} Server stderr: {}", e, stderr_tail_wait(&stderr_log)))?;
     Ok(McpCallResult {
@@ -151,12 +154,13 @@ pub fn call_tool(
     })
 }
 
-/// Spawn the server child, returning ownership of the process plus pipes.
-/// The caller keeps the [`Child`] so timeouts can kill it even while a
-/// worker thread blocks on stdio. Server stderr is drained on a background
-/// thread into shared memory (capped tail) so failures can quote the real
-/// cause — e.g. a missing env var — instead of reporting a bare EOF.
-fn spawn_server(config: &McpServerConfig) -> Result<(Child, McpPipes, Arc<Mutex<String>>), String> {
+/// Spawn the server child (own process group on Unix), returning ownership of
+/// the process, its group and pipes. The caller keeps the [`Child`] so
+/// timeouts can stop it even while a worker thread blocks on stdio. Server
+/// stderr is drained on a background thread into shared memory (capped tail)
+/// so failures can quote the real cause — e.g. a missing env var — instead of
+/// reporting a bare EOF.
+fn spawn_server(config: &McpServerConfig) -> Result<SpawnedServer, String> {
     if !config.enabled {
         return Err(format!("MCP server '{}' is disabled.", config.name));
     }
@@ -164,12 +168,15 @@ fn spawn_server(config: &McpServerConfig) -> Result<(Child, McpPipes, Arc<Mutex<
         .map_err(|message| format!("Failed to spawn MCP server '{}': {message}", config.command))?;
     let mut cmd = Command::new(&exe);
     cmd.args(&config.args);
+    cmd.env("PATH", crate::tools::child_path());
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    crate::process::isolate_process_group(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn MCP server '{}': {e}", config.command))?;
+    let group = ProcessGroup::new(Some(child.id()));
     let stdin = child.stdin.take().ok_or("MCP server has no stdin.")?;
     let stdout = child.stdout.take().ok_or("MCP server has no stdout.")?;
     let stderr = child.stderr.take().ok_or("MCP server has no stderr.")?;
@@ -205,15 +212,23 @@ fn spawn_server(config: &McpServerConfig) -> Result<(Child, McpPipes, Arc<Mutex<
             }
         }
     });
-    Ok((
+    Ok(SpawnedServer {
         child,
-        McpPipes {
+        group,
+        pipes: McpPipes {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
         },
         stderr_log,
-    ))
+    })
+}
+
+struct SpawnedServer {
+    child: Child,
+    group: ProcessGroup,
+    pipes: McpPipes,
+    stderr_log: Arc<Mutex<String>>,
 }
 
 /// Read the drained stderr tail, waiting briefly for the drain thread: it may
@@ -230,50 +245,70 @@ fn stderr_tail_wait(log: &Arc<Mutex<String>>) -> String {
     "(no stderr output)".to_string()
 }
 
-/// Run `f` on a worker thread while the main thread enforces `timeout` and
-/// cooperative cancellation; the child is killed on expiry/cancel.
+/// Run `f` on a detached worker thread while the calling thread enforces
+/// `timeout` and cooperative cancellation; the server's process group is
+/// stopped on expiry/cancel. The worker is never joined: a descendant that
+/// still holds the server's stdout cannot keep this call from returning.
 fn run_bounded<T: Send + 'static>(
     child: &mut Child,
+    group: &ProcessGroup,
     pipes: McpPipes,
     timeout: Duration,
     cancel: &Arc<AtomicBool>,
-    f: impl FnOnce(&mut McpPipes) -> Result<T, String> + Send,
+    f: impl FnOnce(&mut McpPipes) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
+    std::thread::Builder::new()
+        .name("orchevia-mcp".into())
+        .spawn(move || {
             let mut owned = pipes;
             let result = f(&mut owned);
             let _ = tx.send(result);
-        });
-        let deadline = Instant::now() + timeout;
-        loop {
-            match rx.recv_timeout(Duration::from_millis(25)) {
-                Ok(result) => return result,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if cancel.load(Ordering::SeqCst) {
-                        let _ = child.kill();
-                        return Err("Cancelled.".to_string());
-                    }
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        return Err(format!(
-                            "MCP exchange exceeded {}s and was killed.",
-                            timeout.as_secs()
-                        ));
-                    }
+        })
+        .map_err(|e| format!("MCP worker failed to start: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(25)) {
+            Ok(result) => return result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if cancel.load(Ordering::SeqCst) {
+                    stop_server(child, group);
+                    return Err("Cancelled.".to_string());
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("MCP worker vanished.".to_string());
+                if Instant::now() >= deadline {
+                    stop_server(child, group);
+                    return Err(format!(
+                        "MCP exchange exceeded {}s and was killed.",
+                        timeout.as_secs()
+                    ));
                 }
             }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("MCP worker vanished.".to_string());
+            }
         }
-    })
+    }
 }
 
-fn shutdown(mut child: Child) {
+/// `SIGTERM` the server's group, wait up to the grace period, then `SIGKILL`
+/// whatever remains (e.g. the `node` process behind `npx`).
+fn stop_server(child: &mut Child, group: &ProcessGroup) {
+    group.terminate();
+    #[cfg(not(unix))]
     let _ = child.kill();
+    let deadline = Instant::now() + TERMINATE_GRACE;
+    while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    group.kill();
+    let _ = child.kill();
+}
+
+/// MCP servers run until told to stop; stop the whole tree after each exchange.
+fn shutdown(mut child: Child, mut group: ProcessGroup) {
+    stop_server(&mut child, &group);
     let _ = child.wait();
+    group.release();
 }
 
 struct McpPipes {
@@ -421,6 +456,7 @@ pub fn preview_server(config: &McpServerConfig) -> String {
         executable: config.command.clone(),
         args: config.args.clone(),
         working_dir: None,
+        stdin: None,
     };
     spec.preview()
 }
@@ -639,5 +675,53 @@ done
         let (_dir, config) = fixture_config();
         let flag = Arc::new(AtomicBool::new(true));
         assert!(list_tools(&config, Duration::from_secs(5), &flag).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_returns_promptly_while_a_grandchild_holds_the_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("stuck-mcp.sh");
+        let group_file = dir.path().join("group");
+        // Never answers; a background grandchild inherits stdout, so killing
+        // only the direct child would leave `read_line` blocked for 30 s.
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nsleep 30 &\nwait\n",
+                shell_escape::escape(group_file.to_string_lossy())
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let config = McpServerConfig {
+            id: "stuck".into(),
+            name: "Stuck".into(),
+            command: script.to_string_lossy().into_owned(),
+            args: vec![],
+            enabled: true,
+        };
+        let started = std::time::Instant::now();
+        let err = list_tools(&config, Duration::from_millis(500), &cancel_flag()).unwrap_err();
+        assert!(err.contains("exceeded"), "got: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+        let group: u32 = std::fs::read_to_string(&group_file)
+            .expect("group")
+            .trim()
+            .parse()
+            .expect("pid");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while crate::process::process_group_alive(group) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !crate::process::process_group_alive(group),
+            "grandchild survived"
+        );
     }
 }

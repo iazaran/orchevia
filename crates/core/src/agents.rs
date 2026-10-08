@@ -65,7 +65,7 @@ impl AdapterKind {
                 default_executable: "claude".to_string(),
                 supports_model_flag: true,
                 supports_session_resume: true,
-                notes: "Uses `claude -p <prompt> --output-format text`. Model via `--model`."
+                notes: "Uses `claude -p --output-format stream-json --verbose` with the prompt on stdin, so runs report tokens and USD. Model via `--model`."
                     .to_string(),
             },
             AdapterInfo {
@@ -83,7 +83,7 @@ impl AdapterKind {
                 default_executable: "codex".to_string(),
                 supports_model_flag: true,
                 supports_session_resume: true,
-                notes: "Uses `codex exec <prompt>`. Model via `--model`. Non-interactive."
+                notes: "Uses `codex exec --json -` with the prompt on stdin, so runs report tokens. Model via `--model`. Non-interactive."
                     .to_string(),
             },
         ]
@@ -419,15 +419,54 @@ fn validate_extra_arg(arg: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the executable command for a profile + rendered prompt.
-///
-/// Never uses a shell. Prompt is passed as a single argv element (`-p` for
-/// Claude, positional for Codex) so prompt text cannot become flags.
-pub fn build_agent_command(
+/// How an ordinary (non-session) Agent node reports its result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuredOutput {
+    /// Claude stream-json / Codex JSONL, decoded into the final response text
+    /// plus CLI-reported usage.
+    Supported,
+    /// Custom CLIs print their own text; Orchevia does not parse it.
+    Unsupported,
+    /// The profile's extra arguments choose their own output format, so the
+    /// node keeps the text invocation. The note explains the missing usage.
+    Conflict(String),
+}
+
+/// Whether ordinary Agent nodes for `profile` can use structured output.
+pub fn structured_output(profile: &AgentProfile) -> StructuredOutput {
+    let flags: &[&str] = match profile.adapter {
+        AdapterKind::Claude => &["--output-format"],
+        AdapterKind::Codex => &["--json", "--experimental-json"],
+        AdapterKind::Custom => return StructuredOutput::Unsupported,
+    };
+    for arg in &profile.extra_args {
+        if flags
+            .iter()
+            .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+        {
+            return StructuredOutput::Conflict(format!(
+                "Text output used: the profile's extra argument '{arg}' sets the CLI output \
+                 format, so this run reports no token or cost data. Remove it to enable \
+                 usage reporting."
+            ));
+        }
+    }
+    StructuredOutput::Supported
+}
+
+/// Validated pieces shared by every invocation form.
+struct Prepared {
+    working_dir: Option<String>,
+    /// Rendered prompt with CLI-native skill mentions prefixed.
+    prompt: String,
+    effort: Option<String>,
+}
+
+fn prepare(
     profile: &AgentProfile,
     rendered_prompt: &str,
     node_working_dir: Option<&str>,
-) -> Result<CommandSpec, String> {
+) -> Result<Prepared, String> {
     let config_errors = profile.validate();
     if !config_errors.is_empty() {
         return Err(config_errors.join("; "));
@@ -448,7 +487,6 @@ pub fn build_agent_command(
             return Err(format!("Working directory does not exist: {dir}"));
         }
     }
-    let mut args: Vec<String> = Vec::new();
     let prompt = if profile.skills.is_empty() {
         rendered_prompt.to_string()
     } else {
@@ -475,49 +513,140 @@ pub fn build_agent_command(
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .map(|e| e.to_ascii_lowercase());
-    match profile.adapter {
+    Ok(Prepared {
+        working_dir,
+        prompt,
+        effort,
+    })
+}
+
+fn push_model_and_effort(args: &mut Vec<String>, profile: &AgentProfile, effort: Option<&str>) {
+    if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
+        args.push("--model".to_string());
+        args.push(model.trim().to_string());
+    }
+    if let Some(effort) = effort {
+        if profile.adapter == AdapterKind::Claude {
+            args.push("--effort".to_string());
+            args.push(effort.to_string());
+        } else if profile.adapter == AdapterKind::Codex {
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort=\"{effort}\""));
+        }
+    }
+}
+
+/// Build the command an ordinary Agent node runs for a profile + rendered
+/// prompt: structured output when [`structured_output`] allows it, the text
+/// invocation otherwise.
+///
+/// Never uses a shell. Claude and Codex receive the prompt on stdin (`claude
+/// -p`, `codex exec … -`), so prompt text can neither become flags nor hit
+/// argv length limits. Custom CLIs keep the prompt as the final argument.
+pub fn build_agent_command(
+    profile: &AgentProfile,
+    rendered_prompt: &str,
+    node_working_dir: Option<&str>,
+) -> Result<CommandSpec, String> {
+    match structured_output(profile) {
+        StructuredOutput::Supported => {
+            build_structured_command(profile, rendered_prompt, node_working_dir, None)
+        }
+        _ => build_text_agent_command(profile, rendered_prompt, node_working_dir),
+    }
+}
+
+/// Plain-text invocation: `claude -p --output-format text`, `codex exec -`
+/// (prompt on stdin), or the Custom CLI contract. Used by text fallbacks and
+/// workflow generation, which parses the CLI's text as proposal JSON.
+pub fn build_text_agent_command(
+    profile: &AgentProfile,
+    rendered_prompt: &str,
+    node_working_dir: Option<&str>,
+) -> Result<CommandSpec, String> {
+    let Prepared {
+        working_dir,
+        prompt,
+        effort,
+    } = prepare(profile, rendered_prompt, node_working_dir)?;
+    let mut args: Vec<String> = Vec::new();
+    let stdin = match profile.adapter {
         AdapterKind::Claude => {
             args.push("-p".to_string());
-            args.push(prompt.clone());
             args.push("--output-format".to_string());
             args.push("text".to_string());
-            if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
-                args.push("--model".to_string());
-                args.push(model.trim().to_string());
-            }
-            if let Some(effort) = effort.as_deref() {
-                args.push("--effort".to_string());
-                args.push(effort.to_string());
-            }
-        }
-        AdapterKind::Custom => {
-            if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
-                args.push("--model".to_string());
-                args.push(model.trim().to_string());
-            }
+            push_model_and_effort(&mut args, profile, effort.as_deref());
             args.extend(profile.extra_args.iter().cloned());
-            args.push(prompt.clone());
+            Some(prompt)
         }
         AdapterKind::Codex => {
             args.push("exec".to_string());
-            if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
-                args.push("--model".to_string());
-                args.push(model.trim().to_string());
-            }
-            if let Some(effort) = effort.as_deref() {
-                args.push("-c".to_string());
-                args.push(format!("model_reasoning_effort=\"{effort}\""));
-            }
-            args.push(prompt);
+            push_model_and_effort(&mut args, profile, effort.as_deref());
+            args.push("-".to_string());
+            args.extend(profile.extra_args.iter().cloned());
+            Some(prompt)
         }
+        AdapterKind::Custom => {
+            push_model_and_effort(&mut args, profile, None);
+            args.extend(profile.extra_args.iter().cloned());
+            args.push(prompt);
+            None
+        }
+    };
+    Ok(CommandSpec {
+        executable: profile.effective_executable(),
+        args,
+        working_dir,
+        stdin,
+    })
+}
+
+/// Claude `stream-json` / Codex JSONL invocation, optionally resuming an
+/// explicit session. The prompt travels on stdin.
+fn build_structured_command(
+    profile: &AgentProfile,
+    rendered_prompt: &str,
+    node_working_dir: Option<&str>,
+    resume_id: Option<&str>,
+) -> Result<CommandSpec, String> {
+    if profile.adapter == AdapterKind::Custom {
+        return Err("Custom CLI profiles do not support structured output.".into());
     }
-    if profile.adapter != AdapterKind::Custom {
-        args.extend(profile.extra_args.iter().cloned());
+    let Prepared {
+        working_dir,
+        prompt,
+        effort,
+    } = prepare(profile, rendered_prompt, node_working_dir)?;
+    let mut args: Vec<String> = if profile.adapter == AdapterKind::Claude {
+        vec![
+            "-p".into(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+        ]
+    } else {
+        vec!["exec".into(), "--json".into()]
+    };
+    push_model_and_effort(&mut args, profile, effort.as_deref());
+    args.extend(profile.extra_args.iter().cloned());
+    if let Some(id) = resume_id {
+        args.extend([
+            if profile.adapter == AdapterKind::Claude {
+                "--resume".into()
+            } else {
+                "resume".into()
+            },
+            id.into(),
+        ]);
+    }
+    if profile.adapter == AdapterKind::Codex {
+        args.push("-".into());
     }
     Ok(CommandSpec {
         executable: profile.effective_executable(),
         args,
         working_dir,
+        stdin: Some(prompt),
     })
 }
 
@@ -585,60 +714,7 @@ pub fn build_session_command(
     if resume_id.is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) {
         return Err("Invalid recorded session id.".into());
     }
-    let mut spec = build_agent_command(profile, prompt, node_dir)?;
-    let prompt = if profile.skills.is_empty() {
-        prompt.to_string()
-    } else {
-        let prefix = if profile.adapter == AdapterKind::Claude {
-            "/"
-        } else {
-            "$"
-        };
-        format!(
-            "{}\n\n{prompt}",
-            profile
-                .skills
-                .iter()
-                .map(|s| format!("{prefix}{s}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-    };
-    let mut args = if profile.adapter == AdapterKind::Claude {
-        vec![
-            "-p".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-        ]
-    } else {
-        vec!["exec".into(), "--json".into()]
-    };
-    if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
-        args.extend(["--model".into(), model.trim().into()]);
-    }
-    if let Some(effort) = profile.effort.as_deref().filter(|e| !e.trim().is_empty()) {
-        let effort = effort.trim().to_ascii_lowercase();
-        if profile.adapter == AdapterKind::Claude {
-            args.extend(["--effort".into(), effort]);
-        } else {
-            args.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
-        }
-    }
-    args.extend(profile.extra_args.iter().cloned());
-    if let Some(id) = resume_id {
-        args.extend([
-            if profile.adapter == AdapterKind::Claude {
-                "--resume".into()
-            } else {
-                "resume".into()
-            },
-            id.into(),
-        ]);
-    }
-    args.extend(["--".into(), prompt]);
-    spec.args = args;
-    Ok(spec)
+    build_structured_command(profile, prompt, node_dir, resume_id)
 }
 
 /// Safe display preview (shell-escaped, display only).
@@ -674,10 +750,87 @@ mod tests {
     fn claude_command_uses_print_mode() {
         let spec = build_agent_command(&claude_profile(), "hello", None).expect("build");
         assert_eq!(spec.executable, "claude");
-        assert!(spec.args.contains(&"-p".to_string()));
-        assert!(spec.args.contains(&"hello".to_string()));
-        assert!(spec.args.contains(&"--model".to_string()));
-        assert!(spec.args.contains(&"opus".to_string()));
+        assert_eq!(
+            spec.args,
+            [
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--model",
+                "opus"
+            ]
+        );
+        // The prompt travels on stdin, never in argv.
+        assert_eq!(spec.stdin.as_deref(), Some("hello"));
+        assert!(!spec.args.iter().any(|a| a.contains("hello")));
+        assert!(spec.preview().ends_with("<prompt via stdin, 5 chars>"));
+    }
+
+    #[test]
+    fn conflicting_output_flags_keep_the_text_invocation_with_a_note() {
+        let mut claude = claude_profile();
+        claude.extra_args = vec!["--output-format".into(), "json".into()];
+        let StructuredOutput::Conflict(note) = structured_output(&claude) else {
+            panic!("--output-format must conflict");
+        };
+        assert!(note.contains("--output-format") && note.contains("no token or cost data"));
+        let spec = build_agent_command(&claude, "hi", None).unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "-p",
+                "--output-format",
+                "text",
+                "--model",
+                "opus",
+                "--output-format",
+                "json"
+            ]
+        );
+        assert_eq!(spec.stdin.as_deref(), Some("hi"));
+
+        let mut codex = claude_profile();
+        codex.adapter = AdapterKind::Codex;
+        assert_eq!(structured_output(&codex), StructuredOutput::Supported);
+        codex.extra_args = vec!["--json".into()];
+        assert!(matches!(
+            structured_output(&codex),
+            StructuredOutput::Conflict(_)
+        ));
+        let spec = build_agent_command(&codex, "hi", None).unwrap();
+        assert_eq!(spec.args, ["exec", "--model", "opus", "-", "--json"]);
+
+        let mut custom = claude_profile();
+        custom.adapter = AdapterKind::Custom;
+        custom.executable = Some("/usr/local/bin/aichat".into());
+        assert_eq!(structured_output(&custom), StructuredOutput::Unsupported);
+    }
+
+    #[test]
+    fn text_commands_for_generation_read_the_prompt_from_stdin() {
+        let claude = build_text_agent_command(&claude_profile(), "draft", None).unwrap();
+        assert_eq!(
+            claude.args,
+            ["-p", "--output-format", "text", "--model", "opus"]
+        );
+        assert_eq!(claude.stdin.as_deref(), Some("draft"));
+        let mut codex = claude_profile();
+        codex.adapter = AdapterKind::Codex;
+        codex.effort = Some("high".into());
+        let codex = build_text_agent_command(&codex, "draft", None).unwrap();
+        assert_eq!(
+            codex.args,
+            [
+                "exec",
+                "--model",
+                "opus",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "-"
+            ]
+        );
+        assert_eq!(codex.stdin.as_deref(), Some("draft"));
     }
 
     #[test]
@@ -688,8 +841,14 @@ mod tests {
             p.adapter = adapter;
             p.effort = Some("medium".into());
             let spec = build_session_command(&p, "--last is task text", None, Some(id)).unwrap();
-            assert_eq!(spec.args.last().unwrap(), "--last is task text");
-            assert_eq!(spec.args[spec.args.len() - 2], "--");
+            // Prompt text is stdin data and can never be parsed as a flag.
+            assert_eq!(spec.stdin.as_deref(), Some("--last is task text"));
+            assert!(!spec.args.iter().any(|a| a.contains("task text")));
+            if adapter == AdapterKind::Codex {
+                assert_eq!(spec.args.last().unwrap(), "-");
+            } else {
+                assert_eq!(spec.args.last().unwrap(), id);
+            }
             assert!(spec.args.windows(2).any(|pair| pair
                 == [
                     if adapter == AdapterKind::Claude {
@@ -730,8 +889,8 @@ mod tests {
         p.adapter = AdapterKind::Codex;
         let spec = build_agent_command(&p, "review this", None).expect("build");
         assert_eq!(spec.executable, "codex");
-        assert_eq!(spec.args[0], "exec");
-        assert!(spec.args.contains(&"review this".to_string()));
+        assert_eq!(spec.args, ["exec", "--json", "--model", "opus", "-"]);
+        assert_eq!(spec.stdin.as_deref(), Some("review this"));
     }
 
     #[test]
@@ -740,15 +899,17 @@ mod tests {
         value["skills"] = serde_json::json!(["code-review", "team:style"]);
         let mut profile: AgentProfile = serde_json::from_value(value).expect("deserialize");
         let claude = build_agent_command(&profile, "Review this change", None).expect("build");
-        assert!(claude
-            .args
-            .contains(&"/code-review /team:style\n\nReview this change".to_string()));
+        assert_eq!(
+            claude.stdin.as_deref(),
+            Some("/code-review /team:style\n\nReview this change")
+        );
 
         profile.adapter = AdapterKind::Codex;
         let codex = build_agent_command(&profile, "Review this change", None).expect("build");
-        assert!(codex
-            .args
-            .contains(&"$code-review $team:style\n\nReview this change".to_string()));
+        assert_eq!(
+            codex.stdin.as_deref(),
+            Some("$code-review $team:style\n\nReview this change")
+        );
     }
 
     #[test]
@@ -874,8 +1035,9 @@ mod tests {
         assert!(p.validate().is_empty());
         let spec = build_agent_command(&p, "do it", None).expect("build");
         assert_eq!(spec.executable, "/usr/local/bin/aichat");
-        // Prompt is the final argv element.
+        // Custom CLI contract is unchanged: prompt is the final argv element.
         assert_eq!(spec.args.last().map(String::as_str), Some("do it"));
+        assert!(spec.stdin.is_none());
     }
 
     #[test]
