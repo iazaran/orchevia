@@ -106,8 +106,9 @@ Errors block execution; warnings don't. Current rules:
 - Non-zero exit codes fail the run at that node; later nodes are skipped.
 - Approval nodes pause durably; resume continues with remaining nodes.
 - Agent nodes (v2): render the `prompt` template against workflow vars + completed
-  upstream outputs, build adapter argv (`claude -p …` / `codex exec …`), validate the
-  working directory, then run like a command with the node/profile timeout.
+  upstream outputs, build adapter argv (`claude -p …` / `codex exec … -`, prompt on
+  stdin), validate the working directory, then run like a command with the
+  node/profile timeout.
 - v3 engine: DAG scheduling with fan-out/fan-in joins, condition branches
   (`true`/`false` edges), `failure` recovery edges, bounded retries with backoff,
   guarded loops (`maxVisits`), typed workflow inputs, and structured results

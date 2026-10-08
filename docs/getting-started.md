@@ -22,9 +22,11 @@ commands; `pnpm tauri dev` and the installed desktop app execute them.
 
 The setup wizard detects `git`, `gh`, `claude`, and `codex`. Missing tools do not
 prevent command-only workflows. Install and authenticate each CLI yourself,
-then check it in **Environment**. A desktop app launched from your system menu
-may have a different PATH from your terminal; try launching it from a terminal
-or set a full executable path in the relevant profile.
+then check it in **Environment**. Orchevia reads your login shell's `PATH`, so
+CLIs installed with nvm, fnm, Homebrew or into `~/.local/bin` are found even when
+the app starts from your system menu. If you install a CLI while Orchevia is open,
+choose **Refresh** in Environment. If a CLI is still not found, set its full
+executable path in the relevant profile.
 
 In **Agents**, create a profile for your installed CLI. Keep the model blank to
 use its default, or choose a model supported by that CLI and account. Profiles

@@ -36,8 +36,9 @@ Custom CLI profiles cannot join a session group. Managed nodes own stream and
 resume arguments: remove conflicting `--resume`, `--continue`, `--last`, output
 format, session persistence, or CLI directory/worktree flags from the profile's
 extra arguments, including alternative Claude selectors `--from-pr` and `--teleport`.
-Validation explains conflicts before execution. Profiles without
-a group keep the existing invocation behavior.
+Validation explains conflicts before execution. Nodes without a group start a
+fresh conversation each time; they still use structured output unless the profile's
+extra arguments set the output format (then they use text output and report no usage).
 
 ## Pass only relevant outputs between agents
 
@@ -58,8 +59,9 @@ selected output; that would duplicate it and bypass the excerpt budget.
 
 Full captured logs stay in Runs; context budgets only affect the next prompt.
 Existing stdout/stderr capture limits still apply (200000 characters each).
-Managed execution stores final response and readable agent activity separately;
-conditions and severity routing see clean final text instead of JSON envelopes.
+Claude and Codex nodes store the final response and readable agent activity
+separately; conditions and severity routing see clean final text instead of JSON
+envelopes.
 Command preview shows the fresh profile command; session IDs and handoff contents
 are selected at runtime.
 
@@ -127,9 +129,11 @@ estimate dollars from tokens or text patterns. Reused and simulated results do
 not contribute. Runs reports the number of priced attempts and attempts missing
 USD reports; unknown coverage means the displayed total is partial.
 
-Claude managed result streams can report USD. Codex/custom and legacy plain-text
-calls may not report any USD. A missing report cannot trigger a dollar guard;
-unsupported calls can therefore continue. This is neither a provider quota meter
+Claude Agent nodes report USD in their structured result, with or without a session
+group. Codex reports tokens but no USD. Custom CLIs, profiles whose extra arguments
+force text output (Runs shows a note) and legacy plain-text results report none. A
+missing report cannot trigger a dollar guard; unsupported calls can therefore
+continue. This is neither a provider quota meter
 nor a universal hard billing cap. Provider-native budget flags are not configured
 by this feature.
 
