@@ -58,8 +58,12 @@ Claude and Codex nodes decode the structured stream into the final response
 and CLI-reported usage (tokens; USD for Claude). If a profile's extra arguments set
 the output format themselves (`--output-format` for Claude, `--json` for Codex), the
 node uses the text form instead (`claude -p --output-format text …`,
-`codex exec … - [extra args…]`) and Runs notes that no usage was reported. Workflow
-generation and assistance always use the text form.
+`codex exec … - [extra args…]`) and Runs notes that no usage was reported. A Claude
+profile with its own `--input-format` keeps the previous invocation
+(`claude -p <prompt> --output-format text …`, prompt as an argument). A stray
+non-JSON line (for example from a wrapper script) is kept in the activity log
+instead of failing the node; session-group turns stay strict. Workflow generation
+and assistance always use the text form.
 
 Optional effort maps to `--effort` for Claude and `model_reasoning_effort` for
 Codex. Custom adapters leave effort to the CLI. Selected skills are prefixed

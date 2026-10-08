@@ -7,6 +7,10 @@ const MAX_EVENT_BYTES: usize = 4_000_000;
 
 pub(crate) struct AgentOutput {
     adapter: AdapterKind,
+    /// Keep non-JSON lines as activity instead of failing (ordinary nodes:
+    /// wrapper scripts or runtimes may print a stray line). Session turns stay
+    /// strict so malformed conversations are never reused.
+    tolerant: bool,
     pending: Vec<u8>,
     discarding: bool,
     activity_chars: usize,
@@ -22,6 +26,7 @@ impl AgentOutput {
     pub fn new(adapter: AdapterKind) -> Self {
         Self {
             adapter,
+            tolerant: false,
             pending: Vec::new(),
             discarding: false,
             activity_chars: 0,
@@ -31,6 +36,14 @@ impl AgentOutput {
             usage: Value::Null,
             error: None,
             complete: false,
+        }
+    }
+
+    /// Decoder for ordinary Agent nodes; see `tolerant`.
+    pub fn tolerant(adapter: AdapterKind) -> Self {
+        Self {
+            tolerant: true,
+            ..Self::new(adapter)
         }
     }
 
@@ -99,6 +112,11 @@ impl AgentOutput {
         }
         let value: Value = match serde_json::from_slice(&self.pending) {
             Ok(value) => value,
+            Err(_) if self.tolerant => {
+                let line = String::from_utf8_lossy(&self.pending).into_owned();
+                self.add_activity(line.trim_end());
+                return;
+            }
             Err(_) => {
                 self.error = Some("CLI returned malformed structured output.".into());
                 return;
@@ -239,6 +257,26 @@ mod tests {
         out.finish();
         assert!(out.error.as_deref().unwrap().contains("budget reached"));
         assert!(!out.success());
+    }
+
+    #[test]
+    fn ordinary_nodes_keep_stray_lines_while_sessions_stay_strict() {
+        let events = b"wrapper: starting claude\n{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"usage\":{\"input_tokens\":1}}\n";
+        let mut ordinary = AgentOutput::tolerant(AdapterKind::Claude);
+        ordinary.push(events);
+        ordinary.finish();
+        assert!(ordinary.success(), "{:?}", ordinary.error);
+        assert_eq!(ordinary.text.as_deref(), Some("done"));
+        assert!(ordinary.activity.contains("wrapper: starting claude"));
+        let mut session = AgentOutput::new(AdapterKind::Claude);
+        session.push(events);
+        session.finish();
+        assert!(!session.success());
+        // Without a completed result the tolerant decoder still fails.
+        let mut incomplete = AgentOutput::tolerant(AdapterKind::Codex);
+        incomplete.push(b"plain text only\n");
+        incomplete.finish();
+        assert!(!incomplete.success());
     }
 
     #[test]

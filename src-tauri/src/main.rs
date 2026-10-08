@@ -98,7 +98,8 @@ fn main() {
             let scheduler_db = Arc::clone(&db);
             tauri::async_runtime::spawn(async move {
                 // Resolve the login shell PATH once, off the main thread, before
-                // automation can start CLIs. Lookups made meanwhile wait for it.
+                // automation can start CLIs. Lookups made meanwhile use the
+                // fallback PATH; tool detection waits for this resolution.
                 let _ = tauri::async_runtime::spawn_blocking(
                     orchevia_core::tools::refresh_search_environment,
                 )

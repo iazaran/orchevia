@@ -427,6 +427,9 @@ pub fn login_shell_path(shell: &Path, timeout: Duration) -> Result<OsString, Str
     // Dropping the group stops whatever the probe shell left running.
     let group = crate::process::ProcessGroup::new(Some(child.id()));
     let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
+    // Detached and never joined. If an rc file starts a daemon that leaves this
+    // session yet keeps stdout open, the reader stays parked on `read` (one idle
+    // thread per refresh, no locks held) instead of delaying the result.
     let reader = child.stdout.take().map(|mut stdout| {
         std::thread::Builder::new()
             .name("orchevia-shell-path".into())
@@ -568,10 +571,25 @@ fn process_fallback() -> SearchEnvironment {
     )
 }
 
-/// The current search environment. Waits (bounded) for an in-flight login
-/// shell resolution; before any resolution it is the safe fallback, so
-/// library users and tests never spawn a shell implicitly.
+/// The current search environment, without waiting: the last resolved
+/// environment, or the safe fallback before the first resolution finishes.
+/// Synchronous UI commands and spawns therefore never block on a login shell,
+/// and library users and tests never spawn a shell implicitly.
 pub fn search_environment() -> Arc<SearchEnvironment> {
+    let (lock, _) = search_state();
+    let Ok(mut guard) = lock.lock() else {
+        return Arc::new(process_fallback());
+    };
+    Arc::clone(
+        guard
+            .env
+            .get_or_insert_with(|| Arc::new(process_fallback())),
+    )
+}
+
+/// Wait (bounded) for an in-flight resolution, then return the environment.
+/// Only the blocking refresh path uses this.
+fn resolved_search_environment() -> Arc<SearchEnvironment> {
     let (lock, changed) = search_state();
     let Ok(mut guard) = lock.lock() else {
         return Arc::new(process_fallback());
@@ -587,11 +605,8 @@ pub fn search_environment() -> Arc<SearchEnvironment> {
             Err(_) => return Arc::new(process_fallback()),
         };
     }
-    Arc::clone(
-        guard
-            .env
-            .get_or_insert_with(|| Arc::new(process_fallback())),
-    )
+    drop(guard);
+    search_environment()
 }
 
 /// Resolve the login shell `PATH` again and drop cached lookups. Blocking
@@ -606,7 +621,7 @@ pub fn refresh_search_environment() -> Arc<SearchEnvironment> {
                 .is_some_and(|at| at.elapsed() < REFRESH_COALESCE)
         {
             drop(guard);
-            return search_environment();
+            return resolved_search_environment();
         }
     }
     install_search_environment(|| {
@@ -632,7 +647,7 @@ fn install_search_environment(
         Ok(mut guard) if !guard.resolving => guard.resolving = true,
         Ok(guard) => {
             drop(guard);
-            return search_environment();
+            return resolved_search_environment();
         }
         Err(_) => return Arc::new(resolve()),
     }
@@ -754,19 +769,30 @@ fn probe_version(exe: &std::path::Path, version_args: &[String]) -> Option<Strin
 /// keep finding their tools.
 #[cfg(test)]
 pub(crate) fn prepend_search_dir_for_tests(dir: &Path) {
-    let current = search_environment();
+    let (lock, _) = search_state();
+    let mut guard = lock.lock().expect("search state");
     let mut dirs = vec![dir.to_path_buf()];
-    dirs.extend(current.dirs.iter().cloned());
-    install_search_environment(|| SearchEnvironment {
+    if let Some(current) = &guard.env {
+        dirs.extend(current.dirs.iter().cloned());
+    } else {
+        dirs.extend(process_fallback().dirs);
+    }
+    // Installed directly under the lock: concurrent hooks or resolutions
+    // cannot drop this directory.
+    guard.env = Some(Arc::new(SearchEnvironment {
         dirs: dedup(dirs),
         source: SearchPathSource::LoginShell,
         note: None,
-    });
+    }));
+    guard.cache.clear();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes tests that replace the process-wide search environment.
+    static GLOBAL_ENV: Mutex<()> = Mutex::new(());
 
     #[test]
     fn missing_tool_reports_not_found() {
@@ -1022,6 +1048,7 @@ mod tests {
         let own = SearchEnvironment::fallback(std::env::var_os("PATH").as_deref(), None, None);
         assert!(own.find("orchevia-fake-node-xyz").is_none());
         // …but once the login shell reports it, the CLI's children can.
+        let _global = GLOBAL_ENV.lock().unwrap_or_else(|e| e.into_inner());
         prepend_search_dir_for_tests(&interpreters);
         assert_eq!(
             find_executable("orchevia-fake-node-xyz"),
@@ -1042,7 +1069,41 @@ mod tests {
     }
 
     #[test]
+    fn lookups_never_wait_for_an_in_flight_resolution_but_refresh_does() {
+        let _global = GLOBAL_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let resolver = std::thread::spawn(move || {
+            install_search_environment(|| {
+                let _ = wait.recv_timeout(Duration::from_secs(3));
+                (*search_environment()).clone()
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !search_state().0.lock().expect("state").resolving && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let started = Instant::now();
+        let _ = search_environment();
+        let _ = find_executable("sh");
+        let _ = child_path();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let refresher = std::thread::spawn(|| {
+            let started = Instant::now();
+            let _ = refresh_search_environment();
+            started.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        release.send(()).expect("release");
+        resolver.join().expect("resolver");
+        let waited = refresher.join().expect("refresher");
+        // The refresh reused the in-flight resolution instead of starting a shell.
+        assert!(waited >= Duration::from_millis(150), "{waited:?}");
+        assert!(waited < Duration::from_secs(2), "{waited:?}");
+    }
+
+    #[test]
     fn a_failed_resolution_never_leaves_lookups_waiting() {
+        let _global = GLOBAL_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let result = std::panic::catch_unwind(|| {
             install_search_environment(|| panic!("resolver failed"));
         });

@@ -432,18 +432,39 @@ pub enum StructuredOutput {
     Conflict(String),
 }
 
+fn has_flag(profile: &AgentProfile, flag: &str) -> Option<String> {
+    profile
+        .extra_args
+        .iter()
+        .find(|arg| *arg == flag || arg.starts_with(&format!("{flag}=")))
+        .cloned()
+}
+
+/// A Claude profile that sets `--input-format` reads its prompt differently
+/// (e.g. `stream-json`), so it keeps the previous invocation: the prompt as an
+/// argument after `-p`, with text output.
+fn claude_reads_custom_input(profile: &AgentProfile) -> Option<String> {
+    (profile.adapter == AdapterKind::Claude)
+        .then(|| has_flag(profile, "--input-format"))
+        .flatten()
+}
+
 /// Whether ordinary Agent nodes for `profile` can use structured output.
 pub fn structured_output(profile: &AgentProfile) -> StructuredOutput {
+    if let Some(arg) = claude_reads_custom_input(profile) {
+        return StructuredOutput::Conflict(format!(
+            "Text output used: the profile's extra argument '{arg}' changes how Claude \
+             reads its prompt, so the prompt is passed as an argument and this run reports \
+             no token or cost data. Remove it to enable usage reporting."
+        ));
+    }
     let flags: &[&str] = match profile.adapter {
         AdapterKind::Claude => &["--output-format"],
         AdapterKind::Codex => &["--json", "--experimental-json"],
         AdapterKind::Custom => return StructuredOutput::Unsupported,
     };
-    for arg in &profile.extra_args {
-        if flags
-            .iter()
-            .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
-        {
+    for flag in flags {
+        if let Some(arg) = has_flag(profile, flag) {
             return StructuredOutput::Conflict(format!(
                 "Text output used: the profile's extra argument '{arg}' sets the CLI output \
                  format, so this run reports no token or cost data. Remove it to enable \
@@ -571,6 +592,16 @@ pub fn build_text_agent_command(
     } = prepare(profile, rendered_prompt, node_working_dir)?;
     let mut args: Vec<String> = Vec::new();
     let stdin = match profile.adapter {
+        AdapterKind::Claude if claude_reads_custom_input(profile).is_some() => {
+            // Previous invocation, unchanged for profiles with their own input format.
+            args.push("-p".to_string());
+            args.push(prompt);
+            args.push("--output-format".to_string());
+            args.push("text".to_string());
+            push_model_and_effort(&mut args, profile, effort.as_deref());
+            args.extend(profile.extra_args.iter().cloned());
+            None
+        }
         AdapterKind::Claude => {
             args.push("-p".to_string());
             args.push("--output-format".to_string());
@@ -805,6 +836,33 @@ mod tests {
         custom.adapter = AdapterKind::Custom;
         custom.executable = Some("/usr/local/bin/aichat".into());
         assert_eq!(structured_output(&custom), StructuredOutput::Unsupported);
+    }
+
+    #[test]
+    fn claude_profiles_with_their_own_input_format_keep_the_argument_prompt() {
+        let mut claude = claude_profile();
+        claude.extra_args = vec!["--input-format".into(), "stream-json".into()];
+        let StructuredOutput::Conflict(note) = structured_output(&claude) else {
+            panic!("--input-format must keep text mode");
+        };
+        assert!(note.contains("--input-format") && note.contains("passed as an argument"));
+        let spec = build_agent_command(&claude, "hi", None).unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "-p",
+                "hi",
+                "--output-format",
+                "text",
+                "--model",
+                "opus",
+                "--input-format",
+                "stream-json"
+            ]
+        );
+        assert!(spec.stdin.is_none());
+        // Session groups still reject it before running.
+        assert!(validate_session_profile(&claude).is_err());
     }
 
     #[test]

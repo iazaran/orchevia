@@ -75,7 +75,8 @@ clippy `-D warnings`, `cargo fmt --check`, `cargo check -p orchevia`: all pass.
    - Lookups cache resolved paths; a cache hit is re-validated with one `stat` (exec
      bit) so uninstalls fall back to a rescan. Resolution happens off the main thread
      at startup; Environment/Agents **Refresh** (`detect_tools`) invalidates and
-     re-resolves. Callers that arrive mid-resolution wait (bounded by the timeout).
+     re-resolves. Lookups never wait for a resolution (they use the current or
+     fallback `PATH`); only the off-thread refresh path waits for one in flight.
    - The exec bit is required on Unix. `detect_tools` and `test_agent_profile` become
      async commands using `spawn_blocking`. New error text: not found in the login
      shell `PATH` or common install locations; install it, set the full path in the
@@ -178,6 +179,40 @@ usage kept and an empty process group. Two runs asking Claude to run a long idle
 command through its Bash tool were declined by the CLI's own policy, so real
 tool-subprocess cancellation remains a manual check.
 
+## Independent review (Fable 5.1) and disposition
+
+1. **Fixed.** Lookups waited on an in-flight login-shell resolution, so synchronous
+   commands on the UI thread (`git_branches`, `github_state`, `mcp_preview`) could
+   stall up to 5 s during startup or Refresh. Lookups now never wait (current or
+   fallback `PATH`); only the off-thread refresh path waits. (The report's claim that
+   Environment re-resolves on every mount was incorrect: only its Refresh button
+   does.) Test: `lookups_never_wait_for_an_in_flight_resolution_but_refresh_does`.
+2. **Fixed.** One non-JSON stdout line (wrapper script, runtime notice) failed an
+   otherwise successful ordinary node. Ordinary nodes now use a tolerant decoder that
+   keeps such lines as activity and still requires a completed result; session turns
+   stay strict. Tests in `agent_output.rs` and
+   `ordinary_nodes_tolerate_a_stray_stdout_line_from_a_wrapper`.
+3. **Deferred (documented).** After the group leader is reaped, the final group
+   `SIGKILL` could in theory reach a new group that reused the id within microseconds.
+   Linux and macOS allocate PIDs sequentially, so this needs the PID space to wrap in
+   that window. The precise fix (`waitid(WNOWAIT)` before reaping) uses a `siginfo_t`
+   layout that differs between Linux and macOS and cannot be compiled or tested for
+   macOS here.
+4. **Fixed.** A Claude profile with its own `--input-format` would have received the
+   prompt on stdin. It now keeps the v0.1.11 invocation (prompt as an argument, text
+   output) with a note; mirrored in TypeScript and the mock preview.
+5. **Documented.** If an rc file starts a daemon that leaves the probe's session but
+   keeps stdout, the detached probe reader stays parked (one idle thread per refresh,
+   no locks, no delay).
+6. **Fixed.** The test hook now installs its directory under the state lock; tests
+   that replace the global search state share a test mutex.
+7. **Rejected.** The `< 2750 ms` bound belongs to an existing test whose timing this
+   branch does not change (normal exit still drains for at most 2 s).
+8. **Rejected (already addressed).** Terminal launches keep their own `PATH` first
+   (`SearchPathSource::Terminal`, added during review), matching the documentation.
+9. **Documented.** A CLI that ignores `SIGTERM` is stopped after the 2 s grace, so
+   cancelling it can take up to about 4 s with the bounded output drain (CHANGELOG).
+
 ## Status
 
 - [x] Search environment, exec bit, async probes, error text
@@ -186,4 +221,4 @@ tool-subprocess cancellation remains a manual check.
 - [x] Process-group cleanup and MCP bound
 - [x] Docs, CHANGELOG, version 0.1.12, README/project page
 - [x] Real CLI smoke checks
-- [ ] Independent review (see PR)
+- [x] Independent review

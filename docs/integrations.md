@@ -75,7 +75,7 @@ tools, use Ticket/MCP nodes and keep the working MCP configuration.
 ## Generic MCP (`mcp` node)
 
 Call one configured tool with templated string arguments. Each invocation is
-bounded (timeout + cancellation kill the child), records server/tool
+bounded (timeout + cancellation stop the server's process group), records server/tool
 provenance, and treats tool-level `isError` as node failure. Disabled or
 missing servers fail validation; imported workflows never auto-invoke.
 Generation discovers enabled servers' tool names and required argument keys

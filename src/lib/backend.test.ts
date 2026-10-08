@@ -384,6 +384,20 @@ describe('mock backend (browser dev)', () => {
     expect(claudePreview.preview).toMatch(/<prompt via stdin, 8 chars>$/);
     const codexPreview = await backend.previewAgentCommand(codex.id, 'Review');
     expect(codexPreview.args).toEqual(['exec', '--json', '--sandbox', 'read-only', '-']);
+    const ownInput = { ...claude, extraArgs: ['--input-format', 'stream-json'] };
+    await backend.saveAgentProfile(ownInput);
+    const legacy = await backend.previewAgentCommand(ownInput.id, 'Review');
+    expect(legacy.args).toEqual([
+      '-p',
+      'Review',
+      '--output-format',
+      'text',
+      '--model',
+      'haiku',
+      '--input-format',
+      'stream-json',
+    ]);
+    expect(legacy.preview).not.toContain('stdin');
   });
   beforeEach(() => {
     localStorage.clear();

@@ -243,4 +243,7 @@ it('mirrors native structured-output conflicts for ordinary Agent nodes', () => 
       extraArgs: ['--json'],
     }),
   ).toBeNull();
+  expect(
+    structuredOutputConflict({ ...claude, extraArgs: ['--input-format', 'stream-json'] }),
+  ).toContain('passed as an argument');
 });

@@ -43,6 +43,7 @@ import {
 import {
   composeSkillPrompt,
   structuredOutputConflict,
+  claudeInputFormatArg,
   composeAgentContext,
   renderPromptStrict,
   validateSessionProfile,
@@ -1532,10 +1533,13 @@ class MockBackend implements Backend {
     // stdin, structured unless the profile's own arguments pick a format.
     const structured =
       profile.adapter !== 'custom' && structuredOutputConflict(profile) === null;
+    // Claude profiles with their own --input-format keep the argument prompt.
+    const argumentPrompt = claudeInputFormatArg(profile) !== null;
     const args: string[] =
       profile.adapter === 'claude'
         ? [
             '-p',
+            ...(argumentPrompt ? [effectivePrompt] : []),
             '--output-format',
             ...(structured ? ['stream-json', '--verbose'] : ['text']),
           ]
@@ -1557,7 +1561,7 @@ class MockBackend implements Backend {
     if (profile.adapter === 'codex' && structured) args.push('-');
     if (profile.adapter === 'custom') args.push(effectivePrompt);
     const stdinNote =
-      profile.adapter === 'custom'
+      profile.adapter === 'custom' || argumentPrompt
         ? []
         : [`<prompt via stdin, ${String(Array.from(effectivePrompt).length)} chars>`];
     return {

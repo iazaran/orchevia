@@ -14,7 +14,9 @@ All notable changes are recorded here, following
   and the reported-spend guard receive CLI token counts (and Claude's USD) without a
   session group. Node output is the clean final response, as for session groups (the
   trailing newline of text mode is no longer included). Profiles whose extra arguments
-  choose their own output format keep text mode, and Runs explains the missing usage.
+  choose their own output format keep text mode (Claude profiles with their own
+  `--input-format` also keep the prompt as an argument), and Runs explains the missing
+  usage. Stray non-JSON lines are kept as activity instead of failing the node.
 
 ### Changed
 
@@ -37,8 +39,9 @@ All notable changes are recorded here, following
 
 - Cancel, timeouts, MCP shutdown and app exit stop a CLI's whole process group on
   Linux and macOS (SIGTERM, 2 s grace, SIGKILL), so shells, MCP servers and
-  `npx`/`uvx` descendants no longer survive. MCP calls return on timeout even when a
-  descendant holds the pipe. Partial output is kept.
+  `npx`/`uvx` descendants no longer survive; a CLI that ignores SIGTERM is stopped
+  after the grace period. MCP calls return on timeout even when a descendant holds the
+  pipe. Partial output is kept.
 
 ## [0.1.11] - 2026-10-08
 

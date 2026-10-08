@@ -3092,10 +3092,12 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         }
         let started = Instant::now();
         let live_id = db.start_node_result(run_id, node_id, attempt).ok();
-        let stream = agent
-            .map(|a| a.profile.adapter)
-            .or(decode)
-            .map(|adapter| Arc::new(Mutex::new(AgentOutput::new(adapter))));
+        let stream = match (agent, decode) {
+            (Some(a), _) => Some(AgentOutput::new(a.profile.adapter)),
+            (None, Some(adapter)) => Some(AgentOutput::tolerant(adapter)),
+            (None, None) => None,
+        }
+        .map(|output| Arc::new(Mutex::new(output)));
         let retry_spec = if attempt > 1 {
             match agent
                 .map(|a| build_session_command(&a.profile, &a.prompt, a.node_dir.as_deref(), None))
@@ -5247,6 +5249,36 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_
             .unwrap();
         assert_eq!(row.status, "succeeded", "{}", row.stderr);
         assert_eq!(row.stdout, "done early");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ordinary_nodes_tolerate_a_stray_stdout_line_from_a_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(
+            dir.path(),
+            crate::agents::AdapterKind::Claude,
+            Some(
+                r#"echo 'wrapper: using node from nvm'
+printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_tokens":2}}\n'"#,
+            ),
+        );
+        db.upsert_agent_profile(&profile).unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "stray-line").await;
+        let row = db
+            .list_node_results("stray-line")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "agent1")
+            .unwrap();
+        assert_eq!(row.status, "succeeded", "{}", row.stderr);
+        assert_eq!(row.stdout, "FINAL");
+        let metadata: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+        assert!(metadata["agentActivity"]
+            .as_str()
+            .unwrap()
+            .contains("wrapper: using node from nvm"));
     }
 
     #[cfg(unix)]
