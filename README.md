@@ -42,9 +42,9 @@ writes. CLI usage costs and remote-provider behavior remain with your chosen too
 
 ## Install
 
-Release v0.1.12 is being prepared. The permanent installer links below target this
+Release v0.1.13 is being prepared. The permanent installer links below target this
 version; they become available after the matching tag's release workflow succeeds.
-See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.12).
+See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.13).
 Until then, use the [published v0.1.11 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.11).
 A merged PR alone does not build installers.
 
@@ -53,11 +53,11 @@ account that has repository access. The repository and downloads will be public 
 
 | Platform                    | Installer                                                                                                                                                                                                  |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-macos-arm64.dmg)                                                                                                             |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-macos-x86_64.dmg)                                                                                                            |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.12/Orchevia-linux-x86_64.deb) |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-macos-arm64.dmg)                                                                                                             |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-macos-x86_64.dmg)                                                                                                            |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.12/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.13/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -208,8 +208,10 @@ not a guarantee that every requested integration operation is supported.
 
 Use **Dry run** to supply successive node-result fixtures and test routing without
 executing tools. Claude and Codex Agent nodes report CLI token usage (Claude also
-reports USD). **Run options** adds an optional CLI-reported USD guard. Runs show
-parallel timing and cost-report coverage; failed runs offer deliberate recovery
+reports an estimated API value in USD). **Run options** adds an optional guard on
+that reported estimate. Dollar values live in collapsed **CLI usage details**;
+they are not your subscription bill or remaining quota. Runs show parallel timing
+and estimate coverage; failed runs offer deliberate recovery
 using the original workflow and inputs. Reused output and simulated tests stay
 separate from actual execution/spend and verified project knowledge.
 
@@ -219,7 +221,7 @@ See [execution semantics](docs/execution.md#dry-run-workflow-tests),
 
 ## Current limits
 
-- **Beta:** source version 0.1.12 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** source version 0.1.13 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Orchevia reads
   only `PATH` from your login shell; Jira and other MCP servers may need credentials

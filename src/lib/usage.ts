@@ -11,6 +11,10 @@
 import type { StoredNodeResult, StoredRun } from './workflow';
 import type { AgentProfile } from './agents';
 
+/** CLI estimates cannot reconcile a subscription bill or measure remaining quota. */
+export const CLI_COST_EXPLANATION =
+  "CLI dollar estimates are not your subscription bill. Subscription limits and remaining quota are unavailable here; check your provider's usage page.";
+
 export interface ProfileUsage {
   profileId: string;
   profileName: string;
@@ -144,7 +148,7 @@ export function agentContextDetails(structuredJson?: string): {
       ['cache_read_input_tokens', 'cache read'],
       ['cache_creation_input_tokens', 'cache creation'],
       ['output_tokens', 'output'],
-      ['reported_cost_usd', 'CLI reported USD'],
+      ['reported_cost_usd', 'estimated API USD'],
     ]) {
       if (!key || !label) continue;
       const value: unknown = usage?.[key];

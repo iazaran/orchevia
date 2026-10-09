@@ -109,9 +109,20 @@ models and effort. Existing installations can rerun setup to create missing prof
 
 ## Measure with reported facts
 
-Runs display fresh/resumed context and turn count, plus token/cache counts and USD
-cost only when the CLI reports them. These are per-invocation provider facts, not
-remaining quota or a billing reconciliation. Longer histories can increase input
+Runs display fresh/resumed context and turn count. Token/cache counts and dollar
+estimates are available in collapsed **CLI usage** details on each step; the timeline's
+**CLI usage details** includes estimate coverage after agent attempts finish. Before
+any attempt has reported or finished without a report, the empty summary is hidden.
+A missing USD report stays unknown; it is never converted to zero.
+
+Claude's `total_cost_usd` is preserved as `agentUsage.reported_cost_usd`. It is an
+estimated API value, not a subscription charge. Claude documents that its session
+dollar figure is computed from token pricing and is not relevant to billing for Pro
+and Max subscriptions. API users should check their billing console for authoritative
+charges. Orchevia cannot infer subscription limits, remaining five-hour quota, or a
+run's share of a monthly fee from these fields. Check the provider's usage page or
+interactive CLI usage view for those facts; no subscription percentages or dollar
+allocations are invented from elapsed time. Longer histories can increase input
 cost; caching and compaction depend on the CLI/provider. No savings percentage is
 promised. Browser development uses simulated sessions and reports no token spend;
 its directory normalization cannot resolve filesystem symlinks.
@@ -126,8 +137,9 @@ Open **Run options** and enter a positive USD threshold, or leave it blank for
 ordinary execution. The guard adds up finite, nonnegative structured
 `agentUsage.reported_cost_usd` for newly executed Agent attempts. It does not
 estimate dollars from tokens or text patterns. Reused and simulated results do
-not contribute. Runs reports the number of priced attempts and attempts missing
-USD reports; unknown coverage means the displayed total is partial.
+not contribute. Runs reports the number of attempts with estimates and attempts
+missing USD reports inside collapsed usage details; unknown coverage means the
+estimate is partial.
 
 Claude Agent nodes report USD in their structured result, with or without a session
 group. Codex reports tokens but no USD. Custom CLIs, profiles whose extra arguments
@@ -137,8 +149,8 @@ continue. This is neither a provider quota meter
 nor a universal hard billing cap. Provider-native budget flags are not configured
 by this feature.
 
-Once known spend reaches the threshold, no further effectful work is dispatched.
-Already running siblings finish and may increase spend further. The engine then
+Once the reported estimate reaches the threshold, no further effectful work is dispatched.
+Already running siblings finish and may increase the reported estimate further. The engine then
 pauses if more tools are ready; pure graph completion may finish the run. Choose
 **Review spend pause**, then enter a threshold above the reported total or choose
 **Continue without the spend guard**. Decisions are atomic, identify the exact

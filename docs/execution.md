@@ -227,3 +227,18 @@ The optional [reported-spend guard](workflow-costs.md#reported-spend-guard) crea
 a distinct durable pause. Ordinary Approve cannot bypass it. Review the spend
 pause to increase the threshold or explicitly continue without it; Cancel remains
 available. Pure graph completion after the final tool can finish without a pause.
+
+## Reading run output and findings
+
+Long stdout, stderr and agent activity use **Show full output** rather than a
+newline count, since one source line may wrap across many screen lines. Expanding
+output scrolls to its latest text. While a step is running, new text keeps the
+expanded viewport at the bottom. Scroll up to read earlier text without being
+pulled down; **Follow latest** resumes following. Each stream has its own bounded
+viewport, including formatted and raw Markdown.
+
+Review findings appear inside each source agent's latest successful step, matching
+the backend's finding extraction. Findings shared by several agents appear at each
+source step with their deduplicated attribution. Findings whose sources cannot be
+matched to a stored step remain visible in a separate fallback section. Long text,
+paths, suggested fixes and Markdown code/tables wrap instead of widening the page.
