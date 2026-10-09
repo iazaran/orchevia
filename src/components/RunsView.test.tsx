@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests, type Backend } from '../lib/backend';
 import { useAppStore } from '../store';
@@ -466,4 +466,252 @@ it("never shows a previous run's late findings after switching runs", async () =
   });
   expect(await screen.findByText(/Second finding/)).toBeInTheDocument();
   expect(screen.queryByText(/First finding/)).toBeNull();
+});
+
+async function renderLiveOutput(
+  text: string,
+  structuredJson?: string,
+): Promise<StoredNodeResult> {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'live-output',
+    workflowId: 'output-wf',
+    status: 'running',
+    startedAt: new Date().toISOString(),
+  };
+  const result: StoredNodeResult = {
+    id: 501,
+    runId: run.id,
+    nodeId: 'writer',
+    status: 'running',
+    stdout: text,
+    stderr: '',
+    startedAt: run.startedAt,
+    ...(structuredJson ? { structuredJson } : {}),
+  };
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(useAppStore.getState().runResults[id] ?? []),
+  );
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'output-wf',
+    name: 'Output',
+    edges: [],
+    nodes: [
+      {
+        id: 'writer',
+        type: 'agent',
+        label: 'Writer',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+    ],
+  });
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [result] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await screen.findByText('Writer');
+  return result;
+}
+
+it('expands full live output without claiming a count of visual lines', async () => {
+  const text = Array.from(
+    { length: 30 },
+    (_, i) => `Line ${String(i)} ${'long wrapped text '.repeat(30)}`,
+  ).join('\n');
+  await renderLiveOutput(text);
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout' }));
+  const expand = screen.getByRole('button', { name: 'Expand stdout' });
+  expect(expand).toHaveTextContent('Show full output');
+  expect(expand).not.toHaveTextContent('lines');
+  fireEvent.click(expand);
+  expect(screen.getByRole('region', { name: 'stdout output' })).toHaveTextContent(
+    'Line 29',
+  );
+});
+
+it('follows new live output, pauses on scroll-up and resumes explicitly', async () => {
+  const result = await renderLiveOutput(
+    Array.from({ length: 20 }, (_, i) => `line ${String(i)}`).join('\n'),
+  );
+  const output = screen.getByRole('region', { name: 'stdout output' });
+  Object.defineProperties(output, {
+    scrollHeight: { value: 1000, configurable: true },
+    clientHeight: { value: 200, configurable: true },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Expand stdout' }));
+  expect(output.scrollTop).toBe(1000);
+  output.scrollTop = 100;
+  fireEvent.scroll(output);
+  act(() =>
+    useAppStore.setState({
+      runResults: {
+        [result.runId]: [{ ...result, stdout: result.stdout + '\nnewest line' }],
+      },
+    }),
+  );
+  expect(output.scrollTop).toBe(100);
+  fireEvent.click(screen.getByRole('button', { name: 'Follow latest stdout' }));
+  expect(output.scrollTop).toBe(1000);
+  Object.defineProperty(output, 'scrollHeight', { value: 1400 });
+  act(() =>
+    useAppStore.setState({
+      runResults: {
+        [result.runId]: [
+          { ...result, stdout: result.stdout + '\nnewest line\nlast line' },
+        ],
+      },
+    }),
+  );
+  expect(output.scrollTop).toBe(1400);
+});
+
+it('follows expanded agent activity as it streams', async () => {
+  const activity = 'tool update\n'.repeat(30);
+  const result = await renderLiveOutput('', JSON.stringify({ agentActivity: activity }));
+  const output = screen.getByRole('region', { name: 'Agent activity output' });
+  Object.defineProperty(output, 'scrollHeight', { value: 900, configurable: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Expand Agent activity' }));
+  expect(output.scrollTop).toBe(900);
+  Object.defineProperty(output, 'scrollHeight', { value: 1200 });
+  act(() =>
+    useAppStore.setState({
+      runResults: {
+        [result.runId]: [
+          {
+            ...result,
+            structuredJson: JSON.stringify({
+              agentActivity: activity + 'last tool result',
+            }),
+          },
+        ],
+      },
+    }),
+  );
+  expect(output.scrollTop).toBe(1200);
+});
+
+it('places deduplicated findings at their source steps and keeps unknown sources visible', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'findings-run',
+    workflowId: 'wf',
+    status: 'running',
+    startedAt: new Date().toISOString(),
+  };
+  const results: StoredNodeResult[] = ['review', 'review', 'review-2'].map(
+    (nodeId, i) => ({
+      id: 610 + i,
+      runId: run.id,
+      nodeId,
+      status: 'succeeded',
+      stdout: '',
+      stderr: '',
+      startedAt: run.startedAt,
+    }),
+  );
+  const finding = (title: string, sources: string[]): GroupedFinding => ({
+    finding: {
+      fingerprint: title,
+      severity: 'P1',
+      category: 'bug',
+      title,
+      explanation: 'details',
+      source: sources[0] ?? '',
+      suggestedFix: 'x'.repeat(500),
+    },
+    sources,
+  });
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: ['review', 'review-2'].map((id) => ({
+      id,
+      type: 'agent',
+      label: id,
+      position: { x: 0, y: 0 },
+      config: {},
+    })),
+  });
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([
+    finding('Shared finding', ['review (Claude)', 'review-2 (Codex)']),
+    finding('Unknown origin', ['deleted-node']),
+  ]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await screen.findByText('Unknown origin');
+  const first = document.getElementById('run-result-610') as HTMLElement;
+  const latest = document.getElementById('run-result-611') as HTMLElement;
+  const other = document.getElementById('run-result-612') as HTMLElement;
+  expect(within(first).queryByText('Shared finding')).toBeNull();
+  expect(within(latest).getByText('Shared finding')).toBeInTheDocument();
+  expect(within(other).getByText('Shared finding')).toBeInTheDocument();
+  expect(screen.getByText('Unknown origin').closest('.run-step')).toBeNull();
+});
+
+it('follows the final output update when a running step finishes', async () => {
+  const result = await renderLiveOutput('running output\n'.repeat(20));
+  const output = screen.getByRole('region', { name: 'stdout output' });
+  Object.defineProperty(output, 'scrollHeight', { value: 1800 });
+  act(() =>
+    useAppStore.setState({
+      runResults: {
+        [result.runId]: [
+          { ...result, status: 'succeeded', stdout: 'final response\n'.repeat(100) },
+        ],
+      },
+    }),
+  );
+  expect(output.scrollTop).toBe(1800);
+});
+
+it('keeps a paused reader in place when the final output arrives', async () => {
+  const result = await renderLiveOutput('running output\n'.repeat(20));
+  const output = screen.getByRole('region', { name: 'stdout output' });
+  Object.defineProperties(output, {
+    scrollHeight: { value: 1800 },
+    clientHeight: { value: 200 },
+  });
+  output.scrollTop = 100;
+  fireEvent.scroll(output);
+  act(() =>
+    useAppStore.setState({
+      runResults: {
+        [result.runId]: [
+          { ...result, status: 'failed', stdout: 'partial final response\n'.repeat(100) },
+        ],
+      },
+    }),
+  );
+  expect(output.scrollTop).toBe(100);
+});
+
+it('keeps unverified plain-text dollar hints inside collapsed usage details', async () => {
+  await renderLiveOutput('cost: $36.7953');
+  const hint = screen.getByText(/cost: \$36\.7953/, { selector: '.field-hint' });
+  const details = hint.closest('details');
+  expect(details).not.toBeNull();
+  expect(details).not.toHaveAttribute('open');
+  expect(details).toHaveTextContent('Unverified text hints');
+  expect(details).toHaveTextContent('not your subscription bill');
 });

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
 import { RunTimeline } from './RunTimeline';
 import type { StoredNodeResult, StoredRun, Workflow } from '../lib/workflow';
@@ -38,9 +38,43 @@ it('shows overlapping execution separately from wall time and unknown cost cover
   }));
   render(<RunTimeline run={run} workflow={workflow} results={results} />);
   expect(screen.getByLabelText('Run timeline')).toHaveTextContent('Elapsed: 5s');
-  expect(screen.getByLabelText('Run timeline')).toHaveTextContent('USD 2.0000');
+  const details = screen.getByText('CLI usage details').closest('details');
+  expect(details).not.toHaveAttribute('open');
+  fireEvent.click(screen.getByText('CLI usage details'));
+  expect(details).toHaveTextContent('Estimated API value: USD 2.0000');
+  expect(details).toHaveTextContent('not your subscription bill');
+  expect(details).toHaveTextContent(
+    'Subscription limits and remaining quota are unavailable',
+  );
   expect(screen.getByLabelText('Run timeline')).toHaveTextContent(
     '1 attempt without a USD report',
   );
   expect(screen.getAllByRole('link')).toHaveLength(2);
+});
+
+it('hides empty dollar summaries while preserving the timeline', () => {
+  const workflow: Workflow = {
+    schemaVersion: 6,
+    id: 'w',
+    name: 'W',
+    nodes: [],
+    edges: [],
+  };
+  const run: StoredRun = {
+    id: 'r',
+    workflowId: 'w',
+    status: 'running',
+    startedAt: '2026-10-09T00:00:00Z',
+  };
+  render(
+    <RunTimeline
+      run={run}
+      workflow={workflow}
+      results={[]}
+      now={Date.parse(run.startedAt)}
+    />,
+  );
+  expect(screen.getByLabelText('Run timeline')).toHaveTextContent('No step timing yet');
+  expect(screen.queryByText('CLI usage details')).toBeNull();
+  expect(screen.getByLabelText('Run timeline')).not.toHaveTextContent('USD unknown');
 });

@@ -132,10 +132,10 @@ export function RunOptionsDialog({
             placeholder="Optional"
           />
           <p className="field-hint">
-            Pauses future tool dispatch at the CLI-reported total. Missing cost reports
-            cannot stop work; in-flight calls can overshoot. Claude managed streams may
-            report USD; Codex, custom and plain-text calls may not. This is not a billing
-            cap or a quota meter.
+            Pauses future tool dispatch at the CLI-estimated API value. Missing cost
+            reports cannot stop work; in-flight calls can overshoot. Claude managed
+            streams may report USD; Codex, custom and plain-text calls may not. This is
+            not a subscription charge, billing cap or quota meter.
           </p>
         </div>
       )}
@@ -310,8 +310,9 @@ export function SpendContinueDialog({
     >
       <h2>Continue after spend pause</h2>
       <p className="field-hint">
-        CLI-reported USD {pause.reportedUsd.toFixed(4)}. Actual spend may be higher
-        because reports may be missing and concurrent calls can overshoot.
+        CLI-estimated API value: USD {pause.reportedUsd.toFixed(4)}. This is not your
+        subscription bill or remaining quota. Estimates may be incomplete and concurrent
+        calls can overshoot the threshold.
       </p>
       <div className="field">
         <label className="field-label" htmlFor="replacement-limit">

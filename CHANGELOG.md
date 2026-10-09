@@ -6,6 +6,30 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-10-09
+
+### Changed
+
+- Runs place review findings beside each originating agent's latest successful
+  step, retaining deduplicated source attribution. Finding titles, paths, suggested
+  fixes, code and tables wrap within the available width.
+- CLI dollar values move into collapsed usage details and are labeled estimated
+  API value, with subscription billing and remaining quota explicitly separate.
+  Empty dollar summaries are hidden; missing reports still mark estimates partial.
+  The optional reported-USD guard retains its behavior with clearer estimate wording.
+- Expanded live stdout, stderr and agent activity follow the newest output. Scrolling
+  up pauses following; **Follow latest** resumes it. The expand button says **Show
+  full output**, avoiding a newline count that does not match wrapped screen lines.
+
+### Fixed
+
+- Bottom-left notifications slide in and out from the left and hold their exit
+  position until removal, preventing a return to their resting appearance. Removal
+  follows animation completion, with a reduced-motion/timer fallback.
+- Expanding the last step's agent activity works on the first click.
+- Runs detail columns can shrink to fit long findings and output instead of
+  expanding the page horizontally.
+
 ## [0.1.12] - 2026-10-08
 
 ### Added

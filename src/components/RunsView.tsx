@@ -3,12 +3,17 @@ import { RecoveryDialog, SpendContinueDialog } from './RunControls';
 import { resultMetadata, type SpendPause } from '../lib/run-controls';
 import { successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import type { GroupedFinding } from '../lib/scheduler';
 import { isMarkdown } from '../lib/markdown';
 import { formatTime } from '../lib/time';
-import { agentContextDetails, extractUsageHints, formatDurationMs } from '../lib/usage';
+import {
+  agentContextDetails,
+  CLI_COST_EXPLANATION,
+  extractUsageHints,
+  formatDurationMs,
+} from '../lib/usage';
 import { useAppStore } from '../store';
 import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
@@ -17,8 +22,7 @@ import { CloseButton } from './CloseButton';
 import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
 
-/** Step output that collapses long logs behind an expand toggle.
- * Agent stdout renders formatted when it carries markdown (`rich`). */
+/** A bounded output viewport follows live text until the reader scrolls up. */
 function OutputBlock({
   text,
   label,
@@ -26,6 +30,7 @@ function OutputBlock({
   expanded,
   onToggle,
   rich,
+  live = false,
 }: {
   text: string;
   label: string;
@@ -33,55 +38,114 @@ function OutputBlock({
   expanded: boolean | undefined;
   onToggle: () => void;
   rich?: boolean;
+  live?: boolean;
 }): React.JSX.Element | null {
-  if (text === '') return null;
+  const viewport = useRef<HTMLDivElement>(null);
+  const wasOpen = useRef(false);
+  const wasLive = useRef(live);
+  const [following, setFollowing] = useState(true);
   const lines = text.split('\n');
-  const open = expanded ?? defaultOpen;
-  const PREVIEW_LINES = 8;
-  const COLLAPSE_AFTER = 12;
-  if (rich === true && isMarkdown(text)) {
-    if (lines.length <= COLLAPSE_AFTER) {
-      return <MarkdownText text={text} />;
+  const collapsible = lines.length > 12 || text.length > 1200;
+  const open = !collapsible || (expanded ?? defaultOpen);
+  useLayoutEffect(() => {
+    const justOpened = open && !wasOpen.current;
+    const streamUpdated = live || wasLive.current;
+    wasOpen.current = open;
+    wasLive.current = live;
+    if (!open || !viewport.current) return;
+    if (justOpened || (streamUpdated && following)) {
+      viewport.current.scrollTop = viewport.current.scrollHeight;
+      if (justOpened) setFollowing(true);
     }
-    return (
-      <div>
-        {open ? (
-          <MarkdownText text={text} />
+  }, [text, open, live, following]);
+  if (text === '') return null;
+  const shown = open ? text : lines.slice(0, 8).join('\n').slice(0, 1200) + '\n…';
+  return (
+    <div className="run-output">
+      <div
+        ref={viewport}
+        className="run-output-scroll"
+        role="region"
+        aria-label={`${label} output`}
+        tabIndex={0}
+        onScroll={(event) => {
+          if (!open) return;
+          const el = event.currentTarget;
+          setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 32);
+        }}
+      >
+        {rich === true && isMarkdown(text) ? (
+          <MarkdownText text={shown} allowRaw={open} />
         ) : (
-          <MarkdownText
-            text={lines.slice(0, PREVIEW_LINES).join('\n') + '\n…'}
-            allowRaw={false}
-          />
+          <div className="log-block">{shown}</div>
         )}
+      </div>
+      {collapsible && (
         <button
           className="btn btn-ghost output-toggle"
           aria-expanded={open}
-          aria-label={`${open ? 'Collapse' : 'Expand'} ${label} (${String(lines.length)} lines)`}
+          aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
           onClick={onToggle}
         >
-          {open ? 'Collapse ▲' : `Show all ${String(lines.length)} lines ▼`}
+          {open ? 'Collapse ▲' : 'Show full output ▼'}
         </button>
-      </div>
-    );
-  }
-  if (lines.length <= COLLAPSE_AFTER) {
-    return <div className="log-block">{text}</div>;
-  }
-  return (
-    <div>
-      <div className="log-block">
-        {open ? text : lines.slice(0, PREVIEW_LINES).join('\n')}
-        {!open && lines.length > PREVIEW_LINES ? '\n…' : ''}
-      </div>
-      <button
-        className="btn btn-ghost output-toggle"
-        aria-expanded={open}
-        aria-label={`${open ? 'Collapse' : 'Expand'} ${label} (${String(lines.length)} lines)`}
-        onClick={onToggle}
-      >
-        {open ? 'Collapse ▲' : `Show all ${String(lines.length)} lines ▼`}
-      </button>
+      )}
+      {open && !following && (
+        <button
+          className="btn btn-ghost output-toggle"
+          aria-label={`${live ? 'Follow' : 'Jump to'} latest ${label}`}
+          onClick={() => {
+            setFollowing(true);
+            if (viewport.current)
+              viewport.current.scrollTop = viewport.current.scrollHeight;
+          }}
+        >
+          {live ? 'Follow latest ↓' : 'Jump to latest ↓'}
+        </button>
+      )}
     </div>
+  );
+}
+
+function ReviewFindings({
+  findings,
+}: {
+  findings: GroupedFinding[];
+}): React.JSX.Element | null {
+  if (findings.length === 0) return null;
+  return (
+    <details className="run-findings" aria-label="Review findings" open>
+      <summary>Findings ({findings.length})</summary>
+      {findings.map((g) => (
+        <article key={g.finding.fingerprint} className="tool-card finding-card">
+          <div className="finding-head">
+            <span className="status-pill status-paused">{g.finding.severity}</span>
+            <strong>{g.finding.title.replace(/^#{1,4}\s*/, '')}</strong>
+          </div>
+          <p className="finding-source field-hint">
+            {g.finding.file && (
+              <span>
+                {g.finding.file}
+                {g.finding.lineStart !== undefined
+                  ? `:${String(g.finding.lineStart)}`
+                  : ''}{' '}
+                ·{' '}
+              </span>
+            )}
+            Reported by {g.sources.join(', ')}
+          </p>
+          {g.finding.explanation !== '' && (
+            <MarkdownText text={g.finding.explanation} allowRaw={false} />
+          )}
+          {g.finding.suggestedFix && (
+            <div className="finding-fix">
+              <strong>Suggested fix</strong>
+              <MarkdownText text={g.finding.suggestedFix} allowRaw={false} />
+            </div>
+          )}
+        </article>
+      ))}
+    </details>
   );
 }
 
@@ -287,6 +351,25 @@ export function RunsView(): React.JSX.Element {
     findings: GroupedFinding[];
   } | null>(null);
   const findings = findingsState?.runId === activeRunId ? findingsState.findings : [];
+  const findingsByResult = new Map<number, GroupedFinding[]>();
+  const unassignedFindings: GroupedFinding[] = [];
+  for (const finding of findings) {
+    const sourceRows = new Set<number>();
+    for (const source of finding.sources) {
+      const row = [...results]
+        .reverse()
+        .find(
+          (r) =>
+            r.status === 'succeeded' &&
+            (source === r.nodeId || source.startsWith(`${r.nodeId} (`)),
+        );
+      if (row) sourceRows.add(row.id);
+    }
+    if (sourceRows.size === 0) unassignedFindings.push(finding);
+    for (const id of sourceRows) {
+      findingsByResult.set(id, [...(findingsByResult.get(id) ?? []), finding]);
+    }
+  }
 
   // Findings follow the selected run's own results; other runs' cache updates
   // and unchanged polls keep the same array and do not refetch.
@@ -467,13 +550,7 @@ export function RunsView(): React.JSX.Element {
             <p>Run a workflow from the Workflows tab to see history here.</p>
           </div>
         )}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(280px, 380px) 1fr',
-            gap: 20,
-          }}
-        >
+        <div className="runs-layout">
           <div className="run-list">
             {runs.map((run) => (
               <div key={run.id} className="run-row-wrap" style={{ position: 'relative' }}>
@@ -525,7 +602,7 @@ export function RunsView(): React.JSX.Element {
               </div>
             ))}
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             {activeRun === null && runs.length > 0 && (
               <p className="field-hint">Select a run to inspect node results.</p>
             )}
@@ -813,54 +890,11 @@ export function RunsView(): React.JSX.Element {
                     </>
                   );
                 })()}
-                {findings.length > 0 && (
-                  <section aria-label="Review findings" style={{ marginBottom: 16 }}>
-                    <h3 style={{ fontSize: 14 }}>
-                      Findings ({findings.length}, deduped across agents)
-                    </h3>
-                    {findings.map((g) => (
-                      <div
-                        key={g.finding.fingerprint}
-                        className="tool-card"
-                        style={{ marginBottom: 8 }}
-                      >
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                          <span className="status-pill status-paused">
-                            {g.finding.severity}
-                          </span>
-                          <strong>{g.finding.title.replace(/^#{1,4}\s*/, '')}</strong>
-                        </div>
-                        <div className="tool-version">
-                          {g.finding.file ?? ''}
-                          {g.finding.lineStart !== undefined
-                            ? `:${String(g.finding.lineStart)}`
-                            : ''}{' '}
-                          · via {g.sources.join(', ')}
-                        </div>
-                        {g.finding.explanation !== '' &&
-                          (isMarkdown(g.finding.explanation) ? (
-                            <MarkdownText text={g.finding.explanation} />
-                          ) : (
-                            <p className="field-hint">{g.finding.explanation}</p>
-                          ))}
-                        {g.finding.suggestedFix !== undefined &&
-                          g.finding.suggestedFix !== '' &&
-                          (isMarkdown(g.finding.suggestedFix) ? (
-                            <MarkdownText
-                              text={`Suggested fix: ${g.finding.suggestedFix}`}
-                            />
-                          ) : (
-                            <p className="field-hint">
-                              Suggested fix: {g.finding.suggestedFix}
-                            </p>
-                          ))}
-                      </div>
-                    ))}
-                  </section>
-                )}
+                <ReviewFindings findings={unassignedFindings} />
                 {results.map((r, index) => {
                   const node = nodeFor(r.nodeId);
                   const context = agentContextDetails(r.structuredJson);
+                  const textUsageHints = extractUsageHints(r.stdout, r.stderr);
                   // The last step (usually the report) opens expanded; the rest
                   // collapse long logs behind a toggle.
                   const isLast = index === results.length - 1;
@@ -870,7 +904,12 @@ export function RunsView(): React.JSX.Element {
                       const values = prev.runId === activeRunId ? prev.values : {};
                       return {
                         runId: activeRunId,
-                        values: { ...values, [key]: !(values[key] ?? isLast) },
+                        values: {
+                          ...values,
+                          [key]: !(
+                            values[key] ?? (stream === 'activity' ? false : isLast)
+                          ),
+                        },
                       };
                     });
                   };
@@ -953,27 +992,36 @@ export function RunsView(): React.JSX.Element {
                             {context.sessionLabel}
                           </span>
                         )}
-                        {(context?.usageHints.length ?? 0) > 0 && (
-                          <span className="field-hint">
-                            CLI usage: {context?.usageHints.join(' · ')}
-                          </span>
-                        )}
-                        {extractUsageHints(r.stdout, r.stderr).length > 0 && (
-                          <span className="field-hint">
-                            usage: {extractUsageHints(r.stdout, r.stderr).join(' · ')}
-                          </span>
-                        )}
                       </div>
                       {r.error !== undefined && r.error !== '' && (
                         <Notice inline variant="error">
                           {r.error}
                         </Notice>
                       )}
+                      <ReviewFindings findings={findingsByResult.get(r.id) ?? []} />
+                      {((context?.usageHints.length ?? 0) > 0 ||
+                        textUsageHints.length > 0) && (
+                        <details className="cli-usage-details">
+                          <summary>CLI usage</summary>
+                          {(context?.usageHints.length ?? 0) > 0 && (
+                            <p className="field-hint">
+                              {context?.usageHints.join(' · ')}
+                            </p>
+                          )}
+                          {textUsageHints.length > 0 && (
+                            <p className="field-hint">
+                              Unverified text hints: {textUsageHints.join(' · ')}
+                            </p>
+                          )}
+                          <p className="field-hint">{CLI_COST_EXPLANATION}</p>
+                        </details>
+                      )}
                       {context?.outputNote && (
                         <p className="field-hint">{context.outputNote}</p>
                       )}
                       <OutputBlock
                         text={r.stdout}
+                        live={r.status === 'running'}
                         label="stdout"
                         rich={node?.type === 'agent'}
                         defaultOpen={isLast}
@@ -987,6 +1035,7 @@ export function RunsView(): React.JSX.Element {
                           <div style={{ marginTop: 6 }}>
                             <OutputBlock
                               text={context.activity}
+                              live={r.status === 'running'}
                               label="Agent activity"
                               defaultOpen={false}
                               expanded={expandedOutputs[`${String(r.id)}:activity`]}
@@ -999,6 +1048,7 @@ export function RunsView(): React.JSX.Element {
                       <div style={{ marginTop: 6 }}>
                         <OutputBlock
                           text={r.stderr}
+                          live={r.status === 'running'}
                           label="stderr"
                           defaultOpen={isLast}
                           expanded={expandedOutputs[`${String(r.id)}:err`]}

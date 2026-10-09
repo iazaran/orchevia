@@ -104,3 +104,20 @@ it('publishes repeated action errors after dismissal and while a prior one is vi
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
   expect(screen.getAllByText('Pick a repository')).toHaveLength(2);
 });
+
+it('removes an exiting notice when its slide finishes and dismisses only once', async () => {
+  const dismiss = vi.fn();
+  render(<Notice onDismiss={dismiss}>Saved once</Notice>);
+  await act(() => vi.advanceTimersByTime(5000));
+  const notice = screen.getByText('Saved once').closest('.notice') as HTMLElement;
+  // React detects the prefixed animation event in jsdom; exercise both surfaces.
+  for (const type of ['animationend', 'webkitAnimationEnd']) {
+    const event = new Event(type, { bubbles: true });
+    Object.defineProperty(event, 'animationName', { value: 'notice-exit' });
+    fireEvent(notice, event);
+  }
+  expect(screen.queryByText('Saved once')).toBeNull();
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  await act(() => vi.advanceTimersByTime(1000));
+  expect(dismiss).toHaveBeenCalledTimes(1);
+});

@@ -1718,21 +1718,36 @@ details[open] > .gen-summary::after {
   overflow-wrap: anywhere;
   box-shadow: var(--shadow);
   pointer-events: auto;
-  animation: notice-enter 200ms ease-out;
-  transition: opacity 200ms ease-out;
+  animation: notice-enter 180ms ease-out both;
 }
 
 .notice-stack .notice-exiting {
-  opacity: 0;
+  /* Hold offscreen until React removes the notice; no return to its base style. */
+  animation: notice-exit 180ms ease-in forwards;
   pointer-events: none;
 }
 
 @keyframes notice-enter {
   from {
-    opacity: 0;
+    transform: translateX(calc(-100% - 16px));
   }
   to {
-    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes notice-exit {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(calc(-100% - 16px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice-stack .notice-exiting {
+    visibility: hidden;
   }
 }
 
@@ -1790,5 +1805,97 @@ details[open] > .gen-summary::after {
   .timeline-row {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+}
+
+/* One viewport owns live output scrolling, including formatted/raw content. */
+.run-output-scroll {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.run-output-scroll .md-body,
+.run-output-scroll .log-block,
+.run-output-scroll .md-body pre {
+  max-height: none;
+  overflow: visible;
+}
+.run-output-scroll .md-body pre {
+  white-space: pre-wrap;
+}
+.cli-usage-details {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cli-usage-details summary,
+.run-findings summary {
+  cursor: pointer;
+  color: var(--text-1);
+}
+.run-findings {
+  margin: 10px 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.run-findings summary {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.finding-card {
+  min-width: 0;
+  margin-bottom: 8px;
+}
+.finding-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.finding-head strong {
+  min-width: 0;
+}
+.finding-head .status-pill {
+  flex-shrink: 0;
+}
+.finding-source {
+  white-space: normal;
+}
+.finding-fix {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.run-findings .log-block,
+.run-findings .md-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+.run-findings .md-table-scroll {
+  overflow-x: hidden;
+}
+.run-findings table {
+  table-layout: fixed;
+}
+.run-findings th,
+.run-findings td {
+  min-width: 0;
+}
+
+.runs-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 20px;
+}
+@media (max-width: 900px) {
+  .runs-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .runs-layout > .run-list {
+    max-height: 220px;
+    overflow: auto;
   }
 }

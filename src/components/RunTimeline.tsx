@@ -1,6 +1,6 @@
 import type { StoredNodeResult, StoredRun, Workflow } from '../lib/workflow';
 import { reportedSpend, timelineEntries } from '../lib/run-controls';
-import { formatDurationMs } from '../lib/usage';
+import { CLI_COST_EXPLANATION, formatDurationMs } from '../lib/usage';
 
 export function RunTimeline({
   run,
@@ -38,16 +38,21 @@ export function RunTimeline({
       </p>
       {run.execution?.options.dryRun ? (
         <p className="field-hint">Simulated test — no actual spend.</p>
-      ) : (
-        <p className="field-hint">
-          CLI-reported USD{' '}
-          {spend.reportedAttempts ? spend.reportedUsd.toFixed(4) : 'unknown'} ·{' '}
-          {spend.reportedAttempts} reported attempt
-          {spend.reportedAttempts === 1 ? '' : 's'} · {spend.unknownAttempts} attempt
-          {spend.unknownAttempts === 1 ? '' : 's'} without a USD report.{' '}
-          {spend.unknownAttempts > 0 ? 'Total is partial.' : ''}
-        </p>
-      )}
+      ) : spend.reportedAttempts + spend.unknownAttempts > 0 ? (
+        <details className="cli-usage-details">
+          <summary>CLI usage details</summary>
+          <p className="field-hint">{CLI_COST_EXPLANATION}</p>
+          <p className="field-hint">
+            {spend.reportedAttempts > 0
+              ? `Estimated API value: USD ${spend.reportedUsd.toFixed(4)}`
+              : 'No dollar estimate reported'}{' '}
+            · {spend.reportedAttempts} reported attempt
+            {spend.reportedAttempts === 1 ? '' : 's'} · {spend.unknownAttempts} attempt
+            {spend.unknownAttempts === 1 ? '' : 's'} without a USD report.{' '}
+            {spend.unknownAttempts > 0 ? 'Estimate is partial.' : ''}
+          </p>
+        </details>
+      ) : null}
       {entries.length === 0 ? (
         <p className="field-hint">No step timing yet.</p>
       ) : (

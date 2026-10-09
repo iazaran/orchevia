@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
   type ReactNode,
+  type AnimationEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppStore, type UiNotice } from '../store';
@@ -23,6 +24,7 @@ interface NoticeProps {
   className?: string;
   /** Contextual content (previews and saved run details), rather than an alert. */
   inline?: boolean;
+  onAnimationEnd?: (event: AnimationEvent<HTMLDivElement>) => void;
   children: ReactNode;
 }
 
@@ -106,6 +108,7 @@ function NoticeBody({
   role,
   style,
   className,
+  onAnimationEnd,
   children,
 }: NoticeProps): React.JSX.Element {
   return (
@@ -113,6 +116,7 @@ function NoticeBody({
       className={`notice${variant !== undefined ? ` ${variant}` : ''}${onDismiss !== undefined ? ' has-dismiss' : ''}${className !== undefined ? ` ${className}` : ''}`}
       role={role ?? (variant === 'error' ? 'alert' : 'status')}
       style={style}
+      onAnimationEnd={onAnimationEnd}
     >
       {children}
       {onDismiss !== undefined && (
@@ -129,6 +133,13 @@ function NoticeBody({
 function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
   const remove = useAppStore((s) => s.removeUiNotice);
   const [exiting, setExiting] = useState(false);
+  const dismissed = useRef(false);
+  const finishExit = useCallback((): void => {
+    if (dismissed.current) return;
+    dismissed.current = true;
+    remove(notice.id);
+    notice.onDismiss?.();
+  }, [notice, remove]);
   useEffect(() => {
     if (notice.variant === 'warn' || notice.variant === 'error') return;
     const timer = setTimeout(() => setExiting(true), 5000);
@@ -136,12 +147,10 @@ function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
   }, [notice.id, notice.variant]);
   useEffect(() => {
     if (!exiting) return;
-    const timer = setTimeout(() => {
-      remove(notice.id);
-      notice.onDismiss?.();
-    }, 200);
+    // Fallback for reduced motion or a missing animation event.
+    const timer = setTimeout(finishExit, 200);
     return () => clearTimeout(timer);
-  }, [exiting, notice, remove]);
+  }, [exiting, finishExit]);
   return (
     <NoticeBody
       {...(notice.variant === undefined ? {} : { variant: notice.variant })}
@@ -149,6 +158,14 @@ function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
       {...(notice.dismissLabel === undefined
         ? {}
         : { dismissLabel: notice.dismissLabel })}
+      onAnimationEnd={(event) => {
+        if (
+          exiting &&
+          event.target === event.currentTarget &&
+          event.animationName === 'notice-exit'
+        )
+          finishExit();
+      }}
       className={`floating-notice${exiting ? ' notice-exiting' : ''}`}
       {...(notice.variant === 'warn' ||
       notice.variant === 'error' ||
