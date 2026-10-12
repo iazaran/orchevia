@@ -214,7 +214,7 @@ source provider-session metadata. Unavailable additional visits fail instead of
 silently replaying a tool. Repeated requests with the same recovery request id
 return the existing child; conflicting decisions are rejected.
 
-## Timeline and spend pauses
+## Timeline, spend and usage pauses
 
 Runs places attempts and repeated visits on a common timestamp axis. Concurrent
 bars overlap; elapsed time comes from run start/end instead of summed durations.
@@ -227,6 +227,13 @@ The optional [reported-spend guard](workflow-costs.md#reported-spend-guard) crea
 a distinct durable pause. Ordinary Approve cannot bypass it. Review the spend
 pause to increase the threshold or explicitly continue without it; Cancel remains
 available. Pure graph completion after the final tool can finish without a pause.
+
+The [workflow usage budget](workflow-costs.md#workflow-usage-limits-v0114) works
+the same way for dispatched Agent attempts: exhaustion records a `guardPaused`
+usage row (never a success marker) and pauses durably. Review the usage pause to
+extend the budget explicitly or continue without the guard; ordinary approval
+cannot clear it, and stale or duplicate continuations are rejected. Budget-limited
+reviews contribute no findings, approvals or publications for unfinished work.
 
 ## Reading run output and findings
 

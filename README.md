@@ -42,9 +42,9 @@ writes. CLI usage costs and remote-provider behavior remain with your chosen too
 
 ## Install
 
-Release v0.1.13 is being prepared. The permanent installer links below target this
+Release v0.1.14 is being prepared. The permanent installer links below target this
 version; they become available after the matching tag's release workflow succeeds.
-See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.13).
+See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.14).
 Until then, use the [published v0.1.11 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.11).
 A merged PR alone does not build installers.
 
@@ -53,11 +53,11 @@ account that has repository access. The repository and downloads will be public 
 
 | Platform                    | Installer                                                                                                                                                                                                  |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-macos-arm64.dmg)                                                                                                             |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-macos-x86_64.dmg)                                                                                                            |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.13/Orchevia-linux-x86_64.deb) |
+| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.14/Orchevia-macos-arm64.dmg)                                                                                                             |
+| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.14/Orchevia-macos-x86_64.dmg)                                                                                                            |
+| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.14/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.14/Orchevia-linux-x86_64.deb) |
 
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.13/SHA256SUMS)
+Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.14/SHA256SUMS)
 into the same directory, keep the published filenames, then verify your download:
 
 ```bash
@@ -221,7 +221,7 @@ See [execution semantics](docs/execution.md#dry-run-workflow-tests),
 
 ## Current limits
 
-- **Beta:** source version 0.1.13 targets Linux x86_64 and macOS Apple Silicon/Intel.
+- **Beta:** source version 0.1.14 targets Linux x86_64 and macOS Apple Silicon/Intel.
   Windows is not supported. macOS installers are unsigned and not notarized.
 - **Tools and authentication:** install and authenticate CLIs yourself. Orchevia reads
   only `PATH` from your login shell; Jira and other MCP servers may need credentials

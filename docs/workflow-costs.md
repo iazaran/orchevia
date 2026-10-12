@@ -133,7 +133,8 @@ Provider references: [Codex non-interactive mode](https://learn.chatgpt.com/docs
 
 ## Reported-spend guard
 
-Open **Run options** and enter a positive USD threshold, or leave it blank for
+Open **Usage limits** (or override per run in the start form) and enter a positive
+USD threshold, or leave it blank for
 ordinary execution. The guard adds up finite, nonnegative structured
 `agentUsage.reported_cost_usd` for newly executed Agent attempts. It does not
 estimate dollars from tokens or text patterns. Reused and simulated results do
@@ -156,3 +157,72 @@ pauses if more tools are ready; pure graph completion may finish the run. Choose
 **Continue without the spend guard**. Decisions are atomic, identify the exact
 pause, persist across restart, and reject stale/duplicate continuation. Ordinary
 workflow approvals cannot authorize a spend pause. Cancel keeps partial output.
+
+## Workflow usage limits (v0.1.14)
+
+Open **Usage limits** in the Workflows toolbar to save optional per-workflow
+controls; the start form shows the effective values and accepts a clearly marked
+override for one run. Empty clears a limit back to ordinary execution. Every run
+snapshots its effective limits at start (manual, scheduled and watcher runs
+alike), so later workflow edits never change an existing run.
+
+- **Agent attempts per run (enforced).** Total dispatched Agent attempts,
+  counting retries and loop visits. Capacity is reserved before parallel
+  siblings dispatch, so they cannot each spend the same remaining allowance.
+  Consumption persists across approvals, restarts and continuations; recovery
+  starts a new budget and reused or simulated results are never re-charged.
+  Exhaustion preserves partial output and pauses the run durably: extend the
+  budget explicitly or cancel. A stale or duplicate continuation is rejected,
+  and ordinary approval cannot clear a usage pause.
+- **Tool calls / subagents (advisory).** Allowances per run or per Agent node
+  travel as guidance inside each Agent prompt (one injected policy block per
+  invocation, never recursively copied) and are observed where the CLI reports
+  them. The CLI owns its tool loop, so these never hard-stop work. Per-node
+  values are that step's share, never the whole workflow budget; stricter node
+  instructions always win, and the policy never mentions subscription balances.
+- **Spend target (API-equivalent).** The existing reported-spend guard, saved
+  per workflow and overridable per run as before.
+
+An incomplete or budget-limited review is neither approval nor evidence of
+cleanliness: guard-paused nodes record no success marker, contribute no
+findings, and release no dependent approvals, publications or side effects
+until the required work actually runs.
+
+### Control coverage
+
+| Control                | Claude                         | Codex                | Custom/text |
+| ---------------------- | ------------------------------ | -------------------- | ----------- |
+| Agent attempts per run | enforced                       | enforced             | enforced    |
+| Agentic turns          | advisory                       | advisory             | unsupported |
+| Individual tool calls  | advisory (+observed)           | observed             | unsupported |
+| Nested subagents       | advisory (+observed Task uses) | advisory             | unsupported |
+| Spend estimate pause   | enforced (can overshoot)       | unsupported (no USD) | unsupported |
+
+Orchevia passes no `--max-turns`/`--max-budget-usd` flags itself. Claude's
+`--max-turns` counts agentic turns, not individual tools, and its
+`--max-budget-usd` is a client-side API estimate that can overshoot; users may
+pass them via a profile's extra arguments as the CLI's own enforcement. Codex
+has no verified equivalent flags. Killing a process after a streamed tool event
+never un-runs that tool. No SDK, provider or gateway layer is introduced to
+manufacture enforcement that does not exist.
+
+## Usage & costs page
+
+**Usage & costs** (after Environment) aggregates run history in the backend over
+every stored run — never a capped recent list — with date range,
+workflow/provider/model filters, a daily chart, and workflow/model tables.
+Boundaries are inclusive start / exclusive end, grouped by UTC day with the
+display timezone shown. Workflow names and adapter/model identity are recorded
+at execution time; legacy rows stay “unknown”, never zero. Fixtures and reused
+outputs contribute no new consumption; duplicate terminal events and
+parent/subagent wrapper rows are not double-counted. Workflow-run counts are
+execution counts, not completed PR or ticket counts.
+
+Three money lanes stay separate: user-entered subscription fees and extras for
+a billing period, CLI-reported API-equivalent estimates with source and
+coverage, and an optional allocation labeled with its method and declared
+Orchevia share (outside/untracked usage excluded). The illustrative
+$120 + $24 example from early feedback is a settings example, not a default or
+a verified price. The API-equivalent target offers estimate ranges with sample
+counts from comparable history, or **Insufficient history** — never fabricated
+rates, and no reverse calculator from tool counts to enforceable dollars.
