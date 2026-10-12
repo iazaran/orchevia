@@ -118,6 +118,7 @@ mod tests {
             name: "W".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes,
             edges: Vec::new(),
         }

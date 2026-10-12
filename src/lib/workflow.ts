@@ -107,6 +107,10 @@ export interface NodeConfig {
   sessionMaxTurns?: number;
   contextRefs?: string[];
   contextMaxChars?: number;
+  /** Advisory per-node tool-call allowance (observed, never enforced). */
+  maxToolCalls?: number;
+  /** Advisory per-node nested-subagent allowance. */
+  maxSubagents?: number;
   timeoutSecs?: number;
   extendOnOutput?: boolean;
   retry?: RetryPolicy;
@@ -143,6 +147,65 @@ export interface Workflow {
   edges: WorkflowEdge[];
   inputs?: WorkflowInput[];
   defaults?: WorkflowDefaults;
+  /** Saved, optional workflow-wide usage controls (v0.1.14). */
+  limits?: WorkflowLimits;
+}
+
+/** Saved workflow-wide usage controls. Absent preserves ordinary execution. */
+export interface WorkflowLimits {
+  maxAgentAttempts?: number;
+  maxToolCalls?: number;
+  maxSubagents?: number;
+  spendLimitUsd?: number;
+}
+
+/** Hard bounds mirror Rust MAX_*_LIMIT. */
+export const MAX_ATTEMPTS_LIMIT = 10_000;
+export const MAX_TOOL_CALL_LIMIT = 100_000;
+export const MAX_SUBAGENT_LIMIT = 1_000;
+
+export function validateLimitValue(
+  name: string,
+  value: number,
+  max: number,
+): string | null {
+  if (!Number.isInteger(value) || value < 1)
+    return `${name} must be a whole number of at least 1.`;
+  if (value > max) return `${name} must not exceed ${String(max)}.`;
+  return null;
+}
+
+export function validateWorkflowLimits(limits: WorkflowLimits): string | null {
+  if (limits.maxAgentAttempts !== undefined) {
+    const error = validateLimitValue(
+      'Agent attempt limit',
+      limits.maxAgentAttempts,
+      MAX_ATTEMPTS_LIMIT,
+    );
+    if (error) return error;
+  }
+  if (limits.maxToolCalls !== undefined) {
+    const error = validateLimitValue(
+      'Tool-call allowance',
+      limits.maxToolCalls,
+      MAX_TOOL_CALL_LIMIT,
+    );
+    if (error) return error;
+  }
+  if (limits.maxSubagents !== undefined) {
+    const error = validateLimitValue(
+      'Subagent allowance',
+      limits.maxSubagents,
+      MAX_SUBAGENT_LIMIT,
+    );
+    if (error) return error;
+  }
+  if (
+    limits.spendLimitUsd !== undefined &&
+    (!Number.isFinite(limits.spendLimitUsd) || limits.spendLimitUsd <= 0)
+  )
+    return 'Spend limit must be a positive finite USD amount.';
+  return null;
 }
 
 /** Repository/branch defaults shared by a workflow's Git/GitHub nodes. */
@@ -695,6 +758,47 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
           nodeId: node.id,
         });
       }
+      if (node.config.maxToolCalls !== undefined) {
+        const error = validateLimitValue(
+          'Node tool-call allowance',
+          node.config.maxToolCalls,
+          MAX_TOOL_CALL_LIMIT,
+        );
+        if (error !== null) {
+          issues.push({
+            code: 'agent-tool-allowance-invalid',
+            message: error,
+            severity: 'error',
+            nodeId: node.id,
+          });
+        }
+      }
+      if (node.config.maxSubagents !== undefined) {
+        const error = validateLimitValue(
+          'Node subagent allowance',
+          node.config.maxSubagents,
+          MAX_SUBAGENT_LIMIT,
+        );
+        if (error !== null) {
+          issues.push({
+            code: 'agent-subagent-allowance-invalid',
+            message: error,
+            severity: 'error',
+            nodeId: node.id,
+          });
+        }
+      }
+    }
+    if (
+      node.type !== 'agent' &&
+      (node.config.maxToolCalls !== undefined || node.config.maxSubagents !== undefined)
+    ) {
+      issues.push({
+        code: 'agent-allowance-misplaced',
+        message: 'Tool-call and subagent allowances only apply to AI Agent nodes.',
+        severity: 'error',
+        nodeId: node.id,
+      });
     }
     if (node.type === 'command') {
       const timeout = node.config.timeoutSecs;
@@ -853,6 +957,16 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
           nodeId: node.id,
         });
       }
+    }
+  }
+  if (wf.limits !== undefined) {
+    const error = validateWorkflowLimits(wf.limits);
+    if (error !== null) {
+      issues.push({
+        code: 'workflow-limits-invalid',
+        message: error,
+        severity: 'error',
+      });
     }
   }
   return issues;

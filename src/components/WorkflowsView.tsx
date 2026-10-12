@@ -1,4 +1,4 @@
-import { RunOptionsDialog } from './RunControls';
+import { StartRunDialog, UsageLimitsDialog } from './RunControls';
 import { useEffect, useState } from 'react';
 import { ADAPTER_LABELS, createDefaultProfile, type AdapterKind } from '../lib/agents';
 import { getBackend } from '../lib/backend';
@@ -104,17 +104,16 @@ export function WorkflowsView(): React.JSX.Element {
     return () => clearInterval(timer);
   }, [overlayRunId, refreshRunOverlay, setRunMessage]);
   const [starting, setStarting] = useState(false);
-  const [runOptionsMode, setRunOptionsMode] = useState<'dry' | 'live' | null>(null);
+  const [startMode, setStartMode] = useState<'dry' | 'live' | null>(null);
+  const [limitsOpen, setLimitsOpen] = useState(false);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
+  // Previously entered input values, kept per workflow so reopening the
+  // start form restores them and switching workflows never leaks them.
   const [inputState, setInputState] = useState<{
     workflowId: string | null;
     values: Record<string, string>;
-    shown: boolean;
-    expanded: Record<string, boolean>;
-  }>({ workflowId: null, values: {}, shown: false, expanded: {} });
+  }>({ workflowId: null, values: {} });
   const inputValues = inputState.workflowId === active?.id ? inputState.values : {};
-  const showInputs = inputState.workflowId === active?.id && inputState.shown;
-  const expandedInputs = inputState.workflowId === active?.id ? inputState.expanded : {};
   const [goal, setGoal] = useState('');
   const [genRepoDir, setGenRepoDir] = useState<string>(
     () => readLocal('orchevia.genRepo.v1') ?? '',
@@ -385,51 +384,41 @@ export function WorkflowsView(): React.JSX.Element {
       });
   };
 
-  const runActive = (): void => {
+  // One live-start path for every run: the floating start form. Workflows
+  // without inputs still open it so saved limits can be reviewed or
+  // overridden before starting.
+  const openStartForm = (mode: 'dry' | 'live'): void => {
     if (active === null || starting) return;
-    const declaredInputs = active.definition.inputs ?? [];
-    // Warm the form with defaults on first open.
-    if (!showInputs && declaredInputs.length > 0) {
+    // Warm previously entered values with input defaults on first open.
+    if (inputState.workflowId !== active.id) {
       const seeded: Record<string, string> = {};
-      for (const input of declaredInputs) {
-        seeded[input.name] = inputValues[input.name] ?? input.default ?? '';
+      for (const input of active.definition.inputs ?? []) {
+        seeded[input.name] = input.default ?? '';
       }
-      setInputState({
-        workflowId: active.id,
-        values: seeded,
-        shown: true,
-        expanded: expandedInputs,
-      });
-      return;
+      setInputState({ workflowId: active.id, values: seeded });
     }
     setRunMessage(null);
+    setStartMode(mode);
+  };
+
+  const startFromDialog = async (
+    inputs: Record<string, string>,
+    options: import('../lib/run-controls').RunOptions,
+  ): Promise<void> => {
+    if (active === null) return;
     setStarting(true);
-    void (async () => {
-      try {
-        await saveActiveWorkflow();
-        const backend = getBackend();
-        const issues = await backend.validateWorkflow(active.definition);
-        const blocking = issues.filter((i) => i.severity === 'error');
-        if (blocking.length > 0) {
-          setRunMessage(`Cannot run: ${blocking[0]?.message ?? 'validation failed.'}`);
-          return;
-        }
-        const inputs = Object.fromEntries(
-          declaredInputs.map((input) => [
-            input.name,
-            inputValues[input.name] ?? input.default ?? '',
-          ]),
-        );
-        const { runId } = await backend.runWorkflow(active.id, inputs);
-        await refreshRuns();
-        await selectRun(runId);
-        setView('runs');
-      } catch (err) {
-        setRunMessage(errorMessage(err), 'error');
-      } finally {
-        setStarting(false);
-      }
-    })();
+    try {
+      await saveActiveWorkflow();
+      const { runId } = await getBackend().runWorkflow(active.id, inputs, options);
+      await refreshRuns();
+      await selectRun(runId);
+      setView('runs');
+    } catch (err) {
+      setRunMessage(errorMessage(err), 'error');
+      throw err;
+    } finally {
+      setStarting(false);
+    }
   };
 
   const deleteActive = (): void => {
@@ -901,20 +890,21 @@ export function WorkflowsView(): React.JSX.Element {
           <button
             className="btn"
             disabled={active === null || starting}
-            onClick={() => setRunOptionsMode('dry')}
+            onClick={() => openStartForm('dry')}
           >
             Dry run
           </button>
           <button
             className="btn btn-ghost"
             disabled={active === null || starting}
-            onClick={() => setRunOptionsMode('live')}
+            title="Edit this workflow's saved usage limits"
+            onClick={() => setLimitsOpen(true)}
           >
-            Run options
+            Usage limits
           </button>
           <button
             className="btn btn-primary"
-            onClick={runActive}
+            onClick={() => openStartForm('live')}
             disabled={active === null || starting}
           >
             {starting ? 'Starting…' : '▶ Run'}
@@ -929,27 +919,30 @@ export function WorkflowsView(): React.JSX.Element {
           </button>
         </fieldset>
       </div>
-      {runOptionsMode !== null && active !== null && (
-        <RunOptionsDialog
-          key={`${active.id}-${runOptionsMode}`}
+      {startMode !== null && active !== null && (
+        <StartRunDialog
+          key={`${active.id}-${startMode}`}
           workflow={active.definition}
-          dryRun={runOptionsMode === 'dry'}
-          onClose={() => setRunOptionsMode(null)}
-          onStart={async (inputs, options) => {
-            setStarting(true);
-            try {
-              await saveActiveWorkflow();
-              const { runId } = await getBackend().runWorkflow(
-                active.id,
-                inputs,
-                options,
-              );
-              await refreshRuns();
-              await selectRun(runId);
-              setView('runs');
-            } finally {
-              setStarting(false);
-            }
+          initialDryRun={startMode === 'dry'}
+          initialInputs={inputValues}
+          onInputsChange={(values) => {
+            setInputState({ workflowId: active.id, values });
+          }}
+          onClose={() => setStartMode(null)}
+          onStart={startFromDialog}
+        />
+      )}
+      {limitsOpen && active !== null && (
+        <UsageLimitsDialog
+          key={`limits-${active.id}`}
+          workflow={active.definition}
+          onClose={() => setLimitsOpen(false)}
+          onSave={async (limits) => {
+            const next = { ...active.definition };
+            if (limits === undefined) delete next.limits;
+            else next.limits = limits;
+            await saveActiveWorkflow(next);
+            await refreshWorkflows();
           }}
         />
       )}
@@ -963,102 +956,6 @@ export function WorkflowsView(): React.JSX.Element {
         >
           <span>{runMessage}</span>
         </Notice>
-      )}
-      {showInputs && (active.definition.inputs ?? []).length > 0 && (
-        <div style={{ padding: '12px 20px 0' }}>
-          <div className="notice" role="form" aria-label="Workflow inputs">
-            <strong>Run inputs:</strong>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-                gap: 10,
-                marginTop: 8,
-              }}
-            >
-              {(active.definition.inputs ?? []).map((input) => {
-                const value = inputValues[input.name] ?? input.default ?? '';
-                const expanded = expandedInputs[input.name] === true || value.length > 80;
-                return (
-                  <div key={input.name} className="field" style={{ marginBottom: 0 }}>
-                    <label className="field-label" htmlFor={`run-input-${input.name}`}>
-                      {input.label ?? input.name}
-                      {input.required === true ? ' *' : ''}
-                    </label>
-                    {expanded ? (
-                      <textarea
-                        id={`run-input-${input.name}`}
-                        className="textarea"
-                        rows={4}
-                        value={value}
-                        placeholder={input.default ?? ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setInputState((state) => ({
-                            ...state,
-                            values: { ...state.values, [input.name]: value },
-                          }));
-                        }}
-                      />
-                    ) : (
-                      <input
-                        id={`run-input-${input.name}`}
-                        className="input"
-                        value={value}
-                        placeholder={input.default ?? ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setInputState((state) => ({
-                            ...state,
-                            values: { ...state.values, [input.name]: value },
-                          }));
-                        }}
-                      />
-                    )}
-                    <button
-                      className="btn btn-ghost"
-                      style={{
-                        alignSelf: 'flex-start',
-                        padding: '2px 8px',
-                        fontSize: 12,
-                      }}
-                      aria-expanded={expanded}
-                      title={
-                        expanded ? 'Collapse to a single line' : 'Expand for long text'
-                      }
-                      onClick={() => {
-                        setInputState((state) => ({
-                          ...state,
-                          expanded: { ...state.expanded, [input.name]: !expanded },
-                        }));
-                      }}
-                    >
-                      {expanded ? 'Collapse ▲' : 'Expand ▼'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <button
-              className="btn btn-primary"
-              style={{ marginLeft: 8 }}
-              onClick={() => {
-                setInputState((state) => ({ ...state, shown: false }));
-                runActive();
-              }}
-            >
-              ▶ Run with inputs
-            </button>{' '}
-            <button
-              className="btn btn-ghost"
-              onClick={() => {
-                setInputState((state) => ({ ...state, shown: false }));
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
       )}
       {overlayRunId !== null && (
         <div style={{ padding: '12px 20px 0' }}>

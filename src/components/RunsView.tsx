@@ -1,6 +1,6 @@
 import { RunTimeline } from './RunTimeline';
-import { RecoveryDialog, SpendContinueDialog } from './RunControls';
-import { resultMetadata, type SpendPause } from '../lib/run-controls';
+import { RecoveryDialog, SpendContinueDialog, UsageContinueDialog } from './RunControls';
+import { resultMetadata, type SpendPause, type UsagePause } from '../lib/run-controls';
 import { successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -21,6 +21,66 @@ import { confirmDialog } from './ConfirmDialog';
 import { CloseButton } from './CloseButton';
 import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
+import { countAgentAttempts, reportedSpend } from '../lib/run-controls';
+import type { StoredNodeResult, StoredRun } from '../lib/workflow';
+
+/** Compact per-run usage line linking to the full Usage & costs page. */
+function RunUsageLine({
+  run,
+  results,
+  workflow,
+}: {
+  run: StoredRun;
+  results: StoredNodeResult[];
+  workflow: Workflow | null;
+}): React.JSX.Element | null {
+  const setView = useAppStore((s) => s.setView);
+  const dry = run.execution?.options.dryRun === true;
+  const limit = run.execution?.resolvedLimits?.maxAgentAttempts;
+  const consumed =
+    run.execution?.consumedAgentAttempts ??
+    (workflow ? countAgentAttempts(workflow, results) : 0);
+  const spend = workflow ? reportedSpend(workflow, results, dry) : null;
+  if (dry)
+    return (
+      <p className="field-hint">
+        Simulated run — no real usage.{' '}
+        <button
+          className="btn btn-ghost"
+          style={{ padding: '0 8px' }}
+          onClick={() => setView('usage')}
+        >
+          Usage & costs
+        </button>
+      </p>
+    );
+  return (
+    <p className="field-hint">
+      {limit === undefined ? (
+        <>{String(consumed)} agent attempts dispatched (no budget set)</>
+      ) : (
+        <>
+          {String(consumed)} of {String(limit)} agent attempts
+          {run.execution?.usagePause !== undefined ? ' · paused at budget' : ''}
+        </>
+      )}
+      {spend !== null && spend.reportedAttempts > 0 && (
+        <> · estimated API value USD {spend.reportedUsd.toFixed(4)}</>
+      )}
+      {spend !== null && spend.unknownAttempts > 0 && (
+        <> · {String(spend.unknownAttempts)} without USD reports</>
+      )}
+      .{' '}
+      <button
+        className="btn btn-ghost"
+        style={{ padding: '0 8px' }}
+        onClick={() => setView('usage')}
+      >
+        Usage & costs
+      </button>
+    </p>
+  );
+}
 
 /** A bounded output viewport follows live text until the reader scrolls up. */
 function OutputBlock({
@@ -168,6 +228,10 @@ export function RunsView(): React.JSX.Element {
   const [spendDecision, setSpendDecision] = useState<{
     runId: string;
     pause: SpendPause;
+  } | null>(null);
+  const [usageDecision, setUsageDecision] = useState<{
+    runId: string;
+    pause: UsagePause;
   } | null>(null);
   const [memoryMessage, setMemoryMessage, , memoryMessageEvent] =
     useNoticeMessage('info');
@@ -346,6 +410,7 @@ export function RunsView(): React.JSX.Element {
   const [reportOpen, setReportOpen] = useState(false);
   const [copiedReport, setCopiedReport] = useState(false);
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
+  const setView = useAppStore((s) => s.setView);
   const [findingsState, setFindingsState] = useState<{
     runId: string;
     findings: GroupedFinding[];
@@ -498,10 +563,26 @@ export function RunsView(): React.JSX.Element {
           onContinued={() => refreshRunData()}
         />
       )}
+      {usageDecision !== null && (
+        <UsageContinueDialog
+          key={`${usageDecision.runId}-${String(usageDecision.pause.id)}`}
+          runId={usageDecision.runId}
+          pause={usageDecision.pause}
+          onClose={() => setUsageDecision(null)}
+          onContinued={() => refreshRunData()}
+        />
+      )}
       <div className="topbar">
         <h1>Runs</h1>
         <span className="topbar-sub">History of explicit workflow executions.</span>
         <div className="topbar-actions">
+          <button
+            className="btn btn-ghost"
+            title="Aggregated usage, estimates and subscription settings"
+            onClick={() => setView('usage')}
+          >
+            Usage & costs
+          </button>
           <button className="btn" onClick={() => void refreshRunData()}>
             Refresh
           </button>
@@ -623,6 +704,7 @@ export function RunsView(): React.JSX.Element {
                     remain historical.
                   </p>
                 )}
+                <RunUsageLine run={activeRun} results={results} workflow={runWorkflow} />
                 <div
                   style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}
                 >
@@ -665,8 +747,20 @@ export function RunsView(): React.JSX.Element {
                       Review spend pause
                     </button>
                   )}
+                  {activeRun.status === 'paused' && activeRun.execution?.usagePause && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const pause = activeRun.execution?.usagePause;
+                        if (pause) setUsageDecision({ runId: activeRun.id, pause });
+                      }}
+                    >
+                      Review usage pause
+                    </button>
+                  )}
                   {activeRun.status === 'paused' &&
-                    activeRun.execution?.spendPause === undefined && (
+                    activeRun.execution?.spendPause === undefined &&
+                    activeRun.execution?.usagePause === undefined && (
                       <>
                         <button
                           className="btn btn-primary"
@@ -700,7 +794,8 @@ export function RunsView(): React.JSX.Element {
                   />
                 )}
                 {activeRun.status === 'paused' &&
-                  activeRun.execution?.spendPause === undefined && (
+                  activeRun.execution?.spendPause === undefined &&
+                  activeRun.execution?.usagePause === undefined && (
                     <div className="field" style={{ maxWidth: 560 }}>
                       <label className="field-label" htmlFor="approve-note">
                         Note (optional, stored with the decision)

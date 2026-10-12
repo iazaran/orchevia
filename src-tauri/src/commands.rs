@@ -215,11 +215,59 @@ pub async fn continue_spend_run(
     expected_pause_id: i64,
     limit: Option<f64>,
 ) -> Result<(), String> {
-    state
+    let workflow = state
         .engine
-        .continue_spend_run(&run_id, expected_pause_id, limit)
-        .await
+        .claim_spend_continuation(&run_id, expected_pause_id, limit)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        Engine::new(db, cancel).execute(workflow, run_id).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn continue_usage_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    expected_pause_id: i64,
+    extension: Option<u32>,
+) -> Result<(), String> {
+    let workflow = state
+        .engine
+        .claim_usage_continuation(&run_id, expected_pause_id, extension)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        Engine::new(db, cancel).execute(workflow, run_id).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn usage_summary(
+    state: State<AppState>,
+    filter: Option<orchevia_core::usage::UsageFilter>,
+) -> Result<orchevia_core::usage::UsageSummary, String> {
+    orchevia_core::usage::usage_summary(&state.db, &filter.unwrap_or_default())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn adapter_capabilities(
+    state: State<AppState>,
+) -> Result<Vec<orchevia_core::usage::AdapterCapabilities>, String> {
+    let _ = state;
+    Ok([
+        orchevia_core::agents::AdapterKind::Claude,
+        orchevia_core::agents::AdapterKind::Codex,
+        orchevia_core::agents::AdapterKind::Custom,
+    ]
+    .into_iter()
+    .map(orchevia_core::usage::adapter_capabilities)
+    .collect())
 }
 
 #[tauri::command]
@@ -771,6 +819,10 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "ui.theme",
     "onboarding.completed",
     "workflow.assistanceProfileId",
+    "usage.subscriptionFees",
+    "usage.extraCharges",
+    "usage.allocationShare",
+    "usage.allocationMethod",
 ];
 
 /// User-taught model names per adapter ("claude" | "codex" | "custom").
@@ -865,9 +917,13 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
             return Err("Scheduler interval must be 30–3600 s.".to_string());
         }
     }
-    if value.len() > 200 {
+    // Subscription fee lists are JSON documents; they stay bounded but need
+    // more room than scalar preferences.
+    let max_len = if key.starts_with("usage.") { 8000 } else { 200 };
+    if value.len() > max_len {
         return Err("Setting value too long.".to_string());
     }
+    orchevia_core::usage::validate_usage_setting(key, value)?;
     db.set_setting(key, value).map_err(|e| e.to_string())
 }
 
@@ -1815,6 +1871,33 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_settings_validate_before_storage_and_preserve_legacy_period_labels() {
+        let db = orchevia_core::db::SqliteDb::open_in_memory().unwrap();
+        super::set_setting_for_db(&db, "usage.allocationShare", "50").unwrap();
+        for value in ["101", "-1", "NaN", "Infinity"] {
+            assert!(super::set_setting_for_db(&db, "usage.allocationShare", value).is_err());
+        }
+        assert_eq!(
+            db.get_setting("usage.allocationShare").unwrap().as_deref(),
+            Some("50")
+        );
+        assert!(super::set_setting_for_db(&db, "usage.allocationMethod", "invented").is_err());
+        assert!(super::set_setting_for_db(
+            &db,
+            "usage.subscriptionFees",
+            r#"[{"label":"Fee","amountUsd":-1,"period":"old label"}]"#
+        )
+        .is_err());
+        assert!(super::set_setting_for_db(&db, "usage.extraCharges", "not json").is_err());
+        super::set_setting_for_db(
+            &db,
+            "usage.subscriptionFees",
+            r#"[{"label":"Fee","amountUsd":2,"period":"old label"}]"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn assistance_setting_round_trips_and_unknown_keys_are_rejected() {
         let db = orchevia_core::db::SqliteDb::open_in_memory().expect("db");

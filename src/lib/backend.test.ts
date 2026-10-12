@@ -3,6 +3,336 @@ import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
 import { createEmptyWorkflow } from './workflow';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
+import type { StoredNodeResult, StoredRun } from './workflow';
+
+function analyticsBackend(
+  rows: Partial<StoredNodeResult>[],
+  startedAt = '2026-10-01T00:00:00.000Z',
+): ReturnType<typeof __setMockBackendForTests> {
+  localStorage.clear();
+  const definition = createEmptyWorkflow('Recorded name');
+  definition.nodes.push({ id: 'a', type: 'agent', position: { x: 0, y: 0 }, config: {} });
+  const run: StoredRun = {
+    id: 'analytics',
+    workflowId: definition.id,
+    status: 'succeeded',
+    startedAt,
+  };
+  localStorage.setItem(
+    'orchevia.mock-backend.v1',
+    JSON.stringify({
+      workflows: [
+        {
+          id: definition.id,
+          name: definition.name,
+          definition,
+          createdAt: startedAt,
+          updatedAt: startedAt,
+        },
+      ],
+      runs: [run],
+      runWorkflows: [[run.id, definition]],
+      results: [
+        [
+          run.id,
+          rows.map((row, i) => ({
+            id: i + 1,
+            runId: run.id,
+            nodeId: 'a',
+            status: 'succeeded',
+            attempt: 1,
+            stdout: '',
+            stderr: '',
+            startedAt,
+            ...row,
+          })),
+        ],
+      ],
+    }),
+  );
+  return __setMockBackendForTests();
+}
+
+it('usage analytics counts loop visits while excluding undispatched Agent rows', async () => {
+  const usage = JSON.stringify({
+    agentUsage: { adapter: 'claude', model: 'm', reported_cost_usd: 2 },
+  });
+  const backend = analyticsBackend([
+    { structuredJson: usage },
+    { structuredJson: usage },
+    { status: 'skipped' },
+    { status: 'guardPaused' },
+  ]);
+  const summary = await backend.usageSummary();
+  expect(summary.totals.agentAttempts).toBe(2);
+  expect(summary.totals.reportedUsd).toBe(4);
+  expect(summary.totals.unknownUsdAttempts).toBe(0);
+});
+
+it('attributes profile usage to saved run nodes, including deleted and unknown profiles', async () => {
+  localStorage.clear();
+  const snapshot = createEmptyWorkflow('Recorded workflow');
+  snapshot.nodes.push(
+    {
+      id: 'a',
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { agentProfileId: 'p1' },
+    },
+    {
+      id: 'b',
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { agentProfileId: 'deleted-profile' },
+    },
+    { id: 'legacy', type: 'agent', position: { x: 0, y: 0 }, config: {} },
+  );
+  const current = structuredClone(snapshot);
+  current.name = 'Renamed workflow';
+  const currentAgent = current.nodes.find((node) => node.id === 'a');
+  if (currentAgent) currentAgent.config.agentProfileId = 'deleted-profile';
+  const first = '2026-10-01T00:00:00.000Z';
+  const last = '2026-10-02T00:00:00.000Z';
+  const runs: StoredRun[] = [
+    { id: 'r1', workflowId: snapshot.id, startedAt: first, status: 'succeeded' },
+    { id: 'r2', workflowId: snapshot.id, startedAt: last, status: 'succeeded' },
+    { id: 'old', workflowId: snapshot.id, startedAt: first, status: 'succeeded' },
+  ];
+  const envelope = (cost?: number): string =>
+    JSON.stringify({
+      agentUsage: {
+        adapter: 'claude',
+        model: 'shared',
+        ...(cost !== undefined ? { reported_cost_usd: cost } : {}),
+      },
+    });
+  const row = (
+    id: number,
+    runId: string,
+    nodeId: string,
+    durationMs: number,
+    structuredJson: string,
+    status: StoredNodeResult['status'] = 'succeeded',
+  ): StoredNodeResult => ({
+    id,
+    runId,
+    nodeId,
+    durationMs,
+    structuredJson,
+    status,
+    attempt: 1,
+    startedAt: first,
+    stdout: '',
+    stderr: '',
+  });
+  localStorage.setItem(
+    'orchevia.mock-backend.v1',
+    JSON.stringify({
+      workflows: [
+        {
+          id: current.id,
+          name: current.name,
+          definition: current,
+          createdAt: first,
+          updatedAt: last,
+        },
+      ],
+      profiles: [
+        { ...createDefaultProfile('claude'), id: 'p1', name: 'Current renamed profile' },
+      ],
+      runs,
+      runWorkflows: [
+        ['r1', snapshot],
+        ['r2', snapshot],
+      ],
+      results: [
+        [
+          'r1',
+          [
+            row(1, 'r1', 'a', 100, envelope(1)),
+            row(2, 'r1', 'a', 200, envelope(), 'retrying'),
+            row(3, 'r1', 'a', 300, envelope(0)),
+            row(4, 'r1', 'b', 400, envelope(2)),
+            row(
+              5,
+              'r1',
+              'legacy',
+              500,
+              JSON.stringify({ agentUsage: { adapter: 'custom', model: 'text' } }),
+              'failed',
+            ),
+            row(6, 'r1', 'a', 900, JSON.stringify({ reusedFrom: 'previous' })),
+            row(7, 'r1', 'a', 900, JSON.stringify({ simulated: true })),
+            row(8, 'r1', 'a', 900, '{}', 'guardPaused'),
+            row(9, 'r1', 'a', 900, JSON.stringify({ notDispatched: true }), 'failed'),
+          ],
+        ],
+        ['r2', [row(10, 'r2', 'a', 600, envelope(3))]],
+        // Missing historical snapshot: today's assignment is not evidence.
+        ['old', [row(11, 'old', 'a', 700, envelope())]],
+      ],
+    }),
+  );
+  const backend = __setMockBackendForTests();
+  const summary = await backend.usageSummary();
+  expect(summary).toHaveProperty('byProfile');
+  expect(summary.byProfile).toEqual([
+    {
+      profileId: 'p1',
+      runs: 2,
+      agentAttempts: 4,
+      totalDurationMs: 1200,
+      lastRunAt: last,
+      reportedUsd: 4,
+      reportedUsdAttempts: 3,
+      unknownUsdAttempts: 1,
+    },
+    {
+      profileId: null,
+      runs: 2,
+      agentAttempts: 2,
+      totalDurationMs: 1200,
+      lastRunAt: first,
+      reportedUsd: 0,
+      reportedUsdAttempts: 0,
+      unknownUsdAttempts: 2,
+    },
+    {
+      profileId: 'deleted-profile',
+      runs: 1,
+      agentAttempts: 1,
+      totalDurationMs: 400,
+      lastRunAt: first,
+      reportedUsd: 2,
+      reportedUsdAttempts: 1,
+      unknownUsdAttempts: 0,
+    },
+  ]);
+  expect(summary.totals.agentAttempts).toBe(7);
+  expect(summary.totals.reportedUsd).toBe(6);
+  expect(summary.byModel).toHaveLength(2);
+  for (const filter of [
+    { adapters: ['codex'] },
+    { models: ['other'] },
+    { workflowIds: ['other'] },
+    { to: first },
+    { from: '2026-10-03T00:00:00.000Z' },
+  ])
+    expect((await backend.usageSummary(filter)).byProfile).toEqual([]);
+  const filtered = await backend.usageSummary({
+    workflowIds: [snapshot.id],
+    adapters: ['claude'],
+    models: ['shared'],
+    from: last,
+  });
+  expect(filtered.byProfile).toEqual([
+    {
+      profileId: 'p1',
+      runs: 1,
+      agentAttempts: 1,
+      totalDurationMs: 600,
+      lastRunAt: last,
+      reportedUsd: 3,
+      reportedUsdAttempts: 1,
+      unknownUsdAttempts: 0,
+    },
+  ]);
+});
+
+it('usage analytics normalizes cache tokens by adapter and preserves missing coverage', async () => {
+  const backend = analyticsBackend([
+    {
+      structuredJson: JSON.stringify({
+        agentUsage: {
+          adapter: 'codex',
+          model: 'c',
+          input_tokens: 23,
+          cached_input_tokens: 20,
+          output_tokens: 3,
+        },
+      }),
+    },
+    {
+      status: 'failed',
+      structuredJson: JSON.stringify({
+        agentUsage: {
+          adapter: 'claude',
+          model: 'm',
+          input_tokens: 10,
+          cache_read_input_tokens: 30,
+          cache_creation_input_tokens: 20,
+          output_tokens: 5,
+        },
+      }),
+    },
+    {
+      status: 'cancelled',
+      structuredJson: JSON.stringify({
+        agentUsage: { adapter: 'custom', model: 'text' },
+      }),
+    },
+  ]);
+  const summary = await backend.usageSummary();
+  expect(summary.totals.inputTokens).toBe(83);
+  expect(summary.totals.outputTokens).toBe(8);
+  expect(summary.totals.coverage.inputTokens).toBe(2);
+  expect(summary.totals.coverage.toolCalls).toBe(0);
+  expect(summary.totals.coverage.subagents).toBe(0);
+});
+
+it('usage provider filters exclude unmatched runs and apply RFC3339 instants', async () => {
+  const backend = analyticsBackend([
+    { structuredJson: JSON.stringify({ agentUsage: { adapter: 'claude', model: 'm' } }) },
+  ]);
+  expect((await backend.usageSummary({ adapters: ['codex'] })).totals.runs).toBe(0);
+  expect(
+    (
+      await backend.usageSummary({
+        from: '2026-10-01T04:00:00+04:00',
+        to: '2026-10-01T04:00:01+04:00',
+      })
+    ).totals.runs,
+  ).toBe(1);
+  expect(
+    (await backend.usageSummary({ to: '2026-10-01T04:00:00+04:00' })).totals.runs,
+  ).toBe(0);
+  await expect(backend.usageSummary({ from: '2026-10-01' })).rejects.toThrow('RFC 3339');
+});
+
+it('rejects ordinary live mock starts with structural validation errors', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Invalid');
+  wf.edges.push({ id: 'dangling', source: 'missing', target: wf.nodes[1]!.id });
+  await backend.saveWorkflow(wf);
+  await expect(backend.runWorkflow(wf.id, {})).rejects.toThrow();
+  expect(await backend.listRuns()).toHaveLength(0);
+});
+
+it('rejects invalid usage settings without overwriting saved values', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.setSetting('usage.allocationShare', '50');
+  for (const value of ['101', '-1', 'NaN', 'Infinity']) {
+    await expect(backend.setSetting('usage.allocationShare', value)).rejects.toThrow();
+  }
+  expect(await backend.getSetting('usage.allocationShare')).toBe('50');
+  await expect(
+    backend.setSetting('usage.allocationMethod', 'invented'),
+  ).rejects.toThrow();
+  await expect(
+    backend.setSetting(
+      'usage.subscriptionFees',
+      '[{"label":"Fee","amountUsd":-1,"period":"old label"}]',
+    ),
+  ).rejects.toThrow();
+  await expect(backend.setSetting('usage.extraCharges', 'not json')).rejects.toThrow();
+  await backend.setSetting(
+    'usage.subscriptionFees',
+    '[{"label":"Fee","amountUsd":2,"period":"old label"}]',
+  );
+  expect(await backend.getSetting('usage.subscriptionFees')).toContain('old label');
+});
 
 describe('mock backend (browser dev)', () => {
   it('dry-runs all branches without profiles and recovers with explicit choices', async () => {
@@ -719,6 +1049,9 @@ it('runs the built-in ticket implementation with simulated ticket aliases', asyn
     fastReview: profile.id,
     deepReview: profile.id,
   }).workflow;
+  workflow.defaults = { repoDir: '/mock/repository' };
+  const ticket = workflow.nodes.find((node) => node.type === 'ticket');
+  if (ticket) ticket.config.mcpServerId = 'mock-tickets';
   // Stop after implementation to exercise the real built-in prompt without review-loop simulation.
   const implement = workflow.nodes.find((n) => n.label === 'Implement')!;
   const end = workflow.nodes.find((n) => n.type === 'end')!;
@@ -739,3 +1072,83 @@ it('runs the built-in ticket implementation with simulated ticket aliases', asyn
   expect(result.stdout).toContain('Implement DEV-1:');
   expect(result.stdout).toContain('Mock ticket DEV-1');
 });
+
+it('enforces the mock attempt budget and continues only with an explicit extension', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = createDefaultProfile('claude');
+  await backend.saveAgentProfile(profile);
+  const workflow = createEmptyWorkflow('Mock budget');
+  const agent = (id: string): (typeof workflow.nodes)[number] => ({
+    id,
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: profile.id, prompt: 'Work' },
+  });
+  workflow.nodes.splice(1, 0, agent('a1'), agent('a2'));
+  workflow.edges = [
+    { id: 'e0', source: workflow.nodes[0]!.id, target: 'a1' },
+    { id: 'e1', source: 'a1', target: 'a2' },
+    { id: 'e2', source: 'a2', target: workflow.nodes.at(-1)!.id },
+  ];
+  const stored = await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow(stored.id, {}, { maxAgentAttempts: 1 });
+  await vi.waitFor(
+    async () => {
+      const run = await backend.getRun(runId);
+      expect(run?.status).toBe('paused');
+    },
+    { timeout: 8000 },
+  );
+  const paused = await backend.getRun(runId);
+  expect(paused?.execution?.usagePause?.consumedAttempts).toBe(1);
+  expect(paused?.execution?.resolvedLimits?.maxAgentAttempts).toBe(1);
+  // Ordinary approval cannot clear a usage pause.
+  await expect(backend.approveRun(runId, true)).rejects.toThrow('not paused');
+  // Stale pause ids and non-extending budgets are rejected.
+  await expect(backend.continueUsageRun(runId, 9999, 2)).rejects.toThrow('not paused');
+  await expect(
+    backend.continueUsageRun(runId, paused?.execution?.usagePause?.id ?? 0, 1),
+  ).rejects.toThrow('exceeding');
+  await expect(
+    backend.continueUsageRun(runId, paused?.execution?.usagePause?.id ?? 0, 10_001),
+  ).rejects.toThrow();
+  await backend.continueUsageRun(runId, paused?.execution?.usagePause?.id ?? 0, 2);
+  await vi.waitFor(
+    async () => {
+      const run = await backend.getRun(runId);
+      expect(run?.status).toBe('succeeded');
+    },
+    { timeout: 8000 },
+  );
+  const done = await backend.getRun(runId);
+  expect(done?.execution?.consumedAgentAttempts).toBe(2);
+});
+
+it('aggregates usage over more than fifty runs with date boundaries', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Bulk history');
+  const stored = await backend.saveWorkflow(workflow);
+  // Runs start synchronously; background simulation finishes on its own.
+  // Analytics must scan all of them, not a capped recent list.
+  for (let n = 0; n < 55; n++) await backend.runWorkflow(stored.id, {});
+  await vi.waitFor(
+    async () => {
+      const summary = await backend.usageSummary();
+      expect(summary.runsScanned).toBe(55);
+      expect(summary.totals.runs).toBe(55);
+    },
+    { timeout: 15000 },
+  );
+  const summary = await backend.usageSummary();
+  // Command-only history: no agent attempts, no fabricated USD.
+  expect(summary.totals.agentAttempts).toBe(0);
+  expect(summary.totals.reportedUsd).toBe(0);
+  expect(summary.byWorkflow).toHaveLength(1);
+  const future = await backend.usageSummary({ from: '2999-01-01T00:00:00.000Z' });
+  expect(future.totals.runs).toBe(0);
+  await expect(backend.usageSummary({ from: 'not-a-date' })).rejects.toThrow(
+    "Invalid 'from' date",
+  );
+}, 20000);

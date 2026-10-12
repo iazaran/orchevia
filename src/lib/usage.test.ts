@@ -1,13 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import {
-  aggregateProfileUsage,
   extractUsageHints,
   formatDurationMs,
   agentContextDetails,
+  billingPeriod,
+  measuredUsage,
 } from './usage';
-import { createDefaultProfile } from './agents';
 
 describe('usage helpers', () => {
+  it('preserves measured zeroes and validates explicit billing-period boundaries', () => {
+    const known = measuredUsage(
+      {
+        input_tokens: 0,
+        output_tokens: 0,
+        observed_tool_calls: 0,
+        reasoning_output_tokens: 2,
+      },
+      'codex',
+    );
+    expect(known.coverage.inputTokens).toBe(1);
+    expect(known.coverage.toolCalls).toBe(1);
+    expect(known.coverage.subagents).toBe(0);
+    expect(known.reasoningOutputTokens).toBe(2);
+    expect(
+      measuredUsage({ input_tokens: 1.5, observed_tool_calls: -1 }, 'codex').coverage
+        .inputTokens,
+    ).toBe(0);
+    expect(billingPeriod('2026-02-01/2026-03-01')).toEqual({
+      from: '2026-02-01',
+      to: '2026-03-01',
+    });
+    expect(billingPeriod('2026-02-30/2026-03-01')).toBeNull();
+    expect(billingPeriod('2026-03-01/2026-03-01')).toBeNull();
+    expect(billingPeriod('monthly')).toBeNull();
+  });
   it('shows explicit session reuse and provider counts without invented usage', () => {
     const details = agentContextDetails(
       JSON.stringify({
@@ -43,43 +69,6 @@ describe('usage helpers', () => {
     const hints = extractUsageHints('done\ninput tokens: 1200, output tokens: 300', '');
     expect(hints.length).toBeGreaterThan(0);
     expect(extractUsageHints('hello world', '')).toHaveLength(0);
-  });
-
-  it('aggregates per-profile runs and durations', () => {
-    const profile = { ...createDefaultProfile('claude'), id: 'p1', name: 'Claude' };
-    const workflows = [
-      {
-        id: 'wf1',
-        definition: {
-          nodes: [{ id: 'n1', type: 'agent', config: { agentProfileId: 'p1' } }],
-        },
-      },
-    ];
-    const runs = [
-      {
-        id: 'r1',
-        workflowId: 'wf1',
-        status: 'succeeded' as const,
-        startedAt: '2026-01-01T00:00:00Z',
-      },
-    ];
-    const runResults = {
-      r1: [
-        {
-          id: 1,
-          runId: 'r1',
-          nodeId: 'n1',
-          status: 'succeeded' as const,
-          stdout: 'ok',
-          stderr: '',
-          startedAt: '2026-01-01T00:00:00Z',
-          durationMs: 1500,
-        },
-      ],
-    };
-    const usage = aggregateProfileUsage([profile], runs, runResults, workflows);
-    expect(usage[0]?.runs).toBe(1);
-    expect(usage[0]?.totalDurationMs).toBe(1500);
   });
 
   it('formats durations', () => {

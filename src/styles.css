@@ -962,6 +962,17 @@ input[type='radio'] {
   stroke-width: 3;
 }
 
+/* Connection highlight on node hover/focus (v0.1.14): stronger stroke plus a
+   glow, never a new color — selection, edge labels, node accents and
+   run-status styling keep their semantic cues. */
+.react-flow__edge.edge-connected .react-flow__edge-path {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 3px var(--accent-strong));
+}
+.react-flow__edge.edge-connected .react-flow__edge-text {
+  font-weight: 700;
+}
+
 select.input {
   appearance: none;
   -webkit-appearance: none;
@@ -1898,4 +1909,91 @@ details[open] > .gen-summary::after {
     max-height: 220px;
     overflow: auto;
   }
+}
+
+/* Usage & costs page (v0.1.14): cards, responsive filters, bounded tables. */
+.usage-view section {
+  margin-bottom: 24px;
+}
+.usage-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.usage-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--bg-1);
+  padding: 12px 14px;
+  min-width: 0;
+}
+.usage-card-value {
+  font-size: 1.4em;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-card-label {
+  color: var(--text-2);
+  font-size: 0.85em;
+  margin-top: 4px;
+}
+.usage-chart {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+}
+.usage-bar {
+  fill: var(--accent-strong);
+}
+.table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.table-wrap table {
+  border-collapse: collapse;
+  min-width: 560px;
+  width: 100%;
+}
+.table-wrap th,
+.table-wrap td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-money-list {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+.usage-money-list li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.usage-add-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: end;
+  margin: 8px 0;
+}
+.usage-add-row .input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+@media (max-width: 700px) {
+  .usage-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+[data-theme='light'] .usage-bar {
+  fill: var(--accent-strong);
 }

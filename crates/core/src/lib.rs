@@ -25,6 +25,7 @@ pub mod templates;
 pub mod ticket;
 pub mod tools;
 pub mod trust;
+pub mod usage;
 pub mod workflow;
 
 pub use agents::AgentProfile;

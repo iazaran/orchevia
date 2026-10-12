@@ -11,6 +11,7 @@ import { EnvironmentView } from './components/EnvironmentView';
 import { MemoryView } from './components/MemoryView';
 import { RunsView } from './components/RunsView';
 import { TemplatesView } from './components/TemplatesView';
+import { UsageView } from './components/UsageView';
 import { WorkflowsView } from './components/WorkflowsView';
 import { useAppStore, type View } from './store';
 import { errorMessage } from './lib/errors';
@@ -26,6 +27,7 @@ const NAV: { id: View; label: string; icon: string }[] = [
   { id: 'memory', label: 'Memory', icon: '🧠' },
   { id: 'runs', label: 'Runs', icon: '▶' },
   { id: 'environment', label: 'Environment', icon: '◍' },
+  { id: 'usage', label: 'Usage & costs', icon: '◔' },
 ];
 
 export function App(): React.JSX.Element {
@@ -190,6 +192,7 @@ export function App(): React.JSX.Element {
           {view === 'memory' && <MemoryView />}
           {view === 'runs' && <RunsView />}
           {view === 'environment' && <EnvironmentView />}
+          {view === 'usage' && <UsageView />}
         </ViewErrorBoundary>
       </main>
     </div>

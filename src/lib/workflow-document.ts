@@ -27,6 +27,7 @@ export interface DeveloperWorkflow {
   edges: { from: string; to: string; label?: string }[];
   inputs?: Workflow['inputs'];
   defaults?: Workflow['defaults'];
+  limits?: Workflow['limits'];
 }
 const configKeys = [
   'executable',
@@ -38,6 +39,8 @@ const configKeys = [
   'sessionMaxTurns',
   'contextRefs',
   'contextMaxChars',
+  'maxToolCalls',
+  'maxSubagents',
   'inputRefs',
   'timeoutSecs',
   'extendOnOutput',
@@ -113,6 +116,8 @@ function configShape(value: unknown, raw = false): void {
   stringsField(config, 'contextRefs');
   uintField(config, 'sessionMaxTurns', false, 4294967295);
   uintField(config, 'contextMaxChars', false, 4294967295);
+  uintField(config, 'maxToolCalls', false, 4294967295);
+  uintField(config, 'maxSubagents', false, 4294967295);
   uintField(config, 'timeoutSecs');
   uintField(config, 'maxVisits', false, 4294967295);
   boolField(config, 'extendOnOutput');
@@ -222,6 +227,23 @@ function workflowFieldsShape(value: Record<string, unknown>): void {
     const defaults = objectShape(value.defaults, 'defaults');
     stringField(defaults, 'repoDir');
     stringField(defaults, 'branch');
+  }
+  if (value.limits === null) delete value.limits;
+  if (value.limits !== undefined) {
+    const limits = objectShape(value.limits, 'limits');
+    for (const key of Object.keys(limits))
+      if (
+        !['maxAgentAttempts', 'maxToolCalls', 'maxSubagents', 'spendLimitUsd'].includes(
+          key,
+        )
+      )
+        throw new Error(`Unknown limits field '${key}'.`);
+    for (const key of ['maxAgentAttempts', 'maxToolCalls', 'maxSubagents'] as const)
+      uintField(limits, key, false, 4294967295);
+    if (limits.spendLimitUsd === null) delete limits.spendLimitUsd;
+    const spend: unknown = limits.spendLimitUsd;
+    if (spend !== undefined && (typeof spend !== 'number' || !Number.isFinite(spend)))
+      throw new Error("Invalid limits: 'spendLimitUsd' must be a finite number.");
   }
   if (value.inputs !== undefined) {
     if (!Array.isArray(value.inputs))
@@ -361,6 +383,7 @@ export function encodeDocument(
     }),
     ...(workflow.inputs === undefined ? {} : { inputs: workflow.inputs }),
     ...(workflow.defaults === undefined ? {} : { defaults: workflow.defaults }),
+    ...(workflow.limits === undefined ? {} : { limits: workflow.limits }),
   };
   return {
     json: JSON.stringify(doc, null, 2),
@@ -437,7 +460,9 @@ export function decodeDocument(
       'Invalid developer workflow: expected version 1, name, nodes and edges.',
     );
   for (const key of Object.keys(doc))
-    if (!['version', 'name', 'nodes', 'edges', 'inputs', 'defaults'].includes(key))
+    if (
+      !['version', 'name', 'nodes', 'edges', 'inputs', 'defaults', 'limits'].includes(key)
+    )
       throw new Error(`Unknown document field '${key}'.`);
   const ids = Object.create(null) as Record<string, string>;
   const unique = new Set<string>();
@@ -550,5 +575,6 @@ export function decodeDocument(
     edges,
     ...(doc.inputs === undefined ? {} : { inputs: doc.inputs }),
     ...(doc.defaults === undefined ? {} : { defaults: doc.defaults }),
+    ...(doc.limits === undefined ? {} : { limits: doc.limits }),
   };
 }

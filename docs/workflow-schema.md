@@ -195,13 +195,23 @@ workflow definitions. `runWorkflow(workflowId, inputs, options)` accepts optiona
 - `dryRun`: boolean, default false.
 - `fixtures`: node-id map of ordered fixture results; allowed only for dry-runs.
 - `spendLimitUsd`: positive finite number; ordinary execution only, default absent.
+- `maxAgentAttempts` / `maxToolCalls` / `maxSubagents`: per-run overrides of the
+  saved workflow limits (whole numbers ≥ 1 within hard bounds); absent inherits.
+- `ignoreSavedLimits`: when true, saved workflow limits are ignored for this run
+  while explicit overrides still apply.
 
-Stored runs include `execution.options`, optional `execution.recoveredFrom`,
-per-node `execution.recoveryChoices`, and an optional `execution.spendPause`
-containing its unique `id` and `reportedUsd`. Existing SQLite databases migrate
-additively with ordinary execution defaults. Fixtures cannot set reserved execution
-metadata. New commands remain thin Backend → Tauri → core calls:
-`previewRecovery`, `recoverRun`, and `continueSpendRun`.
+Saved workflows may carry optional `limits` (`maxAgentAttempts`,
+`maxToolCalls`, `maxSubagents`, `spendLimitUsd`) and per-Agent-node
+`maxToolCalls` / `maxSubagents` allowances; all are mirrored in validation,
+Simple JSON (document v1) and generation assistance, and require no schema
+migration. Stored runs include `execution.options`, optional
+`execution.recoveredFrom`, per-node `execution.recoveryChoices`, snapshotted
+`execution.resolvedLimits`, a persisted `execution.consumedAgentAttempts` counter, and optional `execution.spendPause` / `execution.usagePause` guards,
+each with its unique `id`. Existing SQLite databases migrate additively with
+ordinary execution defaults. Fixtures cannot set reserved execution metadata.
+New commands remain thin Backend → Tauri → core calls: `previewRecovery`,
+`recoverRun`, `continueSpendRun`, `continueUsageRun`, `usageSummary`, and
+`adapterCapabilities`.
 
 Recovery previews include a source fingerprint and per-node allowed choices.
 Submission requires those decisions and a request id for idempotence. Retained

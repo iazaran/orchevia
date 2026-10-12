@@ -45,6 +45,15 @@ A failed node with no taken `failure` edge fails the run immediately
 going — the recovery branch is a normal path from there. Unknown labels warn at
 validation and behave as success edges.
 
+Structured Agent responses that identify a provider budget/turn limit, or that
+lack a completed structured result, are incomplete work. They fail the run without
+taking ordinary failure edges, so a publish or approval fallback cannot treat an
+unfinished review as clearance. Partial output is preserved. Adjust any provider
+profile cap and use deliberate failed-run recovery before replaying such work;
+extending an Orchevia attempt budget does not change a provider's own cap.
+Explicit local process timeouts retain their configured retry and failure-recovery
+behavior; they are distinguished from unexpected missing terminal responses.
+
 ## Conditions
 
 Small deterministic formulas: `<variable> <operator> <literal>`, joined by one
@@ -214,7 +223,7 @@ source provider-session metadata. Unavailable additional visits fail instead of
 silently replaying a tool. Repeated requests with the same recovery request id
 return the existing child; conflicting decisions are rejected.
 
-## Timeline and spend pauses
+## Timeline, spend and usage pauses
 
 Runs places attempts and repeated visits on a common timestamp axis. Concurrent
 bars overlap; elapsed time comes from run start/end instead of summed durations.
@@ -227,6 +236,13 @@ The optional [reported-spend guard](workflow-costs.md#reported-spend-guard) crea
 a distinct durable pause. Ordinary Approve cannot bypass it. Review the spend
 pause to increase the threshold or explicitly continue without it; Cancel remains
 available. Pure graph completion after the final tool can finish without a pause.
+
+The [workflow usage budget](workflow-costs.md#workflow-usage-limits-v0114) works
+the same way for dispatched Agent attempts: exhaustion records a `guardPaused`
+usage row (never a success marker) and pauses durably. Review the usage pause to
+extend the budget explicitly or continue without the guard; ordinary approval
+cannot clear it, and stale or duplicate continuations are rejected. Budget-limited
+reviews contribute no findings, approvals or publications for unfinished work.
 
 ## Reading run output and findings
 

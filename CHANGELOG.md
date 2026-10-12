@@ -6,6 +6,72 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-10-12
+
+### Added
+
+- One floating start-run form replaces the inline inputs panel and the separate
+  run-options dialog: inputs, dry-run fixtures and per-run limit overrides share
+  a single explicit Start/Cancel flow. Workflows without inputs still review the
+  effective limits before starting. The toolbar **Run options** button is now
+  **Usage limits**, editing the workflow's saved limits; every run snapshots its
+  effective values so later edits never change an existing run.
+- Saved workflow-wide usage controls: an enforced Agent-attempt budget plus
+  advisory tool-call, subagent and spend allowances. Dispatch reserves capacity
+  before parallel siblings run, retries and loop visits count, and reused or
+  simulated results are never charged. Exhaustion pauses the run durably with
+  partial output preserved; only an explicit extension or cancellation resumes
+  it, and ordinary approval cannot clear it. Per-node advisory allowances and a
+  single injected policy per Agent invocation carry the bounds to the CLI.
+- Honest capability labels per provider: only the run attempt budget is
+  Orchevia-enforced; CLI turns, tools and subagents are advisory guidance plus
+  observed stream counts (Claude `--max-turns` counts turns, not tools;
+  `--max-budget-usd` is an estimate that can overshoot; Codex reports no USD).
+  Incomplete or budget-limited reviews never emit success markers, approvals or
+  publications for unfinished work.
+- A **Usage & costs** page after Environment: date range, workflow/provider/model
+  filters, daily chart, workflow, AI profile and model tables, and a compact Runs summary
+  linking to it. History aggregates in the backend over every stored run (never
+  a capped recent list) with UTC-day grouping. Subscription fees you enter,
+  CLI-reported API estimates with source and coverage, and an optional labeled
+  allocation stay in separate lanes; thin history reports **Insufficient
+  history** instead of fabricated rates.
+- Hovering or keyboard-focusing a node highlights its directly incoming and
+  outgoing connections without touching selection, labels, accents or run-status
+  colors. Each workflow's pan/zoom persists locally and restores on return;
+  without a saved viewport the graph opens with a centered fit.
+
+### Changed
+
+- Document v1 Simple JSON round-trips workflow limits and per-node allowances;
+  generation assistance preserves existing limits and allowances instead of
+  erasing them. New `usage_summary`, `continue_usage_run` and
+  `adapter_capabilities` backend commands back the page and the dialogs, with
+  matching browser-mock behavior. New `usage.*` settings keys store subscription
+  fees, extras, allocation share and method.
+- AI profile run counts, execution time and CLI-reported cost coverage now live in
+  **Usage & costs**; Agents focuses on profile configuration. Historical profile
+  attribution uses each run's saved workflow, retaining deleted or unknown identities.
+
+### Fixed
+
+- Parallel Agent siblings can no longer each spend the same remaining attempt
+  allowance; resumed, approved and continued runs keep one budget while recovery
+  starts a new one without re-charging reused results.
+- Ordinary and session-managed retries share the same atomic attempt gate; pause
+  records and undispatched work do not consume attempts. Saved API-estimate limits
+  apply to dispatch, and continuing a guard returns control to the desktop while
+  execution resumes in the background.
+- Structured provider-limit errors and incomplete CLI responses stop dependent
+  work instead of following a failure route that could publish an unchecked result.
+  Explicit local timeouts retain their configured retry and recovery behavior.
+- Usage history retains distinct loop visits, accounts for provider-specific cache
+  tokens, and exposes missing counter coverage. Subscription allocations remain
+  explicit fee pools rather than prices derived from filtered workflow activity.
+- Pending start/save/continue dialogs cannot dismiss via Escape or their close
+  button; keyboard focus highlights the actual canvas node. Large workflows can
+  fit below 30% zoom, and corrupt viewport storage can recover on the next move.
+
 ## [0.1.13] - 2026-10-09
 
 ### Changed
