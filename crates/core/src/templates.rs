@@ -350,6 +350,7 @@ fn template(
             name: name.to_string(),
             inputs,
             defaults: None,
+            limits: None,
             nodes,
             edges,
         },

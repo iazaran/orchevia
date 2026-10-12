@@ -34,6 +34,11 @@ pub struct Workflow {
     /// repository and branch on every node. Node config always wins when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defaults: Option<WorkflowDefaults>,
+    /// Saved, optional workflow-wide usage controls (v0.1.14). Absent
+    /// preserves ordinary execution; only the Agent-attempt budget is
+    /// hard-enforced, the rest is advisory guidance for the CLIs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::run_controls::WorkflowLimits>,
 }
 
 /// Repository/branch defaults shared by a workflow's Git/GitHub nodes.
@@ -133,6 +138,15 @@ pub struct NodeConfig {
     pub context_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_max_chars: Option<u32>,
+    /// Advisory per-node tool-call allowance for Agent nodes (v0.1.14).
+    /// Observed where the CLI reports tool events, enforced never: the CLI
+    /// owns its tool loop. Travels inside the injected usage policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    /// Advisory per-node nested-subagent allowance for Agent nodes.
+    /// The agent is instructed not to spawn subagents unless allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subagents: Option<u32>,
     /// Node ids whose outputs are exposed as `{{node.<id>.output}}` plus
     /// their raw stdout under `{{node.<id>}}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -369,6 +383,7 @@ impl Workflow {
             edges: Vec::new(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
         }
     }
 
@@ -811,6 +826,34 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         );
                     }
                 }
+                if let Some(n) = node.config.max_tool_calls {
+                    if let Err(message) = crate::run_controls::validate_limit_value(
+                        "Node tool-call allowance",
+                        n,
+                        crate::run_controls::MAX_TOOL_CALL_LIMIT,
+                    ) {
+                        push_error(
+                            &mut issues,
+                            "agent-tool-allowance-invalid",
+                            message,
+                            Some(node.id.clone()),
+                        );
+                    }
+                }
+                if let Some(n) = node.config.max_subagents {
+                    if let Err(message) = crate::run_controls::validate_limit_value(
+                        "Node subagent allowance",
+                        n,
+                        crate::run_controls::MAX_SUBAGENT_LIMIT,
+                    ) {
+                        push_error(
+                            &mut issues,
+                            "agent-subagent-allowance-invalid",
+                            message,
+                            Some(node.id.clone()),
+                        );
+                    }
+                }
                 validate_retry(node, &mut issues);
                 validate_max_visits(node, &mut issues);
             }
@@ -1000,6 +1043,18 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 validate_max_visits(node, &mut issues);
             }
         }
+        // Usage allowances only apply to AI Agent nodes: anywhere else they
+        // would be silently ignored, so they are rejected instead of dropped.
+        if node.kind != NodeKind::Agent
+            && (node.config.max_tool_calls.is_some() || node.config.max_subagents.is_some())
+        {
+            push_error(
+                &mut issues,
+                "agent-allowance-misplaced",
+                "Tool-call and subagent allowances only apply to AI Agent nodes.".to_string(),
+                Some(node.id.clone()),
+            );
+        }
         // Prompt template variable references (agent nodes).
         if node.kind == NodeKind::Agent {
             if let Some(template) = node.config.prompt.as_deref() {
@@ -1040,6 +1095,14 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     None,
                 );
             }
+        }
+    }
+
+    // Workflow-wide usage limits (v0.1.14): optional, errors on
+    // zero/out-of-range values. Absent preserves ordinary execution.
+    if let Some(limits) = &wf.limits {
+        if let Err(message) = crate::run_controls::validate_workflow_limits(limits) {
+            push_error(&mut issues, "workflow-limits-invalid", message, None);
         }
     }
 
@@ -1472,6 +1535,7 @@ pub fn sample_workflow() -> Workflow {
         name: "Sample: Environment Check".to_string(),
         inputs: Vec::new(),
         defaults: None,
+        limits: None,
         nodes: vec![
             node(
                 "start",
@@ -1523,6 +1587,7 @@ mod tests {
             name: "Sample".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 Node {
                     id: "start".into(),
@@ -1817,6 +1882,7 @@ mod tests {
             name: "Branch".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 node("start", NodeKind::Start, NodeConfig::default()),
                 node(
@@ -2061,6 +2127,7 @@ mod integration_validation_tests {
             name: "W".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes,
             edges: Vec::new(),
         }

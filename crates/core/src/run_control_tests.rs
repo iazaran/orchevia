@@ -606,3 +606,222 @@ async fn recovery_rejects_reuse_of_failed_and_data_dependent_outputs() {
         .is_err());
     assert!(db.get_run("bad-data").unwrap().is_none());
 }
+
+#[test]
+fn run_options_reject_absent_null_zero_negative_and_out_of_range_usage_limits() {
+    let (_, engine, wf) = setup();
+    // Zero, negative (via serde f64 for spend; u32 rejects negative at parse),
+    // non-finite and out-of-range values are all rejected.
+    for value in [
+        json!({"spendLimitUsd": 0}),
+        json!({"spendLimitUsd": -2}),
+        json!({"maxAgentAttempts": 0}),
+        json!({"maxAgentAttempts": 10_001}),
+        json!({"maxToolCalls": 0}),
+        json!({"maxToolCalls": 100_001}),
+        json!({"maxSubagents": 0}),
+        json!({"maxSubagents": 1_001}),
+    ] {
+        assert!(
+            engine
+                .start_run_with_options(
+                    &wf,
+                    "invalid-usage",
+                    &HashMap::new(),
+                    &options(value.clone())
+                )
+                .is_err(),
+            "{value}"
+        );
+    }
+    // Non-finite spend cannot arrive as JSON; the struct validator still
+    // rejects it (mirrors the TypeScript Number.isFinite check).
+    assert!(RunOptions {
+        spend_limit_usd: Some(f64::INFINITY),
+        ..RunOptions::default()
+    }
+    .validate(&wf)
+    .is_err());
+    // Unknown option keys are still rejected (deny_unknown_fields).
+    assert!(serde_json::from_value::<RunOptions>(json!({"maxTokens": 5})).is_err());
+    // Boundary values are accepted.
+    for (index, value) in [
+        json!({"maxAgentAttempts": 1}),
+        json!({"maxAgentAttempts": 10_000}),
+        json!({"maxToolCalls": 100_000}),
+        json!({"maxSubagents": 1_000}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            engine
+                .start_run_with_options(
+                    &wf,
+                    &format!("valid-usage-{index}"),
+                    &HashMap::new(),
+                    &options(value.clone())
+                )
+                .is_ok(),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn workflow_and_node_allowances_reject_zero_and_out_of_range() {
+    let (_, _, mut wf) = setup();
+    wf.limits = Some(crate::run_controls::WorkflowLimits {
+        max_agent_attempts: Some(0),
+        max_tool_calls: None,
+        max_subagents: None,
+        spend_limit_usd: None,
+    });
+    assert!(crate::workflow::validate_workflow(&wf)
+        .iter()
+        .any(|i| i.code == "workflow-limits-invalid"
+            && i.severity == crate::workflow::ValidationSeverity::Error));
+    wf.limits = None;
+    // Node "a" is a command node: allowances there are misplaced, never silent.
+    wf.nodes[1].config.max_tool_calls = Some(10);
+    assert!(crate::workflow::validate_workflow(&wf)
+        .iter()
+        .any(|i| i.code == "agent-allowance-misplaced"));
+    wf.nodes[1].config.max_tool_calls = None;
+    // Range checks apply on agent nodes.
+    wf.nodes[1].kind = crate::NodeKind::Agent;
+    wf.nodes[1].config.agent_profile_id = Some("p".into());
+    wf.nodes[1].config.prompt = Some("x".into());
+    wf.nodes[1].config.max_tool_calls = Some(100_001);
+    wf.nodes[1].config.max_subagents = Some(0);
+    let codes: Vec<_> = crate::workflow::validate_workflow(&wf)
+        .iter()
+        .map(|i| i.code.clone())
+        .collect();
+    assert!(codes.contains(&"agent-tool-allowance-invalid".to_string()));
+    assert!(codes.contains(&"agent-subagent-allowance-invalid".to_string()));
+    // Legacy workflows without any limits stay valid.
+    wf.nodes[1].config.max_tool_calls = None;
+    wf.nodes[1].config.max_subagents = None;
+    assert!(crate::workflow::validate_workflow(&wf).is_empty());
+}
+
+#[test]
+fn usage_summary_scans_all_history_with_honest_unknowns() {
+    use crate::db::NewNodeResult;
+    use crate::usage::{usage_summary, UsageFilter};
+    let (db, _, wf) = setup();
+    // 60 runs: proves analytics never comes from a capped recent-50 list.
+    for n in 0..60 {
+        let run_id = format!("usage-{n:02}");
+        db.create_run_with_execution(
+            &run_id,
+            &wf,
+            &Default::default(),
+            &crate::run_controls::RunExecution::default(),
+        )
+        .unwrap();
+        // Command-node rows carry no agent envelope; one run also holds a
+        // simulated fixture row. Only real agent work counts as attempts.
+        let structured = if n == 1 {
+            r#"{"simulated":true}"#
+        } else {
+            "{}"
+        };
+        db.record_node_result(NewNodeResult {
+            stdout: "ok",
+            structured_json: structured,
+            ..NewNodeResult::simple(&run_id, "a", "succeeded", Some(0), None)
+        })
+        .unwrap();
+    }
+    let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+    assert_eq!(summary.runs_scanned, 60);
+    assert_eq!(summary.totals.runs, 60);
+    // Node "a" is a command node in this fixture: no agent attempts counted.
+    assert_eq!(summary.totals.agent_attempts, 0);
+    assert_eq!(summary.totals.simulated_results, 1);
+    // Date boundaries are inclusive start / exclusive end.
+    let first = db.get_run("usage-00").unwrap().unwrap();
+    let filtered = usage_summary(
+        &db,
+        &UsageFilter {
+            from: Some(first.started_at.to_rfc3339()),
+            to: Some(first.started_at.to_rfc3339()),
+            ..UsageFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(filtered.totals.runs, 0);
+    assert!(usage_summary(
+        &db,
+        &UsageFilter {
+            from: Some("not-a-date".into()),
+            ..UsageFilter::default()
+        }
+    )
+    .is_err());
+}
+
+#[test]
+fn usage_summary_counts_agent_attempts_with_execution_identity() {
+    use crate::db::NewNodeResult;
+    use crate::usage::{usage_summary, UsageFilter};
+    let (db, _, mut wf) = setup();
+    wf.nodes[1].kind = crate::NodeKind::Agent;
+    wf.nodes[1].config.agent_profile_id = Some("p".into());
+    wf.nodes[1].config.prompt = Some("x".into());
+    let run_id = "usage-agent";
+    db.create_run_with_execution(
+        run_id,
+        &wf,
+        &Default::default(),
+        &crate::run_controls::RunExecution::default(),
+    )
+    .unwrap();
+    db.record_node_result(NewNodeResult {
+        stdout: "done",
+        structured_json: r#"{"agentUsage":{"adapter":"claude","model":"sonnet","input_tokens":10,"output_tokens":4,"reported_cost_usd":0.5,"observed_tool_calls":6,"observed_subagents":1}}"#,
+        attempt: 2,
+        ..NewNodeResult::simple(run_id, "a", "succeeded", Some(0), None)
+    })
+    .unwrap();
+    // Duplicate terminal event for the same attempt is not double-counted.
+    db.record_node_result(NewNodeResult {
+        stdout: "done",
+        structured_json: r#"{"agentUsage":{"adapter":"claude","model":"sonnet","input_tokens":10,"reported_cost_usd":0.5}}"#,
+        attempt: 2,
+        ..NewNodeResult::simple(run_id, "a", "succeeded", Some(0), None)
+    })
+    .unwrap();
+    // Legacy row without identity stays unknown, not zero.
+    db.record_node_result(NewNodeResult {
+        stdout: "old",
+        structured_json: r#"{"agentUsage":{"input_tokens":2}}"#,
+        attempt: 1,
+        ..NewNodeResult::simple(run_id, "a", "failed", Some(1), None)
+    })
+    .unwrap();
+    let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+    assert_eq!(summary.totals.agent_attempts, 2);
+    assert_eq!(summary.totals.failed_attempts, 1);
+    assert_eq!(summary.totals.reported_usd_attempts, 1);
+    assert_eq!(summary.totals.unknown_usd_attempts, 1);
+    assert_eq!(summary.totals.unknown_model_attempts, 1);
+    assert_eq!(summary.totals.observed_tool_calls, 6);
+    assert_eq!(summary.totals.observed_subagents, 1);
+    assert_eq!(summary.by_model.len(), 2);
+    // Model filter narrows to the identified row only.
+    let filtered = usage_summary(
+        &db,
+        &UsageFilter {
+            models: vec!["sonnet".into()],
+            ..UsageFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(filtered.totals.agent_attempts, 1);
+    assert_eq!(filtered.days.len(), 1);
+    assert_eq!(filtered.by_workflow.len(), 1);
+    assert_eq!(filtered.by_workflow[0].workflow_name, "Controls");
+}

@@ -184,6 +184,9 @@ enum TaskOutcome {
     Failed,
     ConditionBranch(bool),
     Cancelled,
+    /// The Agent-attempt budget ran out inside this task. Partial output is
+    /// preserved; the scheduler drains siblings, then pauses the run.
+    UsageExhausted,
 }
 
 /// Terminal row statuses: they complete a node visit. `retrying` and `paused`
@@ -382,6 +385,11 @@ impl Engine {
             recovered_from: Some(source_id.into()),
             recovery_choices: choices.clone(),
             spend_pause: None,
+            // A recovery is new execution under the same effective limits:
+            // reused results are never re-charged, retries and replays count.
+            resolved_limits: source.execution.resolved_limits.clone(),
+            consumed_agent_attempts: 0,
+            usage_pause: None,
         };
         self.db
             .create_recovery_run(new_id, &source, &workflow, &execution, &seeds, request_id)
@@ -402,6 +410,30 @@ impl Engine {
         {
             let mut flags = self.cancel.flags();
             if !self.db.continue_spend_run(run_id, pause_id, limit)? {
+                return Err(EngineError::NotPaused(run_id.into()));
+            }
+            flags.insert(run_id.into(), Arc::new(AtomicBool::new(false)));
+        }
+        self.execute(workflow, run_id.into()).await;
+        Ok(())
+    }
+
+    /// Continue after a usage pause with an explicit attempt-budget
+    /// extension. Stale or duplicate pause ids are rejected, and the new cap
+    /// must exceed what was already consumed. `None` removes the cap.
+    pub async fn continue_usage_run(
+        &self,
+        run_id: &str,
+        pause_id: i64,
+        extension: Option<u32>,
+    ) -> Result<(), EngineError> {
+        let workflow = self
+            .db
+            .get_run_workflow(run_id)?
+            .ok_or_else(|| EngineError::UnknownRun(run_id.into()))?;
+        {
+            let mut flags = self.cancel.flags();
+            if !self.db.continue_usage_run(run_id, pause_id, extension)? {
                 return Err(EngineError::NotPaused(run_id.into()));
             }
             flags.insert(run_id.into(), Arc::new(AtomicBool::new(false)));
@@ -625,6 +657,10 @@ impl Engine {
             &merged,
             &RunExecution {
                 options: options.clone(),
+                // Core start path resolves saved workflow limits with the
+                // per-run overrides for manual, scheduled and watcher runs
+                // alike; UI-only resolution would leave those paths raw.
+                resolved_limits: run_controls::resolve_limits(workflow.limits.as_ref(), options),
                 ..RunExecution::default()
             },
         )?;
@@ -657,6 +693,7 @@ impl Engine {
                     result,
                     Ok(RunOutcome::Paused
                         | RunOutcome::SpendPaused(_)
+                        | RunOutcome::UsagePaused { .. }
                         | RunOutcome::Finished(RunStatus::Succeeded))
                 ) {
                 Ok(RunOutcome::Finished(RunStatus::Cancelled))
@@ -674,6 +711,9 @@ impl Engine {
                 Ok(RunOutcome::SpendPaused(total)) => {
                     let _ = self.db.pause_for_spend(&run_id, *total);
                 }
+                Ok(RunOutcome::UsagePaused { consumed, limit }) => {
+                    let _ = self.db.pause_for_usage(&run_id, *consumed, *limit);
+                }
                 Err(e) => {
                     let _ =
                         self.record_simple(&run_id, "run", "failed", None, Some(&e.to_string()));
@@ -688,7 +728,9 @@ impl Engine {
                     self.emit_terminal(&workflow, &run_id, &workflow_name, scheduled, status);
                 }
             }
-            Ok(RunOutcome::Paused | RunOutcome::SpendPaused(_)) => {
+            Ok(
+                RunOutcome::Paused | RunOutcome::SpendPaused(_) | RunOutcome::UsagePaused { .. },
+            ) => {
                 if !simulated {
                     crate::notify::emit_event(
                         &self.db,
@@ -932,6 +974,45 @@ impl Engine {
                 });
             }
 
+            // Workflow-wide Agent-attempt budget (v0.1.14): enforced by
+            // Orchevia's dispatch gate. Retries and loop visits count;
+            // reused and simulated rows never do. Dry runs are simulated,
+            // so the gate never blocks them. Capacity is reserved before
+            // parallel dispatch so siblings cannot each spend the same
+            // remaining allowance; the hard check also runs inside every
+            // attempt spawn (see run_with_retries).
+            let usage_max = run.execution.resolved_limits.max_agent_attempts;
+            let dry = run.execution.options.dry_run;
+            if !dry && usage_max.is_some() {
+                let rows = self.db.list_node_results(run_id)?;
+                let consumed = run_controls::count_agent_attempts(workflow, &rows);
+                if consumed != run.execution.consumed_agent_attempts {
+                    let _ = self.db.record_consumed_attempts(run_id, consumed);
+                }
+                let is_agent_dispatch = |id: &String| {
+                    graph.nodes.get(id).is_some_and(|n| {
+                        n.kind == NodeKind::Agent
+                            && !matches!(
+                                run.execution.recovery_choices.get(id),
+                                Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                            )
+                    })
+                };
+                if fail_fast.is_none()
+                    && usage_max.is_some_and(|max| consumed >= max)
+                    && in_flight.is_empty()
+                    && ready.iter().any(&is_agent_dispatch)
+                {
+                    return Ok(RunOutcome::UsagePaused {
+                        consumed,
+                        limit: usage_max.unwrap_or(consumed),
+                    });
+                }
+                if fail_fast.is_none() && usage_max.is_some_and(|max| consumed >= max) {
+                    ready.retain(|id| !is_agent_dispatch(id));
+                }
+            }
+
             // Approval gates engage only when nothing else is in flight, so a
             // pause never strands running siblings mid-branch.
             if fail_fast.is_none() && in_flight.is_empty() {
@@ -1030,11 +1111,29 @@ impl Engine {
 
             if fail_fast.is_none() {
                 let capacity = MAX_PARALLEL_NODES.saturating_sub(in_flight.len());
+                // Attempts reserved by siblings dispatched earlier this tick,
+                // so parallel Agent nodes cannot each spend the same
+                // remaining allowance.
+                let mut usage_reserved: u32 = 0;
                 for id in ready.iter().take(capacity) {
                     let id_owned = id.clone();
                     let kind = graph.nodes.get(&id_owned).map(|n| n.kind);
                     if kind == Some(NodeKind::Approval) {
                         continue; // waits for the drain above
+                    }
+                    if kind == Some(NodeKind::Agent)
+                        && !dry
+                        && !matches!(
+                            run.execution.recovery_choices.get(&id_owned),
+                            Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                        )
+                        && usage_max.is_some_and(|max| {
+                            let rows = self.db.list_node_results(run_id).unwrap_or_default();
+                            run_controls::count_agent_attempts(workflow, &rows) + usage_reserved
+                                >= max
+                        })
+                    {
+                        continue;
                     }
                     let node = graph.nodes.get(&id_owned).cloned().ok_or_else(|| {
                         EngineError::Validation(format!(
@@ -1057,6 +1156,17 @@ impl Engine {
                         let outcome = execute_node_task(db, owned, task_flag).await;
                         (id_owned, outcome)
                     });
+                    // Only budget-consuming dispatches reserve capacity;
+                    // dry runs, skips and reuses never charge the budget.
+                    if kind == Some(NodeKind::Agent)
+                        && !dry
+                        && !matches!(
+                            run.execution.recovery_choices.get(id),
+                            Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                        )
+                    {
+                        usage_reserved += 1;
+                    }
                     in_flight.insert(id.clone());
                 }
             }
@@ -1107,12 +1217,22 @@ impl Engine {
             };
             in_flight.remove(&node_id);
 
+            // The budget ran out inside this task. Its partial rows stay;
+            // the node keeps no terminal mark, so dependents wait and the
+            // tick-top gate pauses the run once siblings drain. This is
+            // never a success marker: reviews, publishes and approvals
+            // downstream cannot treat it as completed work.
+            if matches!(task_outcome, TaskOutcome::UsageExhausted) {
+                continue;
+            }
             let (outcome, branch) = match task_outcome {
                 TaskOutcome::Skipped => (NodeOutcome::Skipped, None),
                 TaskOutcome::Succeeded => (NodeOutcome::Succeeded, None),
                 TaskOutcome::Failed => (NodeOutcome::Failed, None),
                 TaskOutcome::ConditionBranch(branch) => (NodeOutcome::Succeeded, Some(branch)),
                 TaskOutcome::Cancelled => (NodeOutcome::Cancelled, None),
+                // Handled above (durable pause, no routing); unreachable here.
+                TaskOutcome::UsageExhausted => continue,
             };
             // Record the visit for real executions (tasks already wrote rows).
             if outcome == NodeOutcome::Succeeded || outcome == NodeOutcome::Failed {
@@ -1394,6 +1514,7 @@ enum RunOutcome {
     Finished(RunStatus),
     Paused,
     SpendPaused(f64),
+    UsagePaused { consumed: u32, limit: u32 },
 }
 
 /// Owned inputs for a spawned node task.
@@ -1688,6 +1809,9 @@ async fn execute_node_task(
                 output_note: None,
                 extend_on_output: task.node.config.extend_on_output,
                 flag: &flag,
+                // Command nodes never consume the Agent-attempt budget.
+                usage: None,
+                agent_meta: None,
             })
             .await
         }
@@ -1850,6 +1974,33 @@ async fn execute_agent_task(
         Ok(prompt) => prompt,
         Err(e) => return agent_failure(db, task, node_id, &e),
     };
+    // Injected usage policy (v0.1.14): one short block composed with the
+    // user's prompt through this authoritative path — fresh attempts, loop
+    // visits and retries alike. Applies when the workflow opts into limits
+    // or the node carries its own allowances; ordinary runs keep byte-identical
+    // prompts. The marker guard keeps handoffs and follow-ups to a single copy.
+    let rendered = {
+        let limits = &task.execution.resolved_limits;
+        let opts_in = limits.max_agent_attempts.is_some()
+            || limits.max_tool_calls.is_some()
+            || limits.max_subagents.is_some()
+            || limits.spend_limit_usd.is_some()
+            || task.node.config.max_tool_calls.is_some()
+            || task.node.config.max_subagents.is_some();
+        if opts_in {
+            let policy = crate::usage::build_usage_policy(
+                Some((
+                    task.node.config.max_tool_calls.or(limits.max_tool_calls),
+                    task.node.config.max_subagents.or(limits.max_subagents),
+                )),
+                crate::usage::remaining_attempts(limits, task.execution.consumed_agent_attempts),
+                crate::usage::policy_coverage_note(profile.adapter),
+            );
+            crate::usage::inject_usage_policy(&rendered, &policy)
+        } else {
+            rendered
+        }
+    };
     let mut spec =
         match build_agent_command(&profile, &rendered, task.node.config.working_dir.as_deref()) {
             Ok(spec) => spec,
@@ -2004,6 +2155,40 @@ async fn execute_agent_task(
         output_note: output_note.as_deref(),
         extend_on_output: task.node.config.extend_on_output,
         flag,
+        // Enforced attempt budget for this Agent task (retries count).
+        // Dry runs are simulated and never consume the budget.
+        usage: if task.execution.options.dry_run {
+            None
+        } else {
+            task.execution
+                .resolved_limits
+                .max_agent_attempts
+                .map(|max_attempts| {
+                    let mut agent_node_ids = db
+                        .get_run_snapshot(&task.run_id)
+                        .ok()
+                        .flatten()
+                        .map(|snapshot| {
+                            snapshot
+                                .nodes
+                                .iter()
+                                .filter(|n| n.kind == NodeKind::Agent)
+                                .map(|n| n.id.clone())
+                                .collect::<std::collections::HashSet<String>>()
+                        })
+                        .unwrap_or_default();
+                    // The snapshot always contains this node; legacy rows
+                    // without one still gate on this node's own attempts.
+                    agent_node_ids.insert(task.node.id.clone());
+                    UsageGate {
+                        agent_node_ids,
+                        max_attempts,
+                    }
+                })
+        },
+        // Adapter + model as configured now; analytics falls back to
+        // "unknown" for legacy rows that predate this recording.
+        agent_meta: Some((profile.adapter, profile.model.clone())),
     })
     .await;
     drop(group_guard);
@@ -3047,6 +3232,19 @@ struct RetryRequest<'a> {
     output_note: Option<&'a str>,
     extend_on_output: bool,
     flag: &'a Arc<AtomicBool>,
+    /// Enforced Agent-attempt budget for Agent tasks (None for commands and
+    /// dry runs). Checked before every attempt spawn, including retries.
+    usage: Option<UsageGate>,
+    /// Execution-time Agent identity for usage analytics: adapter + the
+    /// profile model as configured now (None for non-agent tasks).
+    agent_meta: Option<(AdapterKind, Option<String>)>,
+}
+
+/// Authoritative attempt budget for one Agent task: the run's resolved cap
+/// plus the Agent-node ids whose new executions count against it.
+struct UsageGate {
+    agent_node_ids: std::collections::HashSet<String>,
+    max_attempts: u32,
 }
 
 async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
@@ -3065,6 +3263,8 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         output_note,
         extend_on_output,
         flag,
+        usage,
+        agent_meta,
     } = request;
     let max_attempts = if agent.is_some_and(|a| a.resume_id.is_some()) {
         1
@@ -3089,6 +3289,28 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 Some("Cancelled by user."),
             ));
             return TaskOutcome::Cancelled;
+        }
+        // Hard budget check before every Agent attempt spawn, including
+        // retries: a retry is new execution and counts. Partial output from
+        // earlier attempts is preserved; the run pauses durably.
+        if agent.is_some() {
+            if let Some(gate) = usage.as_ref() {
+                let rows = db.list_node_results(run_id).unwrap_or_default();
+                let consumed = run_controls::count_dispatched_attempts(&rows, &gate.agent_node_ids);
+                if consumed >= gate.max_attempts {
+                    let _ = db.record_node_result(NewNodeResult::simple(
+                        run_id,
+                        node_id,
+                        "guardPaused",
+                        None,
+                        Some(&format!(
+                            "Agent attempt budget exhausted: {consumed}/{} attempts dispatched. Extend the budget or cancel; unfinished scope stays unfinished.",
+                            gate.max_attempts
+                        )),
+                    ));
+                    return TaskOutcome::UsageExhausted;
+                }
+            }
         }
         let started = Instant::now();
         let live_id = db.start_node_result(run_id, node_id, attempt).ok();
@@ -3168,6 +3390,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                         metadata["agentSession"] = serde_json::json!({"key":a.key,"group":a.group,"id":decoded.session_id,"turn":if attempt == 1 {a.turn}else{1},"reused":expected_id.is_some(),"usable":code == Some(0) && decoded.success() && decoded.session_id.is_some()});
                     }
                     metadata["agentUsage"] = decoded.usage.clone();
+                    stamp_agent_meta(&mut metadata, &agent_meta);
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
                 }
                 if let Some(note) = output_note {
@@ -3250,6 +3473,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(mut decoded) = stream.as_ref().and_then(|s| s.lock().ok()) {
                     decoded.finish();
                     metadata["agentUsage"] = decoded.usage.clone();
+                    stamp_agent_meta(&mut metadata, &agent_meta);
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
                 }
                 if let Some(note) = output_note {
@@ -3826,6 +4050,28 @@ async fn stop_process_tree(
     group.release();
 }
 
+/// Stamp execution-time adapter/model identity into structured agentUsage
+/// for usage analytics. Text-mode rows keep no agentUsage at all (their
+/// coverage stays honestly unknown); legacy rows predate this recording.
+fn stamp_agent_meta(
+    metadata: &mut serde_json::Value,
+    agent_meta: &Option<(AdapterKind, Option<String>)>,
+) {
+    let Some((adapter, model)) = agent_meta else {
+        return;
+    };
+    let Some(usage) = metadata.get_mut("agentUsage") else {
+        return;
+    };
+    if !usage.is_object() {
+        return;
+    }
+    usage["adapter"] = serde_json::json!(adapter.as_str());
+    if let Some(model) = model.as_deref().filter(|m| !m.trim().is_empty()) {
+        usage["model"] = serde_json::json!(model);
+    }
+}
+
 /// Check an executable name/path (exec bit included) without spawning it.
 fn is_executable_available(exe: &str) -> bool {
     crate::tools::find_executable(exe).is_some()
@@ -4080,6 +4326,7 @@ mod tests {
             name: "Vertical slice".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes,
             edges,
         }
@@ -4112,6 +4359,7 @@ mod tests {
             name: "Unreachable branches".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 simple_node("end", NodeKind::End, 100.0),
@@ -4181,6 +4429,7 @@ mod tests {
             name: "Approval with an unreachable join".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 simple_node("gate", NodeKind::Approval, 100.0),
@@ -4230,6 +4479,7 @@ mod tests {
             name: "Live output".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 command_node(
@@ -4418,6 +4668,7 @@ mod tests {
             name: "Two gates".into(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 simple_node("gate1", NodeKind::Approval, 100.0),
@@ -4611,6 +4862,7 @@ mod tests {
             name: "Agent slice".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes,
             edges,
         }
@@ -5377,6 +5629,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                 required: false,
             }],
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 Node {
@@ -5462,6 +5715,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             name: "Fan".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 command_node("left", "echo", &["L"], 100.0),
@@ -5492,6 +5746,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             name: "FailRoute".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 command_node("risky", "false", &[], 100.0),
@@ -5533,6 +5788,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             name: "Retry".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 flaky,
@@ -5586,6 +5842,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             name: "Flaky".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 flaky,
@@ -5651,6 +5908,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                 Vec::new()
             },
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 fix,
@@ -5715,6 +5973,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             id: "test-command".into(),
             name: "Tests".into(),
             defaults: None,
+            limits: None,
             inputs: template.workflow.inputs,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
@@ -5815,6 +6074,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             name: "Timeout".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
                 sleeper,
@@ -5850,6 +6110,486 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             }),
         );
         assert_eq!(command_working_dir(&task), Some("/elsewhere"));
+    }
+    // -- v0.1.14 usage budgets (deterministic fixture CLIs, no paid runs) --
+
+    fn two_agent_workflow(profile_id: &str) -> Workflow {
+        let mut wf = agent_workflow(profile_id);
+        let mut second = wf.nodes[1].clone();
+        second.id = "agent2".into();
+        second.position = Position { x: 80.0, y: 150.0 };
+        second.config.prompt = Some("Second step".into());
+        wf.nodes.insert(2, second);
+        wf.edges = vec![
+            edge("e0", "start", "agent1", None),
+            edge("e1", "agent1", "agent2", None),
+            edge("e2", "agent2", "end", None),
+        ];
+        wf
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_budget_pauses_before_second_agent_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = two_agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "usage-one",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        // Saved limits resolve into the run: later workflow edits cannot
+        // change this run's snapshot.
+        assert_eq!(
+            db.get_run("usage-one")
+                .unwrap()
+                .unwrap()
+                .execution
+                .resolved_limits
+                .max_agent_attempts,
+            Some(1)
+        );
+        engine.execute(wf, "usage-one".into()).await;
+        let run = db.get_run("usage-one").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        let pause = run.execution.usage_pause.expect("usage pause");
+        assert_eq!((pause.consumed_attempts, pause.limit_attempts), (1, 1));
+        assert!(run.execution.spend_pause.is_none());
+        let rows = db.list_node_results("usage-one").unwrap();
+        // The second agent never dispatched: no success marker, no partial
+        // masquerade — only the durable guard row.
+        assert!(rows
+            .iter()
+            .all(|r| r.node_id != "agent2" || r.status == "guardPaused"));
+        assert!(rows
+            .iter()
+            .any(|r| r.node_id == "__usage_guard" && r.status == "guardPaused"));
+        assert_eq!(run.execution.consumed_agent_attempts, 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn approval_resume_keeps_one_budget_instead_of_resetting() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = two_agent_workflow(&profile.id);
+        wf.nodes
+            .insert(2, simple_node("gate", NodeKind::Approval, 125.0));
+        wf.edges = vec![
+            edge("e0", "start", "agent1", None),
+            edge("e1", "agent1", "gate", None),
+            edge("e2", "gate", "agent2", None),
+            edge("e3", "agent2", "end", None),
+        ];
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "usage-approval-resume",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(2),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine
+            .execute(wf.clone(), "usage-approval-resume".into())
+            .await;
+        assert_eq!(
+            db.get_run("usage-approval-resume").unwrap().unwrap().status,
+            RunStatus::Paused
+        );
+        // No usage pause stands: this is an ordinary approval gate.
+        assert!(db
+            .get_run("usage-approval-resume")
+            .unwrap()
+            .unwrap()
+            .execution
+            .usage_pause
+            .is_none());
+        engine
+            .approve_run("usage-approval-resume", true, None, wf.clone())
+            .await
+            .unwrap();
+        let run = db.get_run("usage-approval-resume").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Succeeded);
+        // Both agents drew from the same budget of two: no reset, no pause.
+        assert_eq!(run.execution.consumed_agent_attempts, 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_continuation_extends_budget_and_rejects_stale_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = two_agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "usage-resume",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf.clone(), "usage-resume".into()).await;
+        let pause = db
+            .get_run("usage-resume")
+            .unwrap()
+            .unwrap()
+            .execution
+            .usage_pause
+            .expect("paused");
+        // Stale and duplicate pause ids are rejected.
+        assert!(engine
+            .continue_usage_run("usage-resume", pause.id + 1000, Some(2))
+            .await
+            .is_err());
+        // The extension must exceed what was consumed.
+        assert!(db
+            .continue_usage_run("usage-resume", pause.id, Some(1))
+            .is_err());
+        engine
+            .continue_usage_run("usage-resume", pause.id, Some(2))
+            .await
+            .unwrap();
+        // Duplicate continuation of the same pause is rejected.
+        assert!(engine
+            .continue_usage_run("usage-resume", pause.id, Some(3))
+            .await
+            .is_err());
+        let run = db.get_run("usage-resume").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Succeeded);
+        assert_eq!(run.execution.resolved_limits.max_agent_attempts, Some(2));
+        assert_eq!(run.execution.consumed_agent_attempts, 2);
+        let rows = db.list_node_results("usage-resume").unwrap();
+        assert!(rows
+            .iter()
+            .any(|r| r.node_id == "__usage_guard" && r.status == "guardContinued"));
+        assert!(rows
+            .iter()
+            .any(|r| r.node_id == "agent2" && r.status == "succeeded"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn parallel_agent_siblings_share_one_allowance() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        let mut second = wf.nodes[1].clone();
+        second.id = "agent2".into();
+        second.config.prompt = Some("Parallel sibling".into());
+        wf.nodes.insert(2, second);
+        wf.edges = vec![
+            edge("e0", "start", "agent1", None),
+            edge("e1", "start", "agent2", None),
+            edge("e2", "agent1", "end", None),
+            edge("e3", "agent2", "end", None),
+        ];
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "usage-parallel",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf, "usage-parallel".into()).await;
+        let run = db.get_run("usage-parallel").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        // Exactly one sibling dispatched; the other waited on the reservation.
+        let dispatched = db
+            .list_node_results("usage-parallel")
+            .unwrap()
+            .into_iter()
+            .filter(|r| (r.node_id == "agent1" || r.node_id == "agent2") && r.status == "succeeded")
+            .count();
+        assert_eq!(dispatched, 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn incomplete_review_neither_approves_nor_reports_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = two_agent_workflow(&profile.id);
+        wf.nodes[2].config.prompt =
+            Some("Review the diff.```finding\nseverity: P0\ntitle: T\nexplanation: E\n```".into());
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "usage-review",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf.clone(), "usage-review".into()).await;
+        let run = db.get_run("usage-review").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        let rows = db.list_node_results("usage-review").unwrap();
+        // The review never ran: no success marker, no failure route output,
+        // no findings attributed to it.
+        assert!(!rows
+            .iter()
+            .any(|r| r.node_id == "agent2" && r.status == "succeeded"));
+        assert_eq!(engine.actionable_finding_count(&wf, "usage-review"), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_policy_injects_once_only_for_limited_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.max_tool_calls = Some(40);
+        wf.limits = Some(crate::run_controls::WorkflowLimits {
+            max_agent_attempts: Some(5),
+            max_tool_calls: None,
+            max_subagents: Some(2),
+            spend_limit_usd: None,
+        });
+        run_to_end(&db, &engine, wf, "usage-policy").await;
+        let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        assert_eq!(
+            stdin.matches(crate::usage::USAGE_POLICY_MARKER).count(),
+            1,
+            "{stdin}"
+        );
+        assert!(stdin.contains("about 40 tool calls"), "{stdin}");
+        assert!(stdin.contains("Never claim completion"), "{stdin}");
+        assert!(!stdin.to_lowercase().contains("subscription"), "{stdin}");
+    }
+
+    #[tokio::test]
+    async fn scheduler_gate_uses_history_rows_without_new_dispatch() {
+        // Retries and loop visits count even when recorded directly: with a
+        // budget of 1 and one prior agent attempt on record, a resumed
+        // schedule pauses instead of dispatching replacement work.
+        let (db, engine) = harness();
+        db.upsert_agent_profile(&echo_profile("p-usage-history"))
+            .expect("profile");
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-usage-history".into(),
+            name: "History gate".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                Node {
+                    id: "agent1".into(),
+                    kind: NodeKind::Agent,
+                    position: Position { x: 80.0, y: 100.0 },
+                    config: NodeConfig {
+                        agent_profile_id: Some("p-usage-history".into()),
+                        prompt: Some("never dispatched".into()),
+                        ..NodeConfig::default()
+                    },
+                    label: Some("Agent".into()),
+                },
+                simple_node("end", NodeKind::End, 200.0),
+            ],
+            edges: vec![
+                edge("e0", "start", "agent1", None),
+                edge("e1", "agent1", "end", None),
+            ],
+        };
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "usage-history",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        // One real attempt already on record (e.g. a retried visit); the
+        // profile is gone, so any new dispatch would fail loudly instead.
+        db.record_node_result(NewNodeResult {
+            stdout: "partial",
+            structured_json: r#"{"agentUsage":{"input_tokens":3}}"#,
+            ..NewNodeResult::simple("usage-history", "agent1", "retrying", Some(1), None)
+        })
+        .unwrap();
+        let flag = engine.cancel.flag_for("usage-history");
+        let outcome = engine
+            .execute_inner(&wf, "usage-history", &flag)
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            RunOutcome::UsagePaused {
+                consumed: 1,
+                limit: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn approval_cannot_clear_a_usage_pause() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-usage-approval".into(),
+            name: "Approval gate".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                simple_node("gate", NodeKind::Approval, 50.0),
+                simple_node("end", NodeKind::End, 100.0),
+            ],
+            edges: vec![
+                edge("e0", "start", "gate", None),
+                edge("e1", "gate", "end", None),
+            ],
+        };
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run_with_execution(
+            "usage-approval",
+            &wf,
+            &Default::default(),
+            &RunExecution {
+                resolved_limits: crate::run_controls::ResolvedLimits {
+                    max_agent_attempts: Some(1),
+                    max_tool_calls: None,
+                    max_subagents: None,
+                    spend_limit_usd: None,
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.pause_for_usage("usage-approval", 1, 1).unwrap();
+        // Ordinary approval must not accidentally clear the usage pause.
+        assert!(!db
+            .decide_paused_run("usage-approval", true, "ok", None)
+            .unwrap());
+        assert_eq!(
+            db.get_run("usage-approval").unwrap().unwrap().status,
+            RunStatus::Paused
+        );
+        // ...while an explicit extension resumes execution.
+        assert!(db.continue_usage_run("usage-approval", 1, Some(2)).unwrap());
+        assert_eq!(
+            db.get_run("usage-approval").unwrap().unwrap().status,
+            RunStatus::Running
+        );
+    }
+
+    #[test]
+    fn recovery_keeps_limits_but_restarts_consumption() {
+        use crate::run_controls::{count_agent_attempts, resolve_limits};
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-usage-recovery".into(),
+            name: "Recovery budget".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: Some(crate::run_controls::WorkflowLimits {
+                max_agent_attempts: Some(4),
+                max_tool_calls: None,
+                max_subagents: None,
+                spend_limit_usd: None,
+            }),
+            nodes: vec![Node {
+                id: "a".into(),
+                kind: NodeKind::Agent,
+                position: Position { x: 0.0, y: 0.0 },
+                config: NodeConfig::default(),
+                label: None,
+            }],
+            edges: Vec::new(),
+        };
+        let resolved = resolve_limits(wf.limits.as_ref(), &RunOptions::default());
+        assert_eq!(resolved.max_agent_attempts, Some(4));
+        // Reused and simulated rows are never re-charged; retries count.
+        let rows = vec![
+            StoredNodeResult {
+                id: 1,
+                run_id: "r".into(),
+                node_id: "a".into(),
+                status: "succeeded".into(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: None,
+                started_at: chrono::Utc::now(),
+                finished_at: None,
+                attempt: 1,
+                duration_ms: 0,
+                structured_json: r#"{"reusedFrom":{"runId":"old","resultId":1}}"#.into(),
+            },
+            StoredNodeResult {
+                id: 2,
+                run_id: "r".into(),
+                node_id: "a".into(),
+                status: "succeeded".into(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: None,
+                started_at: chrono::Utc::now(),
+                finished_at: None,
+                attempt: 1,
+                duration_ms: 0,
+                structured_json: r#"{"simulated":true}"#.into(),
+            },
+            StoredNodeResult {
+                id: 3,
+                run_id: "r".into(),
+                node_id: "a".into(),
+                status: "retrying".into(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: None,
+                started_at: chrono::Utc::now(),
+                finished_at: None,
+                attempt: 1,
+                duration_ms: 0,
+                structured_json: "{}".into(),
+            },
+        ];
+        assert_eq!(count_agent_attempts(&wf, &rows), 1);
     }
 }
 
@@ -5913,6 +6653,7 @@ mod integration_tests {
             name: id.to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes,
             edges,
         }
@@ -6358,6 +7099,7 @@ done
             name: "Ticket flow".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 Node {
                     id: "start".into(),
@@ -6508,6 +7250,7 @@ exit 1
             name: "GH".to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 Node {
                     id: "start".into(),

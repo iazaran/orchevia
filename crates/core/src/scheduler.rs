@@ -965,6 +965,7 @@ mod tick_tests {
             name: id.to_string(),
             inputs: Vec::new(),
             defaults: None,
+            limits: None,
             nodes: vec![
                 Node {
                     id: "start".into(),

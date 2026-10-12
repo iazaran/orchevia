@@ -223,6 +223,44 @@ pub async fn continue_spend_run(
 }
 
 #[tauri::command]
+pub async fn continue_usage_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    expected_pause_id: i64,
+    extension: Option<u32>,
+) -> Result<(), String> {
+    state
+        .engine
+        .continue_usage_run(&run_id, expected_pause_id, extension)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn usage_summary(
+    state: State<AppState>,
+    filter: Option<orchevia_core::usage::UsageFilter>,
+) -> Result<orchevia_core::usage::UsageSummary, String> {
+    orchevia_core::usage::usage_summary(&state.db, &filter.unwrap_or_default())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn adapter_capabilities(
+    state: State<AppState>,
+) -> Result<Vec<orchevia_core::usage::AdapterCapabilities>, String> {
+    let _ = state;
+    Ok([
+        orchevia_core::agents::AdapterKind::Claude,
+        orchevia_core::agents::AdapterKind::Codex,
+        orchevia_core::agents::AdapterKind::Custom,
+    ]
+    .into_iter()
+    .map(orchevia_core::usage::adapter_capabilities)
+    .collect())
+}
+
+#[tauri::command]
 pub fn cancel_run(state: State<AppState>, run_id: String) -> Result<bool, String> {
     state.engine.cancel_run(&run_id).map_err(|e| e.to_string())
 }
@@ -771,6 +809,10 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "ui.theme",
     "onboarding.completed",
     "workflow.assistanceProfileId",
+    "usage.subscriptionFees",
+    "usage.extraCharges",
+    "usage.allocationShare",
+    "usage.allocationMethod",
 ];
 
 /// User-taught model names per adapter ("claude" | "codex" | "custom").
@@ -865,7 +907,10 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
             return Err("Scheduler interval must be 30–3600 s.".to_string());
         }
     }
-    if value.len() > 200 {
+    // Subscription fee lists are JSON documents; they stay bounded but need
+    // more room than scalar preferences.
+    let max_len = if key.starts_with("usage.") { 8000 } else { 200 };
+    if value.len() > max_len {
         return Err("Setting value too long.".to_string());
     }
     db.set_setting(key, value).map_err(|e| e.to_string())

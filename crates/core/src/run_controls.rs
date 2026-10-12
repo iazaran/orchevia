@@ -21,6 +21,20 @@ pub struct RunOptions {
     pub fixtures: HashMap<String, Vec<FixtureResult>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend_limit_usd: Option<f64>,
+    /// Per-run override for the workflow's saved Agent-attempt budget.
+    /// `Some(n)` replaces it for this run; `None` inherits the saved value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agent_attempts: Option<u32>,
+    /// Per-run override for the advisory tool-call allowance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    /// Per-run override for the advisory nested-subagent allowance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subagents: Option<u32>,
+    /// When true, saved workflow limits are ignored for this run (explicit
+    /// clearing). Overrides above still apply.
+    #[serde(default)]
+    pub ignore_saved_limits: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,12 +60,145 @@ pub struct RunExecution {
     pub recovery_choices: HashMap<String, RecoveryChoice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend_pause: Option<SpendPause>,
+    /// Effective limits snapshotted when the run started. Later workflow
+    /// edits never change an existing run.
+    #[serde(default)]
+    pub resolved_limits: ResolvedLimits,
+    /// Agent attempts dispatched so far in this run (retries and loop
+    /// visits count). Survives approvals, restarts and continuations;
+    /// recovery starts a new budget and reused results are not re-charged.
+    #[serde(default)]
+    pub consumed_agent_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_pause: Option<UsagePause>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpendPause {
     pub id: i64,
     pub reported_usd: f64,
+}
+/// Durable pause when the enforced Agent-attempt budget is exhausted.
+/// Continuation explicitly extends the budget; cancellation ends the run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePause {
+    pub id: i64,
+    pub consumed_attempts: u32,
+    pub limit_attempts: u32,
+}
+
+/// Saved, optional workflow-wide usage controls. Every field is optional:
+/// absent preserves ordinary execution. Only `max_agent_attempts` is
+/// hard-enforced by the engine; the remaining allowances travel as advisory
+/// guidance inside Agent prompts because the CLIs own their tool loops.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agent_attempts: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subagents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_limit_usd: Option<f64>,
+}
+
+/// Effective per-run limits after merging saved workflow limits with the
+/// start-run overrides. Snapshotted into `RunExecution` at start.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_agent_attempts: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subagents: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_limit_usd: Option<f64>,
+}
+
+/// Hard bounds for attempt/tool/subagent allowances (per run or per node).
+pub const MAX_ATTEMPTS_LIMIT: u32 = 10_000;
+pub const MAX_TOOL_CALL_LIMIT: u32 = 100_000;
+pub const MAX_SUBAGENT_LIMIT: u32 = 1_000;
+
+pub fn validate_limit_value(name: &str, value: u32, max: u32) -> Result<(), String> {
+    if value == 0 {
+        return Err(format!("{name} must be at least 1."));
+    }
+    if value > max {
+        return Err(format!("{name} must not exceed {max}."));
+    }
+    Ok(())
+}
+
+pub fn validate_workflow_limits(limits: &WorkflowLimits) -> Result<(), String> {
+    if let Some(n) = limits.max_agent_attempts {
+        validate_limit_value("Agent attempt limit", n, MAX_ATTEMPTS_LIMIT)?;
+    }
+    if let Some(n) = limits.max_tool_calls {
+        validate_limit_value("Tool-call allowance", n, MAX_TOOL_CALL_LIMIT)?;
+    }
+    if let Some(n) = limits.max_subagents {
+        validate_limit_value("Subagent allowance", n, MAX_SUBAGENT_LIMIT)?;
+    }
+    if let Some(n) = limits.spend_limit_usd {
+        if !n.is_finite() || n <= 0.0 {
+            return Err("Spend limit must be a positive finite USD amount.".into());
+        }
+    }
+    Ok(())
+}
+
+/// Merge saved workflow limits with per-run overrides. `ignore_saved_limits`
+/// clears every saved value; explicit overrides still apply on top.
+pub fn resolve_limits(saved: Option<&WorkflowLimits>, options: &RunOptions) -> ResolvedLimits {
+    let base = if options.ignore_saved_limits {
+        None
+    } else {
+        saved
+    };
+    ResolvedLimits {
+        max_agent_attempts: options
+            .max_agent_attempts
+            .or_else(|| base.and_then(|l| l.max_agent_attempts)),
+        max_tool_calls: options
+            .max_tool_calls
+            .or_else(|| base.and_then(|l| l.max_tool_calls)),
+        max_subagents: options
+            .max_subagents
+            .or_else(|| base.and_then(|l| l.max_subagents)),
+        spend_limit_usd: options
+            .spend_limit_usd
+            .or_else(|| base.and_then(|l| l.spend_limit_usd)),
+    }
+}
+
+/// Agent attempts actually dispatched in this run: new executions of Agent
+/// nodes only. Reused (`reusedFrom`) and simulated (dry-run fixture) results
+/// are never charged; retries and loop visits each count.
+pub fn count_agent_attempts(workflow: &Workflow, rows: &[StoredNodeResult]) -> u32 {
+    let ids: std::collections::HashSet<String> = workflow
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Agent)
+        .map(|n| n.id.clone())
+        .collect();
+    count_dispatched_attempts(rows, &ids)
+}
+
+/// Same count over an explicit Agent-node id set (for task-level gates that
+/// do not hold the whole workflow definition).
+pub fn count_dispatched_attempts(
+    rows: &[StoredNodeResult],
+    agent_ids: &std::collections::HashSet<String>,
+) -> u32 {
+    rows.iter()
+        .filter(|row| agent_ids.contains(&row.node_id) && is_new_execution(row))
+        .count() as u32
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -97,6 +244,15 @@ impl RunOptions {
             .is_some_and(|n| !n.is_finite() || n <= 0.0)
         {
             return Err("Spend limit must be a positive finite USD amount.".into());
+        }
+        if let Some(n) = self.max_agent_attempts {
+            validate_limit_value("Agent attempt limit", n, MAX_ATTEMPTS_LIMIT)?;
+        }
+        if let Some(n) = self.max_tool_calls {
+            validate_limit_value("Tool-call allowance", n, MAX_TOOL_CALL_LIMIT)?;
+        }
+        if let Some(n) = self.max_subagents {
+            validate_limit_value("Subagent allowance", n, MAX_SUBAGENT_LIMIT)?;
         }
         if !self.dry_run && !self.fixtures.is_empty() {
             return Err("Fixtures require Dry run.".into());

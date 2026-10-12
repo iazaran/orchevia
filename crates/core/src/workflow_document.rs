@@ -24,6 +24,8 @@ pub struct DeveloperWorkflow {
     pub inputs: Vec<WorkflowInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defaults: Option<WorkflowDefaults>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::run_controls::WorkflowLimits>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -58,6 +60,8 @@ const CONFIG_KEYS: &[&str] = &[
     "sessionMaxTurns",
     "contextRefs",
     "contextMaxChars",
+    "maxToolCalls",
+    "maxSubagents",
     "inputRefs",
     "timeoutSecs",
     "extendOnOutput",
@@ -373,6 +377,7 @@ pub fn export_document(
         edges,
         inputs: workflow.inputs.clone(),
         defaults: workflow.defaults.clone(),
+        limits: workflow.limits.clone(),
     };
     Ok(DocumentSession {
         json: serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?,
@@ -509,6 +514,7 @@ pub fn import_document(
         edges,
         inputs: document.inputs,
         defaults: document.defaults,
+        limits: document.limits,
     })
 }
 

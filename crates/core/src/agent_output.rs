@@ -20,6 +20,13 @@ pub(crate) struct AgentOutput {
     pub usage: Value,
     pub error: Option<String>,
     complete: bool,
+    /// Observed tool calls inside this CLI invocation (Claude `tool_use`
+    /// blocks, Codex `command_execution` items). Advisory companion to the
+    /// enforced run attempt budget; stops nothing by itself.
+    tool_calls: u64,
+    /// Observed nested-subagent spawns (Claude `Task` tool uses). Codex has
+    /// no verified equivalent shape, so Codex subagents stay unobserved.
+    subagents: u64,
 }
 
 impl AgentOutput {
@@ -36,6 +43,8 @@ impl AgentOutput {
             usage: Value::Null,
             error: None,
             complete: false,
+            tool_calls: 0,
+            subagents: 0,
         }
     }
 
@@ -72,6 +81,7 @@ impl AgentOutput {
             self.event();
             self.pending.clear();
         }
+        self.flush_counts();
         if !self.complete && self.error.is_none() {
             self.error = Some(
                 "CLI did not return a completed structured result; partial output is preserved."
@@ -82,6 +92,21 @@ impl AgentOutput {
 
     pub fn success(&self) -> bool {
         self.complete && self.error.is_none()
+    }
+
+    /// Copy observed in-CLI counts into the usage envelope. Called when a
+    /// terminal event lands and at finish, so partial output keeps partial
+    /// counts. Creates the envelope when the CLI reported no usage block
+    /// but did emit countable tool events.
+    fn flush_counts(&mut self) {
+        if self.tool_calls == 0 && self.subagents == 0 {
+            return;
+        }
+        if !self.usage.is_object() {
+            self.usage = serde_json::json!({});
+        }
+        self.usage["observed_tool_calls"] = serde_json::json!(self.tool_calls);
+        self.usage["observed_subagents"] = serde_json::json!(self.subagents);
     }
 
     fn add_activity(&mut self, text: &str) {
@@ -153,6 +178,14 @@ impl AgentOutput {
                                 self.response(text);
                             }
                         } else if let Some(name) = block.get("name").and_then(Value::as_str) {
+                            // Any named content block is a tool invocation
+                            // (`tool_use`); the nested-agent tool is "Task".
+                            // Observed only: killing the process after this
+                            // event cannot un-run the tool.
+                            self.tool_calls += 1;
+                            if name == "Task" {
+                                self.subagents += 1;
+                            }
                             self.add_activity(&format!("Tool: {name}"));
                         }
                     }
@@ -175,6 +208,7 @@ impl AgentOutput {
                     self.response(text);
                 }
                 self.usage = value.get("usage").cloned().unwrap_or(Value::Null);
+                self.flush_counts();
                 if let Some(cost) = value.get("total_cost_usd").and_then(Value::as_f64) {
                     if cost.is_finite() && cost >= 0.0 {
                         if !self.usage.is_object() {
@@ -205,6 +239,7 @@ impl AgentOutput {
                         }
                     }
                     Some("command_execution") => {
+                        self.tool_calls += 1;
                         if let Some(command) = item.get("command").and_then(Value::as_str) {
                             self.add_activity(command);
                         }
@@ -219,6 +254,7 @@ impl AgentOutput {
             (AdapterKind::Codex, "turn.completed") => {
                 self.complete = true;
                 self.usage = value.get("usage").cloned().unwrap_or(Value::Null);
+                self.flush_counts();
             }
             (_, "error" | "turn.failed") => {
                 self.error = Some(

@@ -352,6 +352,7 @@ pub fn compile_proposal_with_profiles(
         name: proposal.name.clone(),
         inputs: compiled_inputs,
         defaults,
+        limits: None,
         nodes,
         edges,
     };
@@ -979,6 +980,10 @@ pub fn compile_assistance_proposal(
                 }
                 node.config.extend_on_output = old.config.extend_on_output;
                 node.config.mcp_server_id = old.config.mcp_server_id.clone();
+                // Allowances are user-side settings, never proposal content:
+                // an omitted generated field must not erase them.
+                node.config.max_tool_calls = old.config.max_tool_calls;
+                node.config.max_subagents = old.config.max_subagents;
                 if let Some(mut retry) = old.config.retry.clone() {
                     if let Some(attempts) = patch.config.max_attempts {
                         retry.max_attempts = attempts;
@@ -998,6 +1003,9 @@ pub fn compile_assistance_proposal(
         preview.workflow.inputs = base.inputs.clone();
         preview.workflow.edges = base.edges.clone();
     }
+    // Workflow limits are user-side settings, never proposal content: an
+    // omitted generated field must not erase the existing budget.
+    preview.workflow.limits = base.limits.clone();
     preview.issues = validate_workflow(&preview.workflow);
     preview.unmapped_roles.retain(|role| {
         preview.workflow.nodes.iter().any(|n| {
