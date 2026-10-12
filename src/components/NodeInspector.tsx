@@ -1507,9 +1507,9 @@ export function NodeInspector(): React.JSX.Element | null {
               }}
             />
             <span className="field-hint">
-              Nested agents this step may spawn. Zero/blank means “do not spawn unless the
-              task explicitly allows it”. Only the run-wide attempt budget is enforced;
-              see Usage limits for the saved workflow budget.
+              Blank inherits the workflow allowance. Spawning still requires explicit
+              permission in the task. This allowance is advisory; only the run-wide
+              attempt budget is enforced.
             </span>
           </div>
           <div className="field">

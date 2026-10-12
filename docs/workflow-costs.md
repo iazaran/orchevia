@@ -180,6 +180,10 @@ alike), so later workflow edits never change an existing run.
   them. The CLI owns its tool loop, so these never hard-stop work. Per-node
   values are that step's share, never the whole workflow budget; stricter node
   instructions always win, and the policy never mentions subscription balances.
+  Each dispatch uses the remaining observed run allowance and reserves a share for
+  other possible attempts. Retries receive refreshed guidance, and a node's own
+  allowance can only tighten the workflow allowance. Unsupported or incomplete
+  observations remain visible coverage limits; these figures are not hard caps.
 - **Spend target (API-equivalent).** The existing reported-spend guard, saved
   per workflow and overridable per run as before.
 
@@ -187,16 +191,21 @@ An incomplete or budget-limited review is neither approval nor evidence of
 cleanliness: guard-paused nodes record no success marker, contribute no
 findings, and release no dependent approvals, publications or side effects
 until the required work actually runs.
+Known structured provider-limit errors and missing terminal responses stop the
+graph without taking ordinary failure routes. Prompt-only allowances still depend
+on the agent following the guidance; Orchevia does not infer completion or reliable
+dollar balances from arbitrary prose.
+Explicit local process timeouts retain configured retries and failure recovery.
 
 ### Control coverage
 
-| Control                | Claude                         | Codex                | Custom/text |
-| ---------------------- | ------------------------------ | -------------------- | ----------- |
-| Agent attempts per run | enforced                       | enforced             | enforced    |
-| Agentic turns          | advisory                       | advisory             | unsupported |
-| Individual tool calls  | advisory (+observed)           | observed             | unsupported |
-| Nested subagents       | advisory (+observed Task uses) | advisory             | unsupported |
-| Spend estimate pause   | enforced (can overshoot)       | unsupported (no USD) | unsupported |
+| Control                | Claude                          | Codex                | Custom/text |
+| ---------------------- | ------------------------------- | -------------------- | ----------- |
+| Agent attempts per run | enforced                        | enforced             | enforced    |
+| Agentic turns          | advisory                        | advisory             | unsupported |
+| Individual tool calls  | advisory (+observed)            | observed             | unsupported |
+| Nested subagents       | advisory (+observed Task/Agent) | advisory             | unsupported |
+| Spend estimate pause   | enforced (can overshoot)        | unsupported (no USD) | unsupported |
 
 Orchevia passes no `--max-turns`/`--max-budget-usd` flags itself. Claude's
 `--max-turns` counts agentic turns, not individual tools, and its
@@ -210,7 +219,7 @@ manufacture enforcement that does not exist.
 
 **Usage & costs** (after Environment) aggregates run history in the backend over
 every stored run — never a capped recent list — with date range,
-workflow/provider/model filters, a daily chart, and workflow/model tables.
+workflow/provider/model filters, a daily chart, and workflow, AI profile and model tables.
 Boundaries are inclusive start / exclusive end, grouped by UTC day with the
 display timezone shown. Workflow names and adapter/model identity are recorded
 at execution time; legacy rows stay “unknown”, never zero. Fixtures and reused
@@ -218,10 +227,20 @@ outputs contribute no new consumption; duplicate terminal events and
 parent/subagent wrapper rows are not double-counted. Workflow-run counts are
 execution counts, not completed PR or ticket counts.
 
+AI profile rows include distinct runs, dispatched attempts, execution time and
+CLI-reported API estimates with missing-report coverage. Profile IDs come from
+the run's saved workflow, so reassigning a node later does not change attribution.
+Existing profiles display their current names; deleted profiles retain their IDs,
+and history without a saved identity stays unknown. This replaces the usage panel
+on Agents, which now focuses on configuring profiles.
+
 Three money lanes stay separate: user-entered subscription fees and extras for
 a billing period, CLI-reported API-equivalent estimates with source and
-coverage, and an optional allocation labeled with its method and declared
-Orchevia share (outside/untracked usage excluded). The illustrative
+coverage, and an optional manual fee pool with its declared Orchevia share
+(outside/untracked usage excluded). Full overlapping billing periods remain
+unprorated; periods outside the selected range or without valid dates are not
+allocated. Provider, workflow or model filters do not convert the pool into
+per-run or per-attempt prices. The illustrative
 $120 + $24 example from early feedback is a settings example, not a default or
 a verified price. The API-equivalent target offers estimate ranges with sample
 counts from comparable history, or **Insufficient history** — never fabricated

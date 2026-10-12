@@ -45,6 +45,15 @@ A failed node with no taken `failure` edge fails the run immediately
 going — the recovery branch is a normal path from there. Unknown labels warn at
 validation and behave as success edges.
 
+Structured Agent responses that identify a provider budget/turn limit, or that
+lack a completed structured result, are incomplete work. They fail the run without
+taking ordinary failure edges, so a publish or approval fallback cannot treat an
+unfinished review as clearance. Partial output is preserved. Adjust any provider
+profile cap and use deliberate failed-run recovery before replaying such work;
+extending an Orchevia attempt budget does not change a provider's own cap.
+Explicit local process timeouts retain their configured retry and failure-recovery
+behavior; they are distinguished from unexpected missing terminal responses.
+
 ## Conditions
 
 Small deterministic formulas: `<variable> <operator> <literal>`, joined by one

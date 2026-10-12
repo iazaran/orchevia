@@ -867,6 +867,7 @@ impl SqliteDb {
             ));
         }
         execution.options.spend_limit_usd = limit;
+        execution.resolved_limits.spend_limit_usd = limit;
         execution.spend_pause = None;
         tx.execute(
             "UPDATE runs SET status='running',finished_at=NULL,execution_json=?1 WHERE id=?2",
@@ -945,6 +946,14 @@ impl SqliteDb {
         };
         if pause.id != expected_pause_id {
             return Ok(false);
+        }
+        if let Some(next) = extension {
+            crate::run_controls::validate_limit_value(
+                "Agent attempt limit",
+                next,
+                crate::run_controls::MAX_ATTEMPTS_LIMIT,
+            )
+            .map_err(DbError::Io)?;
         }
         match extension {
             Some(next) if next <= pause.consumed_attempts => {
@@ -1044,6 +1053,64 @@ impl SqliteDb {
         )?;
         let kept: i64 = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))?;
         Ok((removed, kept as usize))
+    }
+
+    /// Create a visible row before a Command or Agent process finishes.
+    /// Claim a shared Agent slot and create its live row under one database
+    /// transaction. Running siblings and retries cannot claim the same slot.
+    pub(crate) fn try_start_agent_attempt(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        attempt: u32,
+        agent_ids: &std::collections::HashSet<String>,
+        max_attempts: u32,
+    ) -> DbResult<Option<i64>> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let consumed = {
+            let mut stmt = tx.prepare(
+                "SELECT node_id,status,structured_json FROM node_results WHERE run_id=?1",
+            )?;
+            let rows = stmt.query_map(params![run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            let mut consumed = 0u32;
+            for row in rows {
+                let (id, status, metadata) = row?;
+                if agent_ids.contains(&id)
+                    && crate::run_controls::is_dispatched_record(&status, &metadata)
+                {
+                    consumed += 1;
+                }
+            }
+            consumed
+        };
+        if consumed >= max_attempts {
+            return Ok(None);
+        }
+        tx.execute("INSERT INTO node_results (run_id,node_id,status,started_at,attempt,structured_json) VALUES (?1,?2,'running',?3,?4,'{}')",params![run_id,node_id,Utc::now().to_rfc3339(),attempt])?;
+        let id = tx.last_insert_rowid();
+        let value: String = tx.query_row(
+            "SELECT execution_json FROM runs WHERE id=?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        execution.consumed_agent_attempts = consumed + 1;
+        tx.execute(
+            "UPDATE runs SET execution_json=?1 WHERE id=?2",
+            params![serde_json::to_string(&execution)?, run_id],
+        )?;
+        tx.commit()?;
+        Ok(Some(id))
     }
 
     /// Create a visible row before a Command or Agent process finishes.

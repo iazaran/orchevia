@@ -89,9 +89,19 @@ import type {
   ValidationIssue,
   Workflow,
 } from './workflow';
-import { createSampleWorkflow, validateWorkflowLocal } from './workflow';
+import {
+  createSampleWorkflow,
+  validateWorkflowLocal,
+  MAX_ATTEMPTS_LIMIT,
+} from './workflow';
 import type { UsageFilter, UsageSummary } from './usage';
-import { emptyUsageSummary } from './usage';
+import {
+  emptyUsageSummary,
+  emptyUsageCoverage,
+  measuredUsage,
+  addUsageCoverage,
+  validateUsageSetting,
+} from './usage';
 
 export interface Backend {
   encodeWorkflowDocument(workflow: Workflow): Promise<DocumentSession>;
@@ -786,11 +796,7 @@ class MockBackend implements Backend {
     const structural = validateWorkflowLocal(wf.definition).filter(
       (i) => i.severity === 'error',
     );
-    if (
-      (runOptions.dryRun || typeof runOptions.spendLimitUsd === 'number') &&
-      structural.length
-    )
-      throw new Error(structural.map((i) => i.message).join(' '));
+    if (structural.length) throw new Error(structural.map((i) => i.message).join(' '));
     const effectiveInputs = { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) };
     for (const input of wf.definition.inputs ?? []) {
       if (input.required && !(effectiveInputs[input.name] ?? '').trim())
@@ -1422,7 +1428,9 @@ class MockBackend implements Backend {
       throw new Error('Run is not paused at this usage guard.');
     if (
       extension !== undefined &&
-      (!Number.isInteger(extension) || extension <= pause.consumedAttempts)
+      (!Number.isInteger(extension) ||
+        extension <= pause.consumedAttempts ||
+        extension > MAX_ATTEMPTS_LIMIT)
     )
       throw new Error(
         'New attempt budget must be a whole number exceeding the attempts already consumed.',
@@ -1448,16 +1456,34 @@ class MockBackend implements Backend {
   async usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
     const summary = emptyUsageSummary();
     const applied = filter ?? {};
-    if (applied.from !== undefined && Number.isNaN(Date.parse(applied.from)))
-      throw new Error("Invalid 'from' date; use RFC 3339.");
-    if (applied.to !== undefined && Number.isNaN(Date.parse(applied.to)))
-      throw new Error("Invalid 'to' date; use RFC 3339.");
+    const boundary = (value: string | undefined, name: string): number | undefined => {
+      if (value === undefined) return undefined;
+      const parts =
+        /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(
+          value,
+        );
+      const time = Date.parse(value);
+      const lastDay = parts
+        ? new Date(Date.UTC(Number(parts[1]), Number(parts[2]), 0)).getUTCDate()
+        : 0;
+      if (
+        !parts ||
+        !Number.isFinite(time) ||
+        Number(parts[3]) < 1 ||
+        Number(parts[3]) > lastDay
+      )
+        throw new Error(`Invalid '${name}' date; use RFC 3339.`);
+      return time;
+    };
+    const fromTime = boundary(applied.from, 'from');
+    const toTime = boundary(applied.to, 'to');
     if (applied.from !== undefined) summary.from = applied.from;
     if (applied.to !== undefined) summary.to = applied.to;
     summary.timezone = applied.timezone ?? 'UTC';
     const days = new Map<string, (typeof summary.days)[number]>();
     const workflows = new Map<string, (typeof summary.byWorkflow)[number]>();
     const models = new Map<string, (typeof summary.byModel)[number]>();
+    const profiles = new Map<string | null, (typeof summary.byProfile)[number]>();
     let scanned = 0;
     for (const run of this.runs) {
       if (
@@ -1465,18 +1491,25 @@ class MockBackend implements Backend {
         !applied.workflowIds?.includes(run.workflowId)
       )
         continue;
-      if (applied.from !== undefined && run.startedAt < applied.from) continue;
-      if (applied.to !== undefined && run.startedAt >= applied.to) continue;
+      const started = Date.parse(run.startedAt);
+      if (fromTime !== undefined && started < fromTime) continue;
+      if (toTime !== undefined && started >= toTime) continue;
       const snapshot = this.runWorkflows.get(run.id);
-      const workflowName =
-        snapshot?.name ?? this.workflows.get(run.workflowId)?.name ?? run.workflowId;
+      const workflowName = snapshot?.name ?? run.workflowId;
       const agentIds = new Set(
-        (snapshot?.nodes ?? this.workflows.get(run.workflowId)?.definition.nodes ?? [])
+        (snapshot?.nodes ?? []).filter((n) => n.type === 'agent').map((n) => n.id),
+      );
+      const agentProfiles = new Map(
+        (snapshot?.nodes ?? [])
           .filter((n) => n.type === 'agent')
-          .map((n) => n.id),
+          .map((n) => [
+            n.id,
+            n.config.agentProfileId?.trim() ? n.config.agentProfileId : null,
+          ]),
       );
       const rows = this.results.get(run.id) ?? [];
-      const seenTerminal = new Set<string>();
+      const seenResults = new Set<number>();
+      const runProfiles = new Set<string | null>();
       let runAttempts = 0;
       let runUsd = 0;
       let runUnknown = 0;
@@ -1495,22 +1528,27 @@ class MockBackend implements Backend {
           continue;
         }
         const isAgent =
-          agentIds.size > 0
-            ? agentIds.has(row.nodeId)
-            : meta.agentUsage !== undefined || meta.agentSession !== undefined;
+          agentIds.has(row.nodeId) ||
+          meta.agentUsage !== undefined ||
+          meta.agentSession !== undefined;
         if (!isAgent) continue;
-        if (['succeeded', 'failed', 'cancelled', 'retrying'].includes(row.status)) {
-          const key = `${row.nodeId}:${String(row.attempt ?? 1)}:${row.status}`;
-          if (seenTerminal.has(key)) continue;
-          seenTerminal.add(key);
-        }
+        if (
+          run.execution?.options.dryRun === true ||
+          !['running', 'succeeded', 'failed', 'cancelled', 'retrying'].includes(
+            row.status,
+          ) ||
+          meta.notDispatched === true ||
+          seenResults.has(row.id)
+        )
+          continue;
+        seenResults.add(row.id);
         const usage: Record<string, unknown> | null =
           typeof meta.agentUsage === 'object' && meta.agentUsage !== null
             ? (meta.agentUsage as Record<string, unknown>)
             : null;
         const adapterValue = usage?.adapter;
         const adapter =
-          typeof adapterValue === 'string' && adapterValue !== ''
+          typeof adapterValue === 'string' && adapterValue.trim() !== ''
             ? adapterValue
             : 'unknown';
         const modelValue = usage?.model;
@@ -1523,13 +1561,14 @@ class MockBackend implements Backend {
         if ((applied.models?.length ?? 0) > 0 && !applied.models?.includes(model))
           continue;
         runAttempts += 1;
-        const num = (value: unknown): number =>
-          typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
-        runIn +=
-          num(usage?.input_tokens) +
-          num(usage?.cached_input_tokens) +
-          num(usage?.cache_read_input_tokens);
-        runOut += num(usage?.output_tokens);
+        const metrics = measuredUsage(usage, adapter);
+        runIn += metrics.inputTokens;
+        runOut += metrics.outputTokens;
+        summary.totals.cachedInputTokens += metrics.cachedInputTokens;
+        summary.totals.cacheReadInputTokens += metrics.cacheReadInputTokens;
+        summary.totals.cacheCreationInputTokens += metrics.cacheCreationInputTokens;
+        summary.totals.reasoningOutputTokens += metrics.reasoningOutputTokens;
+        addUsageCoverage(summary.totals.coverage, metrics.coverage);
         const costValue = usage?.reported_cost_usd;
         const cost =
           typeof costValue === 'number' && Number.isFinite(costValue) && costValue >= 0
@@ -1544,13 +1583,37 @@ class MockBackend implements Backend {
           runUsd += cost;
           if (summary.recentAttemptUsd.length < 500) summary.recentAttemptUsd.push(cost);
         }
-        const tools = num(usage?.observed_tool_calls);
-        const subs = num(usage?.observed_subagents);
+        const tools = metrics.observedToolCalls;
+        const subs = metrics.observedSubagents;
         summary.totals.observedToolCalls += tools;
         summary.totals.observedSubagents += subs;
-        if (adapter === 'unknown') summary.totals.unknownModelAttempts += 1;
+        if (adapter === 'unknown' || model === 'unknown')
+          summary.totals.unknownModelAttempts += 1;
         if (row.status === 'failed') summary.totals.failedAttempts += 1;
         if (row.status === 'retrying') summary.totals.retriedAttempts += 1;
+        const profileId = agentProfiles.get(row.nodeId) ?? null;
+        const profile: (typeof summary.byProfile)[number] = profiles.get(profileId) ?? {
+          profileId,
+          runs: 0,
+          agentAttempts: 0,
+          totalDurationMs: 0,
+          reportedUsd: 0,
+          reportedUsdAttempts: 0,
+          unknownUsdAttempts: 0,
+        };
+        if (!runProfiles.has(profileId)) {
+          runProfiles.add(profileId);
+          profile.runs += 1;
+        }
+        profile.agentAttempts += 1;
+        profile.totalDurationMs += row.durationMs ?? 0;
+        if (profile.lastRunAt === undefined || started > Date.parse(profile.lastRunAt))
+          profile.lastRunAt = run.startedAt;
+        if (cost !== null) {
+          profile.reportedUsd += cost;
+          profile.reportedUsdAttempts += 1;
+        } else profile.unknownUsdAttempts += 1;
+        profiles.set(profileId, profile);
         const modelKey = `${adapter}::${model}`;
         const entry =
           models.get(modelKey) ??
@@ -1562,29 +1625,46 @@ class MockBackend implements Backend {
               inputTokens: 0,
               outputTokens: 0,
               reportedUsd: 0,
+              reportedUsdAttempts: 0,
+              unknownUsdAttempts: 0,
               observedToolCalls: 0,
               observedSubagents: 0,
+              cachedInputTokens: 0,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              reasoningOutputTokens: 0,
+              coverage: emptyUsageCoverage(),
             })
             .get(modelKey);
         if (entry) {
           entry.agentAttempts += 1;
-          entry.inputTokens +=
-            num(usage?.input_tokens) +
-            num(usage?.cached_input_tokens) +
-            num(usage?.cache_read_input_tokens);
-          entry.outputTokens += num(usage?.output_tokens);
-          if (cost !== null) entry.reportedUsd += cost;
+          entry.inputTokens += metrics.inputTokens;
+          entry.outputTokens += metrics.outputTokens;
+          entry.cachedInputTokens += metrics.cachedInputTokens;
+          entry.cacheReadInputTokens += metrics.cacheReadInputTokens;
+          entry.cacheCreationInputTokens += metrics.cacheCreationInputTokens;
+          entry.reasoningOutputTokens += metrics.reasoningOutputTokens;
+          addUsageCoverage(entry.coverage, metrics.coverage);
+          if (cost !== null) {
+            entry.reportedUsd += cost;
+            entry.reportedUsdAttempts += 1;
+          } else entry.unknownUsdAttempts += 1;
           entry.observedToolCalls += tools;
           entry.observedSubagents += subs;
         }
       }
       scanned += 1;
-      if (run.execution?.options.dryRun === true) continue;
+      if (
+        run.execution?.options.dryRun === true ||
+        (runAttempts === 0 &&
+          ((applied.adapters?.length ?? 0) > 0 || (applied.models?.length ?? 0) > 0))
+      )
+        continue;
       summary.totals.runs += 1;
       summary.totals.agentAttempts += runAttempts;
       summary.totals.inputTokens += runIn;
       summary.totals.outputTokens += runOut;
-      const day = run.startedAt.slice(0, 10);
+      const day = new Date(started).toISOString().slice(0, 10);
       const dayEntry =
         days.get(day) ??
         days
@@ -1638,6 +1718,19 @@ class MockBackend implements Backend {
             : a.model < b.model
               ? -1
               : 1),
+    );
+    summary.byProfile = [...profiles.values()].sort(
+      (a, b) =>
+        b.agentAttempts - a.agentAttempts ||
+        (a.profileId === b.profileId
+          ? 0
+          : a.profileId === null
+            ? -1
+            : b.profileId === null
+              ? 1
+              : a.profileId < b.profileId
+                ? -1
+                : 1),
     );
     summary.runsScanned = scanned;
     return summary;
@@ -2077,6 +2170,7 @@ class MockBackend implements Backend {
     const maxLen = key.startsWith('usage.') ? 8000 : 200;
     if (new TextEncoder().encode(value).length > maxLen)
       throw new Error('Setting value too long.');
+    validateUsageSetting(key, value);
     this.settings.set(key, value);
     this.persist();
   }

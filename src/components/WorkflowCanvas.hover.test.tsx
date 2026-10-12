@@ -2,10 +2,8 @@ import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createEmptyWorkflow } from '../lib/workflow';
 import { useAppStore } from '../store';
-import { OrcheviaFlowNode } from './FlowNode';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import type { Edge, Node } from '@xyflow/react';
-import { ReactFlowProvider } from '@xyflow/react';
 
 const { flow } = vi.hoisted(() => ({
   flow: {
@@ -29,7 +27,16 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     onNodesDelete?: (deleted: { id: string }[]) => void;
   }): React.JSX.Element {
     flow.current = props;
-    return <div />;
+    // React Flow puts keyboard focus on a wrapper outside the custom node.
+    return (
+      <div>
+        {props.nodes.map((node) => (
+          <div key={node.id} className="react-flow__node" data-id={node.id} tabIndex={0}>
+            <div className="orchevia-node">{node.id}</div>
+          </div>
+        ))}
+      </div>
+    );
   }
   return { ...actual, ReactFlow: Flow };
 });
@@ -124,37 +131,33 @@ it('clears a stale hover after the hovered node is deleted', () => {
   expect(edges().filter((e) => e.className === 'edge-connected')).toHaveLength(0);
 });
 
-it('reports keyboard focus and blur through the node for the same highlight', () => {
-  const onHover = vi.fn();
-  const { container } = render(
-    <ReactFlowProvider>
-      <OrcheviaFlowNode
-        id="middle"
-        data={{
-          label: 'Middle',
-          kind: 'command',
-          detail: 'echo',
-          selected: false,
-          onHover,
-        }}
-        type="orchevia"
-        selected={false}
-        isConnectable={false}
-        zIndex={0}
-        dragging={false}
-        selectable={false}
-        deletable={false}
-        draggable={false}
-        positionAbsoluteX={0}
-        positionAbsoluteY={0}
-      />
-      ,
-    </ReactFlowProvider>,
-  );
-  const inner = container.firstElementChild;
-  if (!inner) throw new Error('node missing');
-  fireEvent.focus(inner);
-  expect(onHover).toHaveBeenLastCalledWith('middle');
-  fireEvent.blur(inner);
-  expect(onHover).toHaveBeenLastCalledWith(null);
-});
+it.each([false, true])(
+  'highlights the focused node wrapper in readOnly=%s',
+  (readOnly) => {
+    useAppStore.setState({
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      validation: [],
+      overlayResults: [],
+      profiles: [],
+      updateActiveWorkflow: vi.fn(),
+    });
+    const { container } = render(
+      <WorkflowCanvas workflow={hoverWorkflow()} readOnly={readOnly} />,
+    );
+    const wrapper = container.querySelector('.react-flow__node[data-id="middle"]');
+    if (!wrapper) throw new Error('node wrapper missing');
+    fireEvent.focus(wrapper);
+    expect(
+      edges()
+        .filter((e) => e.className === 'edge-connected')
+        .map((e) => e.id)
+        .sort(),
+    ).toEqual(['e-end', 'e-start']);
+    // Pointer exit does not discard a keyboard-focused node's highlight.
+    act(() => flow.current?.onNodeMouseLeave?.());
+    expect(edges().filter((e) => e.className === 'edge-connected')).toHaveLength(2);
+    fireEvent.blur(wrapper);
+    expect(edges().filter((e) => e.className === 'edge-connected')).toHaveLength(0);
+  },
+);

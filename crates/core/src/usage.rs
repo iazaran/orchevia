@@ -176,17 +176,25 @@ pub fn build_usage_policy(
     lines.join("\n")
 }
 
-/// Inject the policy into a composed Agent prompt exactly once. Prompts that
-/// already carry the marker (resumed handoffs, follow-ups) pass through
-/// untouched so earlier policies are never recursively copied.
+/// Remove earlier injected blocks from handoffs, then prepend the current
+/// invocation's policy once. The shared allowance may have changed since a
+/// previous invocation.
 pub fn inject_usage_policy(prompt: &str, policy: &str) -> String {
-    if prompt.contains(USAGE_POLICY_MARKER) || policy.trim().is_empty() {
+    if policy.trim().is_empty() {
         return prompt.to_string();
     }
-    if prompt.trim().is_empty() {
+    let mut cleaned = prompt.to_string();
+    let marker = format!("[{USAGE_POLICY_MARKER}]");
+    while let Some(start) = cleaned.find(&marker) {
+        let Some(end) = cleaned[start..].find("\n\n---\n\n") else {
+            break;
+        };
+        cleaned.replace_range(start..start + end + "\n\n---\n\n".len(), "");
+    }
+    if cleaned.trim().is_empty() {
         return policy.to_string();
     }
-    format!("{policy}\n\n---\n\n{prompt}")
+    format!("{policy}\n\n---\n\n{cleaned}")
 }
 
 // -- Analytics ---------------------------------------------------------------
@@ -237,6 +245,21 @@ pub struct UsageWorkflowRow {
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UsageProfileRow {
+    /// Profile ID from the immutable run snapshot. Missing snapshots/IDs stay unknown.
+    pub profile_id: Option<String>,
+    pub runs: u32,
+    pub agent_attempts: u32,
+    pub total_duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub reported_usd: f64,
+    pub reported_usd_attempts: u32,
+    pub unknown_usd_attempts: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageModelRow {
     /// Adapter + model recorded at execution time; legacy rows stay "unknown".
     pub adapter: String,
@@ -245,8 +268,44 @@ pub struct UsageModelRow {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub reported_usd: f64,
+    pub reported_usd_attempts: u32,
+    pub unknown_usd_attempts: u32,
     pub observed_tool_calls: u64,
     pub observed_subagents: u64,
+    pub cached_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub coverage: UsageCoverage,
+}
+
+/// Number of attempts reporting each metric. Absent counters remain unknown;
+/// a reported zero counts as covered. Claude total-input coverage requires its
+/// uncached, cache-read and cache-write components.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCoverage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cached_input_tokens: u32,
+    pub cache_read_input_tokens: u32,
+    pub cache_creation_input_tokens: u32,
+    pub reasoning_output_tokens: u32,
+    pub tool_calls: u32,
+    pub subagents: u32,
+}
+
+impl UsageCoverage {
+    fn add(&mut self, other: &Self) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_read_input_tokens += other.cache_read_input_tokens;
+        self.cache_creation_input_tokens += other.cache_creation_input_tokens;
+        self.reasoning_output_tokens += other.reasoning_output_tokens;
+        self.tool_calls += other.tool_calls;
+        self.subagents += other.subagents;
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -267,6 +326,11 @@ pub struct UsageTotals {
     pub observed_subagents: u64,
     /// Rows whose adapter/model predates execution-time recording.
     pub unknown_model_attempts: u32,
+    pub cached_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub coverage: UsageCoverage,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -276,6 +340,7 @@ pub struct UsageSummary {
     pub days: Vec<UsageDay>,
     pub by_workflow: Vec<UsageWorkflowRow>,
     pub by_model: Vec<UsageModelRow>,
+    pub by_profile: Vec<UsageProfileRow>,
     /// Inclusive start / exclusive end actually applied, RFC 3339.
     pub from: Option<String>,
     pub to: Option<String>,
@@ -296,10 +361,10 @@ fn metadata(row: &StoredNodeResult) -> serde_json::Value {
     serde_json::from_str(&row.structured_json).unwrap_or_default()
 }
 
-fn meta_u64(meta: &serde_json::Value, key: &str) -> u64 {
+fn meta_count(meta: &serde_json::Value, key: &str) -> Option<u64> {
     meta.pointer(&format!("/agentUsage/{key}"))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
+        .filter(|value| *value <= 9_007_199_254_740_991)
 }
 
 fn is_agent_result(row: &StoredNodeResult, agent_ids: &std::collections::HashSet<String>) -> bool {
@@ -342,6 +407,7 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
     let mut days: HashMap<String, UsageDay> = HashMap::new();
     let mut workflows: HashMap<String, UsageWorkflowRow> = HashMap::new();
     let mut models: HashMap<(String, String), UsageModelRow> = HashMap::new();
+    let mut profiles: HashMap<Option<String>, UsageProfileRow> = HashMap::new();
     let mut scanned = 0u32;
     for run in &runs {
         if !filter.workflow_ids.is_empty() && !filter.workflow_ids.contains(&run.workflow_id) {
@@ -367,6 +433,7 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
         // so text-mode and legacy rows still count as attempts (unknown
         // model/usage), never as zero.
         let agent_ids: std::collections::HashSet<String> = snapshot
+            .as_ref()
             .map(|w| {
                 w.nodes
                     .iter()
@@ -375,16 +442,34 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                     .collect()
             })
             .unwrap_or_default();
+        let agent_profiles: HashMap<String, Option<String>> = snapshot
+            .as_ref()
+            .map(|w| {
+                w.nodes
+                    .iter()
+                    .filter(|n| n.kind == crate::workflow::NodeKind::Agent)
+                    .map(|n| {
+                        (
+                            n.id.clone(),
+                            n.config
+                                .agent_profile_id
+                                .clone()
+                                .filter(|id| !id.trim().is_empty()),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let rows = db.list_node_results(&run.id).map_err(|e| e.to_string())?;
-        // Terminal-event dedupe: identical (node, attempt, status) rows keep
-        // the first; parent/subagent wrapper rows never enter totals.
-        let mut seen_terminal: HashMap<(String, u32, String), bool> = HashMap::new();
+        // A persisted result id identifies one dispatch. Loop visits can
+        // share node/attempt/status; they must each contribute consumption.
+        let mut seen_results = std::collections::HashSet::new();
+        let mut run_profiles = std::collections::HashSet::new();
         let mut run_attempts = 0u32;
         let mut run_usd = 0.0f64;
         let mut run_unknown = 0u32;
         let mut run_in = 0u64;
         let mut run_out = 0u64;
-        let mut counted_rows: Vec<&StoredNodeResult> = Vec::new();
         for row in &rows {
             if !is_agent_result(row, &agent_ids) {
                 // Reused non-agent outputs still count as reuse evidence.
@@ -407,20 +492,17 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                 summary.totals.reused_results += 1;
                 continue;
             }
-            let terminal = matches!(
-                row.status.as_str(),
-                "succeeded" | "failed" | "cancelled" | "retrying"
-            );
-            if terminal {
-                let key = (row.node_id.clone(), row.attempt, row.status.clone());
-                if seen_terminal.insert(key, true).is_some() {
-                    continue; // duplicate terminal event for the same attempt
-                }
+            if dry
+                || !crate::run_controls::is_dispatched_attempt(row)
+                || !seen_results.insert(row.id)
+            {
+                continue;
             }
             // Adapter/model recorded at execution time; legacy rows unknown.
             let adapter = meta
                 .pointer("/agentUsage/adapter")
                 .and_then(serde_json::Value::as_str)
+                .filter(|a| !a.trim().is_empty())
                 .unwrap_or("unknown")
                 .to_string();
             let model = meta
@@ -435,17 +517,48 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
             if !filter.models.is_empty() && !filter.models.contains(&model) {
                 continue;
             }
-            counted_rows.push(row);
             run_attempts += 1;
-            run_in += meta_u64(&meta, "input_tokens")
-                + meta_u64(&meta, "cached_input_tokens")
-                + meta_u64(&meta, "cache_read_input_tokens");
-            run_out += meta_u64(&meta, "output_tokens");
-            if let Some(cost) = meta
+            let input = meta_count(&meta, "input_tokens");
+            let output = meta_count(&meta, "output_tokens");
+            let cached = meta_count(&meta, "cached_input_tokens");
+            let read = meta_count(&meta, "cache_read_input_tokens");
+            let created = meta_count(&meta, "cache_creation_input_tokens");
+            let reasoning = meta_count(&meta, "reasoning_output_tokens");
+            // Codex cached_input_tokens is a subset of input_tokens. Claude
+            // reports three disjoint input components.
+            let input_total = input.unwrap_or(0)
+                + if adapter == "claude" {
+                    read.unwrap_or(0) + created.unwrap_or(0)
+                } else {
+                    0
+                };
+            let tools = meta_count(&meta, "observed_tool_calls");
+            let subs = meta_count(&meta, "observed_subagents");
+            let coverage = UsageCoverage {
+                input_tokens: u32::from(
+                    input.is_some()
+                        && (adapter != "claude" || (read.is_some() && created.is_some())),
+                ),
+                output_tokens: u32::from(output.is_some()),
+                cached_input_tokens: u32::from(cached.is_some()),
+                cache_read_input_tokens: u32::from(read.is_some()),
+                cache_creation_input_tokens: u32::from(created.is_some()),
+                reasoning_output_tokens: u32::from(reasoning.is_some()),
+                tool_calls: u32::from(tools.is_some()),
+                subagents: u32::from(subs.is_some()),
+            };
+            run_in += input_total;
+            run_out += output.unwrap_or(0);
+            summary.totals.cached_input_tokens += cached.unwrap_or(0);
+            summary.totals.cache_read_input_tokens += read.unwrap_or(0);
+            summary.totals.cache_creation_input_tokens += created.unwrap_or(0);
+            summary.totals.reasoning_output_tokens += reasoning.unwrap_or(0);
+            summary.totals.coverage.add(&coverage);
+            let cost = meta
                 .pointer("/agentUsage/reported_cost_usd")
                 .and_then(serde_json::Value::as_f64)
-                .filter(|n| n.is_finite() && *n >= 0.0)
-            {
+                .filter(|n| n.is_finite() && *n >= 0.0);
+            if let Some(cost) = cost {
                 run_usd += cost;
                 summary.totals.reported_usd += cost;
                 summary.totals.reported_usd_attempts += 1;
@@ -456,11 +569,9 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                 summary.totals.unknown_usd_attempts += 1;
                 run_unknown += 1;
             }
-            let tools = meta_u64(&meta, "observed_tool_calls");
-            let subs = meta_u64(&meta, "observed_subagents");
-            summary.totals.observed_tool_calls += tools;
-            summary.totals.observed_subagents += subs;
-            if adapter == "unknown" {
+            summary.totals.observed_tool_calls += tools.unwrap_or(0);
+            summary.totals.observed_subagents += subs.unwrap_or(0);
+            if adapter == "unknown" || model == "unknown" {
                 summary.totals.unknown_model_attempts += 1;
             }
             if row.status == "failed" {
@@ -468,6 +579,25 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
             }
             if row.status == "retrying" {
                 summary.totals.retried_attempts += 1;
+            }
+            let profile_id = agent_profiles.get(&row.node_id).cloned().flatten();
+            let profile = profiles
+                .entry(profile_id.clone())
+                .or_insert_with(|| UsageProfileRow {
+                    profile_id: profile_id.clone(),
+                    ..UsageProfileRow::default()
+                });
+            profile.runs += u32::from(run_profiles.insert(profile_id));
+            profile.agent_attempts += 1;
+            profile.total_duration_ms += row.duration_ms;
+            if profile.last_run_at.is_none_or(|last| run.started_at > last) {
+                profile.last_run_at = Some(run.started_at);
+            }
+            if let Some(cost) = cost {
+                profile.reported_usd += cost;
+                profile.reported_usd_attempts += 1;
+            } else {
+                profile.unknown_usd_attempts += 1;
             }
             let entry = models
                 .entry((adapter.clone(), model.clone()))
@@ -477,25 +607,25 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                     ..UsageModelRow::default()
                 });
             entry.agent_attempts += 1;
-            entry.input_tokens += meta_u64(&meta, "input_tokens")
-                + meta_u64(&meta, "cached_input_tokens")
-                + meta_u64(&meta, "cache_read_input_tokens");
-            entry.output_tokens += meta_u64(&meta, "output_tokens");
-            if let Some(cost) = meta
-                .pointer("/agentUsage/reported_cost_usd")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|n| n.is_finite() && *n >= 0.0)
-            {
+            entry.input_tokens += input_total;
+            entry.output_tokens += output.unwrap_or(0);
+            entry.cached_input_tokens += cached.unwrap_or(0);
+            entry.cache_read_input_tokens += read.unwrap_or(0);
+            entry.cache_creation_input_tokens += created.unwrap_or(0);
+            entry.reasoning_output_tokens += reasoning.unwrap_or(0);
+            entry.coverage.add(&coverage);
+            if let Some(cost) = cost {
                 entry.reported_usd += cost;
+                entry.reported_usd_attempts += 1;
+            } else {
+                entry.unknown_usd_attempts += 1;
             }
-            entry.observed_tool_calls += tools;
-            entry.observed_subagents += subs;
-        }
-        if counted_rows.is_empty() && !dry {
-            // Runs without agent attempts still count as workflow runs.
+            entry.observed_tool_calls += tools.unwrap_or(0);
+            entry.observed_subagents += subs.unwrap_or(0);
         }
         scanned += 1;
-        if dry {
+        if dry || (run_attempts == 0 && (!filter.adapters.is_empty() || !filter.models.is_empty()))
+        {
             continue; // dry fixtures never contribute to consumption totals
         }
         summary.totals.runs += 1;
@@ -544,6 +674,13 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
     summary.days = day_list;
     summary.by_workflow = wf_list;
     summary.by_model = model_list;
+    let mut profile_list: Vec<UsageProfileRow> = profiles.into_values().collect();
+    profile_list.sort_by(|a, b| {
+        b.agent_attempts
+            .cmp(&a.agent_attempts)
+            .then_with(|| a.profile_id.cmp(&b.profile_id))
+    });
+    summary.by_profile = profile_list;
     summary.runs_scanned = scanned;
     Ok(summary)
 }
@@ -571,6 +708,53 @@ pub struct ExtraCharge {
     pub label: String,
     #[serde(default)]
     pub amount_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<String>,
+}
+
+pub fn validate_usage_setting(key: &str, value: &str) -> Result<(), String> {
+    match key {
+        "usage.allocationShare" => {
+            let text = value.trim();
+            if text.is_empty() {
+                return Ok(());
+            }
+            let decimal = text.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && text.chars().filter(|c| *c == '.').count() <= 1
+                && text.chars().any(|c| c.is_ascii_digit());
+            if !decimal
+                || !text
+                    .parse::<f64>()
+                    .is_ok_and(|n| n.is_finite() && (0.0..=100.0).contains(&n))
+            {
+                return Err("Orchevia share must be a finite percentage from 0 to 100.".into());
+            }
+        }
+        "usage.allocationMethod" if !["manual", "proportional", "even"].contains(&value) => {
+            return Err("Unknown allocation method.".into());
+        }
+        "usage.subscriptionFees" | "usage.extraCharges" => {
+            let entries: Vec<serde_json::Value> = serde_json::from_str(value)
+                .map_err(|_| "Fee list must be a JSON array.".to_string())?;
+            if entries.len() > 100 {
+                return Err("Fee list must be a JSON array with at most 100 entries.".into());
+            }
+            for entry in entries {
+                let label = entry.get("label").and_then(serde_json::Value::as_str);
+                let amount = entry.get("amountUsd").and_then(serde_json::Value::as_f64);
+                let period = entry.get("period");
+                if !label.is_some_and(|s| !s.trim().is_empty() && s.len() <= 200)
+                    || !amount.is_some_and(|n| n.is_finite() && n >= 0.0)
+                    || (key == "usage.subscriptionFees" && period.is_none())
+                    || period.is_some_and(|p| !p.as_str().is_some_and(|s| s.len() <= 120))
+                {
+                    return Err("Fees require a label, a finite nonnegative USD amount and a bounded period label.".into());
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 pub fn validate_money_entries(label: &str, entries: &[(String, f64)]) -> Result<(), String> {
@@ -614,6 +798,381 @@ pub fn remaining_attempts(limits: &ResolvedLimits, consumed: u32) -> Option<u32>
 mod tests {
     use super::*;
     use crate::run_controls::{resolve_limits, RunOptions, WorkflowLimits};
+
+    fn analytics_db() -> SqliteDb {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let workflow = serde_json::from_value(serde_json::json!({
+            "schemaVersion": crate::workflow::CURRENT_SCHEMA_VERSION,
+            "id":"analytics", "name":"Recorded name", "inputs":[],
+            "nodes":[{"id":"a","type":"agent","position":{"x":0,"y":0},"config":{}}],
+            "edges":[]
+        }))
+        .unwrap();
+        db.upsert_workflow(&workflow).unwrap();
+        db.create_run_with_workflow("r", &workflow, &HashMap::new())
+            .unwrap();
+        db
+    }
+
+    fn analytics_row(db: &SqliteDb, status: &str, usage: serde_json::Value) {
+        db.record_node_result(crate::db::NewNodeResult {
+            structured_json: &serde_json::json!({"agentUsage": usage}).to_string(),
+            ..crate::db::NewNodeResult::simple("r", "a", status, Some(0), None)
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn analytics_counts_distinct_loop_visits_and_excludes_undispatched_rows() {
+        let db = analytics_db();
+        for _ in 0..2 {
+            analytics_row(
+                &db,
+                "succeeded",
+                serde_json::json!({"adapter":"claude","model":"m","reported_cost_usd":2}),
+            );
+        }
+        analytics_row(&db, "skipped", serde_json::Value::Null);
+        analytics_row(&db, "guardPaused", serde_json::Value::Null);
+        let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+        assert_eq!(summary.totals.agent_attempts, 2);
+        assert_eq!(summary.totals.reported_usd, 4.0);
+        assert_eq!(summary.totals.unknown_usd_attempts, 0);
+    }
+
+    #[test]
+    fn analytics_uses_adapter_specific_input_token_semantics() {
+        let db = analytics_db();
+        analytics_row(
+            &db,
+            "succeeded",
+            serde_json::json!({"adapter":"codex","model":"c","input_tokens":23,"cached_input_tokens":20,"output_tokens":3}),
+        );
+        analytics_row(
+            &db,
+            "failed",
+            serde_json::json!({"adapter":"claude","model":"m","input_tokens":10,"cache_read_input_tokens":30,"cache_creation_input_tokens":20,"output_tokens":5}),
+        );
+        let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+        assert_eq!(summary.totals.input_tokens, 83);
+        assert_eq!(summary.totals.output_tokens, 8);
+        assert_eq!(
+            summary
+                .by_model
+                .iter()
+                .find(|r| r.adapter == "codex")
+                .unwrap()
+                .input_tokens,
+            23
+        );
+        assert_eq!(summary.totals.cached_input_tokens, 20);
+        assert_eq!(summary.totals.cache_read_input_tokens, 30);
+        assert_eq!(summary.totals.cache_creation_input_tokens, 20);
+        assert_eq!(summary.totals.coverage.input_tokens, 2);
+        assert_eq!(summary.totals.coverage.tool_calls, 0);
+        assert_eq!(summary.totals.coverage.subagents, 0);
+    }
+
+    #[test]
+    fn analytics_distinguishes_reported_zero_from_missing_metrics() {
+        let db = analytics_db();
+        analytics_row(
+            &db,
+            "succeeded",
+            serde_json::json!({"adapter":"codex","model":"c","input_tokens":0,"output_tokens":0,"observed_tool_calls":0,"reasoning_output_tokens":2}),
+        );
+        analytics_row(
+            &db,
+            "failed",
+            serde_json::json!({"adapter":"custom","model":"text"}),
+        );
+        let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+        assert_eq!(summary.totals.agent_attempts, 2);
+        assert_eq!(summary.totals.input_tokens, 0);
+        assert_eq!(summary.totals.coverage.input_tokens, 1);
+        assert_eq!(summary.totals.coverage.tool_calls, 1);
+        assert_eq!(summary.totals.coverage.subagents, 0);
+        assert_eq!(summary.totals.reasoning_output_tokens, 2);
+        assert_eq!(summary.totals.coverage.reasoning_output_tokens, 1);
+    }
+
+    #[test]
+    fn analytics_scans_more_than_fifty_runs_and_uses_instant_boundaries() {
+        let db = analytics_db();
+        let workflow = db.get_run_snapshot("r").unwrap().unwrap();
+        for n in 0..55 {
+            db.create_run_with_workflow(&format!("r{n}"), &workflow, &HashMap::new())
+                .unwrap();
+        }
+        let all = usage_summary(&db, &UsageFilter::default()).unwrap();
+        assert_eq!(all.totals.runs, 56);
+        let first = db.get_run("r").unwrap().unwrap().started_at;
+        let same_instant = first
+            .with_timezone(&chrono::FixedOffset::east_opt(14_400).unwrap())
+            .to_rfc3339();
+        assert_eq!(
+            usage_summary(
+                &db,
+                &UsageFilter {
+                    from: Some(same_instant.clone()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .totals
+            .runs,
+            56
+        );
+        assert_eq!(
+            usage_summary(
+                &db,
+                &UsageFilter {
+                    to: Some(same_instant),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .totals
+            .runs,
+            0
+        );
+    }
+
+    #[test]
+    fn analytics_provider_filter_excludes_unmatched_runs() {
+        let db = analytics_db();
+        analytics_row(
+            &db,
+            "succeeded",
+            serde_json::json!({"adapter":"claude","model":"m"}),
+        );
+        let summary = usage_summary(
+            &db,
+            &UsageFilter {
+                adapters: vec!["codex".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.totals.runs, 0);
+        assert!(summary.days.is_empty());
+        assert!(summary.by_workflow.is_empty());
+    }
+
+    #[test]
+    fn analytics_profiles_use_run_snapshots_and_preserve_attempt_and_usd_coverage() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let mut workflow: crate::workflow::Workflow = serde_json::from_value(serde_json::json!({
+            "schemaVersion": crate::workflow::CURRENT_SCHEMA_VERSION,
+            "id":"profiles", "name":"Recorded workflow", "inputs":[], "edges":[],
+            "nodes":[
+                {"id":"a","type":"agent","position":{"x":0,"y":0},"config":{"agentProfileId":"p1"}},
+                {"id":"b","type":"agent","position":{"x":0,"y":0},"config":{"agentProfileId":"deleted-profile"}},
+                {"id":"legacy","type":"agent","position":{"x":0,"y":0},"config":{}}
+            ]
+        })).unwrap();
+        db.upsert_workflow(&workflow).unwrap();
+        db.create_run_with_workflow("r1", &workflow, &HashMap::new())
+            .unwrap();
+        let latest = db
+            .create_run_with_workflow("r2", &workflow, &HashMap::new())
+            .unwrap();
+        for (run, node, status, duration, meta) in [
+            (
+                "r1",
+                "a",
+                "succeeded",
+                100,
+                serde_json::json!({"agentUsage":{"adapter":"claude","model":"shared","reported_cost_usd":1}}),
+            ),
+            (
+                "r1",
+                "a",
+                "retrying",
+                200,
+                serde_json::json!({"agentUsage":{"adapter":"claude","model":"shared"}}),
+            ),
+            (
+                "r1",
+                "a",
+                "succeeded",
+                300,
+                serde_json::json!({"agentUsage":{"adapter":"claude","model":"shared","reported_cost_usd":0}}),
+            ),
+            (
+                "r1",
+                "b",
+                "succeeded",
+                400,
+                serde_json::json!({"agentUsage":{"adapter":"claude","model":"shared","reported_cost_usd":2}}),
+            ),
+            (
+                "r1",
+                "legacy",
+                "failed",
+                500,
+                serde_json::json!({"agentUsage":{"adapter":"custom","model":"text"}}),
+            ),
+            (
+                "r1",
+                "a",
+                "succeeded",
+                900,
+                serde_json::json!({"reusedFrom":"earlier"}),
+            ),
+            (
+                "r1",
+                "a",
+                "succeeded",
+                900,
+                serde_json::json!({"simulated":true}),
+            ),
+            ("r1", "a", "skipped", 900, serde_json::json!({})),
+            (
+                "r1",
+                "a",
+                "failed",
+                900,
+                serde_json::json!({"notDispatched":true}),
+            ),
+            (
+                "r2",
+                "a",
+                "succeeded",
+                600,
+                serde_json::json!({"agentUsage":{"adapter":"claude","model":"shared","reported_cost_usd":3}}),
+            ),
+        ] {
+            db.record_node_result(crate::db::NewNodeResult {
+                duration_ms: duration,
+                structured_json: &meta.to_string(),
+                ..crate::db::NewNodeResult::simple(run, node, status, Some(0), None)
+            })
+            .unwrap();
+        }
+        // Today's name and assignment must never rewrite the saved attribution.
+        workflow.name = "Renamed workflow".into();
+        workflow.nodes[0].config.agent_profile_id = Some("deleted-profile".into());
+        db.upsert_workflow(&workflow).unwrap();
+        let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+        let json = serde_json::to_value(&summary).unwrap();
+        let profiles = json["byProfile"].as_array().expect("profile aggregates");
+        assert_eq!(profiles.len(), 3);
+        let first = profiles.iter().find(|p| p["profileId"] == "p1").unwrap();
+        assert_eq!(first["runs"], 2);
+        assert_eq!(first["agentAttempts"], 4);
+        assert_eq!(first["totalDurationMs"], 1200);
+        assert_eq!(first["reportedUsd"], 4.0);
+        assert_eq!(first["reportedUsdAttempts"], 3);
+        assert_eq!(first["unknownUsdAttempts"], 1);
+        assert_eq!(
+            first["lastRunAt"],
+            serde_json::to_value(latest.started_at).unwrap()
+        );
+        let deleted = profiles
+            .iter()
+            .find(|p| p["profileId"] == "deleted-profile")
+            .unwrap();
+        assert_eq!(deleted["runs"], 1);
+        assert_eq!(deleted["agentAttempts"], 1);
+        assert_eq!(deleted["totalDurationMs"], 400);
+        let unknown = profiles.iter().find(|p| p["profileId"].is_null()).unwrap();
+        assert_eq!(unknown["unknownUsdAttempts"], 1);
+        assert_eq!(unknown["reportedUsdAttempts"], 0);
+        assert_eq!(unknown["totalDurationMs"], 500);
+        assert_eq!(summary.by_model.len(), 2);
+        assert_eq!(summary.totals.agent_attempts, 6);
+        assert_eq!(summary.totals.reported_usd, 6.0);
+
+        for filter in [
+            UsageFilter {
+                adapters: vec!["codex".into()],
+                ..Default::default()
+            },
+            UsageFilter {
+                models: vec!["other".into()],
+                ..Default::default()
+            },
+            UsageFilter {
+                workflow_ids: vec!["other".into()],
+                ..Default::default()
+            },
+            UsageFilter {
+                to: Some(latest.started_at.to_rfc3339()),
+                from: Some(latest.started_at.to_rfc3339()),
+                ..Default::default()
+            },
+        ] {
+            let filtered = usage_summary(&db, &filter).unwrap();
+            assert_eq!(
+                serde_json::to_value(filtered).unwrap()["byProfile"],
+                serde_json::json!([])
+            );
+        }
+        let filtered = usage_summary(
+            &db,
+            &UsageFilter {
+                models: vec!["shared".into()],
+                adapters: vec!["claude".into()],
+                workflow_ids: vec!["profiles".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(filtered).unwrap()["byProfile"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn analytics_profiles_do_not_guess_from_current_workflow_without_a_run_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let db = SqliteDb::open(&path).unwrap();
+        let workflow: crate::workflow::Workflow = serde_json::from_value(serde_json::json!({
+            "schemaVersion": crate::workflow::CURRENT_SCHEMA_VERSION,
+            "id":"legacy", "name":"Current", "inputs":[], "edges":[],
+            "nodes":[{"id":"a","type":"agent","position":{"x":0,"y":0},"config":{"agentProfileId":"p1"}}]
+        })).unwrap();
+        db.upsert_workflow(&workflow).unwrap();
+        db.create_run_with_workflow("r", &workflow, &HashMap::new())
+            .unwrap();
+        analytics_row(
+            &db,
+            "succeeded",
+            serde_json::json!({"adapter":"claude","model":"m"}),
+        );
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE runs SET workflow_definition = NULL WHERE id = 'r'",
+                [],
+            )
+            .unwrap();
+        let summary =
+            serde_json::to_value(usage_summary(&db, &UsageFilter::default()).unwrap()).unwrap();
+        assert_eq!(
+            summary["byProfile"][0]["profileId"],
+            serde_json::Value::Null
+        );
+        assert_eq!(summary["byProfile"][0]["agentAttempts"], 1);
+    }
+
+    #[test]
+    fn policy_replaces_stale_handoff_policy_with_current_allowance() {
+        let old = build_usage_policy(Some((Some(40), None)), Some(5), "old coverage");
+        let current = build_usage_policy(Some((Some(3), None)), Some(1), "current coverage");
+        let handoff = format!("Task\n{}", inject_usage_policy("Earlier task", &old));
+        let prompt = inject_usage_policy(&handoff, &current);
+        assert!(prompt.contains("about 3 tool calls"));
+        assert!(!prompt.contains("about 40 tool calls"));
+        assert!(prompt.contains("Earlier task"));
+        assert_eq!(prompt.matches(USAGE_POLICY_MARKER).count(), 1);
+    }
 
     #[test]
     fn policy_injects_once_and_never_recurses() {

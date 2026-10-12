@@ -6,6 +6,7 @@ import { createEmptyWorkflow } from '../lib/workflow';
 import { useAppStore } from '../store';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import type { Node, NodeChange } from '@xyflow/react';
+import { getViewportForBounds } from '@xyflow/react';
 const { fit, viewport, flow } = vi.hoisted(() => ({
   fit: vi.fn().mockResolvedValue(true),
   viewport: vi.fn().mockResolvedValue(true),
@@ -282,5 +283,50 @@ it('keeps run snapshots out of the editor viewport and fits empty graphs safely'
   render(<WorkflowCanvas workflow={empty} />);
   const emptyProps = flow.current as unknown as { fitView: boolean };
   expect(emptyProps.fitView).toBe(false);
+  localStorage.removeItem(key);
+});
+
+it('fits a tall graph within the canvas and restores the resulting low zoom', () => {
+  const key = 'orchevia.canvasViewport.v1';
+  localStorage.removeItem(key);
+  const workflow = createEmptyWorkflow('Tall graph');
+  const { unmount } = render(<WorkflowCanvas workflow={workflow} />);
+  const props = flow.current as unknown as {
+    minZoom: number;
+    onMoveEnd: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
+  };
+  const bounds = { x: 0, y: 0, width: 240, height: 4600 };
+  const fitted = getViewportForBounds(bounds, 1000, 800, props.minZoom, 1, {
+    top: '172px',
+    right: '32px',
+    bottom: '32px',
+    left: '32px',
+  });
+  expect(bounds.height * fitted.zoom).toBeLessThanOrEqual(596 + 1e-6);
+  act(() => props.onMoveEnd(null, fitted));
+  unmount();
+  render(<WorkflowCanvas workflow={workflow} />);
+  const restored = flow.current as unknown as {
+    fitView: boolean;
+    defaultViewport?: { x: number; y: number; zoom: number };
+  };
+  expect(restored.fitView).toBe(false);
+  expect(restored.defaultViewport).toEqual(fitted);
+  localStorage.removeItem(key);
+});
+
+it('replaces corrupt viewport storage when the user moves the canvas', () => {
+  const key = 'orchevia.canvasViewport.v1';
+  localStorage.setItem(key, 'not-json{');
+  const workflow = createEmptyWorkflow('Recover corrupt viewport');
+  const { unmount } = render(<WorkflowCanvas workflow={workflow} />);
+  const props = flow.current as unknown as {
+    onMoveEnd: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
+  };
+  act(() => props.onMoveEnd(null, { x: 12, y: 34, zoom: 0.8 }));
+  unmount();
+  render(<WorkflowCanvas workflow={workflow} />);
+  const restored = flow.current as unknown as { defaultViewport?: unknown };
+  expect(restored.defaultViewport).toEqual({ x: 12, y: 34, zoom: 0.8 });
   localStorage.removeItem(key);
 });

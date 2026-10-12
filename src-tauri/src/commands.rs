@@ -215,11 +215,16 @@ pub async fn continue_spend_run(
     expected_pause_id: i64,
     limit: Option<f64>,
 ) -> Result<(), String> {
-    state
+    let workflow = state
         .engine
-        .continue_spend_run(&run_id, expected_pause_id, limit)
-        .await
-        .map_err(|e| e.to_string())
+        .claim_spend_continuation(&run_id, expected_pause_id, limit)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        Engine::new(db, cancel).execute(workflow, run_id).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -229,11 +234,16 @@ pub async fn continue_usage_run(
     expected_pause_id: i64,
     extension: Option<u32>,
 ) -> Result<(), String> {
-    state
+    let workflow = state
         .engine
-        .continue_usage_run(&run_id, expected_pause_id, extension)
-        .await
-        .map_err(|e| e.to_string())
+        .claim_usage_continuation(&run_id, expected_pause_id, extension)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        Engine::new(db, cancel).execute(workflow, run_id).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -913,6 +923,7 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     if value.len() > max_len {
         return Err("Setting value too long.".to_string());
     }
+    orchevia_core::usage::validate_usage_setting(key, value)?;
     db.set_setting(key, value).map_err(|e| e.to_string())
 }
 
@@ -1860,6 +1871,33 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_settings_validate_before_storage_and_preserve_legacy_period_labels() {
+        let db = orchevia_core::db::SqliteDb::open_in_memory().unwrap();
+        super::set_setting_for_db(&db, "usage.allocationShare", "50").unwrap();
+        for value in ["101", "-1", "NaN", "Infinity"] {
+            assert!(super::set_setting_for_db(&db, "usage.allocationShare", value).is_err());
+        }
+        assert_eq!(
+            db.get_setting("usage.allocationShare").unwrap().as_deref(),
+            Some("50")
+        );
+        assert!(super::set_setting_for_db(&db, "usage.allocationMethod", "invented").is_err());
+        assert!(super::set_setting_for_db(
+            &db,
+            "usage.subscriptionFees",
+            r#"[{"label":"Fee","amountUsd":-1,"period":"old label"}]"#
+        )
+        .is_err());
+        assert!(super::set_setting_for_db(&db, "usage.extraCharges", "not json").is_err());
+        super::set_setting_for_db(
+            &db,
+            "usage.subscriptionFees",
+            r#"[{"label":"Fee","amountUsd":2,"period":"old label"}]"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn assistance_setting_round_trips_and_unknown_keys_are_rejected() {
         let db = orchevia_core::db::SqliteDb::open_in_memory().expect("db");

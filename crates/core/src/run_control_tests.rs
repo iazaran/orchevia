@@ -786,7 +786,9 @@ fn usage_summary_counts_agent_attempts_with_execution_identity() {
         ..NewNodeResult::simple(run_id, "a", "succeeded", Some(0), None)
     })
     .unwrap();
-    // Duplicate terminal event for the same attempt is not double-counted.
+    // A second loop visit can have the same node/attempt/status while its
+    // distinct durable result id represents new consumption. Process completion
+    // updates an existing live row rather than inserting another terminal event.
     db.record_node_result(NewNodeResult {
         stdout: "done",
         structured_json: r#"{"agentUsage":{"adapter":"claude","model":"sonnet","input_tokens":10,"reported_cost_usd":0.5}}"#,
@@ -803,9 +805,9 @@ fn usage_summary_counts_agent_attempts_with_execution_identity() {
     })
     .unwrap();
     let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
-    assert_eq!(summary.totals.agent_attempts, 2);
+    assert_eq!(summary.totals.agent_attempts, 3);
     assert_eq!(summary.totals.failed_attempts, 1);
-    assert_eq!(summary.totals.reported_usd_attempts, 1);
+    assert_eq!(summary.totals.reported_usd_attempts, 2);
     assert_eq!(summary.totals.unknown_usd_attempts, 1);
     assert_eq!(summary.totals.unknown_model_attempts, 1);
     assert_eq!(summary.totals.observed_tool_calls, 6);
@@ -820,7 +822,7 @@ fn usage_summary_counts_agent_attempts_with_execution_identity() {
         },
     )
     .unwrap();
-    assert_eq!(filtered.totals.agent_attempts, 1);
+    assert_eq!(filtered.totals.agent_attempts, 2);
     assert_eq!(filtered.days.len(), 1);
     assert_eq!(filtered.by_workflow.len(), 1);
     assert_eq!(filtered.by_workflow[0].workflow_name, "Controls");

@@ -114,7 +114,6 @@ function toFlowNodes(
   selectedId: string | null,
   overlay: Record<string, string>,
   issues: Record<string, 'error' | 'warning'>,
-  onHover: ((nodeId: string | null) => void) | undefined,
 ): Node<CanvasNodeData>[] {
   return wf.nodes.map((n: WorkflowNode) => ({
     id: n.id,
@@ -127,7 +126,6 @@ function toFlowNodes(
       selected: n.id === selectedId,
       runStatus: overlay[n.id],
       issueSeverity: issues[n.id],
-      ...(onHover === undefined ? {} : { onHover }),
     },
   }));
 }
@@ -152,7 +150,7 @@ function toFlowEdges(
 
 /** Per-workflow canvas viewport persistence (guarded localStorage map). */
 const VIEWPORT_STORAGE_KEY = 'orchevia.canvasViewport.v1';
-const VIEWPORT_MIN_ZOOM = 0.3;
+const VIEWPORT_MIN_ZOOM = 0.01;
 const VIEWPORT_MAX_ZOOM = 2;
 
 export interface SavedViewport {
@@ -193,19 +191,19 @@ export function readWorkflowViewport(workflowId: string): SavedViewport | null {
 
 function writeWorkflowViewport(workflowId: string, viewport: SavedViewport): void {
   if (!isValidViewport(viewport)) return;
+  const raw = readLocal(VIEWPORT_STORAGE_KEY);
+  let map: Record<string, unknown> = {};
   try {
-    const raw = readLocal(VIEWPORT_STORAGE_KEY);
-    let map: Record<string, unknown> = {};
     if (raw !== null) {
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
         map = parsed as Record<string, unknown>;
     }
-    map[workflowId] = viewport;
-    writeLocal(VIEWPORT_STORAGE_KEY, JSON.stringify(map));
   } catch {
-    // Storage blocked: the canvas keeps working without persistence.
+    // Replace a corrupt map so future viewport changes can persist again.
   }
+  map[workflowId] = viewport;
+  writeLocal(VIEWPORT_STORAGE_KEY, JSON.stringify(map));
 }
 
 const ADDABLE: NodeKind[] = [
@@ -250,19 +248,18 @@ export function WorkflowCanvas({
   // its directly incoming and outgoing edges. Cleared on exit, deletion and
   // workflow switch (remount); composed with selection and run-status styles.
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const handleHover = useCallback((nodeId: string | null) => {
-    setHoveredNodeId(nodeId);
-  }, []);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const highlightedNodeId = hoveredNodeId ?? focusedNodeId;
   const connectedEdgeIds = useMemo(() => {
-    if (hoveredNodeId === null) return null;
-    if (!workflow.nodes.some((n) => n.id === hoveredNodeId)) return null;
+    if (highlightedNodeId === null) return null;
+    if (!workflow.nodes.some((n) => n.id === highlightedNodeId)) return null;
     const ids = new Set<string>();
     for (const edge of workflow.edges) {
-      if (edge.source === hoveredNodeId || edge.target === hoveredNodeId)
+      if (edge.source === highlightedNodeId || edge.target === highlightedNodeId)
         ids.add(edge.id);
     }
     return ids;
-  }, [hoveredNodeId, workflow.nodes, workflow.edges]);
+  }, [highlightedNodeId, workflow.nodes, workflow.edges]);
 
   // React Flow instance + wrapper size for viewport-aware placement
   // (new nodes land in the center of the current view, not at a fixed spot).
@@ -314,7 +311,7 @@ export function WorkflowCanvas({
   // NOTE: parent remounts this component per workflow (`key={workflow.id}`),
   // so initializing canvas state from the workflow is safe here.
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    toFlowNodes(workflow, selectedNodeId, overlay, issues, handleHover),
+    toFlowNodes(workflow, selectedNodeId, overlay, issues),
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState(
     toFlowEdges(workflow, selectedEdgeId, connectedEdgeIds),
@@ -347,7 +344,6 @@ export function WorkflowCanvas({
             selected: def.id === selectedNodeId,
             runStatus: overlay[def.id],
             issueSeverity: issues[def.id],
-            onHover: handleHover,
           },
         };
       });
@@ -363,7 +359,6 @@ export function WorkflowCanvas({
     validation,
     appliedDirection,
     connectedEdgeIds,
-    handleHover,
     readOnly,
   ]);
 
@@ -610,7 +605,23 @@ export function WorkflowCanvas({
   }, [workflow, selectedNodeId, setNodes, updateActiveWorkflow, selectNode, revalidate]);
 
   return (
-    <div className="canvas-wrap" ref={wrapRef}>
+    <div
+      className="canvas-wrap"
+      ref={wrapRef}
+      onFocusCapture={(event) => {
+        // React Flow focuses its outer node wrapper, outside our custom node.
+        const node = event.target.closest<HTMLElement>('.react-flow__node');
+        setFocusedNodeId(node?.dataset.id ?? null);
+      }}
+      onBlurCapture={(event) => {
+        const next = event.relatedTarget;
+        const node =
+          next instanceof Element && event.currentTarget.contains(next)
+            ? next.closest<HTMLElement>('.react-flow__node')
+            : null;
+        setFocusedNodeId(node?.dataset.id ?? null);
+      }}
+    >
       <fieldset
         disabled={readOnly}
         className="canvas-toolbar"
@@ -715,6 +726,9 @@ export function WorkflowCanvas({
           setHoveredNodeId((current) =>
             current !== null && ids.has(current) ? null : current,
           );
+          setFocusedNodeId((current) =>
+            current !== null && ids.has(current) ? null : current,
+          );
         }}
         onEdgesDelete={(deleted) => {
           if (readOnly) return;
@@ -754,7 +768,7 @@ export function WorkflowCanvas({
         fitView={savedViewport === null && workflow.nodes.length > 0}
         {...(savedViewport === null ? {} : { defaultViewport: savedViewport })}
         fitViewOptions={{ padding: fitPadding, maxZoom: 1, duration: 0 }}
-        minZoom={0.3}
+        minZoom={VIEWPORT_MIN_ZOOM}
         colorMode="system"
         attributionPosition="bottom-right"
       >

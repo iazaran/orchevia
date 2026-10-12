@@ -116,6 +116,8 @@ function configShape(value: unknown, raw = false): void {
   stringsField(config, 'contextRefs');
   uintField(config, 'sessionMaxTurns', false, 4294967295);
   uintField(config, 'contextMaxChars', false, 4294967295);
+  uintField(config, 'maxToolCalls', false, 4294967295);
+  uintField(config, 'maxSubagents', false, 4294967295);
   uintField(config, 'timeoutSecs');
   uintField(config, 'maxVisits', false, 4294967295);
   boolField(config, 'extendOnOutput');
@@ -236,16 +238,12 @@ function workflowFieldsShape(value: Record<string, unknown>): void {
         )
       )
         throw new Error(`Unknown limits field '${key}'.`);
-    for (const key of ['maxAgentAttempts', 'maxToolCalls', 'maxSubagents'] as const) {
-      const n: unknown = limits[key];
-      if (n !== undefined && (!Number.isInteger(n) || (n as number) < 1))
-        throw new Error(`Invalid limits: '${key}' must be a whole number of at least 1.`);
-    }
+    for (const key of ['maxAgentAttempts', 'maxToolCalls', 'maxSubagents'] as const)
+      uintField(limits, key, false, 4294967295);
+    if (limits.spendLimitUsd === null) delete limits.spendLimitUsd;
     const spend: unknown = limits.spendLimitUsd;
-    if (spend !== undefined && (!Number.isFinite(spend) || (spend as number) <= 0))
-      throw new Error(
-        "Invalid limits: 'spendLimitUsd' must be a positive finite USD amount.",
-      );
+    if (spend !== undefined && (typeof spend !== 'number' || !Number.isFinite(spend)))
+      throw new Error("Invalid limits: 'spendLimitUsd' must be a finite number.");
   }
   if (value.inputs !== undefined) {
     if (!Array.isArray(value.inputs))

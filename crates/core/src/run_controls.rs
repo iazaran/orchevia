@@ -197,8 +197,23 @@ pub fn count_dispatched_attempts(
     agent_ids: &std::collections::HashSet<String>,
 ) -> u32 {
     rows.iter()
-        .filter(|row| agent_ids.contains(&row.node_id) && is_new_execution(row))
+        .filter(|row| agent_ids.contains(&row.node_id) && is_dispatched_attempt(row))
         .count() as u32
+}
+
+/// Guard, skip and preflight rows never represent a dispatched CLI process.
+pub(crate) fn is_dispatched_attempt(row: &StoredNodeResult) -> bool {
+    is_dispatched_record(&row.status, &row.structured_json)
+}
+
+pub(crate) fn is_dispatched_record(status: &str, structured_json: &str) -> bool {
+    let metadata = serde_json::from_str::<serde_json::Value>(structured_json).unwrap_or_default();
+    matches!(
+        status,
+        "running" | "succeeded" | "failed" | "retrying" | "cancelled"
+    ) && metadata.get("reusedFrom").is_none()
+        && metadata["simulated"] != true
+        && metadata["notDispatched"] != true
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

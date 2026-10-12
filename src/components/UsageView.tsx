@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, useNoticeMessage } from './Notice';
 import { getBackend } from '../lib/backend';
 import { errorMessage } from '../lib/errors';
@@ -8,6 +8,8 @@ import {
   emptyUsageSummary,
   parseMoneyList,
   subscriptionTotal,
+  billingPeriod,
+  formatDurationMs,
   type ExtraCharge,
   type SubscriptionFee,
   type UsageSummary,
@@ -28,8 +30,16 @@ function money(value: number): string {
   return `USD ${value.toFixed(2)}`;
 }
 
+function metric(value: number, reported: number, attempts: number): string {
+  if (attempts === 0) return '—';
+  if (reported === 0 && value === 0)
+    return `Unknown (${String(attempts)} missing reports)`;
+  return `${String(value)} (${String(reported)}/${String(attempts)} reports${reported < attempts ? '; partial' : ''})`;
+}
+
 export function UsageView(): React.JSX.Element {
   const workflows = useAppStore((s) => s.workflows);
+  const profiles = useAppStore((s) => s.profiles);
   const setView = useAppStore((s) => s.setView);
   const [from, setFrom] = useState(() => isoDay(29));
   const [to, setTo] = useState(() => isoDay(0));
@@ -42,7 +52,7 @@ export function UsageView(): React.JSX.Element {
   const [fees, setFees] = useState<SubscriptionFee[]>([]);
   const [extras, setExtras] = useState<ExtraCharge[]>([]);
   const [share, setShare] = useState('');
-  const [method, setMethod] = useState('proportional');
+  const [method, setMethod] = useState('manual');
   const [settingsError, setSettingsError, , settingsErrorEvent] =
     useNoticeMessage('error');
   const [settingsSaved, setSettingsSaved] = useState(false);
@@ -52,8 +62,11 @@ export function UsageView(): React.JSX.Element {
   const [newFeePeriod, setNewFeePeriod] = useState('');
   const [newExtraLabel, setNewExtraLabel] = useState('');
   const [newExtraAmount, setNewExtraAmount] = useState('');
+  const [newExtraPeriod, setNewExtraPeriod] = useState('');
+  const refreshGeneration = useRef(0);
 
   const refresh = useCallback(() => {
+    const generation = ++refreshGeneration.current;
     void (async () => {
       setLoading(true);
       setError(null);
@@ -79,17 +92,21 @@ export function UsageView(): React.JSX.Element {
       if (adapter !== '') filter.adapters = [adapter];
       if (model.trim() !== '') filter.models = [model.trim()];
       try {
-        setSummary(await getBackend().usageSummary(filter));
+        const result = await getBackend().usageSummary(filter);
+        if (refreshGeneration.current === generation) setSummary(result);
       } catch (err: unknown) {
-        setError(errorMessage(err));
+        if (refreshGeneration.current === generation) setError(errorMessage(err));
       } finally {
-        setLoading(false);
+        if (refreshGeneration.current === generation) setLoading(false);
       }
     })();
   }, [from, to, workflowId, adapter, model, setError]);
 
   useEffect(() => {
     refresh();
+    return () => {
+      refreshGeneration.current += 1;
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -119,12 +136,13 @@ export function UsageView(): React.JSX.Element {
               ? {
                   label: entry.label,
                   amountUsd: typeof entry.amountUsd === 'number' ? entry.amountUsd : NaN,
+                  ...(typeof entry.period === 'string' ? { period: entry.period } : {}),
                 }
               : null,
           ),
         );
         if (shareRaw !== null) setShare(shareRaw);
-        if (methodRaw !== null) setMethod(methodRaw);
+        if (methodRaw === 'manual') setMethod(methodRaw);
       })
       .catch((err: unknown) => {
         if (!cancelled) setSettingsError(errorMessage(err));
@@ -153,14 +171,39 @@ export function UsageView(): React.JSX.Element {
 
   const totals = summary.totals;
   const feeTotal = useMemo(() => subscriptionTotal(fees, extras), [fees, extras]);
+  const inAllocationRange = useCallback(
+    (period: string): boolean => {
+      const bounds = billingPeriod(period);
+      return (
+        bounds !== null &&
+        (from === '' || bounds.to > from) &&
+        (to === '' || bounds.from <= to)
+      );
+    },
+    [from, to],
+  );
+  const allocationPool = useMemo(
+    () =>
+      subscriptionTotal(
+        fees.filter((fee) => inAllocationRange(fee.period)),
+        extras.filter((extra) => inAllocationRange(extra.period ?? '')),
+      ),
+    [fees, extras, inAllocationRange],
+  );
   const sharePct = Number(share);
   const shareValid =
     share.trim() !== '' && Number.isFinite(sharePct) && sharePct >= 0 && sharePct <= 100;
-  const allocated = shareValid ? (feeTotal * sharePct) / 100 : null;
+  const allocated = shareValid ? (allocationPool * sharePct) / 100 : null;
   const targetNum = Number(target);
   const estimate = useMemo(
-    () => estimateRangeUsd(summary.recentAttemptUsd, 3),
-    [summary.recentAttemptUsd],
+    () =>
+      summary.byWorkflow.length === 1 &&
+      summary.byModel.length === 1 &&
+      summary.byModel[0]?.model !== 'unknown' &&
+      summary.byModel[0]?.adapter !== 'unknown'
+        ? estimateRangeUsd(summary.recentAttemptUsd, 3)
+        : undefined,
+    [summary],
   );
   const maxDay = Math.max(1, ...summary.days.map((d) => d.agentAttempts));
   const modelOptions = useMemo(
@@ -302,17 +345,30 @@ export function UsageView(): React.JSX.Element {
                 </div>
               </div>
               <div className="usage-card">
-                <div className="usage-card-value">{money(totals.reportedUsd)}</div>
+                <div className="usage-card-value">
+                  {totals.reportedUsdAttempts > 0 ? money(totals.reportedUsd) : 'Unknown'}
+                </div>
                 <div className="usage-card-label">
                   Estimated API value ({String(totals.reportedUsdAttempts)} reported,{' '}
                   {String(totals.unknownUsdAttempts)} unknown)
                 </div>
               </div>
               <div className="usage-card">
-                <div className="usage-card-value">{String(totals.observedToolCalls)}</div>
+                <div className="usage-card-value">
+                  {metric(
+                    totals.observedToolCalls,
+                    totals.coverage.toolCalls,
+                    totals.agentAttempts,
+                  )}
+                </div>
                 <div className="usage-card-label">
-                  Observed tool calls ({String(totals.observedSubagents)} subagents;{' '}
-                  {String(totals.unknownModelAttempts)} legacy unknown)
+                  Observed tool calls · subagents:{' '}
+                  {metric(
+                    totals.observedSubagents,
+                    totals.coverage.subagents,
+                    totals.agentAttempts,
+                  )}
+                  ; {String(totals.unknownModelAttempts)} legacy unknown model
                 </div>
               </div>
               <div className="usage-card">
@@ -365,7 +421,8 @@ export function UsageView(): React.JSX.Element {
                         <li key={day.day}>
                           {day.day}: {String(day.runs)} runs, {String(day.agentAttempts)}{' '}
                           attempts, USD {day.reportedUsd.toFixed(4)},{' '}
-                          {String(day.inputTokens + day.outputTokens)} tokens
+                          {String(day.inputTokens + day.outputTokens)} reported token
+                          subtotal (missing reports excluded)
                         </li>
                       ))}
                     </ul>
@@ -395,7 +452,11 @@ export function UsageView(): React.JSX.Element {
                           <td title={row.workflowId}>{row.workflowName}</td>
                           <td>{String(row.runs)}</td>
                           <td>{String(row.agentAttempts)}</td>
-                          <td>{row.reportedUsd.toFixed(4)}</td>
+                          <td>
+                            {row.agentAttempts > row.unknownUsdAttempts
+                              ? row.reportedUsd.toFixed(4)
+                              : 'Unknown'}
+                          </td>
                           <td>{String(row.unknownUsdAttempts)}</td>
                         </tr>
                       ))}
@@ -407,6 +468,81 @@ export function UsageView(): React.JSX.Element {
                 Names are recorded when each run starts; renaming a workflow later does
                 not rewrite history. Workflow-run counts are execution counts, not
                 completed PR or ticket counts.
+              </p>
+            </section>
+            <section aria-label="By AI profile">
+              <h2>By AI profile</h2>
+              {summary.byProfile.length === 0 ? (
+                <p className="field-hint">No AI profile activity in this range.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">AI profile</th>
+                        <th scope="col">Runs</th>
+                        <th scope="col">Attempts</th>
+                        <th scope="col">Execution time</th>
+                        <th scope="col">Last run</th>
+                        <th scope="col">Est. API USD</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.byProfile.map((row) => {
+                        const current = profiles.find(
+                          (profile) => profile.id === row.profileId,
+                        );
+                        const label = current?.name ?? row.profileId ?? 'Unknown';
+                        return (
+                          <tr key={JSON.stringify(row.profileId)}>
+                            <td>
+                              <div
+                                title={
+                                  row.profileId === null
+                                    ? label
+                                    : `${label} · ${row.profileId}`
+                                }
+                                style={{
+                                  maxWidth: 240,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {label}
+                              </div>
+                              {current && (
+                                <span className="field-hint">current name</span>
+                              )}
+                            </td>
+                            <td>{String(row.runs)}</td>
+                            <td>{String(row.agentAttempts)}</td>
+                            <td>{formatDurationMs(row.totalDurationMs)}</td>
+                            <td title={row.lastRunAt}>
+                              {row.lastRunAt ? formatTime(row.lastRunAt) : 'Unknown'}
+                            </td>
+                            <td>
+                              {row.reportedUsdAttempts > 0
+                                ? row.reportedUsd.toFixed(4)
+                                : 'Unknown'}{' '}
+                              ({String(row.reportedUsdAttempts)}/
+                              {String(row.agentAttempts)} reports;{' '}
+                              {String(row.unknownUsdAttempts)} unknown)
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <p className="field-hint">
+                Profile IDs come from each saved run snapshot; missing attribution stays
+                Unknown. Names are current profile labels. Deleted profiles retain their
+                recorded IDs. Runs count once per profile; attempts and execution time
+                include retries and loop visits. Execution time sums recorded attempt
+                durations, including concurrent work. CLI USD is an API-equivalent
+                estimate with missing reports shown separately.
               </p>
             </section>
             <section aria-label="By provider and model">
@@ -422,6 +558,7 @@ export function UsageView(): React.JSX.Element {
                         <th scope="col">Model</th>
                         <th scope="col">Attempts</th>
                         <th scope="col">Tokens in/out</th>
+                        <th scope="col">Cache / reasoning</th>
                         <th scope="col">Est. API USD</th>
                         <th scope="col">Observed tools/subagents</th>
                       </tr>
@@ -433,12 +570,70 @@ export function UsageView(): React.JSX.Element {
                           <td>{row.model}</td>
                           <td>{String(row.agentAttempts)}</td>
                           <td>
-                            {String(row.inputTokens)}/{String(row.outputTokens)}
+                            In:{' '}
+                            {metric(
+                              row.inputTokens,
+                              row.coverage.inputTokens,
+                              row.agentAttempts,
+                            )}
+                            <br />
+                            Out:{' '}
+                            {metric(
+                              row.outputTokens,
+                              row.coverage.outputTokens,
+                              row.agentAttempts,
+                            )}
                           </td>
-                          <td>{row.reportedUsd.toFixed(4)}</td>
                           <td>
-                            {String(row.observedToolCalls)}/
-                            {String(row.observedSubagents)}
+                            Codex cached:{' '}
+                            {metric(
+                              row.cachedInputTokens,
+                              row.coverage.cachedInputTokens,
+                              row.agentAttempts,
+                            )}
+                            <br />
+                            Claude cache read:{' '}
+                            {metric(
+                              row.cacheReadInputTokens,
+                              row.coverage.cacheReadInputTokens,
+                              row.agentAttempts,
+                            )}
+                            <br />
+                            Claude cache write:{' '}
+                            {metric(
+                              row.cacheCreationInputTokens,
+                              row.coverage.cacheCreationInputTokens,
+                              row.agentAttempts,
+                            )}
+                            <br />
+                            Reasoning:{' '}
+                            {metric(
+                              row.reasoningOutputTokens,
+                              row.coverage.reasoningOutputTokens,
+                              row.agentAttempts,
+                            )}
+                          </td>
+                          <td>
+                            {row.reportedUsdAttempts > 0
+                              ? row.reportedUsd.toFixed(4)
+                              : 'Unknown'}{' '}
+                            ({String(row.reportedUsdAttempts)}/{String(row.agentAttempts)}{' '}
+                            reports)
+                          </td>
+                          <td>
+                            Tools:{' '}
+                            {metric(
+                              row.observedToolCalls,
+                              row.coverage.toolCalls,
+                              row.agentAttempts,
+                            )}
+                            <br />
+                            Subagents:{' '}
+                            {metric(
+                              row.observedSubagents,
+                              row.coverage.subagents,
+                              row.agentAttempts,
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -449,7 +644,10 @@ export function UsageView(): React.JSX.Element {
               <p className="field-hint">
                 Identity is recorded at execution time. Legacy rows without it stay
                 “unknown” — never zero. Codex runs report tokens but no USD; custom and
-                plain-text runs report neither.
+                plain-text runs report neither. Input totals include available Claude
+                cache read/write components; Codex cached input is already included in its
+                input count. Reasoning is a separate reported subset of output. Missing
+                counters stay unknown.
               </p>
             </section>
           </>
@@ -476,7 +674,11 @@ export function UsageView(): React.JSX.Element {
             <ul className="usage-money-list">
               {fees.map((fee, index) => (
                 <li key={`fee-${String(index)}-${fee.label}`}>
-                  {fee.label} · {money(fee.amountUsd)} · {fee.period}{' '}
+                  {fee.label} · {money(fee.amountUsd)} ·{' '}
+                  {fee.period || 'period unspecified'}
+                  {!inAllocationRange(fee.period)
+                    ? ' · outside allocation (period unrecognized or outside date range)'
+                    : ''}{' '}
                   <button
                     className="btn btn-ghost danger-hover"
                     aria-label={`Remove fee ${fee.label}`}
@@ -488,7 +690,11 @@ export function UsageView(): React.JSX.Element {
               ))}
               {extras.map((extra, index) => (
                 <li key={`extra-${String(index)}-${extra.label}`}>
-                  {extra.label} (extra) · {money(extra.amountUsd)}{' '}
+                  {extra.label} (extra) · {money(extra.amountUsd)} ·{' '}
+                  {extra.period || 'period unspecified'}
+                  {!inAllocationRange(extra.period ?? '')
+                    ? ' · outside allocation (period unrecognized or outside date range)'
+                    : ''}{' '}
                   <button
                     className="btn btn-ghost danger-hover"
                     aria-label={`Remove extra charge ${extra.label}`}
@@ -534,6 +740,12 @@ export function UsageView(): React.JSX.Element {
                   setSettingsError('Fee amount must be a finite USD amount >= 0.');
                   return;
                 }
+                if (billingPeriod(newFeePeriod.trim()) === null) {
+                  setSettingsError(
+                    'Billing period must be a valid UTC start/end range (YYYY-MM-DD/YYYY-MM-DD), with end exclusive.',
+                  );
+                  return;
+                }
                 setFees([
                   ...fees,
                   {
@@ -568,6 +780,13 @@ export function UsageView(): React.JSX.Element {
               value={newExtraAmount}
               onChange={(e) => setNewExtraAmount(e.target.value)}
             />
+            <input
+              className="input"
+              aria-label="Extra billing period"
+              placeholder="Optional YYYY-MM-DD/YYYY-MM-DD"
+              value={newExtraPeriod}
+              onChange={(e) => setNewExtraPeriod(e.target.value)}
+            />
             <button
               className="btn"
               disabled={newExtraLabel.trim() === '' || newExtraAmount.trim() === ''}
@@ -577,25 +796,48 @@ export function UsageView(): React.JSX.Element {
                   setSettingsError('Extra amount must be a finite USD amount >= 0.');
                   return;
                 }
+                if (
+                  newExtraPeriod.trim() !== '' &&
+                  billingPeriod(newExtraPeriod.trim()) === null
+                ) {
+                  setSettingsError(
+                    'Extra billing period must be a valid UTC start/end range (YYYY-MM-DD/YYYY-MM-DD), with end exclusive.',
+                  );
+                  return;
+                }
                 setExtras([
                   ...extras,
-                  { label: newExtraLabel.trim(), amountUsd: amount },
+                  {
+                    label: newExtraLabel.trim(),
+                    amountUsd: amount,
+                    ...(newExtraPeriod.trim() !== ''
+                      ? { period: newExtraPeriod.trim() }
+                      : {}),
+                  },
                 ]);
                 setNewExtraLabel('');
                 setNewExtraAmount('');
+                setNewExtraPeriod('');
               }}
             >
               Add extra
             </button>
           </div>
           <p className="field-hint">Entered total: {money(feeTotal)}.</p>
+          <p className="field-hint">
+            Billing periods use UTC start-inclusive/end-exclusive dates. Unspecified or
+            unrecognized periods remain visible outside allocation.
+          </p>
         </section>
         <section aria-label="Subscription allocation">
           <h2>Subscription-cost allocation (optional)</h2>
           <p className="field-hint">
-            An allocation, not a measurement: it spreads fees you entered across tracked
-            Orchevia work by the method and share below. Outside and untracked CLI usage
-            is not accounted for.
+            An allocation, not a measurement: declare Orchevia's share of the full entered
+            billing-period pool. This manual pool is independent of the current history
+            filters for workflow, provider and model; dates select full overlapping
+            billing periods, without prorating. It does not assign a price to filtered
+            attempts or runs. Outside and untracked usage is represented only by the share
+            you declare.
           </p>
           <div className="usage-add-row">
             <label className="field-label" htmlFor="usage-share">
@@ -621,8 +863,9 @@ export function UsageView(): React.JSX.Element {
               value={method}
               onChange={(e) => setMethod(e.target.value)}
             >
-              <option value="proportional">Proportional to tracked attempts</option>
-              <option value="even">Even split across tracked runs</option>
+              <option value="manual">
+                Declared share of full entered billing periods
+              </option>
             </select>
             <button className="btn btn-primary" onClick={saveSettings}>
               Save subscription settings
@@ -636,14 +879,8 @@ export function UsageView(): React.JSX.Element {
           {allocated !== null && (
             <p className="field-hint">
               Allocated to Orchevia-tracked work: {money(allocated)} ({method}, share{' '}
-              {share.trim()}% of {money(feeTotal)}).{' '}
-              {method === 'proportional' && totals.agentAttempts > 0
-                ? `About ${money(allocated / totals.agentAttempts)} per tracked attempt.`
-                : ''}
-              {method === 'even' && totals.runs > 0
-                ? `About ${money(allocated / totals.runs)} per tracked run.`
-                : ''}{' '}
-              Outside or untracked usage is excluded from this figure.
+              {share.trim()}% of {money(allocationPool)} across full entered periods; no
+              prorating). Outside or untracked usage is excluded from this figure.
             </p>
           )}
         </section>
@@ -651,10 +888,10 @@ export function UsageView(): React.JSX.Element {
           <h2>API-equivalent target (optional)</h2>
           <p className="field-hint">
             A spend-control aid, not a subscription cap. Comparable measured history in
-            the current filter offers an estimate range with its sample count and
-            coverage; tool and subagent figures are approximate scenarios, never fixed
-            exchange rates. Type a target to see scenarios — there is no reverse
-            calculator from tool counts to enforceable dollars.
+            one workflow/provider/model cohort offers an estimate range with its sample
+            count and coverage. Type a target to see approximate attempt scenarios. Joint
+            tool/subagent and USD coverage is unavailable, so no tool or subagent
+            conversion is inferred.
           </p>
           <div className="usage-add-row">
             <label className="field-label" htmlFor="usage-target">
@@ -673,8 +910,9 @@ export function UsageView(): React.JSX.Element {
           </div>
           {estimate === undefined ? (
             <p className="field-hint" role="status">
-              Insufficient history: fewer than 3 comparable attempts with USD reports in
-              this filter. No rates are fabricated.
+              Insufficient history: select one workflow/provider/model cohort with at
+              least 3 comparable attempts reporting USD. Mixed or unknown identities
+              cannot establish comparability.
             </p>
           ) : (
             <p className="field-hint">
@@ -684,24 +922,16 @@ export function UsageView(): React.JSX.Element {
               {target.trim() !== '' &&
               Number.isFinite(targetNum) &&
               targetNum > 0 &&
-              estimate.low > 0 ? (
+              estimate.low > 0 &&
+              estimate.high > 0 &&
+              Number.isFinite(targetNum / estimate.low) &&
+              Number.isFinite(targetNum / estimate.high) ? (
                 <>
                   {' '}
                   A {money(targetNum)} target resembles roughly{' '}
                   {String(Math.floor(targetNum / estimate.high))}–
-                  {String(Math.ceil(targetNum / estimate.low))} such attempts. With{' '}
-                  {String(totals.observedToolCalls)} observed tool calls across{' '}
-                  {String(totals.agentAttempts)} attempts in range, that scenario implies
-                  on the order of{' '}
-                  {String(
-                    Math.round(
-                      (targetNum / ((estimate.low + estimate.high) / 2)) *
-                        (totals.agentAttempts > 0
-                          ? totals.observedToolCalls / totals.agentAttempts
-                          : 0),
-                    ),
-                  )}{' '}
-                  tool calls — approximate, partial coverage, not a rate.
+                  {String(Math.ceil(targetNum / estimate.low))} such attempts —
+                  approximate, partial coverage, not an enforceable exchange rate.
                 </>
               ) : null}
             </p>

@@ -187,6 +187,8 @@ enum TaskOutcome {
     /// The Agent-attempt budget ran out inside this task. Partial output is
     /// preserved; the scheduler drains siblings, then pauses the run.
     UsageExhausted,
+    /// Required work did not complete; stop without releasing failure edges.
+    Incomplete,
 }
 
 /// Terminal row statuses: they complete a node visit. `retrying` and `paused`
@@ -402,6 +404,19 @@ impl Engine {
         pause_id: i64,
         limit: Option<f64>,
     ) -> Result<(), EngineError> {
+        let workflow = self.claim_spend_continuation(run_id, pause_id, limit)?;
+        self.execute(workflow, run_id.into()).await;
+        Ok(())
+    }
+
+    /// Claim a durable pause without waiting for resumed CLI work. Desktop
+    /// commands dispatch the returned snapshot in their existing background task.
+    pub fn claim_spend_continuation(
+        &self,
+        run_id: &str,
+        pause_id: i64,
+        limit: Option<f64>,
+    ) -> Result<Workflow, EngineError> {
         let workflow = self
             .db
             .get_run_workflow(run_id)?
@@ -414,8 +429,7 @@ impl Engine {
             }
             flags.insert(run_id.into(), Arc::new(AtomicBool::new(false)));
         }
-        self.execute(workflow, run_id.into()).await;
-        Ok(())
+        Ok(workflow)
     }
 
     /// Continue after a usage pause with an explicit attempt-budget
@@ -427,6 +441,17 @@ impl Engine {
         pause_id: i64,
         extension: Option<u32>,
     ) -> Result<(), EngineError> {
+        let workflow = self.claim_usage_continuation(run_id, pause_id, extension)?;
+        self.execute(workflow, run_id.into()).await;
+        Ok(())
+    }
+
+    pub fn claim_usage_continuation(
+        &self,
+        run_id: &str,
+        pause_id: i64,
+        extension: Option<u32>,
+    ) -> Result<Workflow, EngineError> {
         let workflow = self
             .db
             .get_run_workflow(run_id)?
@@ -438,8 +463,7 @@ impl Engine {
             }
             flags.insert(run_id.into(), Arc::new(AtomicBool::new(false)));
         }
-        self.execute(workflow, run_id.into()).await;
-        Ok(())
+        Ok(workflow)
     }
 
     pub fn new(db: Arc<SqliteDb>, cancel: CancellationRegistry) -> Self {
@@ -947,8 +971,9 @@ impl Engine {
             );
             let guarded = run
                 .execution
-                .options
+                .resolved_limits
                 .spend_limit_usd
+                .or(run.execution.options.spend_limit_usd)
                 .is_some_and(|limit| spend.reported_usd >= limit);
             if fail_fast.is_none() && guarded {
                 let executable_work = ready.iter().any(|id| {
@@ -983,12 +1008,12 @@ impl Engine {
             // attempt spawn (see run_with_retries).
             let usage_max = run.execution.resolved_limits.max_agent_attempts;
             let dry = run.execution.options.dry_run;
-            if !dry && usage_max.is_some() {
+            if !dry {
                 let rows = self.db.list_node_results(run_id)?;
                 let consumed = run_controls::count_agent_attempts(workflow, &rows);
-                if consumed != run.execution.consumed_agent_attempts {
-                    let _ = self.db.record_consumed_attempts(run_id, consumed);
-                }
+                // Reconcile reservations that never spawned too. The
+                // persisted counter may have changed since this run snapshot.
+                let _ = self.db.record_consumed_attempts(run_id, consumed);
                 let is_agent_dispatch = |id: &String| {
                     graph.nodes.get(id).is_some_and(|n| {
                         n.kind == NodeKind::Agent
@@ -1225,6 +1250,12 @@ impl Engine {
             if matches!(task_outcome, TaskOutcome::UsageExhausted) {
                 continue;
             }
+            if matches!(task_outcome, TaskOutcome::Incomplete) {
+                state.terminal.insert(node_id, NodeOutcome::Failed);
+                fail_fast = Some(FailFast::Failure("Agent work is incomplete; dependent steps were not released. Adjust the CLI limit or resolve the incomplete output, then recover deliberately.".into()));
+                flag.store(true, Ordering::SeqCst);
+                continue;
+            }
             let (outcome, branch) = match task_outcome {
                 TaskOutcome::Skipped => (NodeOutcome::Skipped, None),
                 TaskOutcome::Succeeded => (NodeOutcome::Succeeded, None),
@@ -1233,6 +1264,7 @@ impl Engine {
                 TaskOutcome::Cancelled => (NodeOutcome::Cancelled, None),
                 // Handled above (durable pause, no routing); unreachable here.
                 TaskOutcome::UsageExhausted => continue,
+                TaskOutcome::Incomplete => continue,
             };
             // Record the visit for real executions (tasks already wrote rows).
             if outcome == NodeOutcome::Succeeded || outcome == NodeOutcome::Failed {
@@ -1812,6 +1844,7 @@ async fn execute_node_task(
                 // Command nodes never consume the Agent-attempt budget.
                 usage: None,
                 agent_meta: None,
+                policy: None,
             })
             .await
         }
@@ -1902,29 +1935,25 @@ async fn execute_agent_task(
     let profile: AgentProfile = match db.get_agent_profile(&profile_id) {
         Ok(Some(profile)) => profile,
         _ => {
-            let _ = db.record_node_result(NewNodeResult::simple(
-                &task.run_id,
+            return agent_failure(
+                db,
+                task,
                 node_id,
-                "failed",
-                None,
-                Some(&format!("Unknown Agent Profile '{profile_id}'.")),
-            ));
-            return TaskOutcome::Failed;
+                &format!("Unknown Agent Profile '{profile_id}'."),
+            );
         }
     };
     if !is_executable_available(&profile.effective_executable()) {
-        let _ = db.record_node_result(NewNodeResult::simple(
-            &task.run_id,
+        return agent_failure(
+            db,
+            task,
             node_id,
-            "failed",
-            None,
-            Some(&format!(
+            &format!(
                 "Agent Profile '{}' needs '{}', which was not found on PATH.{PATH_HINT}",
                 profile.name,
                 profile.effective_executable()
-            )),
-        ));
-        return TaskOutcome::Failed;
+            ),
+        );
     }
     let vars = match build_vars(
         db,
@@ -1935,31 +1964,16 @@ async fn execute_agent_task(
     ) {
         Ok(vars) => vars,
         Err(e) => {
-            let message = e.to_string();
-            let _ = db.record_node_result(NewNodeResult::simple(
-                &task.run_id,
-                node_id,
-                "failed",
-                None,
-                Some(&message),
-            ));
-            return TaskOutcome::Failed;
+            return agent_failure(db, task, node_id, &e.to_string());
         }
     };
     let template = task.node.config.prompt.clone().unwrap_or_default();
     let (rendered, missing) = render_prompt(&template, &vars);
     if !missing.is_empty() {
-        let _ = db.record_node_result(NewNodeResult::simple(
-            &task.run_id,
-            node_id,
-            "failed",
-            None,
-            Some(&format!(
+        return agent_failure(db, task, node_id, &format!(
                 "Missing prompt variables: {}. Referenced inputs must come from completed upstream nodes.",
                 missing.join(", ")
-            )),
-        ));
-        return TaskOutcome::Failed;
+            ));
     }
     let context_rows = match db.list_node_results(&task.run_id) {
         Ok(rows) => rows,
@@ -1974,45 +1988,11 @@ async fn execute_agent_task(
         Ok(prompt) => prompt,
         Err(e) => return agent_failure(db, task, node_id, &e),
     };
-    // Injected usage policy (v0.1.14): one short block composed with the
-    // user's prompt through this authoritative path — fresh attempts, loop
-    // visits and retries alike. Applies when the workflow opts into limits
-    // or the node carries its own allowances; ordinary runs keep byte-identical
-    // prompts. The marker guard keeps handoffs and follow-ups to a single copy.
-    let rendered = {
-        let limits = &task.execution.resolved_limits;
-        let opts_in = limits.max_agent_attempts.is_some()
-            || limits.max_tool_calls.is_some()
-            || limits.max_subagents.is_some()
-            || limits.spend_limit_usd.is_some()
-            || task.node.config.max_tool_calls.is_some()
-            || task.node.config.max_subagents.is_some();
-        if opts_in {
-            let policy = crate::usage::build_usage_policy(
-                Some((
-                    task.node.config.max_tool_calls.or(limits.max_tool_calls),
-                    task.node.config.max_subagents.or(limits.max_subagents),
-                )),
-                crate::usage::remaining_attempts(limits, task.execution.consumed_agent_attempts),
-                crate::usage::policy_coverage_note(profile.adapter),
-            );
-            crate::usage::inject_usage_policy(&rendered, &policy)
-        } else {
-            rendered
-        }
-    };
     let mut spec =
         match build_agent_command(&profile, &rendered, task.node.config.working_dir.as_deref()) {
             Ok(spec) => spec,
             Err(e) => {
-                let _ = db.record_node_result(NewNodeResult::simple(
-                    &task.run_id,
-                    node_id,
-                    "failed",
-                    None,
-                    Some(&e),
-                ));
-                return TaskOutcome::Failed;
+                return agent_failure(db, task, node_id, &e);
             }
         };
     let mut managed = None;
@@ -2067,13 +2047,16 @@ async fn execute_agent_task(
             .clone();
         group_guard = Some(lock.lock_owned().await);
         if flag.load(Ordering::SeqCst) {
-            let _ = db.record_node_result(NewNodeResult::simple(
-                &task.run_id,
-                node_id,
-                "cancelled",
-                None,
-                Some("Cancelled by user."),
-            ));
+            let _ = db.record_node_result(NewNodeResult {
+                structured_json: r#"{"notDispatched":true}"#,
+                ..NewNodeResult::simple(
+                    &task.run_id,
+                    node_id,
+                    "cancelled",
+                    None,
+                    Some("Cancelled by user."),
+                )
+            });
             return TaskOutcome::Cancelled;
         }
         let rows = match db.list_node_results(&task.run_id) {
@@ -2163,6 +2146,7 @@ async fn execute_agent_task(
             task.execution
                 .resolved_limits
                 .max_agent_attempts
+                .or(Some(u32::MAX))
                 .map(|max_attempts| {
                     let mut agent_node_ids = db
                         .get_run_snapshot(&task.run_id)
@@ -2189,6 +2173,12 @@ async fn execute_agent_task(
         // Adapter + model as configured now; analytics falls back to
         // "unknown" for legacy rows that predate this recording.
         agent_meta: Some((profile.adapter, profile.model.clone())),
+        policy: Some(AgentPolicy {
+            profile: &profile,
+            prompt: &rendered,
+            node: &task.node,
+            limits: &task.execution.resolved_limits,
+        }),
     })
     .await;
     drop(group_guard);
@@ -2196,13 +2186,10 @@ async fn execute_agent_task(
 }
 
 fn agent_failure(db: &SqliteDb, task: &TaskInput, node_id: &str, error: &str) -> TaskOutcome {
-    let _ = db.record_node_result(NewNodeResult::simple(
-        &task.run_id,
-        node_id,
-        "failed",
-        None,
-        Some(error),
-    ));
+    let _ = db.record_node_result(NewNodeResult {
+        structured_json: r#"{"notDispatched":true}"#,
+        ..NewNodeResult::simple(&task.run_id, node_id, "failed", None, Some(error))
+    });
     TaskOutcome::Failed
 }
 
@@ -3238,6 +3225,120 @@ struct RetryRequest<'a> {
     /// Execution-time Agent identity for usage analytics: adapter + the
     /// profile model as configured now (None for non-agent tasks).
     agent_meta: Option<(AdapterKind, Option<String>)>,
+    policy: Option<AgentPolicy<'a>>,
+}
+
+/// The un-injected composed task prompt, used to build one current policy
+/// for every actual invocation, including retries and resumed turns.
+struct AgentPolicy<'a> {
+    profile: &'a AgentProfile,
+    prompt: &'a str,
+    node: &'a Node,
+    limits: &'a crate::run_controls::ResolvedLimits,
+}
+
+fn current_agent_prompt(
+    db: &SqliteDb,
+    run_id: &str,
+    policy: &AgentPolicy<'_>,
+) -> Result<String, String> {
+    let limits = policy.limits;
+    let config = &policy.node.config;
+    if limits.max_agent_attempts.is_none()
+        && limits.max_tool_calls.is_none()
+        && limits.max_subagents.is_none()
+        && limits.spend_limit_usd.is_none()
+        && config.max_tool_calls.is_none()
+        && config.max_subagents.is_none()
+    {
+        return Ok(policy.prompt.into());
+    }
+    let rows = db.list_node_results(run_id).map_err(|e| e.to_string())?;
+    let snapshot = db.get_run_workflow(run_id).map_err(|e| e.to_string())?;
+    let consumed = snapshot
+        .as_ref()
+        .map(|wf| run_controls::count_agent_attempts(wf, &rows))
+        .unwrap_or(0);
+    // Divide the remaining advisory allowance among possible unfinished
+    // Agent attempts, including configured retries and repeated visits.
+    let slots = snapshot
+        .as_ref()
+        .map(|wf| {
+            wf.nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Agent)
+                .map(|n| {
+                    let used = rows
+                        .iter()
+                        .filter(|r| r.node_id == n.id && run_controls::is_dispatched_attempt(r))
+                        .count() as u32;
+                    let finished = rows
+                        .iter()
+                        .rev()
+                        .find(|r| r.node_id == n.id && is_terminal_status(&r.status))
+                        .is_some_and(|r| {
+                            matches!(r.status.as_str(), "succeeded" | "skipped")
+                                && n.config.max_visits.unwrap_or(1) == 1
+                        });
+                    if finished {
+                        0
+                    } else {
+                        n.config
+                            .max_visits
+                            .unwrap_or(1)
+                            .saturating_mul(
+                                n.config.retry.as_ref().map(|r| r.max_attempts).unwrap_or(1),
+                            )
+                            .saturating_sub(used)
+                    }
+                })
+                .sum::<u32>()
+        })
+        .unwrap_or(1)
+        .max(1);
+    let slots = crate::usage::remaining_attempts(limits, consumed)
+        .map(|left| slots.min(left.max(1)))
+        .unwrap_or(slots);
+    let allowance = |shared: Option<u32>, local: Option<u32>, key: &str| {
+        let observed = |node_only: bool| {
+            rows.iter()
+                .filter(|r| {
+                    run_controls::is_dispatched_attempt(r)
+                        && (!node_only || r.node_id == policy.node.id)
+                })
+                .map(|r| {
+                    serde_json::from_str::<serde_json::Value>(&r.structured_json)
+                        .ok()
+                        .and_then(|m| m["agentUsage"][key].as_u64())
+                        .unwrap_or(0)
+                })
+                .sum::<u64>()
+        };
+        let share = shared
+            .map(|n| (u64::from(n).saturating_sub(observed(false)) / u64::from(slots)) as u32);
+        let local = local.map(|n| u64::from(n).saturating_sub(observed(true)) as u32);
+        match (share, local) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    };
+    let guidance = crate::usage::build_usage_policy(
+        Some((
+            allowance(
+                limits.max_tool_calls,
+                config.max_tool_calls,
+                "observed_tool_calls",
+            ),
+            allowance(
+                limits.max_subagents,
+                config.max_subagents,
+                "observed_subagents",
+            ),
+        )),
+        crate::usage::remaining_attempts(limits, consumed),
+        crate::usage::policy_coverage_note(policy.profile.adapter),
+    );
+    Ok(crate::usage::inject_usage_policy(policy.prompt, &guidance))
 }
 
 /// Authoritative attempt budget for one Agent task: the run's resolved cap
@@ -3265,6 +3366,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         flag,
         usage,
         agent_meta,
+        policy,
     } = request;
     let max_attempts = if agent.is_some_and(|a| a.resume_id.is_some()) {
         1
@@ -3281,46 +3383,87 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
     }
     for attempt in 1..=max_attempts {
         if flag.load(Ordering::SeqCst) {
-            let _ = db.record_node_result(NewNodeResult::simple(
-                run_id,
-                node_id,
-                "cancelled",
-                None,
-                Some("Cancelled by user."),
-            ));
+            let _ = db.record_node_result(NewNodeResult {
+                structured_json: r#"{"notDispatched":true}"#,
+                ..NewNodeResult::simple(
+                    run_id,
+                    node_id,
+                    "cancelled",
+                    None,
+                    Some("Cancelled by user."),
+                )
+            });
             return TaskOutcome::Cancelled;
         }
+        let policy_spec = match policy
+            .as_ref()
+            .map(|policy| {
+                let prompt = current_agent_prompt(db, run_id, policy)?;
+                match agent {
+                    Some(a) => build_session_command(
+                        &a.profile,
+                        &prompt,
+                        a.node_dir.as_deref(),
+                        if attempt == 1 {
+                            a.resume_id.as_deref()
+                        } else {
+                            None
+                        },
+                    ),
+                    None => build_agent_command(policy.profile, &prompt, working_dir),
+                }
+            })
+            .transpose()
+        {
+            Ok(spec) => spec,
+            Err(error) => {
+                let _ = db.record_node_result(NewNodeResult {
+                    structured_json: r#"{"notDispatched":true}"#,
+                    ..NewNodeResult::simple(run_id, node_id, "failed", None, Some(&error))
+                });
+                return TaskOutcome::Failed;
+            }
+        };
         // Hard budget check before every Agent attempt spawn, including
         // retries: a retry is new execution and counts. Partial output from
         // earlier attempts is preserved; the run pauses durably.
-        if agent.is_some() {
-            if let Some(gate) = usage.as_ref() {
-                let rows = db.list_node_results(run_id).unwrap_or_default();
-                let consumed = run_controls::count_dispatched_attempts(&rows, &gate.agent_node_ids);
-                if consumed >= gate.max_attempts {
-                    let _ = db.record_node_result(NewNodeResult::simple(
-                        run_id,
-                        node_id,
-                        "guardPaused",
-                        None,
-                        Some(&format!(
-                            "Agent attempt budget exhausted: {consumed}/{} attempts dispatched. Extend the budget or cancel; unfinished scope stays unfinished.",
-                            gate.max_attempts
-                        )),
-                    ));
-                    return TaskOutcome::UsageExhausted;
+        let started = Instant::now();
+        let live_id = if let Some(gate) = usage.as_ref() {
+            match db.try_start_agent_attempt(
+                run_id,
+                node_id,
+                attempt,
+                &gate.agent_node_ids,
+                gate.max_attempts,
+            ) {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => return TaskOutcome::UsageExhausted,
+                Err(error) => {
+                    let _ = db.record_node_result(NewNodeResult {
+                        structured_json: r#"{"notDispatched":true}"#,
+                        ..NewNodeResult::simple(
+                            run_id,
+                            node_id,
+                            "failed",
+                            None,
+                            Some(&error.to_string()),
+                        )
+                    });
+                    return TaskOutcome::Failed;
                 }
             }
-        }
-        let started = Instant::now();
-        let live_id = db.start_node_result(run_id, node_id, attempt).ok();
+        } else {
+            db.start_node_result(run_id, node_id, attempt).ok()
+        };
         let stream = match (agent, decode) {
             (Some(a), _) => Some(AgentOutput::new(a.profile.adapter)),
             (None, Some(adapter)) => Some(AgentOutput::tolerant(adapter)),
             (None, None) => None,
         }
         .map(|output| Arc::new(Mutex::new(output)));
-        let retry_spec = if attempt > 1 {
+        let retry_spec = if policy_spec.is_some() {
+            policy_spec
+        } else if attempt > 1 {
             match agent
                 .map(|a| build_session_command(&a.profile, &a.prompt, a.node_dir.as_deref(), None))
                 .transpose()
@@ -3364,11 +3507,19 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 code,
                 mut stdout,
                 mut stderr,
+                timed_out,
+                started,
             } => {
                 let mut code = code;
                 let mut metadata = serde_json::json!({});
-                if let Some(Ok(mut decoded)) = stream.as_ref().map(|s| s.lock()) {
+                let mut incomplete = false;
+                if let Some(Ok(mut decoded)) = stream.as_ref().filter(|_| started).map(|s| s.lock())
+                {
                     decoded.finish();
+                    // A local process timeout is an existing retriable failure.
+                    // Explicit provider caps remain incomplete even if the
+                    // wrapper subsequently stalls and reaches that timeout.
+                    incomplete = decoded.limit_exhausted || (decoded.incomplete && !timed_out);
                     stdout = decoded
                         .text
                         .clone()
@@ -3390,8 +3541,15 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                         metadata["agentSession"] = serde_json::json!({"key":a.key,"group":a.group,"id":decoded.session_id,"turn":if attempt == 1 {a.turn}else{1},"reused":expected_id.is_some(),"usable":code == Some(0) && decoded.success() && decoded.session_id.is_some()});
                     }
                     metadata["agentUsage"] = decoded.usage.clone();
-                    stamp_agent_meta(&mut metadata, &agent_meta);
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                }
+                if started {
+                    stamp_agent_meta(&mut metadata, &agent_meta);
+                } else {
+                    metadata["notDispatched"] = serde_json::json!(true);
+                }
+                if timed_out {
+                    metadata["processTimeout"] = serde_json::json!(true);
                 }
                 if let Some(note) = output_note {
                     metadata["agentOutputNote"] = serde_json::json!(note);
@@ -3400,6 +3558,16 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     metadata["severity"] = serde_json::json!(severity);
                 }
                 let structured = metadata.to_string();
+                if incomplete {
+                    metadata["incomplete"] = serde_json::json!(true);
+                    persist_command_result(db, live_id, NewNodeResult {
+                        run_id, node_id, status: "failed", exit_code: code,
+                        stdout: &stdout, stderr: &stderr,
+                        error: Some("Required Agent work is incomplete; dependent steps were not released."),
+                        attempt, duration_ms, structured_json: &metadata.to_string(),
+                    });
+                    return TaskOutcome::Incomplete;
+                }
                 if code == Some(0) {
                     persist_command_result(
                         db,
@@ -3454,13 +3622,16 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     return TaskOutcome::Failed;
                 }
                 if !sleep_interruptible(retry_delay(delay_ms, backoff, attempt), flag).await {
-                    let _ = db.record_node_result(NewNodeResult::simple(
-                        run_id,
-                        node_id,
-                        "cancelled",
-                        None,
-                        Some("Cancelled by user."),
-                    ));
+                    let _ = db.record_node_result(NewNodeResult {
+                        structured_json: r#"{"notDispatched":true}"#,
+                        ..NewNodeResult::simple(
+                            run_id,
+                            node_id,
+                            "cancelled",
+                            None,
+                            Some("Cancelled by user."),
+                        )
+                    });
                     return TaskOutcome::Cancelled;
                 }
             }
@@ -3473,9 +3644,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(mut decoded) = stream.as_ref().and_then(|s| s.lock().ok()) {
                     decoded.finish();
                     metadata["agentUsage"] = decoded.usage.clone();
-                    stamp_agent_meta(&mut metadata, &agent_meta);
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
                 }
+                stamp_agent_meta(&mut metadata, &agent_meta);
                 if let Some(note) = output_note {
                     metadata["agentOutputNote"] = serde_json::json!(note);
                 }
@@ -3715,6 +3886,8 @@ enum CommandOutcome {
         code: Option<i32>,
         stdout: String,
         stderr: String,
+        timed_out: bool,
+        started: bool,
     },
     Cancelled {
         stdout: String,
@@ -3770,6 +3943,8 @@ async fn run_command_with_output(
             code: None,
             stdout: String::new(),
             stderr: "Executable must not be empty.".to_string(),
+            timed_out: false,
+            started: false,
         };
     }
     if let Some(dir) = working_dir {
@@ -3778,6 +3953,8 @@ async fn run_command_with_output(
                 code: None,
                 stdout: String::new(),
                 stderr: format!("Working directory does not exist: {dir}"),
+                timed_out: false,
+                started: false,
             };
         }
     }
@@ -3788,6 +3965,8 @@ async fn run_command_with_output(
                 code: None,
                 stdout: String::new(),
                 stderr: message,
+                timed_out: false,
+                started: false,
             };
         }
     };
@@ -3816,6 +3995,8 @@ async fn run_command_with_output(
                 code: None,
                 stdout: String::new(),
                 stderr: format!("Failed to spawn '{executable}': {e}"),
+                timed_out: false,
+                started: false,
             };
         }
     };
@@ -3970,6 +4151,8 @@ async fn run_command_with_output(
                 code: None,
                 stdout,
                 stderr,
+                timed_out: true,
+                started: true,
             };
         }
         if now >= deadline {
@@ -3995,6 +4178,8 @@ async fn run_command_with_output(
                 code: None,
                 stdout,
                 stderr: truncate_chars(stderr),
+                timed_out: true,
+                started: true,
             };
         }
         match child.try_wait() {
@@ -4014,6 +4199,8 @@ async fn run_command_with_output(
                     code: status.code(),
                     stdout,
                     stderr,
+                    timed_out: false,
+                    started: true,
                 };
             }
             Ok(None) => tokio::time::sleep(Duration::from_millis(25)).await,
@@ -4024,6 +4211,8 @@ async fn run_command_with_output(
                     code: None,
                     stdout: String::new(),
                     stderr: "Failed to wait on child process.".to_string(),
+                    timed_out: false,
+                    started: true,
                 };
             }
         }
@@ -4050,9 +4239,8 @@ async fn stop_process_tree(
     group.release();
 }
 
-/// Stamp execution-time adapter/model identity into structured agentUsage
-/// for usage analytics. Text-mode rows keep no agentUsage at all (their
-/// coverage stays honestly unknown); legacy rows predate this recording.
+/// Stamp execution-time identity even when numeric usage is unavailable.
+/// Missing metrics remain absent rather than becoming zero.
 fn stamp_agent_meta(
     metadata: &mut serde_json::Value,
     agent_meta: &Option<(AdapterKind, Option<String>)>,
@@ -4060,12 +4248,10 @@ fn stamp_agent_meta(
     let Some((adapter, model)) = agent_meta else {
         return;
     };
-    let Some(usage) = metadata.get_mut("agentUsage") else {
-        return;
-    };
-    if !usage.is_object() {
-        return;
+    if !metadata["agentUsage"].is_object() {
+        metadata["agentUsage"] = serde_json::json!({});
     }
+    let usage = &mut metadata["agentUsage"];
     usage["adapter"] = serde_json::json!(adapter.as_str());
     if let Some(model) = model.as_deref().filter(|m| !m.trim().is_empty()) {
         usage["model"] = serde_json::json!(model);
@@ -5559,7 +5745,8 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             .as_str()
             .unwrap()
             .contains("--output-format=text"));
-        assert!(metadata.get("agentUsage").is_none());
+        assert_eq!(metadata["agentUsage"]["adapter"], "claude");
+        assert!(metadata["agentUsage"].get("input_tokens").is_none());
         let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
         assert_eq!(argv, "-p\n--output-format\ntext\n--output-format=text\n");
         assert_eq!(
@@ -6112,6 +6299,462 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         assert_eq!(command_working_dir(&task), Some("/elsewhere"));
     }
     // -- v0.1.14 usage budgets (deterministic fixture CLIs, no paid runs) --
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_retries_pause_without_charging_blocked_attempts() {
+        for managed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (db, engine) = harness();
+            let events = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["transient"],"usage":{"input_tokens":1}}'
+exit 1"#;
+            let profile = structured_profile(dir.path(), AdapterKind::Claude, Some(events));
+            db.upsert_agent_profile(&profile).unwrap();
+            let mut wf = agent_workflow(&profile.id);
+            wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+                max_attempts: 3,
+                delay_ms: 0,
+                backoff: false,
+            });
+            if managed {
+                wf.nodes[1].config.session_group = Some("implementer".into());
+            }
+            db.upsert_workflow(&wf).unwrap();
+            engine
+                .start_run_with_options(
+                    &wf,
+                    "review-retry",
+                    &empty_inputs(),
+                    &RunOptions {
+                        max_agent_attempts: Some(1),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            engine.execute(wf, "review-retry".into()).await;
+            let run = db.get_run("review-retry").unwrap().unwrap();
+            assert_eq!(run.status, RunStatus::Paused, "managed={managed}");
+            assert_eq!(
+                run.execution.usage_pause.unwrap().consumed_attempts,
+                1,
+                "managed={managed}"
+            );
+            let rows = db.list_node_results("review-retry").unwrap();
+            assert_eq!(
+                rows.iter()
+                    .filter(|r| r.node_id == "agent1" && r.status == "retrying")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_saved_spend_target_pauses_and_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = two_agent_workflow(&profile.id);
+        wf.limits = Some(crate::run_controls::WorkflowLimits {
+            spend_limit_usd: Some(1.0),
+            ..Default::default()
+        });
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run(&wf, "review-saved-spend", &empty_inputs())
+            .unwrap();
+        engine
+            .execute(wf.clone(), "review-saved-spend".into())
+            .await;
+        let run = db.get_run("review-saved-spend").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        let pause = run.execution.spend_pause.unwrap();
+        engine
+            .continue_spend_run("review-saved-spend", pause.id, Some(5.0))
+            .await
+            .unwrap();
+        let run = db.get_run("review-saved-spend").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Succeeded);
+        assert_eq!(run.execution.resolved_limits.spend_limit_usd, Some(5.0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_provider_caps_cannot_follow_failure_publish_routes() {
+        for (subtype, stall) in [
+            ("error_max_turns", false),
+            ("error_max_budget_usd", false),
+            ("missing_terminal", false),
+            ("error_max_turns", true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (db, engine) = harness();
+            let mut events = r#"printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Partial review"}]}}'"#.to_string();
+            if subtype != "missing_terminal" {
+                events.push_str(&format!(r#"
+printf '%s\n' '{{"type":"result","subtype":"{subtype}","is_error":true,"errors":["limit reached"],"usage":{{"input_tokens":2}}}}'"#));
+            }
+            if stall {
+                events.push_str("\nexec sleep 5");
+            }
+            let profile = structured_profile(dir.path(), AdapterKind::Claude, Some(&events));
+            db.upsert_agent_profile(&profile).unwrap();
+            let mut wf = two_agent_workflow(&profile.id);
+            if stall {
+                wf.nodes[1].config.timeout_secs = Some(1);
+            }
+            wf.edges[1].label = Some("failure".into());
+            run_to_end(&db, &engine, wf, "review-provider-cap").await;
+            let run = db.get_run("review-provider-cap").unwrap().unwrap();
+            assert_eq!(run.status, RunStatus::Failed);
+            let rows = db.list_node_results("review-provider-cap").unwrap();
+            assert!(!rows.iter().any(|r| r.node_id == "agent2"), "{subtype}");
+            assert!(rows
+                .iter()
+                .any(|r| r.node_id == "agent1" && r.stdout.contains("Partial review")));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_unspawned_agent_failure_preserves_recovery_without_usage() {
+        for managed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (db, engine) = harness();
+            let profile = structured_profile(dir.path(), AdapterKind::Claude, None);
+            // An executable file passes preflight, but exec fails because its
+            // interpreter does not exist. No CLI process was started.
+            std::fs::write(
+                profile.executable.as_deref().unwrap(),
+                format!("#!{}\n", dir.path().join("missing-interpreter").display()),
+            )
+            .unwrap();
+            db.upsert_agent_profile(&profile).unwrap();
+            let mut wf = two_agent_workflow(&profile.id);
+            wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+                max_attempts: 2,
+                delay_ms: 0,
+                backoff: false,
+            });
+            if managed {
+                wf.nodes[1].config.session_group = Some("recovery".into());
+            }
+            wf.nodes[2].kind = NodeKind::Command;
+            wf.nodes[2].config = NodeConfig {
+                executable: Some("/bin/echo".into()),
+                args: vec!["local failure recovered".into()],
+                ..Default::default()
+            };
+            wf.edges[1].label = Some("failure".into());
+            wf.limits = Some(crate::run_controls::WorkflowLimits {
+                max_agent_attempts: Some(1),
+                ..Default::default()
+            });
+            run_to_end(&db, &engine, wf, "review-unspawned").await;
+            let run = db.get_run("review-unspawned").unwrap().unwrap();
+            assert_eq!(run.status, RunStatus::Succeeded, "managed={managed}");
+            assert_eq!(run.execution.consumed_agent_attempts, 0);
+            let rows = db.list_node_results("review-unspawned").unwrap();
+            let attempts: Vec<_> = rows.iter().filter(|r| r.node_id == "agent1").collect();
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(attempts[0].status, "retrying");
+            assert_eq!(attempts[1].status, "failed");
+            for row in attempts {
+                let meta: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+                assert_eq!(meta["notDispatched"], true);
+                assert!(meta.get("incomplete").is_none());
+                assert!(meta.get("agentUsage").is_none());
+                assert!(row.stderr.contains("Failed to spawn"));
+            }
+            let summary = crate::usage::usage_summary(&db, &Default::default()).unwrap();
+            assert_eq!(summary.totals.agent_attempts, 0);
+            assert_eq!(summary.totals.reported_usd_attempts, 0);
+            assert_eq!(summary.totals.unknown_usd_attempts, 0);
+            assert!(summary.by_model.is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_local_timeout_stays_retriable_with_structured_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"if [ ! -f tried ]; then
+touch tried
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Partial attempt"}]}}'
+exec sleep 5
+fi
+printf '%s\n' '{"type":"result","is_error":false,"result":"complete on retry","usage":{}}'"#;
+        let mut profile = structured_profile(dir.path(), AdapterKind::Claude, Some(events));
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.working_dir = Some(dir.path().to_string_lossy().into_owned());
+        wf.nodes[1].config.timeout_secs = Some(1);
+        wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+            max_attempts: 2,
+            delay_ms: 0,
+            backoff: false,
+        });
+        run_to_end(&db, &engine, wf, "review-timeout-retry").await;
+        let run = db.get_run("review-timeout-retry").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Succeeded);
+        let rows = db.list_node_results("review-timeout-retry").unwrap();
+        assert_eq!(run.execution.consumed_agent_attempts, 2, "{rows:#?}");
+        let first = rows
+            .iter()
+            .find(|r| r.node_id == "agent1" && r.status == "retrying")
+            .unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&first.structured_json).unwrap();
+        assert_eq!(meta["processTimeout"], true);
+        assert!(meta.get("incomplete").is_none());
+        assert!(first.stdout.contains("Partial attempt"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_guidance_allocates_remaining_shared_allowances() {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Read"},{"type":"tool_use","id":"b","name":"Read"},{"type":"tool_use","id":"c","name":"Task"}]}}' '{"type":"result","is_error":false,"result":"Complete","usage":{}}'"#;
+        let first = structured_profile(first_dir.path(), AdapterKind::Claude, Some(events));
+        let mut second = structured_profile(second_dir.path(), AdapterKind::Claude, None);
+        second.id = "second-profile".into();
+        db.upsert_agent_profile(&first).unwrap();
+        db.upsert_agent_profile(&second).unwrap();
+        let mut wf = two_agent_workflow(&first.id);
+        wf.nodes[2].config.agent_profile_id = Some(second.id);
+        wf.nodes[2].config.max_tool_calls = Some(9);
+        wf.limits = Some(crate::run_controls::WorkflowLimits {
+            max_agent_attempts: Some(3),
+            max_tool_calls: Some(10),
+            max_subagents: Some(2),
+            spend_limit_usd: None,
+        });
+        run_to_end(&db, &engine, wf, "review-guidance").await;
+        let first_prompt = std::fs::read_to_string(first_dir.path().join("stdin")).unwrap();
+        let second_prompt = std::fs::read_to_string(second_dir.path().join("stdin")).unwrap();
+        assert!(
+            first_prompt.contains("about 5 tool calls, 1 nested subagents"),
+            "{first_prompt}"
+        );
+        assert!(
+            second_prompt.contains("about 7 tool calls, 1 nested subagents"),
+            "{second_prompt}"
+        );
+        assert!(
+            second_prompt.contains("about 2 Agent attempts remain"),
+            "{second_prompt}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_custom_identity_preserves_unknown_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut profile = structured_profile(
+            dir.path(),
+            AdapterKind::Custom,
+            Some("printf 'custom result'"),
+        );
+        profile.model = Some("local-model".into());
+        db.upsert_agent_profile(&profile).unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "review-custom").await;
+        let rows = db.list_node_results("review-custom").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "agent1").unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+        assert_eq!(meta["agentUsage"]["adapter"], "custom");
+        assert_eq!(meta["agentUsage"]["model"], "local-model");
+        assert!(meta["agentUsage"].get("input_tokens").is_none());
+        assert_eq!(
+            db.get_run("review-custom")
+                .unwrap()
+                .unwrap()
+                .execution
+                .consumed_agent_attempts,
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_retry_guidance_refreshes_and_real_failures_keep_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-1","name":"Read"}]}}' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["transient"],"usage":{}}'
+exit 1"#;
+        let profile = structured_profile(dir.path(), AdapterKind::Claude, Some(events));
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = two_agent_workflow(&profile.id);
+        wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+            max_attempts: 2,
+            delay_ms: 0,
+            backoff: false,
+        });
+        wf.nodes[2].kind = NodeKind::Command;
+        wf.nodes[2].config = NodeConfig {
+            executable: Some("/bin/echo".into()),
+            args: vec!["failure recovered".into()],
+            ..Default::default()
+        };
+        wf.edges[1].label = Some("failure".into());
+        wf.limits = Some(crate::run_controls::WorkflowLimits {
+            max_agent_attempts: Some(3),
+            max_tool_calls: Some(10),
+            ..Default::default()
+        });
+        run_to_end(&db, &engine, wf, "review-policy-retry").await;
+        assert_eq!(
+            db.get_run("review-policy-retry").unwrap().unwrap().status,
+            RunStatus::Succeeded
+        );
+        let prompt = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        assert!(prompt.contains("about 9 tool calls"), "{prompt}");
+        assert!(prompt.contains("about 2 Agent attempts remain"), "{prompt}");
+        assert_eq!(prompt.matches(crate::usage::USAGE_POLICY_MARKER).count(), 1);
+    }
+
+    #[test]
+    fn review_usage_extension_respects_the_run_limit_bound() {
+        let (db, _) = harness();
+        let wf = agent_workflow("unused");
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run_with_execution(
+            "review-extension",
+            &wf,
+            &empty_inputs(),
+            &Default::default(),
+        )
+        .unwrap();
+        db.pause_for_usage("review-extension", 1, 1).unwrap();
+        let pause = db
+            .get_run("review-extension")
+            .unwrap()
+            .unwrap()
+            .execution
+            .usage_pause
+            .unwrap();
+        assert!(db
+            .continue_usage_run("review-extension", pause.id, Some(10_001))
+            .is_err());
+        assert_eq!(
+            db.get_run("review-extension").unwrap().unwrap().status,
+            RunStatus::Paused
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_continuation_claim_returns_before_remaining_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), AdapterKind::Claude, None);
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = two_agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "review-claim",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf, "review-claim".into()).await;
+        let pause = db
+            .get_run("review-claim")
+            .unwrap()
+            .unwrap()
+            .execution
+            .usage_pause
+            .unwrap();
+        let resumed = engine
+            .claim_usage_continuation("review-claim", pause.id, Some(2))
+            .unwrap();
+        assert_eq!(
+            db.get_run("review-claim").unwrap().unwrap().status,
+            RunStatus::Running
+        );
+        assert!(!db
+            .list_node_results("review-claim")
+            .unwrap()
+            .iter()
+            .any(|r| r.node_id == "agent2"));
+        assert!(engine
+            .claim_usage_continuation("review-claim", pause.id, Some(3))
+            .is_err());
+        engine.execute(resumed, "review-claim".into()).await;
+        assert_eq!(
+            db.get_run("review-claim").unwrap().unwrap().status,
+            RunStatus::Succeeded
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_usage_parallel_retry_cannot_spend_a_running_siblings_slot() {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["transient"],"usage":{}}'
+exit 1"#;
+        let first = structured_profile(first_dir.path(), AdapterKind::Claude, Some(events));
+        let events = r#"sleep 0.1
+printf '%s\n' '{"type":"result","is_error":false,"result":"done","usage":{}}'"#;
+        let mut second = structured_profile(second_dir.path(), AdapterKind::Claude, Some(events));
+        second.id = "slow-profile".into();
+        db.upsert_agent_profile(&first).unwrap();
+        db.upsert_agent_profile(&second).unwrap();
+        let mut wf = two_agent_workflow(&first.id);
+        wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+            max_attempts: 3,
+            delay_ms: 0,
+            backoff: false,
+        });
+        wf.nodes[2].config.agent_profile_id = Some(second.id);
+        wf.edges = vec![
+            edge("a", "start", "agent1", None),
+            edge("b", "start", "agent2", None),
+            edge("c", "agent1", "end", None),
+            edge("d", "agent2", "end", None),
+        ];
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "review-parallel-retry",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(2),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf, "review-parallel-retry".into()).await;
+        let run = db.get_run("review-parallel-retry").unwrap().unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.execution.usage_pause.unwrap().consumed_attempts, 2);
+        let rows = db.list_node_results("review-parallel-retry").unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.node_id == "agent1" && r.status == "retrying")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.node_id == "agent2" && r.status == "succeeded")
+                .count(),
+            1
+        );
+    }
 
     fn two_agent_workflow(profile_id: &str) -> Workflow {
         let mut wf = agent_workflow(profile_id);
@@ -6843,8 +7486,12 @@ mod integration_tests {
                 code,
                 stdout,
                 stderr,
+                timed_out,
+                started,
             } => {
                 assert_eq!(code, None);
+                assert!(timed_out);
+                assert!(started);
                 assert!(stdout.contains("hello-partial"), "{stdout}");
                 assert!(stderr.contains("timed out"), "{stderr}");
             }

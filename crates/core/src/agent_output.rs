@@ -1,6 +1,7 @@
 //! Incremental decoding for managed CLI conversations. No provider calls here.
 use crate::agents::AdapterKind;
 use serde_json::Value;
+use std::collections::HashSet;
 
 const MAX_TEXT: usize = 200_000;
 const MAX_EVENT_BYTES: usize = 4_000_000;
@@ -19,6 +20,11 @@ pub(crate) struct AgentOutput {
     pub session_id: Option<String>,
     pub usage: Value,
     pub error: Option<String>,
+    /// A provider cap or missing required structured completion left the task
+    /// unfinished. It must never release an ordinary failure route.
+    pub incomplete: bool,
+    /// A structured provider cap, distinct from a process killed by Orchevia.
+    pub limit_exhausted: bool,
     complete: bool,
     /// Observed tool calls inside this CLI invocation (Claude `tool_use`
     /// blocks, Codex `command_execution` items). Advisory companion to the
@@ -27,6 +33,7 @@ pub(crate) struct AgentOutput {
     /// Observed nested-subagent spawns (Claude `Task` tool uses). Codex has
     /// no verified equivalent shape, so Codex subagents stay unobserved.
     subagents: u64,
+    tool_ids: HashSet<String>,
 }
 
 impl AgentOutput {
@@ -42,9 +49,12 @@ impl AgentOutput {
             session_id: None,
             usage: Value::Null,
             error: None,
+            incomplete: false,
+            limit_exhausted: false,
             complete: false,
             tool_calls: 0,
             subagents: 0,
+            tool_ids: HashSet::new(),
         }
     }
 
@@ -82,6 +92,9 @@ impl AgentOutput {
             self.pending.clear();
         }
         self.flush_counts();
+        if !self.complete {
+            self.incomplete = true;
+        }
         if !self.complete && self.error.is_none() {
             self.error = Some(
                 "CLI did not return a completed structured result; partial output is preserved."
@@ -99,14 +112,50 @@ impl AgentOutput {
     /// counts. Creates the envelope when the CLI reported no usage block
     /// but did emit countable tool events.
     fn flush_counts(&mut self) {
-        if self.tool_calls == 0 && self.subagents == 0 {
+        if self.tool_calls == 0 && !self.complete {
             return;
         }
         if !self.usage.is_object() {
             self.usage = serde_json::json!({});
         }
         self.usage["observed_tool_calls"] = serde_json::json!(self.tool_calls);
-        self.usage["observed_subagents"] = serde_json::json!(self.subagents);
+        if self.adapter == AdapterKind::Claude {
+            self.usage["observed_subagents"] = serde_json::json!(self.subagents);
+        }
+    }
+
+    fn observe_tools(&mut self, value: &Value) {
+        match (self.adapter, value["type"].as_str()) {
+            (AdapterKind::Claude, Some("assistant")) => {
+                if let Some(blocks) = value.pointer("/message/content").and_then(Value::as_array) {
+                    for block in blocks {
+                        if block["type"] != "tool_use" {
+                            continue;
+                        }
+                        if let Some(id) = block["id"].as_str() {
+                            if !self.tool_ids.insert(id.into()) {
+                                continue;
+                            }
+                        }
+                        self.tool_calls += 1;
+                        if matches!(block["name"].as_str(), Some("Task" | "Agent")) {
+                            self.subagents += 1;
+                        }
+                    }
+                }
+            }
+            (AdapterKind::Codex, Some("item.completed"))
+                if value["item"]["type"] == "command_execution" =>
+            {
+                if let Some(id) = value["item"]["id"].as_str() {
+                    if !self.tool_ids.insert(id.into()) {
+                        return;
+                    }
+                }
+                self.tool_calls += 1;
+            }
+            _ => {}
+        }
     }
 
     fn add_activity(&mut self, text: &str) {
@@ -147,6 +196,9 @@ impl AgentOutput {
                 return;
             }
         };
+        // Count observable descendant tools, but never replace top-level
+        // response, session or token totals with a descendant's envelope.
+        self.observe_tools(&value);
         // Subagent events cannot replace the top-level response/session.
         if value
             .get("parent_tool_use_id")
@@ -182,10 +234,6 @@ impl AgentOutput {
                             // (`tool_use`); the nested-agent tool is "Task".
                             // Observed only: killing the process after this
                             // event cannot un-run the tool.
-                            self.tool_calls += 1;
-                            if name == "Task" {
-                                self.subagents += 1;
-                            }
                             self.add_activity(&format!("Tool: {name}"));
                         }
                     }
@@ -217,7 +265,19 @@ impl AgentOutput {
                         self.usage["reported_cost_usd"] = serde_json::json!(cost);
                     }
                 }
-                if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+                let cap = matches!(
+                    value["subtype"].as_str(),
+                    Some(
+                        "error_max_turns"
+                            | "error_max_budget_usd"
+                            | "error_max_structured_output_retries"
+                    )
+                ) || value["stop_reason"].as_str() == Some("max_tokens");
+                if cap {
+                    self.incomplete = true;
+                    self.limit_exhausted = true;
+                    self.error = Some(format!("CLI stopped before completing required work ({}). Adjust the CLI limit and recover deliberately; extending Orchevia's attempt budget does not change this CLI limit.", value["subtype"].as_str().unwrap_or("max_tokens")));
+                } else if value.get("is_error").and_then(Value::as_bool) == Some(true) {
                     self.error = Some(
                         value
                             .get("errors")
@@ -239,7 +299,6 @@ impl AgentOutput {
                         }
                     }
                     Some("command_execution") => {
-                        self.tool_calls += 1;
                         if let Some(command) = item.get("command").and_then(Value::as_str) {
                             self.add_activity(command);
                         }
@@ -271,6 +330,7 @@ impl AgentOutput {
             _ => {}
         }
         if self.complete && self.text.is_none() && self.error.is_none() {
+            self.incomplete = true;
             self.error = Some("CLI completed without a response.".into());
         }
     }
@@ -280,6 +340,39 @@ impl AgentOutput {
 mod tests {
     use super::*;
     use crate::agents::AdapterKind;
+
+    #[test]
+    fn review_usage_codex_subagent_observation_stays_unknown() {
+        let mut out = AgentOutput::new(AdapterKind::Codex);
+        out.push(b"{\"type\":\"item.completed\",\"item\":{\"id\":\"tool-1\",\"type\":\"command_execution\"}}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"tool-1\",\"type\":\"command_execution\"}}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}\n{\"type\":\"turn.completed\",\"usage\":{}}\n");
+        out.finish();
+        assert_eq!(out.usage["observed_tool_calls"], 1);
+        assert!(out.usage.get("observed_subagents").is_none());
+    }
+
+    #[test]
+    fn review_usage_claude_observes_current_agent_tool_and_empty_complete_turn() {
+        let mut out = AgentOutput::new(AdapterKind::Claude);
+        out.push(b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"agent-1\",\"name\":\"Agent\"}]}}\n{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"usage\":{}}\n");
+        out.finish();
+        assert_eq!(out.usage["observed_subagents"], 1);
+        let mut empty = AgentOutput::new(AdapterKind::Claude);
+        empty.push(b"{\"type\":\"result\",\"is_error\":false,\"result\":\"done\",\"usage\":{}}\n");
+        empty.finish();
+        assert_eq!(empty.usage["observed_tool_calls"], 0);
+        assert_eq!(empty.usage["observed_subagents"], 0);
+    }
+
+    #[test]
+    fn review_usage_descendant_tools_count_without_replacing_parent_totals() {
+        let mut out = AgentOutput::new(AdapterKind::Claude);
+        out.push(b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"task-1\",\"name\":\"Agent\"}]}}\n{\"type\":\"assistant\",\"parent_tool_use_id\":\"task-1\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"child-read\",\"name\":\"Read\"}]}}\n{\"type\":\"result\",\"parent_tool_use_id\":\"task-1\",\"result\":\"child\",\"usage\":{\"input_tokens\":999}}\n{\"type\":\"result\",\"is_error\":false,\"result\":\"parent\",\"usage\":{\"input_tokens\":10}}\n");
+        out.finish();
+        assert_eq!(out.text.as_deref(), Some("parent"));
+        assert_eq!(out.usage["input_tokens"], 10);
+        assert_eq!(out.usage["observed_tool_calls"], 2);
+        assert_eq!(out.usage["observed_subagents"], 1);
+    }
 
     #[test]
     fn split_streams_preserve_partial_text_and_explicit_provider_errors() {

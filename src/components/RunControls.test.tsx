@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { StartRunDialog, UsageLimitsDialog } from './RunControls';
+import { StartRunDialog, UsageContinueDialog, UsageLimitsDialog } from './RunControls';
+import { __setMockBackendForTests } from '../lib/backend';
 import { createEmptyWorkflow } from '../lib/workflow';
 
 it('submits dry-run fixtures and declared inputs without spend or attempt controls', async () => {
@@ -138,6 +139,60 @@ it('prevents duplicate starts while the first start is still busy', async () => 
   await waitFor(() => expect(close).toHaveBeenCalled());
   expect(start).toHaveBeenCalledTimes(1);
 });
+
+it.each(['start', 'save', 'continue'] as const)(
+  'keeps the %s dialog open when X or Escape is used during a pending mutation',
+  async (action) => {
+    const backend = __setMockBackendForTests();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mutate = vi.fn().mockImplementation(() => pending);
+    const close = vi.fn();
+    const workflow = createEmptyWorkflow('Busy');
+    if (action === 'start') {
+      render(
+        <StartRunDialog
+          workflow={workflow}
+          initialDryRun={false}
+          onStart={mutate}
+          onClose={close}
+        />,
+      );
+    } else if (action === 'save') {
+      render(<UsageLimitsDialog workflow={workflow} onSave={mutate} onClose={close} />);
+    } else {
+      vi.spyOn(backend, 'continueUsageRun').mockImplementation(mutate);
+      render(
+        <UsageContinueDialog
+          runId="run-busy"
+          pause={{ id: 1, consumedAttempts: 1, limitAttempts: 1 }}
+          onContinued={() => Promise.resolve()}
+          onClose={close}
+        />,
+      );
+    }
+    fireEvent.click(
+      screen.getByRole('button', {
+        name:
+          action === 'start'
+            ? 'Start run'
+            : action === 'save'
+              ? 'Save limits'
+              : 'Continue run',
+      }),
+    );
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    const dismiss = screen.getByRole('button', { name: 'Close' });
+    fireEvent.click(dismiss);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(close).not.toHaveBeenCalled();
+    expect(dismiss).toBeDisabled();
+    release();
+    await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+  },
+);
 
 it('rejects negative and non-numeric overrides without starting', async () => {
   const start = vi.fn();

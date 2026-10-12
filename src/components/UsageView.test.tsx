@@ -1,11 +1,161 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { UsageView } from './UsageView';
 import { __setMockBackendForTests } from '../lib/backend';
 import { createDefaultProfile } from '../lib/agents';
 import { createEmptyWorkflow } from '../lib/workflow';
 import { useAppStore } from '../store';
+import { emptyUsageSummary, type UsageSummary } from '../lib/usage';
+
+it('shows profile usage with current names, saved IDs and explicit unknown USD coverage', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({
+    workflows: [],
+    profiles: [{ ...createDefaultProfile('claude'), id: 'p1', name: 'Renamed profile' }],
+  });
+  const summary = {
+    ...emptyUsageSummary(),
+    runsScanned: 2,
+    byProfile: [
+      {
+        profileId: 'p1',
+        runs: 2,
+        agentAttempts: 3,
+        totalDurationMs: 1500,
+        lastRunAt: '2026-10-01T00:00:00.000Z',
+        reportedUsd: 1.25,
+        reportedUsdAttempts: 2,
+        unknownUsdAttempts: 1,
+      },
+      {
+        profileId: 'deleted-profile',
+        runs: 1,
+        agentAttempts: 1,
+        totalDurationMs: 120000,
+        reportedUsd: 0,
+        reportedUsdAttempts: 1,
+        unknownUsdAttempts: 0,
+      },
+      {
+        profileId: null,
+        runs: 1,
+        agentAttempts: 1,
+        totalDurationMs: 0,
+        reportedUsd: 0,
+        reportedUsdAttempts: 0,
+        unknownUsdAttempts: 1,
+      },
+    ],
+  };
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  render(<UsageView />);
+  const section = await screen.findByRole('region', { name: 'By AI profile' });
+  const current = within(section).getByRole('row', { name: /Renamed profile/ });
+  expect(current).toHaveTextContent('current name');
+  expect(current).toHaveTextContent('1.2500');
+  expect(current).toHaveTextContent('2/3 reports');
+  expect(current).toHaveTextContent('1 unknown');
+  expect(current).toHaveTextContent('2s');
+  expect(within(current).getByTitle('2026-10-01T00:00:00.000Z')).toBeInTheDocument();
+  const deleted = within(section).getByRole('row', { name: /deleted-profile/ });
+  expect(deleted).toHaveTextContent('0.0000');
+  expect(deleted).toHaveTextContent('1/1 reports');
+  expect(deleted).toHaveTextContent('2m');
+  const unknown = within(section).getByRole('row', { name: /^Unknown/ });
+  expect(unknown).toHaveTextContent('0/1 reports');
+  expect(unknown).toHaveTextContent('1 unknown');
+  expect(unknown).not.toHaveTextContent('0.0000');
+  expect(within(section).getByText(/saved run snapshot/)).toBeInTheDocument();
+});
+
+it('keeps the newest usage response after filters change', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  const requests: ((summary: UsageSummary) => void)[] = [];
+  vi.spyOn(backend, 'usageSummary').mockImplementation(
+    () => new Promise((resolve) => requests.push(resolve)),
+  );
+  render(<UsageView />);
+  await waitFor(() => expect(requests).toHaveLength(1));
+  await userEvent.selectOptions(screen.getByLabelText('Provider'), 'codex');
+  await waitFor(() => expect(requests).toHaveLength(2));
+  const latest = emptyUsageSummary();
+  latest.runsScanned = 1;
+  latest.totals.runs = 7;
+  await act(async () => {
+    requests[1]?.(latest);
+    await Promise.resolve();
+  });
+  expect(screen.getByText('7')).toBeInTheDocument();
+  const stale = emptyUsageSummary();
+  stale.runsScanned = 1;
+  stale.totals.runs = 99;
+  await act(async () => {
+    requests[0]?.(stale);
+    await Promise.resolve();
+  });
+  expect(screen.queryByText('99')).not.toBeInTheDocument();
+  expect(screen.getByText('7')).toBeInTheDocument();
+});
+
+it('keeps subscription allocation independent of filtered execution counts', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.setSetting(
+    'usage.subscriptionFees',
+    JSON.stringify([
+      { label: 'Claude', amountUsd: 120, period: '2026-10-01/2026-11-01' },
+    ]),
+  );
+  await backend.setSetting('usage.allocationShare', '50');
+  const summary = emptyUsageSummary();
+  summary.runsScanned = 1;
+  summary.totals.runs = 1;
+  summary.totals.agentAttempts = 2;
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  await waitFor(() =>
+    expect(screen.getByText(/Allocated to Orchevia-tracked work/)).toBeInTheDocument(),
+  );
+  expect(screen.queryByText(/per tracked attempt/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/per tracked run/)).not.toBeInTheDocument();
+  expect(
+    screen.getByText(/independent of the current history filters/),
+  ).toBeInTheDocument();
+});
+
+it('allocates full overlapping billing periods while retaining outside and legacy fees', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.setSetting(
+    'usage.subscriptionFees',
+    JSON.stringify([
+      { label: 'Current', amountUsd: 120, period: '2026-10-01/2026-11-01' },
+      { label: 'Past', amountUsd: 120, period: '2026-09-01/2026-10-01' },
+      { label: 'Legacy', amountUsd: 50, period: 'monthly' },
+    ]),
+  );
+  await backend.setSetting('usage.allocationShare', '50');
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-10' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-10-15' },
+  });
+  await waitFor(() =>
+    expect(screen.getByText(/Allocated to Orchevia-tracked work/)).toHaveTextContent(
+      'USD 60.00',
+    ),
+  );
+  expect(screen.getByText(/Past · USD 120.00/)).toHaveTextContent('outside allocation');
+  expect(screen.getByText(/Legacy · USD 50.00/)).toHaveTextContent('outside allocation');
+});
 
 function workflowWithAgent(name: string): ReturnType<typeof createEmptyWorkflow> {
   const wf = createEmptyWorkflow(name);

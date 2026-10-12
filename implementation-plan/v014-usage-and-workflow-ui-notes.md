@@ -37,8 +37,21 @@ Companion to `v014-usage-and-workflow-ui.md` (the brief). Implemented on branch
 
 ## Verification
 
+Independent review corrections include atomic claims for ordinary/session retries,
+saved USD guard resolution, current shared advisory allowances, explicit incomplete
+provider-response handling, loop-visit/cached-token accounting and unknown coverage,
+filtered subscription-allocation honesty, import shape parity, pending-dialog close
+guards, keyboard focus and large/corrupt viewport recovery. Desktop continuations
+claim the exact durable pause before spawning execution and returning to the UI.
+AI profile usage and cost coverage are centralized in Usage & costs, replacing
+the Agents usage panel; attribution uses immutable run snapshots, with explicit
+deleted/unknown identities and current names only as display labels.
+
 - `pnpm check`, `cargo test -p orchevia-core`, `cargo clippy`, `cargo fmt
-  --check`, `cargo check -p orchevia`, `pnpm build`, `git diff --check`.
+--check`, `cargo check -p orchevia`, `pnpm build`, `git diff --check`.
+- Final independent validation: 304 frontend tests, 15 delivery tests and 403
+  core Rust tests passed. Production build retains the existing large-bundle
+  warning. The built preview confirms profile reporting moved out of Agents.
 - Native enforcement proven with deterministic fixture CLIs (no paid runs);
   analytics over 60 native rows and 55 mock runs (never a capped list).
 - Browser/mock inspection at desktop and narrow widths; real-CLI execution not

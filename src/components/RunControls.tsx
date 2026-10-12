@@ -118,6 +118,7 @@ export function StartRunDialog({
     <Modal
       label={dryRun ? 'Dry run workflow' : 'Start run'}
       onClose={onClose}
+      closeDisabled={busy}
       onBackdrop={() => {
         if (!busy) onClose();
       }}
@@ -390,6 +391,7 @@ export function UsageLimitsDialog({
     <Modal
       label="Usage limits"
       onClose={onClose}
+      closeDisabled={busy}
       onBackdrop={() => {
         if (!busy) onClose();
       }}
@@ -545,6 +547,7 @@ export function UsageContinueDialog({
     <Modal
       label="Continue after usage pause"
       onClose={onClose}
+      closeDisabled={busy}
       onBackdrop={() => {
         if (!busy) onClose();
       }}

@@ -15,7 +15,6 @@ import {
   type AgentSkillInfo,
   type WorkingDirMode,
 } from '../lib/agents';
-import { aggregateProfileUsage, formatDurationMs } from '../lib/usage';
 import { DirPicker } from './DirPicker';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
@@ -415,7 +414,6 @@ export function AgentsView(): React.JSX.Element {
           </section>
         )}
 
-        <UsagePanel />
         {editing !== null && (
           <Modal
             label={editing.name === '' ? 'New agent profile' : 'Edit agent profile'}
@@ -957,38 +955,5 @@ function ProfileEditor({
         </button>
       </div>
     </div>
-  );
-}
-
-function UsagePanel(): React.JSX.Element {
-  const profiles = useAppStore((s) => s.profiles);
-  const runs = useAppStore((s) => s.runs);
-  const runResults = useAppStore((s) => s.runResults);
-  const workflows = useAppStore((s) => s.workflows);
-  if (profiles.length === 0) return <></>;
-  const usage = aggregateProfileUsage(profiles, runs, runResults, workflows);
-  return (
-    <section aria-label="Agent usage" style={{ marginTop: 20 }}>
-      <h2 style={{ fontSize: 14 }}>Usage (local estimates)</h2>
-      <p className="field-hint" style={{ maxWidth: 720 }}>
-        Runs + total execution time from local run history. Remaining quota lives in your
-        CLI/provider dashboard — Orchevia never invents it. Per-run CLI hints (tokens/cost
-        lines the tool printed) appear in Runs.
-      </p>
-      <div className="tool-grid">
-        {usage.map((u) => (
-          <div key={u.profileId} className="tool-card">
-            <h3>{u.profileName}</h3>
-            <div className="tool-version">
-              {u.adapter} · {String(u.runs)} run(s) ·{' '}
-              {formatDurationMs(u.totalDurationMs)}
-              {u.lastRunAt !== null
-                ? ` · last ${u.lastRunAt.slice(0, 10)}`
-                : ' · never run'}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }

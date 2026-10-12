@@ -8,84 +8,9 @@
  * - usage hints the CLI itself printed (tokens/cost/duration patterns).
  */
 
-import type { StoredNodeResult, StoredRun } from './workflow';
-import type { AgentProfile } from './agents';
-
 /** CLI estimates cannot reconcile a subscription bill or measure remaining quota. */
 export const CLI_COST_EXPLANATION =
   "CLI dollar estimates are not your subscription bill. Subscription limits and remaining quota are unavailable here; check your provider's usage page.";
-
-export interface ProfileUsage {
-  profileId: string;
-  profileName: string;
-  adapter: string;
-  runs: number;
-  totalDurationMs: number;
-  lastRunAt: string | null;
-}
-
-/** Aggregate local execution facts per Agent Profile from run history. */
-export function aggregateProfileUsage(
-  profiles: AgentProfile[],
-  runs: StoredRun[],
-  runResults: Record<string, StoredNodeResult[]>,
-  workflows: {
-    id: string;
-    definition: {
-      nodes: { id: string; type: string; config: { agentProfileId?: string } }[];
-    };
-  }[],
-): ProfileUsage[] {
-  const byWorkflow = new Map(workflows.map((w) => [w.id, w.definition]));
-  const stats = new Map<
-    string,
-    { runs: Set<string>; totalMs: number; last: string | null }
-  >();
-  for (const run of runs) {
-    if (run.execution?.options.dryRun) continue;
-    const results = runResults[run.id] ?? [];
-    const def = byWorkflow.get(run.workflowId);
-    const profileOf = (nodeId: string): string | null => {
-      const node = def?.nodes.find((n) => n.id === nodeId);
-      const id = node?.config.agentProfileId;
-      return id !== undefined && id !== '' ? id : null;
-    };
-    const seen = new Set<string>();
-    for (const r of results) {
-      try {
-        const metadata: unknown = JSON.parse(r.structuredJson ?? '{}');
-        if (
-          isRecord(metadata) &&
-          (metadata.reusedFrom !== undefined || metadata.simulated === true)
-        )
-          continue;
-      } catch {
-        /* Old plain results retain local timing. */
-      }
-      const pid = profileOf(r.nodeId);
-      if (pid === null) continue;
-      const entry = stats.get(pid) ?? { runs: new Set<string>(), totalMs: 0, last: null };
-      entry.totalMs += r.durationMs ?? 0;
-      if (!seen.has(pid)) {
-        seen.add(pid);
-        entry.runs.add(run.id);
-        if (entry.last === null || run.startedAt > entry.last) entry.last = run.startedAt;
-      }
-      stats.set(pid, entry);
-    }
-  }
-  return profiles.map((p) => {
-    const entry = stats.get(p.id);
-    return {
-      profileId: p.id,
-      profileName: p.name,
-      adapter: p.adapter,
-      runs: entry?.runs.size ?? 0,
-      totalDurationMs: entry?.totalMs ?? 0,
-      lastRunAt: entry?.last ?? null,
-    };
-  });
-}
 
 /** Patterns CLIs commonly print (tokens, cost, elapsed). Display-only. */
 const HINT_PATTERNS: RegExp[] = [
@@ -139,6 +64,18 @@ export interface UsageWorkflowRow {
   unknownUsdAttempts: number;
 }
 
+export interface UsageProfileRow {
+  /** Profile ID from the saved run snapshot; never today's workflow assignment. */
+  profileId: string | null;
+  runs: number;
+  agentAttempts: number;
+  totalDurationMs: number;
+  lastRunAt?: string;
+  reportedUsd: number;
+  reportedUsdAttempts: number;
+  unknownUsdAttempts: number;
+}
+
 export interface UsageModelRow {
   /** Adapter + model recorded at execution time; legacy rows are unknown. */
   adapter: string;
@@ -147,8 +84,96 @@ export interface UsageModelRow {
   inputTokens: number;
   outputTokens: number;
   reportedUsd: number;
+  reportedUsdAttempts: number;
+  unknownUsdAttempts: number;
   observedToolCalls: number;
   observedSubagents: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  coverage: UsageCoverage;
+}
+
+/** Attempts reporting each metric; missing fields never become measured zeroes. */
+export interface UsageCoverage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  toolCalls: number;
+  subagents: number;
+}
+
+export function emptyUsageCoverage(): UsageCoverage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    toolCalls: 0,
+    subagents: 0,
+  };
+}
+
+export function measuredUsage(
+  usage: Record<string, unknown> | null,
+  adapter: string,
+): Omit<
+  UsageModelRow,
+  | 'adapter'
+  | 'model'
+  | 'agentAttempts'
+  | 'reportedUsd'
+  | 'reportedUsdAttempts'
+  | 'unknownUsdAttempts'
+> {
+  const count = (key: string): number | undefined => {
+    const value = usage?.[key];
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+      ? value
+      : undefined;
+  };
+  const input = count('input_tokens');
+  const output = count('output_tokens');
+  const cached = count('cached_input_tokens');
+  const read = count('cache_read_input_tokens');
+  const created = count('cache_creation_input_tokens');
+  const reasoning = count('reasoning_output_tokens');
+  const tools = count('observed_tool_calls');
+  const subs = count('observed_subagents');
+  return {
+    inputTokens: (input ?? 0) + (adapter === 'claude' ? (read ?? 0) + (created ?? 0) : 0),
+    outputTokens: output ?? 0,
+    cachedInputTokens: cached ?? 0,
+    cacheReadInputTokens: read ?? 0,
+    cacheCreationInputTokens: created ?? 0,
+    reasoningOutputTokens: reasoning ?? 0,
+    observedToolCalls: tools ?? 0,
+    observedSubagents: subs ?? 0,
+    coverage: {
+      inputTokens: Number(
+        input !== undefined &&
+          (adapter !== 'claude' || (read !== undefined && created !== undefined)),
+      ),
+      outputTokens: Number(output !== undefined),
+      cachedInputTokens: Number(cached !== undefined),
+      cacheReadInputTokens: Number(read !== undefined),
+      cacheCreationInputTokens: Number(created !== undefined),
+      reasoningOutputTokens: Number(reasoning !== undefined),
+      toolCalls: Number(tools !== undefined),
+      subagents: Number(subs !== undefined),
+    },
+  };
+}
+
+export function addUsageCoverage(target: UsageCoverage, coverage: UsageCoverage): void {
+  for (const key of Object.keys(target) as (keyof UsageCoverage)[])
+    target[key] += coverage[key];
 }
 
 export interface UsageTotals {
@@ -166,6 +191,11 @@ export interface UsageTotals {
   observedToolCalls: number;
   observedSubagents: number;
   unknownModelAttempts: number;
+  cachedInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  coverage: UsageCoverage;
 }
 
 export interface UsageSummary {
@@ -173,6 +203,7 @@ export interface UsageSummary {
   days: UsageDay[];
   byWorkflow: UsageWorkflowRow[];
   byModel: UsageModelRow[];
+  byProfile: UsageProfileRow[];
   from?: string;
   to?: string;
   timezone: string;
@@ -198,10 +229,16 @@ export function emptyUsageSummary(): UsageSummary {
       observedToolCalls: 0,
       observedSubagents: 0,
       unknownModelAttempts: 0,
+      cachedInputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      coverage: emptyUsageCoverage(),
     },
     days: [],
     byWorkflow: [],
     byModel: [],
+    byProfile: [],
     timezone: 'UTC',
     runsScanned: 0,
     recentAttemptUsd: [],
@@ -222,6 +259,64 @@ export interface SubscriptionFee {
 export interface ExtraCharge {
   label: string;
   amountUsd: number;
+  period?: string;
+}
+
+/** Explicit UTC billing periods; old free-form labels stay visible outside allocation. */
+export function billingPeriod(period: string): { from: string; to: string } | null {
+  const match = /^(\d{4}-\d{2}-\d{2})\/(\d{4}-\d{2}-\d{2})$/.exec(period);
+  const from = match?.[1];
+  const to = match?.[2];
+  if (!from || !to) return null;
+  const valid = (day: string): boolean => {
+    const time = Date.parse(`${day}T00:00:00.000Z`);
+    return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === day;
+  };
+  return valid(from) && valid(to) && from < to ? { from, to } : null;
+}
+
+export function validateUsageSetting(key: string, value: string): void {
+  if (key === 'usage.allocationShare') {
+    if (value.trim() === '') return;
+    const share = Number(value);
+    if (
+      !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value.trim()) ||
+      !Number.isFinite(share) ||
+      share < 0 ||
+      share > 100
+    )
+      throw new Error('Orchevia share must be a finite percentage from 0 to 100.');
+  } else if (key === 'usage.allocationMethod') {
+    if (!['manual', 'proportional', 'even'].includes(value))
+      throw new Error('Unknown allocation method.');
+  } else if (key === 'usage.subscriptionFees' || key === 'usage.extraCharges') {
+    let entries: unknown;
+    try {
+      entries = JSON.parse(value);
+    } catch {
+      throw new Error('Fee list must be a JSON array.');
+    }
+    if (!Array.isArray(entries) || entries.length > 100)
+      throw new Error('Fee list must be a JSON array with at most 100 entries.');
+    for (const entry of entries) {
+      if (
+        !isRecord(entry) ||
+        typeof entry.label !== 'string' ||
+        entry.label.trim() === '' ||
+        new TextEncoder().encode(entry.label).length > 200 ||
+        typeof entry.amountUsd !== 'number' ||
+        !Number.isFinite(entry.amountUsd) ||
+        entry.amountUsd < 0 ||
+        (key === 'usage.subscriptionFees' && typeof entry.period !== 'string') ||
+        (entry.period !== undefined &&
+          (typeof entry.period !== 'string' ||
+            new TextEncoder().encode(entry.period).length > 120))
+      )
+        throw new Error(
+          'Fees require a label, a finite nonnegative USD amount and a bounded period label.',
+        );
+    }
+  }
 }
 
 export function subscriptionTotal(

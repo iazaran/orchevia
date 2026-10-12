@@ -141,6 +141,55 @@ it('imports legacy JSON without changing its definition', () => {
   expect(decodeDocument(JSON.stringify(wf), [], {})).toEqual(wf);
 });
 
+it('normalizes optional null usage fields like native serde on both import formats', () => {
+  const wf = createEmptyWorkflow('Nullable limits');
+  const encoded = encodeDocument(wf, []);
+  for (const base of [JSON.parse(encoded.json) as object, wf]) {
+    const decoded = decodeDocument(
+      JSON.stringify({
+        ...base,
+        limits: {
+          maxAgentAttempts: null,
+          maxToolCalls: null,
+          maxSubagents: null,
+          spendLimitUsd: null,
+        },
+        nodes: (base as typeof wf).nodes.map((node) => ({
+          ...node,
+          config: { ...node.config, maxToolCalls: null, maxSubagents: null },
+        })),
+      }),
+      [],
+      {},
+    );
+    expect(decoded.limits).toEqual({});
+    expect(decoded.nodes.every((node) => node.config.maxToolCalls === undefined)).toBe(
+      true,
+    );
+    expect(decoded.nodes.every((node) => node.config.maxSubagents === undefined)).toBe(
+      true,
+    );
+  }
+});
+
+it('rejects malformed node usage allowance types before importing either format', () => {
+  const wf = createEmptyWorkflow('Typed limits');
+  const encoded = encodeDocument(wf, []);
+  for (const base of [JSON.parse(encoded.json) as typeof wf, wf]) {
+    for (const field of ['maxToolCalls', 'maxSubagents']) {
+      for (const value of ['2', true, [], -1, 1.5, 4294967296]) {
+        const nodes = base.nodes.map((node) => ({
+          ...node,
+          config: { ...node.config, [field]: value },
+        }));
+        expect(() => decodeDocument(JSON.stringify({ ...base, nodes }), [], {})).toThrow(
+          `Invalid ${field}`,
+        );
+      }
+    }
+  }
+});
+
 it('rejects malformed typed config, operations, inputs, defaults and graph labels', () => {
   const base = {
     version: 1,

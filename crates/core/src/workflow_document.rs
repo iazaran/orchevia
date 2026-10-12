@@ -695,6 +695,65 @@ mod tests {
     }
 
     #[test]
+    fn usage_allowance_imports_preserve_optional_null_and_unsigned_shapes() {
+        let document = json!({
+            "version": 1, "name": "Nullable limits",
+            "limits": {"maxAgentAttempts": null, "maxToolCalls": null,
+                "maxSubagents": null, "spendLimitUsd": null},
+            "nodes": [{"key": "start", "type": "start",
+                "config": {"maxToolCalls": null, "maxSubagents": null}}],
+            "edges": []
+        });
+        let workflow = import_document(
+            &document.to_string(),
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            "wf",
+        )
+        .unwrap();
+        assert_eq!(workflow.limits, Some(Default::default()));
+        assert_eq!(workflow.nodes[0].config.max_tool_calls, None);
+        assert_eq!(workflow.nodes[0].config.max_subagents, None);
+        let raw = serde_json::to_value(&workflow).unwrap();
+        let imported = import_document(
+            &raw.to_string(),
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            "wf",
+        )
+        .unwrap();
+        assert_eq!(imported, workflow);
+        for base in [document, raw] {
+            for field in ["maxToolCalls", "maxSubagents"] {
+                for value in [
+                    json!("2"),
+                    json!(true),
+                    json!([]),
+                    json!(-1),
+                    json!(1.5),
+                    json!(4294967296u64),
+                ] {
+                    let mut malformed = base.clone();
+                    malformed["nodes"][0]["config"][field] = value;
+                    assert!(import_document(
+                        &malformed.to_string(),
+                        None,
+                        &HashMap::new(),
+                        &[],
+                        &HashMap::new(),
+                        "wf",
+                    )
+                    .is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn developer_github_kind_matches_typescript() {
         let mut wf = crate::workflow::sample_workflow();
         wf.nodes[1].kind = NodeKind::GitHub;
