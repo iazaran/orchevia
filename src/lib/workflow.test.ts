@@ -522,3 +522,35 @@ it('requires namespaced session variables and keeps escaped placeholders literal
     validateWorkflowLocal(wf).some((i) => i.code === 'agent-session-variable-invalid'),
   ).toBe(false);
 });
+
+it('validates workflow limits and node allowances with mirrored codes', () => {
+  const wf = createEmptyWorkflow('Limits mirror');
+  expect(validateWorkflowLocal(wf)).toHaveLength(0);
+  wf.limits = { maxAgentAttempts: 0 };
+  expect(
+    validateWorkflowLocal(wf).some((i) => i.code === 'workflow-limits-invalid'),
+  ).toBe(true);
+  wf.limits = { maxAgentAttempts: 10_001 };
+  expect(
+    validateWorkflowLocal(wf).some((i) => i.code === 'workflow-limits-invalid'),
+  ).toBe(true);
+  wf.limits = { maxAgentAttempts: 5, spendLimitUsd: 2.5 };
+  expect(validateWorkflowLocal(wf)).toHaveLength(0);
+  // Allowances belong on agent nodes only.
+  const command = wf.nodes.find((n) => n.type === 'start');
+  if (!command) throw new Error('fixture');
+  command.config.maxToolCalls = 10;
+  expect(
+    validateWorkflowLocal(wf).some((i) => i.code === 'agent-allowance-misplaced'),
+  ).toBe(true);
+  delete command.config.maxToolCalls;
+  wf.nodes.push({
+    id: 'agent-x',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: 'p', prompt: 'Work', maxToolCalls: 0, maxSubagents: 1001 },
+  });
+  const codes = validateWorkflowLocal(wf).map((i) => i.code);
+  expect(codes).toContain('agent-tool-allowance-invalid');
+  expect(codes).toContain('agent-subagent-allowance-invalid');
+});

@@ -36,7 +36,8 @@ export type View =
   | 'agents'
   | 'automations'
   | 'templates'
-  | 'memory';
+  | 'memory'
+  | 'usage';
 
 export interface WorkflowSaveState {
   status: 'saving' | 'saved' | 'error';

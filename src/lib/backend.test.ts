@@ -739,3 +739,80 @@ it('runs the built-in ticket implementation with simulated ticket aliases', asyn
   expect(result.stdout).toContain('Implement DEV-1:');
   expect(result.stdout).toContain('Mock ticket DEV-1');
 });
+
+it('enforces the mock attempt budget and continues only with an explicit extension', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = createDefaultProfile('claude');
+  await backend.saveAgentProfile(profile);
+  const workflow = createEmptyWorkflow('Mock budget');
+  const agent = (id: string): (typeof workflow.nodes)[number] => ({
+    id,
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: profile.id, prompt: 'Work' },
+  });
+  workflow.nodes.splice(1, 0, agent('a1'), agent('a2'));
+  workflow.edges = [
+    { id: 'e0', source: workflow.nodes[0]!.id, target: 'a1' },
+    { id: 'e1', source: 'a1', target: 'a2' },
+    { id: 'e2', source: 'a2', target: workflow.nodes.at(-1)!.id },
+  ];
+  const stored = await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow(stored.id, {}, { maxAgentAttempts: 1 });
+  await vi.waitFor(
+    async () => {
+      const run = await backend.getRun(runId);
+      expect(run?.status).toBe('paused');
+    },
+    { timeout: 8000 },
+  );
+  const paused = await backend.getRun(runId);
+  expect(paused?.execution?.usagePause?.consumedAttempts).toBe(1);
+  expect(paused?.execution?.resolvedLimits?.maxAgentAttempts).toBe(1);
+  // Ordinary approval cannot clear a usage pause.
+  await expect(backend.approveRun(runId, true)).rejects.toThrow('not paused');
+  // Stale pause ids and non-extending budgets are rejected.
+  await expect(backend.continueUsageRun(runId, 9999, 2)).rejects.toThrow('not paused');
+  await expect(
+    backend.continueUsageRun(runId, paused?.execution?.usagePause?.id ?? 0, 1),
+  ).rejects.toThrow('exceeding');
+  await backend.continueUsageRun(runId, paused?.execution?.usagePause?.id ?? 0, 2);
+  await vi.waitFor(
+    async () => {
+      const run = await backend.getRun(runId);
+      expect(run?.status).toBe('succeeded');
+    },
+    { timeout: 8000 },
+  );
+  const done = await backend.getRun(runId);
+  expect(done?.execution?.consumedAgentAttempts).toBe(2);
+});
+
+it('aggregates usage over more than fifty runs with date boundaries', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Bulk history');
+  const stored = await backend.saveWorkflow(workflow);
+  // Runs start synchronously; background simulation finishes on its own.
+  // Analytics must scan all of them, not a capped recent list.
+  for (let n = 0; n < 55; n++) await backend.runWorkflow(stored.id, {});
+  await vi.waitFor(
+    async () => {
+      const summary = await backend.usageSummary();
+      expect(summary.runsScanned).toBe(55);
+      expect(summary.totals.runs).toBe(55);
+    },
+    { timeout: 15000 },
+  );
+  const summary = await backend.usageSummary();
+  // Command-only history: no agent attempts, no fabricated USD.
+  expect(summary.totals.agentAttempts).toBe(0);
+  expect(summary.totals.reportedUsd).toBe(0);
+  expect(summary.byWorkflow).toHaveLength(1);
+  const future = await backend.usageSummary({ from: '2999-01-01T00:00:00.000Z' });
+  expect(future.totals.runs).toBe(0);
+  await expect(backend.usageSummary({ from: 'not-a-date' })).rejects.toThrow(
+    "Invalid 'from' date",
+  );
+}, 20000);

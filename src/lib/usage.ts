@@ -111,6 +111,150 @@ export function extractUsageHints(stdout: string, stderr: string): string[] {
   return hints;
 }
 
+export interface UsageFilter {
+  from?: string;
+  to?: string;
+  workflowIds?: string[];
+  adapters?: string[];
+  models?: string[];
+  timezone?: string;
+}
+
+export interface UsageDay {
+  day: string;
+  runs: number;
+  agentAttempts: number;
+  reportedUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface UsageWorkflowRow {
+  workflowId: string;
+  /** Workflow name recorded when the run started, not the current label. */
+  workflowName: string;
+  runs: number;
+  agentAttempts: number;
+  reportedUsd: number;
+  unknownUsdAttempts: number;
+}
+
+export interface UsageModelRow {
+  /** Adapter + model recorded at execution time; legacy rows are unknown. */
+  adapter: string;
+  model: string;
+  agentAttempts: number;
+  inputTokens: number;
+  outputTokens: number;
+  reportedUsd: number;
+  observedToolCalls: number;
+  observedSubagents: number;
+}
+
+export interface UsageTotals {
+  runs: number;
+  agentAttempts: number;
+  failedAttempts: number;
+  retriedAttempts: number;
+  reusedResults: number;
+  simulatedResults: number;
+  inputTokens: number;
+  outputTokens: number;
+  reportedUsd: number;
+  reportedUsdAttempts: number;
+  unknownUsdAttempts: number;
+  observedToolCalls: number;
+  observedSubagents: number;
+  unknownModelAttempts: number;
+}
+
+export interface UsageSummary {
+  totals: UsageTotals;
+  days: UsageDay[];
+  byWorkflow: UsageWorkflowRow[];
+  byModel: UsageModelRow[];
+  from?: string;
+  to?: string;
+  timezone: string;
+  runsScanned: number;
+  /** Recent per-attempt CLI-reported USD samples (newest first, capped). */
+  recentAttemptUsd: number[];
+}
+
+export function emptyUsageSummary(): UsageSummary {
+  return {
+    totals: {
+      runs: 0,
+      agentAttempts: 0,
+      failedAttempts: 0,
+      retriedAttempts: 0,
+      reusedResults: 0,
+      simulatedResults: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      reportedUsd: 0,
+      reportedUsdAttempts: 0,
+      unknownUsdAttempts: 0,
+      observedToolCalls: 0,
+      observedSubagents: 0,
+      unknownModelAttempts: 0,
+    },
+    days: [],
+    byWorkflow: [],
+    byModel: [],
+    timezone: 'UTC',
+    runsScanned: 0,
+    recentAttemptUsd: [],
+  };
+}
+
+/**
+ * User-entered subscription fees for a billing period, plus explicit extra
+ * charges. Illustrative settings only — never defaults or verified prices,
+ * and never mixed into API-equivalent estimates.
+ */
+export interface SubscriptionFee {
+  label: string;
+  amountUsd: number;
+  period: string;
+}
+
+export interface ExtraCharge {
+  label: string;
+  amountUsd: number;
+}
+
+export function subscriptionTotal(
+  fees: SubscriptionFee[],
+  extras: ExtraCharge[],
+): number {
+  return [...fees.map((f) => f.amountUsd), ...extras.map((e) => e.amountUsd)]
+    .filter((n) => Number.isFinite(n) && n >= 0)
+    .reduce((sum, n) => sum + n, 0);
+}
+
+/** Guarded parse for the subscription settings documents. */
+export function parseMoneyList<T extends { amountUsd: number }>(
+  raw: string | null,
+  pick: (entry: Record<string, unknown>) => T | null,
+): T[] {
+  if (raw === null || raw.trim() === '') return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: T[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+      const item = pick(entry as Record<string, unknown>);
+      if (item !== null && Number.isFinite(item.amountUsd) && item.amountUsd >= 0)
+        out.push(item);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export function formatDurationMs(ms: number): string {
   if (ms <= 0) return '—';
   if (ms < 1000) return `${String(ms)}ms`;

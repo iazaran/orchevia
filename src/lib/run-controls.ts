@@ -1,4 +1,11 @@
 import type { NodeKind, StoredNodeResult, StoredRun, Workflow } from './workflow';
+import {
+  MAX_ATTEMPTS_LIMIT,
+  MAX_SUBAGENT_LIMIT,
+  MAX_TOOL_CALL_LIMIT,
+  validateLimitValue,
+  type WorkflowLimits,
+} from './workflow';
 
 export interface FixtureResult {
   status: string;
@@ -11,17 +18,41 @@ export interface RunOptions {
   dryRun?: boolean;
   fixtures?: Record<string, FixtureResult[]>;
   spendLimitUsd?: number | null;
+  /** Per-run override for the saved Agent-attempt budget (None inherits). */
+  maxAgentAttempts?: number | null;
+  /** Per-run override for the advisory tool-call allowance. */
+  maxToolCalls?: number | null;
+  /** Per-run override for the advisory nested-subagent allowance. */
+  maxSubagents?: number | null;
+  /** Explicitly ignore saved workflow limits for this run. */
+  ignoreSavedLimits?: boolean;
 }
 export type RecoveryChoice = 'reuse' | 'replay' | 'skip';
 export interface SpendPause {
   id: number;
   reportedUsd: number;
 }
+/** Durable pause when the enforced Agent-attempt budget is exhausted. */
+export interface UsagePause {
+  id: number;
+  consumedAttempts: number;
+  limitAttempts: number;
+}
+/** Effective per-run limits snapshotted at start (saved + overrides). */
+export interface ResolvedLimits {
+  maxAgentAttempts?: number;
+  maxToolCalls?: number;
+  maxSubagents?: number;
+  spendLimitUsd?: number;
+}
 export interface RunExecution {
   options: RunOptions;
   recoveredFrom?: string;
   recoveryChoices?: Record<string, RecoveryChoice>;
   spendPause?: SpendPause;
+  resolvedLimits?: ResolvedLimits;
+  consumedAgentAttempts?: number;
+  usagePause?: UsagePause;
 }
 export interface RecoveryNode {
   nodeId: string;
@@ -52,6 +83,26 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
     (!Number.isFinite(options.spendLimitUsd) || options.spendLimitUsd <= 0)
   )
     throw new Error('Spend limit must be a positive finite USD amount.');
+  for (const [key, value, max, label] of [
+    [
+      'maxAgentAttempts',
+      options.maxAgentAttempts,
+      MAX_ATTEMPTS_LIMIT,
+      'Agent attempt limit',
+    ],
+    ['maxToolCalls', options.maxToolCalls, MAX_TOOL_CALL_LIMIT, 'Tool-call allowance'],
+    ['maxSubagents', options.maxSubagents, MAX_SUBAGENT_LIMIT, 'Subagent allowance'],
+  ] as const) {
+    if (value === undefined || value === null) continue;
+    const error = validateLimitValue(label, value, max);
+    if (error !== null) throw new Error(error);
+    void key;
+  }
+  if (
+    options.ignoreSavedLimits !== undefined &&
+    typeof options.ignoreSavedLimits !== 'boolean'
+  )
+    throw new Error('ignoreSavedLimits must be a boolean.');
   if (!options.dryRun && Object.keys(options.fixtures ?? {}).length)
     throw new Error('Fixtures require Dry run.');
   if (
@@ -62,7 +113,16 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
     throw new Error('Dry-run fixtures do not measure actual spend.');
   if (
     Object.keys(options).some(
-      (key) => !['dryRun', 'fixtures', 'spendLimitUsd'].includes(key),
+      (key) =>
+        ![
+          'dryRun',
+          'fixtures',
+          'spendLimitUsd',
+          'maxAgentAttempts',
+          'maxToolCalls',
+          'maxSubagents',
+          'ignoreSavedLimits',
+        ].includes(key),
     )
   )
     throw new Error('Unknown run option.');
@@ -133,6 +193,115 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merge saved workflow limits with per-run overrides (mirrors Rust
+ * `resolve_limits`). `ignoreSavedLimits` clears every saved value while
+ * explicit overrides still apply on top.
+ */
+export function resolveLimits(
+  saved: WorkflowLimits | undefined,
+  options: RunOptions,
+): ResolvedLimits {
+  const base = options.ignoreSavedLimits === true ? undefined : saved;
+  const resolved: ResolvedLimits = {};
+  const attempts = options.maxAgentAttempts ?? base?.maxAgentAttempts;
+  if (attempts !== undefined) resolved.maxAgentAttempts = attempts;
+  const tools = options.maxToolCalls ?? base?.maxToolCalls;
+  if (tools !== undefined) resolved.maxToolCalls = tools;
+  const subagents = options.maxSubagents ?? base?.maxSubagents;
+  if (subagents !== undefined) resolved.maxSubagents = subagents;
+  const spend = options.spendLimitUsd ?? base?.spendLimitUsd;
+  if (spend !== undefined) resolved.spendLimitUsd = spend;
+  return resolved;
+}
+
+export function remainingAttempts(
+  limits: ResolvedLimits | undefined,
+  consumed: number,
+): number | undefined {
+  if (limits?.maxAgentAttempts === undefined) return undefined;
+  return Math.max(0, limits.maxAgentAttempts - consumed);
+}
+
+/** Agent attempts actually dispatched: new executions of Agent nodes only. */
+export function countAgentAttempts(workflow: Workflow, rows: StoredNodeResult[]): number {
+  const agentIds = new Set(
+    workflow.nodes.filter((n) => n.type === 'agent').map((n) => n.id),
+  );
+  return rows.filter((row) => agentIds.has(row.nodeId) && isNewExecution(row)).length;
+}
+
+function isNewExecution(row: StoredNodeResult): boolean {
+  const data = resultMetadata(row);
+  return data.reusedFrom === undefined && data.simulated !== true;
+}
+
+export type Capability = 'enforced' | 'observed' | 'advisory' | 'unsupported';
+
+export interface AdapterCapabilities {
+  adapter: string;
+  agentAttempts: Capability;
+  agentTurns: Capability;
+  toolCalls: Capability;
+  subagents: Capability;
+  spendEstimate: Capability;
+  note: string;
+}
+
+/**
+ * Honest per-adapter control coverage (mirrors Rust `adapter_capabilities`).
+ * Only the run attempt budget is Orchevia-enforced; everything inside a
+ * CLI's tool loop is advisory guidance plus observed stream counts.
+ */
+export function adapterCapabilities(adapter: string): AdapterCapabilities {
+  if (adapter === 'codex')
+    return {
+      adapter,
+      agentAttempts: 'enforced',
+      agentTurns: 'advisory',
+      toolCalls: 'observed',
+      subagents: 'advisory',
+      spendEstimate: 'unsupported',
+      note: 'Attempts enforced per run by Orchevia. No verified Codex turn/spend flags: turns and subagents are advisory guidance; tool-completion events are observed where the CLI reports them. Codex runs report no USD.',
+    };
+  if (adapter === 'custom')
+    return {
+      adapter,
+      agentAttempts: 'enforced',
+      agentTurns: 'unsupported',
+      toolCalls: 'unsupported',
+      subagents: 'unsupported',
+      spendEstimate: 'unsupported',
+      note: 'Custom/text adapters report no usage: only the Orchevia attempt gate applies; turns, tools, subagents and spend are uncovered.',
+    };
+  return {
+    adapter: 'claude',
+    agentAttempts: 'enforced',
+    agentTurns: 'advisory',
+    toolCalls: 'advisory',
+    subagents: 'advisory',
+    spendEstimate: 'enforced',
+    note: 'Attempts enforced per run by Orchevia. Turns/tools/subagents are advisory guidance plus observed stream counts: Claude --max-turns counts agentic turns, not tools, and --max-budget-usd is a client-side estimate that can overshoot; Orchevia passes neither flag itself.',
+  };
+}
+
+/**
+ * Suggest an API-equivalent target range from comparable measured history.
+ * `undefined` means Insufficient history — never a fabricated rate.
+ */
+export function estimateRangeUsd(
+  samplesUsd: number[],
+  minSamples: number,
+): { low: number; high: number; samples: number } | undefined {
+  const valid = samplesUsd
+    .filter((n) => Number.isFinite(n) && n >= 0)
+    .sort((a, b) => a - b);
+  if (valid.length < minSamples) return undefined;
+  const low = valid[Math.floor(valid.length / 4)] ?? 0;
+  const high = valid[Math.floor((valid.length * 3) / 4)] ?? low;
+  return { low, high: Math.max(high, low), samples: valid.length };
 }
 export function resultMetadata(row: StoredNodeResult): Record<string, unknown> {
   try {

@@ -6,6 +6,10 @@ import {
   resultMetadata,
   replayGraph,
   reportedSpend,
+  resolveLimits,
+  countAgentAttempts,
+  adapterCapabilities,
+  type AdapterCapabilities,
   type RunOptions,
   type RecoveryChoice,
   type RecoveryPlan,
@@ -86,6 +90,8 @@ import type {
   Workflow,
 } from './workflow';
 import { createSampleWorkflow, validateWorkflowLocal } from './workflow';
+import type { UsageFilter, UsageSummary } from './usage';
+import { emptyUsageSummary } from './usage';
 
 export interface Backend {
   encodeWorkflowDocument(workflow: Workflow): Promise<DocumentSession>;
@@ -113,6 +119,13 @@ export interface Backend {
     requestId: string,
   ): Promise<{ runId: string }>;
   continueSpendRun(runId: string, expectedPauseId: number, limit?: number): Promise<void>;
+  continueUsageRun(
+    runId: string,
+    expectedPauseId: number,
+    extension?: number,
+  ): Promise<void>;
+  usageSummary(filter?: UsageFilter): Promise<UsageSummary>;
+  adapterCapabilities(): Promise<AdapterCapabilities[]>;
   cancelRun(runId: string): Promise<boolean>;
   approveRun(
     runId: string,
@@ -290,6 +303,23 @@ class TauriBackend implements Backend {
       expectedPauseId,
       limit: limit ?? null,
     });
+  }
+  continueUsageRun(
+    runId: string,
+    expectedPauseId: number,
+    extension?: number,
+  ): Promise<void> {
+    return this.invoke('continue_usage_run', {
+      runId,
+      expectedPauseId,
+      extension: extension ?? null,
+    });
+  }
+  usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
+    return this.invoke('usage_summary', { filter: filter ?? null });
+  }
+  adapterCapabilities(): Promise<AdapterCapabilities[]> {
+    return this.invoke('adapter_capabilities');
   }
   cancelRun(runId: string): Promise<boolean> {
     return this.invoke('cancel_run', { runId });
@@ -790,7 +820,13 @@ class MockBackend implements Backend {
     const run: StoredRun = {
       id: runId,
       workflowId,
-      execution: { options: structuredClone(runOptions) },
+      execution: {
+        options: structuredClone(runOptions),
+        // Core start path mirrors native resolution: saved workflow limits
+        // merged with per-run overrides, snapshotted into the run.
+        resolvedLimits: resolveLimits(wf.definition.limits, runOptions),
+        consumedAgentAttempts: 0,
+      },
       status: 'running',
       startedAt: new Date().toISOString(),
       inputs: { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) },
@@ -867,6 +903,30 @@ class MockBackend implements Backend {
         run.status = 'paused';
         this.persist();
         return;
+      }
+      // Enforced Agent-attempt budget (mock mirrors native dispatch gating).
+      // Simulated dry runs never consume the budget.
+      const usageMax = execution?.resolvedLimits?.maxAgentAttempts;
+      if (
+        usageMax !== undefined &&
+        execution?.options.dryRun !== true &&
+        node.type === 'agent' &&
+        choice !== 'reuse' &&
+        choice !== 'skip'
+      ) {
+        const consumed = countAgentAttempts(workflow, this.results.get(runId) ?? []);
+        if (execution) execution.consumedAgentAttempts = consumed;
+        if (consumed >= usageMax && execution) {
+          const pause = this.pushResult(runId, '__usage_guard', 'guardPaused', '');
+          execution.usagePause = {
+            id: pause.id,
+            consumedAttempts: consumed,
+            limitAttempts: usageMax,
+          };
+          run.status = 'paused';
+          this.persist();
+          return;
+        }
       }
       if (isEffectful(node.type) && choice === 'skip') {
         this.pushResult(runId, nodeId, 'skipped', '');
@@ -1165,6 +1225,16 @@ class MockBackend implements Backend {
     if (run !== undefined && run.status === 'running') {
       run.status = 'succeeded';
       run.finishedAt = new Date().toISOString();
+      // Persist consumption with the terminal state (approvals and restarts
+      // never reset the budget; recovery starts a new one).
+      if (run.execution) {
+        const snapshot = this.runWorkflows.get(runId);
+        if (snapshot)
+          run.execution.consumedAgentAttempts = countAgentAttempts(
+            snapshot,
+            this.results.get(runId) ?? [],
+          );
+      }
     }
   }
 
@@ -1279,6 +1349,10 @@ class MockBackend implements Backend {
       options: structuredClone(source.execution?.options ?? {}),
       recoveredFrom: runId,
       recoveryChoices: { ...choices },
+      // Recovery is new execution under the same effective limits; reused
+      // results are never re-charged.
+      resolvedLimits: structuredClone(source.execution?.resolvedLimits ?? {}),
+      consumedAgentAttempts: 0,
     };
     this.runs.unshift({
       id: childId,
@@ -1336,6 +1410,247 @@ class MockBackend implements Backend {
     void this.simulate(workflow, runId);
   }
 
+  async continueUsageRun(
+    runId: string,
+    expectedPauseId: number,
+    extension?: number,
+  ): Promise<void> {
+    const run = this.runs.find((r) => r.id === runId);
+    const execution = run?.execution;
+    const pause = execution?.usagePause;
+    if (run?.status !== 'paused' || !pause || pause.id !== expectedPauseId)
+      throw new Error('Run is not paused at this usage guard.');
+    if (
+      extension !== undefined &&
+      (!Number.isInteger(extension) || extension <= pause.consumedAttempts)
+    )
+      throw new Error(
+        'New attempt budget must be a whole number exceeding the attempts already consumed.',
+      );
+    const workflow = this.runWorkflows.get(runId);
+    if (!workflow) throw new Error('Run snapshot is unavailable.');
+    if (!execution.resolvedLimits) execution.resolvedLimits = {};
+    if (extension === undefined) {
+      delete execution.resolvedLimits.maxAgentAttempts;
+      delete execution.options.maxAgentAttempts;
+    } else {
+      execution.resolvedLimits.maxAgentAttempts = extension;
+      execution.options.maxAgentAttempts = extension;
+    }
+    delete execution.usagePause;
+    run.status = 'running';
+    delete run.finishedAt;
+    this.pushResult(runId, '__usage_guard', 'guardContinued', '');
+    this.persist();
+    void this.simulate(workflow, runId);
+  }
+
+  async usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
+    const summary = emptyUsageSummary();
+    const applied = filter ?? {};
+    if (applied.from !== undefined && Number.isNaN(Date.parse(applied.from)))
+      throw new Error("Invalid 'from' date; use RFC 3339.");
+    if (applied.to !== undefined && Number.isNaN(Date.parse(applied.to)))
+      throw new Error("Invalid 'to' date; use RFC 3339.");
+    if (applied.from !== undefined) summary.from = applied.from;
+    if (applied.to !== undefined) summary.to = applied.to;
+    summary.timezone = applied.timezone ?? 'UTC';
+    const days = new Map<string, (typeof summary.days)[number]>();
+    const workflows = new Map<string, (typeof summary.byWorkflow)[number]>();
+    const models = new Map<string, (typeof summary.byModel)[number]>();
+    let scanned = 0;
+    for (const run of this.runs) {
+      if (
+        (applied.workflowIds?.length ?? 0) > 0 &&
+        !applied.workflowIds?.includes(run.workflowId)
+      )
+        continue;
+      if (applied.from !== undefined && run.startedAt < applied.from) continue;
+      if (applied.to !== undefined && run.startedAt >= applied.to) continue;
+      const snapshot = this.runWorkflows.get(run.id);
+      const workflowName =
+        snapshot?.name ?? this.workflows.get(run.workflowId)?.name ?? run.workflowId;
+      const agentIds = new Set(
+        (snapshot?.nodes ?? this.workflows.get(run.workflowId)?.definition.nodes ?? [])
+          .filter((n) => n.type === 'agent')
+          .map((n) => n.id),
+      );
+      const rows = this.results.get(run.id) ?? [];
+      const seenTerminal = new Set<string>();
+      let runAttempts = 0;
+      let runUsd = 0;
+      let runUnknown = 0;
+      let runIn = 0;
+      let runOut = 0;
+      for (const row of rows) {
+        const meta = resultMetadata(row);
+        const simulated = meta.simulated === true;
+        const reused = meta.reusedFrom !== undefined;
+        if (simulated) {
+          summary.totals.simulatedResults += 1;
+          continue;
+        }
+        if (reused) {
+          summary.totals.reusedResults += 1;
+          continue;
+        }
+        const isAgent =
+          agentIds.size > 0
+            ? agentIds.has(row.nodeId)
+            : meta.agentUsage !== undefined || meta.agentSession !== undefined;
+        if (!isAgent) continue;
+        if (['succeeded', 'failed', 'cancelled', 'retrying'].includes(row.status)) {
+          const key = `${row.nodeId}:${String(row.attempt ?? 1)}:${row.status}`;
+          if (seenTerminal.has(key)) continue;
+          seenTerminal.add(key);
+        }
+        const usage: Record<string, unknown> | null =
+          typeof meta.agentUsage === 'object' && meta.agentUsage !== null
+            ? (meta.agentUsage as Record<string, unknown>)
+            : null;
+        const adapterValue = usage?.adapter;
+        const adapter =
+          typeof adapterValue === 'string' && adapterValue !== ''
+            ? adapterValue
+            : 'unknown';
+        const modelValue = usage?.model;
+        const model =
+          typeof modelValue === 'string' && modelValue.trim() !== ''
+            ? modelValue
+            : 'unknown';
+        if ((applied.adapters?.length ?? 0) > 0 && !applied.adapters?.includes(adapter))
+          continue;
+        if ((applied.models?.length ?? 0) > 0 && !applied.models?.includes(model))
+          continue;
+        runAttempts += 1;
+        const num = (value: unknown): number =>
+          typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+        runIn +=
+          num(usage?.input_tokens) +
+          num(usage?.cached_input_tokens) +
+          num(usage?.cache_read_input_tokens);
+        runOut += num(usage?.output_tokens);
+        const costValue = usage?.reported_cost_usd;
+        const cost =
+          typeof costValue === 'number' && Number.isFinite(costValue) && costValue >= 0
+            ? costValue
+            : null;
+        if (cost === null) {
+          summary.totals.unknownUsdAttempts += 1;
+          runUnknown += 1;
+        } else {
+          summary.totals.reportedUsd += cost;
+          summary.totals.reportedUsdAttempts += 1;
+          runUsd += cost;
+          if (summary.recentAttemptUsd.length < 500) summary.recentAttemptUsd.push(cost);
+        }
+        const tools = num(usage?.observed_tool_calls);
+        const subs = num(usage?.observed_subagents);
+        summary.totals.observedToolCalls += tools;
+        summary.totals.observedSubagents += subs;
+        if (adapter === 'unknown') summary.totals.unknownModelAttempts += 1;
+        if (row.status === 'failed') summary.totals.failedAttempts += 1;
+        if (row.status === 'retrying') summary.totals.retriedAttempts += 1;
+        const modelKey = `${adapter}::${model}`;
+        const entry =
+          models.get(modelKey) ??
+          models
+            .set(modelKey, {
+              adapter,
+              model,
+              agentAttempts: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              reportedUsd: 0,
+              observedToolCalls: 0,
+              observedSubagents: 0,
+            })
+            .get(modelKey);
+        if (entry) {
+          entry.agentAttempts += 1;
+          entry.inputTokens +=
+            num(usage?.input_tokens) +
+            num(usage?.cached_input_tokens) +
+            num(usage?.cache_read_input_tokens);
+          entry.outputTokens += num(usage?.output_tokens);
+          if (cost !== null) entry.reportedUsd += cost;
+          entry.observedToolCalls += tools;
+          entry.observedSubagents += subs;
+        }
+      }
+      scanned += 1;
+      if (run.execution?.options.dryRun === true) continue;
+      summary.totals.runs += 1;
+      summary.totals.agentAttempts += runAttempts;
+      summary.totals.inputTokens += runIn;
+      summary.totals.outputTokens += runOut;
+      const day = run.startedAt.slice(0, 10);
+      const dayEntry =
+        days.get(day) ??
+        days
+          .set(day, {
+            day,
+            runs: 0,
+            agentAttempts: 0,
+            reportedUsd: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+          })
+          .get(day);
+      if (dayEntry) {
+        dayEntry.runs += 1;
+        dayEntry.agentAttempts += runAttempts;
+        dayEntry.reportedUsd += runUsd;
+        dayEntry.inputTokens += runIn;
+        dayEntry.outputTokens += runOut;
+      }
+      const wfEntry =
+        workflows.get(run.workflowId) ??
+        workflows
+          .set(run.workflowId, {
+            workflowId: run.workflowId,
+            workflowName,
+            runs: 0,
+            agentAttempts: 0,
+            reportedUsd: 0,
+            unknownUsdAttempts: 0,
+          })
+          .get(run.workflowId);
+      if (wfEntry) {
+        wfEntry.runs += 1;
+        wfEntry.agentAttempts += runAttempts;
+        wfEntry.reportedUsd += runUsd;
+        wfEntry.unknownUsdAttempts += runUnknown;
+      }
+    }
+    summary.days = [...days.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
+    summary.byWorkflow = [...workflows.values()].sort(
+      (a, b) =>
+        b.agentAttempts - a.agentAttempts || (a.workflowName < b.workflowName ? -1 : 1),
+    );
+    summary.byModel = [...models.values()].sort(
+      (a, b) =>
+        b.agentAttempts - a.agentAttempts ||
+        (a.adapter < b.adapter
+          ? -1
+          : a.adapter > b.adapter
+            ? 1
+            : a.model < b.model
+              ? -1
+              : 1),
+    );
+    summary.runsScanned = scanned;
+    return summary;
+  }
+
+  async adapterCapabilities(): Promise<AdapterCapabilities[]> {
+    return [
+      adapterCapabilities('claude'),
+      adapterCapabilities('codex'),
+      adapterCapabilities('custom'),
+    ];
+  }
+
   async cancelRun(runId: string): Promise<boolean> {
     const timer = this.timers.get(runId);
     if (timer !== undefined) clearTimeout(timer);
@@ -1364,7 +1679,8 @@ class MockBackend implements Backend {
     if (
       run === undefined ||
       run.status !== 'paused' ||
-      run.execution?.spendPause !== undefined
+      run.execution?.spendPause !== undefined ||
+      run.execution?.usagePause !== undefined
     ) {
       throw new Error(`Run '${runId}' is not paused.`);
     }
@@ -1741,6 +2057,10 @@ class MockBackend implements Backend {
         'ui.theme',
         'onboarding.completed',
         'workflow.assistanceProfileId',
+        'usage.subscriptionFees',
+        'usage.extraCharges',
+        'usage.allocationShare',
+        'usage.allocationMethod',
       ].includes(key)
     )
       throw new Error(`Setting '${key}' is not user-configurable.`);
@@ -1754,7 +2074,8 @@ class MockBackend implements Backend {
       if (secs < 30 || secs > 3600)
         throw new Error('Scheduler interval must be 30–3600 s.');
     }
-    if (new TextEncoder().encode(value).length > 200)
+    const maxLen = key.startsWith('usage.') ? 8000 : 200;
+    if (new TextEncoder().encode(value).length > maxLen)
       throw new Error('Setting value too long.');
     this.settings.set(key, value);
     this.persist();

@@ -27,6 +27,7 @@ export interface DeveloperWorkflow {
   edges: { from: string; to: string; label?: string }[];
   inputs?: Workflow['inputs'];
   defaults?: Workflow['defaults'];
+  limits?: Workflow['limits'];
 }
 const configKeys = [
   'executable',
@@ -38,6 +39,8 @@ const configKeys = [
   'sessionMaxTurns',
   'contextRefs',
   'contextMaxChars',
+  'maxToolCalls',
+  'maxSubagents',
   'inputRefs',
   'timeoutSecs',
   'extendOnOutput',
@@ -223,6 +226,27 @@ function workflowFieldsShape(value: Record<string, unknown>): void {
     stringField(defaults, 'repoDir');
     stringField(defaults, 'branch');
   }
+  if (value.limits === null) delete value.limits;
+  if (value.limits !== undefined) {
+    const limits = objectShape(value.limits, 'limits');
+    for (const key of Object.keys(limits))
+      if (
+        !['maxAgentAttempts', 'maxToolCalls', 'maxSubagents', 'spendLimitUsd'].includes(
+          key,
+        )
+      )
+        throw new Error(`Unknown limits field '${key}'.`);
+    for (const key of ['maxAgentAttempts', 'maxToolCalls', 'maxSubagents'] as const) {
+      const n: unknown = limits[key];
+      if (n !== undefined && (!Number.isInteger(n) || (n as number) < 1))
+        throw new Error(`Invalid limits: '${key}' must be a whole number of at least 1.`);
+    }
+    const spend: unknown = limits.spendLimitUsd;
+    if (spend !== undefined && (!Number.isFinite(spend) || (spend as number) <= 0))
+      throw new Error(
+        "Invalid limits: 'spendLimitUsd' must be a positive finite USD amount.",
+      );
+  }
   if (value.inputs !== undefined) {
     if (!Array.isArray(value.inputs))
       throw new Error('Invalid inputs: expected an array.');
@@ -361,6 +385,7 @@ export function encodeDocument(
     }),
     ...(workflow.inputs === undefined ? {} : { inputs: workflow.inputs }),
     ...(workflow.defaults === undefined ? {} : { defaults: workflow.defaults }),
+    ...(workflow.limits === undefined ? {} : { limits: workflow.limits }),
   };
   return {
     json: JSON.stringify(doc, null, 2),
@@ -437,7 +462,9 @@ export function decodeDocument(
       'Invalid developer workflow: expected version 1, name, nodes and edges.',
     );
   for (const key of Object.keys(doc))
-    if (!['version', 'name', 'nodes', 'edges', 'inputs', 'defaults'].includes(key))
+    if (
+      !['version', 'name', 'nodes', 'edges', 'inputs', 'defaults', 'limits'].includes(key)
+    )
       throw new Error(`Unknown document field '${key}'.`);
   const ids = Object.create(null) as Record<string, string>;
   const unique = new Set<string>();
@@ -550,5 +577,6 @@ export function decodeDocument(
     edges,
     ...(doc.inputs === undefined ? {} : { inputs: doc.inputs }),
     ...(doc.defaults === undefined ? {} : { defaults: doc.defaults }),
+    ...(doc.limits === undefined ? {} : { limits: doc.limits }),
   };
 }
