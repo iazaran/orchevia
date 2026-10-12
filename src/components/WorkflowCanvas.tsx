@@ -21,6 +21,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { getBackend } from '../lib/backend';
 import { renderCondition } from '../lib/conditions';
+import { readLocal, writeLocal } from '../lib/storage';
 import {
   NODE_KIND_META,
   arrangeWorkflowPositions,
@@ -113,6 +114,7 @@ function toFlowNodes(
   selectedId: string | null,
   overlay: Record<string, string>,
   issues: Record<string, 'error' | 'warning'>,
+  onHover: ((nodeId: string | null) => void) | undefined,
 ): Node<CanvasNodeData>[] {
   return wf.nodes.map((n: WorkflowNode) => ({
     id: n.id,
@@ -125,18 +127,85 @@ function toFlowNodes(
       selected: n.id === selectedId,
       runStatus: overlay[n.id],
       issueSeverity: issues[n.id],
+      ...(onHover === undefined ? {} : { onHover }),
     },
   }));
 }
 
-function toFlowEdges(wf: Workflow, selectedEdgeId: string | null): Edge[] {
+function toFlowEdges(
+  wf: Workflow,
+  selectedEdgeId: string | null,
+  connected: ReadonlySet<string> | null,
+): Edge[] {
   return wf.edges.map((e: WorkflowEdge) => ({
     id: e.id,
     source: e.source,
     target: e.target,
     label: e.label,
     selected: e.id === selectedEdgeId,
+    // Highlight directly connected edges on node hover/focus. Only the
+    // stroke width and glow change: selection, edge labels, node accents
+    // and run-status styling keep their own colors.
+    ...(connected !== null && connected.has(e.id) ? { className: 'edge-connected' } : {}),
   }));
+}
+
+/** Per-workflow canvas viewport persistence (guarded localStorage map). */
+const VIEWPORT_STORAGE_KEY = 'orchevia.canvasViewport.v1';
+const VIEWPORT_MIN_ZOOM = 0.3;
+const VIEWPORT_MAX_ZOOM = 2;
+
+export interface SavedViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+function isValidViewport(value: unknown): value is SavedViewport {
+  if (typeof value !== 'object' || value === null) return false;
+  const viewport = value as Record<string, unknown>;
+  return (
+    typeof viewport.x === 'number' &&
+    Number.isFinite(viewport.x) &&
+    typeof viewport.y === 'number' &&
+    Number.isFinite(viewport.y) &&
+    typeof viewport.zoom === 'number' &&
+    Number.isFinite(viewport.zoom) &&
+    viewport.zoom >= VIEWPORT_MIN_ZOOM &&
+    viewport.zoom <= VIEWPORT_MAX_ZOOM
+  );
+}
+
+export function readWorkflowViewport(workflowId: string): SavedViewport | null {
+  try {
+    const raw = readLocal(VIEWPORT_STORAGE_KEY);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+      return null;
+    const entry = (parsed as Record<string, unknown>)[workflowId];
+    return isValidViewport(entry) ? entry : null;
+  } catch {
+    // Missing/corrupt/unavailable storage falls back to centered fit.
+    return null;
+  }
+}
+
+function writeWorkflowViewport(workflowId: string, viewport: SavedViewport): void {
+  if (!isValidViewport(viewport)) return;
+  try {
+    const raw = readLocal(VIEWPORT_STORAGE_KEY);
+    let map: Record<string, unknown> = {};
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed))
+        map = parsed as Record<string, unknown>;
+    }
+    map[workflowId] = viewport;
+    writeLocal(VIEWPORT_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Storage blocked: the canvas keeps working without persistence.
+  }
 }
 
 const ADDABLE: NodeKind[] = [
@@ -177,6 +246,24 @@ export function WorkflowCanvas({
   const overlayResults = useAppStore((s) => s.overlayResults);
   const profiles = useAppStore((s) => s.profiles);
 
+  // Connection highlighting: hovering or keyboard-focusing a node lights up
+  // its directly incoming and outgoing edges. Cleared on exit, deletion and
+  // workflow switch (remount); composed with selection and run-status styles.
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const handleHover = useCallback((nodeId: string | null) => {
+    setHoveredNodeId(nodeId);
+  }, []);
+  const connectedEdgeIds = useMemo(() => {
+    if (hoveredNodeId === null) return null;
+    if (!workflow.nodes.some((n) => n.id === hoveredNodeId)) return null;
+    const ids = new Set<string>();
+    for (const edge of workflow.edges) {
+      if (edge.source === hoveredNodeId || edge.target === hoveredNodeId)
+        ids.add(edge.id);
+    }
+    return ids;
+  }, [hoveredNodeId, workflow.nodes, workflow.edges]);
+
   // React Flow instance + wrapper size for viewport-aware placement
   // (new nodes land in the center of the current view, not at a fixed spot).
   const flowInstance = useRef<ReactFlowInstance<Node<CanvasNodeData>> | null>(null);
@@ -204,14 +291,13 @@ export function WorkflowCanvas({
     [toolbarHeight],
   );
 
-  const firstNode =
-    workflow.nodes.find((node) => node.type === 'start') ?? workflow.nodes[0];
-  const initialZoom = 0.85;
-  const largeGraphViewport = {
-    x: 24 - (firstNode?.position.x ?? 0) * initialZoom,
-    y: Math.max(110, toolbarHeight + 44) - (firstNode?.position.y ?? 0) * initialZoom,
-    zoom: initialZoom,
-  };
+  // Restored viewport for this editable workflow, read synchronously so the
+  // first paint already sits where the user left it. Snapshots (readOnly run
+  // overlays) never restore or overwrite the editor viewport.
+  const savedViewport = useMemo(
+    () => (readOnly ? null : readWorkflowViewport(workflow.id)),
+    [readOnly, workflow.id],
+  );
 
   const overlay: Record<string, string> = {};
   for (const r of overlayResults) {
@@ -228,10 +314,10 @@ export function WorkflowCanvas({
   // NOTE: parent remounts this component per workflow (`key={workflow.id}`),
   // so initializing canvas state from the workflow is safe here.
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    toFlowNodes(workflow, selectedNodeId, overlay, issues),
+    toFlowNodes(workflow, selectedNodeId, overlay, issues, handleHover),
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    toFlowEdges(workflow, selectedEdgeId),
+    toFlowEdges(workflow, selectedEdgeId, connectedEdgeIds),
   );
 
   const previousDefinition = useRef(workflow.nodes);
@@ -261,11 +347,12 @@ export function WorkflowCanvas({
             selected: def.id === selectedNodeId,
             runStatus: overlay[def.id],
             issueSeverity: issues[def.id],
+            onHover: handleHover,
           },
         };
       });
     });
-    setEdges(toFlowEdges(workflow, selectedEdgeId));
+    setEdges(toFlowEdges(workflow, selectedEdgeId, connectedEdgeIds));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     workflow.nodes,
@@ -275,6 +362,9 @@ export function WorkflowCanvas({
     overlayResults,
     validation,
     appliedDirection,
+    connectedEdgeIds,
+    handleHover,
+    readOnly,
   ]);
 
   const revalidate = useCallback(
@@ -461,56 +551,26 @@ export function WorkflowCanvas({
     });
     // Positions don't affect validation, but re-fit so the result is visible.
   }, [workflow, nodes, layoutDirection, setNodes, updateActiveWorkflow]);
+  // Centered-fit fallback: fit the whole graph into the available view once
+  // nodes are measured. This replaces the old first-six-nodes opening
+  // heuristic and applies to large graphs too; the user's explicit
+  // Arrange/Fit controls and toolbar clearance are unchanged.
   useEffect(() => {
     if (!needsFit.current) return;
     if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
     fitFrame.current = requestAnimationFrame(() => {
       fitFrame.current = null;
-      const firstSteps = [...nodes]
-        .sort((a, b) =>
-          appliedDirection === 'vertical'
-            ? a.position.y - b.position.y || a.position.x - b.position.x
-            : a.position.x - b.position.x || a.position.y - b.position.y,
-        )
-        .slice(0, 6);
-      const viewport = wrapRef.current?.getBoundingClientRect();
-      let fittingSteps = firstSteps;
-      if (viewport && viewport.width > 0 && viewport.height > 0) {
-        const availableWidth = viewport.width - 64;
-        const availableHeight = viewport.height - toolbarHeight - 64;
-        for (let count = 2; count <= firstSteps.length; count++) {
-          const candidates = firstSteps.slice(0, count);
-          const width =
-            Math.max(
-              ...candidates.map((n) => n.position.x + (n.measured?.width ?? 240)),
-            ) - Math.min(...candidates.map((n) => n.position.x));
-          const height =
-            Math.max(
-              ...candidates.map((n) => n.position.y + (n.measured?.height ?? 100)),
-            ) - Math.min(...candidates.map((n) => n.position.y));
-          if (width * 0.65 > availableWidth || height * 0.65 > availableHeight) {
-            fittingSteps = firstSteps.slice(0, count - 1);
-            break;
-          }
-        }
+      if (nodes.length === 0) {
+        needsFit.current = false;
+        return;
       }
       void flowInstance.current
-        ?.fitView({
-          padding: fitPadding,
-          maxZoom: 1,
-          duration: 200,
-          ...(nodes.length > 12
-            ? {
-                minZoom: 0.65,
-                nodes: fittingSteps.map((n) => ({ id: n.id })),
-              }
-            : {}),
-        })
+        ?.fitView({ padding: fitPadding, maxZoom: 1, duration: 200 })
         .then((fitted) => {
           if (fitted) needsFit.current = false;
         });
     });
-  }, [nodes, appliedDirection, fitPadding, toolbarHeight]);
+  }, [nodes, fitPadding]);
   useEffect(
     () => () => {
       if (fitFrame.current !== null) cancelAnimationFrame(fitFrame.current);
@@ -607,16 +667,18 @@ export function WorkflowCanvas({
         edges={edges}
         onInit={(instance) => {
           flowInstance.current = instance;
-          if (workflow.nodes.length > 10) {
-            const top = Math.max(
-              110,
-              (toolbarRef.current?.getBoundingClientRect().height ?? 0) + 44,
-            );
-            void instance.setViewport({
-              ...largeGraphViewport,
-              y: top - (firstNode?.position.y ?? 0) * initialZoom,
-            });
-          }
+        }}
+        onMoveEnd={(_, viewport) => {
+          // Remember this editable workflow's pan/zoom under its own stable
+          // id. Snapshots never persist, and the closure id can never leak
+          // one workflow's viewport into another.
+          if (!readOnly) writeWorkflowViewport(workflow.id, { ...viewport });
+        }}
+        onNodeMouseEnter={(_, node) => {
+          setHoveredNodeId(node.id);
+        }}
+        onNodeMouseLeave={() => {
+          setHoveredNodeId(null);
         }}
         onNodesChange={(changes) =>
           onNodesChange(
@@ -649,6 +711,10 @@ export function WorkflowCanvas({
           updateActiveWorkflow(updated);
           revalidate(updated);
           if (selectedNodeId !== null && ids.has(selectedNodeId)) selectNode(null);
+          // Never leave a highlight pointing at a deleted node.
+          setHoveredNodeId((current) =>
+            current !== null && ids.has(current) ? null : current,
+          );
         }}
         onEdgesDelete={(deleted) => {
           if (readOnly) return;
@@ -683,8 +749,10 @@ export function WorkflowCanvas({
         deleteKeyCode={readOnly ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ interactionWidth: 32 }}
         connectionRadius={32}
-        fitView={workflow.nodes.length <= 10}
-        defaultViewport={largeGraphViewport}
+        // Restored viewports arrive synchronously; otherwise the graph opens
+        // with a measurement-aware centered fit (empty graphs stay put).
+        fitView={savedViewport === null && workflow.nodes.length > 0}
+        {...(savedViewport === null ? {} : { defaultViewport: savedViewport })}
         fitViewOptions={{ padding: fitPadding, maxZoom: 1, duration: 0 }}
         minZoom={0.3}
         colorMode="system"

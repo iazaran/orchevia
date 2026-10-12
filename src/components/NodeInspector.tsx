@@ -1009,6 +1009,32 @@ export function NodeInspector(): React.JSX.Element | null {
           </span>
         </div>
         <div className="field">
+          <span className="field-label">Usage limits</span>
+          <span className="field-hint" style={{ marginBottom: 8 }}>
+            {workflow.limits === undefined ||
+            Object.values(workflow.limits).every((v) => v === undefined)
+              ? 'No saved limits — runs execute ordinarily. '
+              : `Saved: ${[
+                  workflow.limits.maxAgentAttempts !== undefined
+                    ? `${String(workflow.limits.maxAgentAttempts)} attempts (enforced)`
+                    : null,
+                  workflow.limits.maxToolCalls !== undefined
+                    ? `${String(workflow.limits.maxToolCalls)} tools (advisory)`
+                    : null,
+                  workflow.limits.maxSubagents !== undefined
+                    ? `${String(workflow.limits.maxSubagents)} subagents (advisory)`
+                    : null,
+                  workflow.limits.spendLimitUsd !== undefined
+                    ? `USD ${String(workflow.limits.spendLimitUsd)} (estimated API value)`
+                    : null,
+                ]
+                  .filter((part) => part !== null)
+                  .join(' · ')}. `}
+            Edit them with the Usage limits toolbar button; the start form shows the
+            effective values per run.
+          </span>
+        </div>
+        <div className="field">
           <span className="field-label">Workflow inputs (as {'{{input.name}}'})</span>
           {(workflow.inputs ?? []).map((input) => (
             <div key={input.name} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
@@ -1434,6 +1460,56 @@ export function NodeInspector(): React.JSX.Element | null {
             <span className="field-hint">
               Combined excerpt characters, excluding headers (default 12000). Longer
               outputs keep a marked beginning and end; full output stays in run logs.
+            </span>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="node-max-tools">
+              Advisory tool-call allowance
+            </label>
+            <input
+              id="node-max-tools"
+              className="input"
+              type="number"
+              min={1}
+              max={100000}
+              placeholder="Blank = workflow default"
+              value={node.config.maxToolCalls ?? ''}
+              onChange={(e) => {
+                const config = { ...node.config };
+                if (!e.target.value) delete config.maxToolCalls;
+                else config.maxToolCalls = Number(e.target.value);
+                patch(config, node.label);
+              }}
+            />
+            <span className="field-hint">
+              This step's share of tool calls, not the whole workflow budget. Advisory
+              guidance inside the prompt plus observed counts — the CLI owns its tool loop
+              and this never hard-stops work.
+            </span>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="node-max-subagents">
+              Advisory subagent allowance
+            </label>
+            <input
+              id="node-max-subagents"
+              className="input"
+              type="number"
+              min={1}
+              max={1000}
+              placeholder="Blank = workflow default"
+              value={node.config.maxSubagents ?? ''}
+              onChange={(e) => {
+                const config = { ...node.config };
+                if (!e.target.value) delete config.maxSubagents;
+                else config.maxSubagents = Number(e.target.value);
+                patch(config, node.label);
+              }}
+            />
+            <span className="field-hint">
+              Nested agents this step may spawn. Zero/blank means “do not spawn unless the
+              task explicitly allows it”. Only the run-wide attempt budget is enforced;
+              see Usage limits for the saved workflow budget.
             </span>
           </div>
           <div className="field">

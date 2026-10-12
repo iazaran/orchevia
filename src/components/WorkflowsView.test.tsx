@@ -100,14 +100,14 @@ it('reviews each workflow inputs and never carries another workflow values into 
   render(<WorkflowsView />);
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: '▶ Run' }));
-  await user.clear(screen.getByLabelText('branch *'));
-  await user.type(screen.getByLabelText('branch *'), 'first-user-value');
+  await user.clear(screen.getByLabelText('branch (required)'));
+  await user.type(screen.getByLabelText('branch (required)'), 'first-user-value');
   await user.type(screen.getByLabelText('firstOnly'), 'first-secret');
+  // Switching workflows remounts the floating form: no leaked values.
   await user.click(screen.getByRole('button', { name: /Second inputs/ }));
-  await user.click(screen.getByRole('button', { name: '▶ Run' }));
   expect(await backend.listRuns()).toEqual([]);
-  expect(screen.getByLabelText('branch *')).toHaveValue('second-default');
-  await user.click(screen.getByRole('button', { name: '▶ Run with inputs' }));
+  expect(screen.getByLabelText('branch (required)')).toHaveValue('second-default');
+  await user.click(screen.getByRole('button', { name: 'Start run' }));
   await waitFor(async () =>
     expect((await backend.listRuns())[0]?.workflowId).toBe(second.id),
   );

@@ -68,7 +68,7 @@ it('fits after the final canvas synchronization instead of cancelling the pendin
   );
 });
 
-it('opens a long arranged workflow at a readable zoom around its first steps', async () => {
+it('arranging a large workflow fits the whole graph instead of the first steps', async () => {
   const frames = new Map<number, FrameRequestCallback>();
   let next = 1;
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
@@ -109,16 +109,11 @@ it('opens a long arranged workflow at a readable zoom around its first steps', a
     await Promise.resolve();
   });
   expect(fit).toHaveBeenCalledWith(
-    expect.objectContaining({
-      minZoom: 0.65,
-    }),
+    expect.objectContaining({ padding: 0.15, maxZoom: 1 }),
   );
-  const options = fit.mock.calls.at(-1)?.[0] as { nodes: { id: string }[] };
-  expect(options.nodes).toEqual(
-    expect.arrayContaining([{ id: start.id }, { id: 'step-0' }]),
-  );
-  expect(options.nodes).toHaveLength(6);
-  expect(options.nodes).not.toContainEqual({ id: end.id });
+  // The whole graph fits: no six-node subset restricts the view.
+  const options = fit.mock.calls.at(-1)?.[0] as { nodes?: { id: string }[] };
+  expect(options.nodes).toBeUndefined();
 });
 
 it('persists positions for every node in a group drag', () => {
@@ -167,7 +162,7 @@ it('uses measured node bounds when arranging and preserves configuration', async
   );
 });
 
-it('reserves the measured toolbar height when opening and arranging a large workflow', async () => {
+it('opens workflows without a saved viewport with a centered fit', async () => {
   const rectangle = new DOMRect(0, 0, 1000, 140);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
     this: HTMLElement,
@@ -193,9 +188,14 @@ it('reserves the measured toolbar height when opening and arranging a large work
   });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   render(<WorkflowCanvas workflow={workflow} />);
-  expect(viewport).toHaveBeenCalled();
-  const opening = viewport.mock.calls.at(-1)?.[0] as { y: number; zoom: number };
-  expect(opening.y + workflow.nodes[0]!.position.y * opening.zoom).toBeGreaterThan(140);
+  // No saved viewport: centered fit (also for large graphs), never a stale offset.
+  const props = flow.current as unknown as {
+    fitView: boolean;
+    defaultViewport?: unknown;
+  };
+  expect(props.fitView).toBe(true);
+  expect(props.defaultViewport).toBeUndefined();
+  expect(viewport).not.toHaveBeenCalled();
   await userEvent.setup().click(screen.getByRole('button', { name: '⤢ Arrange' }));
   await act(async () => {
     for (const callback of callbacks) callback(0);
@@ -205,42 +205,82 @@ it('reserves the measured toolbar height when opening and arranging a large work
   expect(arranged.padding.top).toBe('172px');
 });
 
-it('fits only the first steps that remain readable below a wrapped toolbar in a short viewport', async () => {
-  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
-    this: HTMLElement,
-  ) {
-    return this.classList.contains('canvas-toolbar')
-      ? new DOMRect(0, 0, 1000, 140)
-      : new DOMRect(0, 0, 1000, 500);
-  });
-  const workflow = createEmptyWorkflow('Short viewport');
-  const steps = Array.from({ length: 14 }, (_, i) => ({
-    id: 'step-' + String(i),
-    type: 'command' as const,
-    position: { x: 0, y: 0 },
-    config: { executable: 'echo' },
-  }));
-  const start = workflow.nodes[0]!;
-  const end = workflow.nodes[1]!;
-  workflow.nodes = [start, ...steps, end];
-  workflow.edges = workflow.nodes.slice(1).map((node, i) => ({
-    id: 'edge-' + String(i),
-    source: workflow.nodes[i]!.id,
-    target: node.id,
-  }));
+it('restores each workflow viewport and falls back to fit on corrupt storage', () => {
+  const key = 'orchevia.canvasViewport.v1';
+  localStorage.removeItem(key);
+  const first = createEmptyWorkflow('Viewport A');
+  const second = createEmptyWorkflow('Viewport B');
   useAppStore.setState({ updateActiveWorkflow: vi.fn() });
-  const callbacks: FrameRequestCallback[] = [];
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-    callbacks.push(callback);
-    return callbacks.length;
-  });
-  vi.stubGlobal('cancelAnimationFrame', vi.fn());
-  render(<WorkflowCanvas workflow={workflow} />);
-  await userEvent.setup().click(screen.getByRole('button', { name: '⤢ Arrange' }));
-  await act(async () => {
-    for (const callback of callbacks) callback(0);
-    await Promise.resolve();
-  });
-  const options = fit.mock.calls.at(-1)?.[0] as { nodes: { id: string }[] };
-  expect(options.nodes).toEqual([{ id: start.id }, { id: steps[0]!.id }]);
+  const firstRender = render(<WorkflowCanvas workflow={first} />);
+  // Pan/zoom persists under the workflow's own id.
+  const props = flow.current as unknown as {
+    onMoveEnd?: (
+      event: unknown,
+      viewport: { x: number; y: number; zoom: number },
+    ) => void;
+  };
+  act(() => props.onMoveEnd?.({}, { x: 111, y: 222, zoom: 1.2 }));
+  const stored = JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, unknown>;
+  expect(stored[first.id]).toEqual({ x: 111, y: 222, zoom: 1.2 });
+  // Workflow B starts centered; A's viewport never leaks into it.
+  const secondRender = render(<WorkflowCanvas workflow={second} />);
+  const secondProps = flow.current as unknown as {
+    fitView: boolean;
+    defaultViewport?: unknown;
+  };
+  expect(secondProps.fitView).toBe(true);
+  expect(secondProps.defaultViewport).toBeUndefined();
+  // Returning to A restores its viewport instead of fitting.
+  firstRender.unmount();
+  secondRender.unmount();
+  render(<WorkflowCanvas workflow={first} />);
+  const restored = flow.current as unknown as {
+    fitView: boolean;
+    defaultViewport?: { x: number; y: number; zoom: number };
+  };
+  expect(restored.fitView).toBe(false);
+  expect(restored.defaultViewport).toEqual({ x: 111, y: 222, zoom: 1.2 });
+  // Corrupt, out-of-range and non-finite viewports fall back safely.
+  for (const corrupt of [
+    'not-json{',
+    JSON.stringify({ [first.id]: { x: 1, y: 2, zoom: 99 } }),
+    JSON.stringify({ [first.id]: { x: Number.NaN, y: 0, zoom: 1 } }),
+    JSON.stringify({ [first.id]: null }),
+  ]) {
+    localStorage.setItem(key, corrupt);
+    const { unmount } = render(<WorkflowCanvas workflow={first} />);
+    const fallback = flow.current as unknown as { fitView: boolean };
+    expect(fallback.fitView).toBe(true);
+    unmount();
+  }
+  localStorage.removeItem(key);
+});
+
+it('keeps run snapshots out of the editor viewport and fits empty graphs safely', () => {
+  const key = 'orchevia.canvasViewport.v1';
+  localStorage.removeItem(key);
+  const workflow = createEmptyWorkflow('Snapshot isolation');
+  useAppStore.setState({ updateActiveWorkflow: vi.fn() });
+  render(<WorkflowCanvas workflow={workflow} readOnly />);
+  const props = flow.current as unknown as {
+    fitView: boolean;
+    defaultViewport?: unknown;
+    onMoveEnd?: (
+      event: unknown,
+      viewport: { x: number; y: number; zoom: number },
+    ) => void;
+  };
+  // Snapshots always open centered and never persist back.
+  expect(props.fitView).toBe(true);
+  expect(props.defaultViewport).toBeUndefined();
+  act(() => props.onMoveEnd?.({}, { x: 5, y: 5, zoom: 1 }));
+  expect(localStorage.getItem(key)).toBeNull();
+  // Empty graphs mount without fitting or crashing.
+  const empty = createEmptyWorkflow('Empty');
+  empty.nodes = [];
+  empty.edges = [];
+  render(<WorkflowCanvas workflow={empty} />);
+  const emptyProps = flow.current as unknown as { fitView: boolean };
+  expect(emptyProps.fitView).toBe(false);
+  localStorage.removeItem(key);
 });

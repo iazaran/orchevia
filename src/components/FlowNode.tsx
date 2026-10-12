@@ -12,6 +12,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
   runStatus?: string | undefined;
   /** Validation severity for this node (error/warning). */
   issueSeverity?: 'error' | 'warning' | undefined;
+  /** Hover/focus reporting for connection highlighting (absent when read-only). */
+  onHover?: ((nodeId: string | null) => void) | undefined;
 }
 
 const KIND_ICONS: Record<NodeKind, string> = {
@@ -27,13 +29,18 @@ const KIND_ICONS: Record<NodeKind, string> = {
   end: '■',
 };
 
-function FlowNode({ data }: NodeProps): React.JSX.Element {
+function FlowNode({ data, id }: NodeProps): React.JSX.Element {
   const node = data as unknown as CanvasNodeData;
   const meta = NODE_KIND_META[node.kind];
   return (
     <div
       className={`orchevia-node${node.selected ? ' selected' : ''}${node.runStatus !== undefined ? ` run-${node.runStatus}` : ''}${node.issueSeverity !== undefined ? ` issue-${node.issueSeverity}` : ''}`}
       style={{ ['--node-accent' as string]: meta.accent }}
+      // Keyboard focus bubbles here from React Flow's focusable node wrapper
+      // (@xyflow/react has no onNodeFocus prop), so Tab reaches the same
+      // connection highlight as pointer hover.
+      onFocus={() => node.onHover?.(id)}
+      onBlur={() => node.onHover?.(null)}
     >
       <Handle
         type="target"
