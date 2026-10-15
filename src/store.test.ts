@@ -1,7 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { __setMockBackendForTests } from './lib/backend';
 import { createEmptyWorkflow } from './lib/workflow';
-import type { StoredNodeResult, StoredWorkflow, ValidationIssue } from './lib/workflow';
+import type {
+  StoredNodeResult,
+  StoredRun,
+  StoredWorkflow,
+  ValidationIssue,
+} from './lib/workflow';
 import { sameNodeResults, useAppStore } from './store';
 afterEach(() => vi.restoreAllMocks());
 
@@ -577,4 +582,176 @@ it('rapid run selection keeps the newest selection and ignores late responses', 
   expect(useAppStore.getState().activeRunId).toBe('second');
   expect(useAppStore.getState().runResults.first).toBeUndefined();
   expect(useAppStore.getState().runResults.second?.[0]?.runId).toBe('second');
+});
+
+it('openRunInRuns selects the exact run in Runs without touching the canvas overlay', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Inbox run');
+  await backend.saveWorkflow(wf);
+  const { runId } = await backend.runWorkflow(wf.id);
+  const overlayBefore = useAppStore.getState().overlayRunId;
+  useAppStore.setState({ view: 'inbox', runs: [], activeRunId: null, runResults: {} });
+  expect(await useAppStore.getState().openRunInRuns(runId)).toBe(true);
+  const state = useAppStore.getState();
+  expect(state.view).toBe('runs');
+  expect(state.activeRunId).toBe(runId);
+  expect(state.runs.some((run) => run.id === runId)).toBe(true);
+  expect(state.runResults[runId]).toBeDefined();
+  expect(state.overlayRunId).toBe(overlayBefore);
+  await expect(useAppStore.getState().openRunInRuns('missing')).rejects.toThrow(
+    'Unknown run',
+  );
+});
+
+it('openRunInRuns keeps the newest navigation when an older fetch finishes last', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Navigation race');
+  await backend.saveWorkflow(wf);
+  const a = await backend.runWorkflow(wf.id);
+  const b = await backend.runWorkflow(wf.id);
+  const realGetRun = backend.getRun.bind(backend);
+  const realGetResults = backend.getRunResults.bind(backend);
+  let releaseA!: (run: StoredRun | null) => void;
+  vi.spyOn(backend, 'getRun').mockImplementation((id) =>
+    id === a.runId
+      ? new Promise((resolve) => {
+          releaseA = resolve;
+        })
+      : realGetRun(id),
+  );
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    id === a.runId ? new Promise<StoredNodeResult[]>(() => {}) : realGetResults(id),
+  );
+  useAppStore.setState({ view: 'inbox', runs: [], activeRunId: null, runResults: {} });
+  const first = useAppStore.getState().openRunInRuns(a.runId);
+  await useAppStore.getState().openRunInRuns(b.runId);
+  releaseA(await realGetRun(a.runId));
+  expect(await first).toBe(false);
+  expect(useAppStore.getState().activeRunId).toBe(b.runId);
+  expect(useAppStore.getState().view).toBe('runs');
+});
+
+it('refreshRuns retains the selected run missing from the recent list', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Retained run');
+  await backend.saveWorkflow(wf);
+  const first = await backend.runWorkflow(wf.id);
+  const second = await backend.runWorkflow(wf.id);
+  const newest = await backend.getRun(second.runId);
+  if (newest === null) throw new Error('mock run went missing');
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([newest]);
+  useAppStore.setState({ runs: [], activeRunId: first.runId });
+  await useAppStore.getState().refreshRuns();
+  const runs = useAppStore.getState().runs;
+  expect(runs.some((run) => run.id === first.runId)).toBe(true);
+  expect(runs.some((run) => run.id === second.runId)).toBe(true);
+  expect(useAppStore.getState().activeRunId).toBe(first.runId);
+});
+
+it('refreshRuns falls back to the listed runs when the selected run is gone', async () => {
+  const backend = __setMockBackendForTests();
+  const wf = createEmptyWorkflow('Deleted run');
+  await backend.saveWorkflow(wf);
+  const second = await backend.runWorkflow(wf.id);
+  const newest = await backend.getRun(second.runId);
+  if (newest === null) throw new Error('mock run went missing');
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([newest]);
+  vi.spyOn(backend, 'getRun').mockResolvedValue(null);
+  useAppStore.setState({ runs: [], activeRunId: 'deleted-run' });
+  await useAppStore.getState().refreshRuns();
+  expect(useAppStore.getState().runs.map((run) => run.id)).toEqual([second.runId]);
+});
+
+it('loads Inbox run details before mounting Runs so its refresh cannot cancel navigation', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'inbox-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-15T10:00:00Z',
+  };
+  let finish: (rows: StoredNodeResult[]) => void = () => {};
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  const loadResults = vi.spyOn(backend, 'getRunResults').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  useAppStore.setState({ view: 'inbox', runs: [], activeRunId: null, runResults: {} });
+  const opening = useAppStore.getState().openRunInRuns(run.id);
+  await vi.waitFor(() => expect(loadResults).toHaveBeenCalled());
+  expect(useAppStore.getState().view).toBe('inbox');
+  finish([resultRow(run.id)]);
+  expect(await opening).toBe(true);
+  expect(useAppStore.getState().view).toBe('runs');
+  expect(useAppStore.getState().runResults[run.id]).toEqual([resultRow(run.id)]);
+});
+
+it('does not let a pending Inbox fetch replace a newer run selection', async () => {
+  const backend = __setMockBackendForTests();
+  let finish: (run: StoredRun | null) => void = () => {};
+  vi.spyOn(backend, 'getRun').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  useAppStore.setState({ view: 'inbox', runs: [], activeRunId: null });
+  const opening = useAppStore.getState().openRunInRuns('old');
+  await useAppStore.getState().selectRun('new');
+  finish({
+    id: 'old',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-15T10:00:00Z',
+  });
+  expect(await opening).toBe(false);
+  expect(useAppStore.getState().activeRunId).toBe('new');
+});
+
+it('does not let an older retention refresh drop a newly opened older run', async () => {
+  const backend = __setMockBackendForTests();
+  const old: StoredRun = {
+    id: 'old-a',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-01T10:00:00Z',
+  };
+  const newer = { ...old, id: 'old-b' };
+  const recent = { ...old, id: 'recent' };
+  let finish: (run: StoredRun | null) => void = () => {};
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([recent]);
+  const getRetainedRun = vi.spyOn(backend, 'getRun').mockImplementation((id) =>
+    id === old.id
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(newer),
+  );
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  useAppStore.setState({ view: 'inbox', runs: [old], activeRunId: old.id });
+  const refresh = useAppStore.getState().refreshRuns();
+  await vi.waitFor(() => expect(getRetainedRun).toHaveBeenCalledWith(old.id));
+  expect(await useAppStore.getState().openRunInRuns(newer.id)).toBe(true);
+  finish(old);
+  await refresh;
+  expect(useAppStore.getState().activeRunId).toBe(newer.id);
+  expect(useAppStore.getState().runs.some((run) => run.id === newer.id)).toBe(true);
+});
+
+it('keeps a cached selected older run when its retention fetch temporarily fails', async () => {
+  const backend = __setMockBackendForTests();
+  const selected: StoredRun = {
+    id: 'old',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-01T10:00:00Z',
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRun').mockRejectedValue(new Error('temporarily unavailable'));
+  useAppStore.setState({ runs: [selected], activeRunId: selected.id });
+  await useAppStore.getState().refreshRuns();
+  expect(useAppStore.getState().runs).toContainEqual(selected);
 });

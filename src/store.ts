@@ -98,6 +98,7 @@ interface AppState {
   selectNode: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
   openRunOnCanvas: (runId: string) => Promise<boolean>;
+  openRunInRuns: (runId: string) => Promise<boolean>;
   refreshRunOverlay: () => Promise<void>;
   showRunOverlay: (runId: string | null) => Promise<void>;
   updateActiveWorkflow: (workflow: Workflow) => void;
@@ -230,7 +231,29 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const backend = getBackend();
     const request = ++runsRefreshSequence;
     const runs = await backend.listRuns(100);
-    if (request === runsRefreshSequence) set({ runs });
+    if (request !== runsRefreshSequence) return;
+    // A directly opened older run may sit outside the recent list. Retain the
+    // selection across refreshes so polling cannot remove it from under Runs.
+    const selected = get().activeRunId;
+    if (selected !== null && !runs.some((run) => run.id === selected)) {
+      try {
+        const retained = await backend.getRun(selected);
+        if (request !== runsRefreshSequence) return;
+        if (get().activeRunId !== selected) {
+          return;
+        }
+        set({ runs: retained === null ? runs : [retained, ...runs] });
+      } catch {
+        if (request !== runsRefreshSequence) return;
+        // A transient fetch failure is not evidence that the selected run was
+        // deleted. Keep its cached row instead of blanking its detail pane.
+        const cached = get().runs.find((run) => run.id === selected);
+        if (get().activeRunId === selected)
+          set({ runs: cached === undefined ? runs : [cached, ...runs] });
+      }
+      return;
+    }
+    set({ runs });
   },
 
   refreshTools: async () => {
@@ -400,6 +423,39 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
     await get().openRunOnCanvas(runId);
   },
+  openRunInRuns: async (runId) => {
+    // Inbox "Open run": show this exact run in Runs, not the canvas overlay.
+    // Fetches by run ID so older runs outside listRuns(100) still resolve,
+    // and runs whose workflow was deleted still open (the stored run row is
+    // what Runs renders; its snapshot workflow loads like any selection).
+    const request = ++navigationSequence;
+    const selection = ++runSelectionSequence;
+    const backend = getBackend();
+    const run = await backend.getRun(runId);
+    if (run === null) throw new Error(`Unknown run '${runId}'.`);
+    if (request !== navigationSequence || selection !== runSelectionSequence)
+      return false;
+    // Load before mounting Runs: its mount refresh selects the run again and
+    // would otherwise invalidate this navigation before Inbox can mark read.
+    const results = await backend.getRunResults(runId);
+    if (request !== navigationSequence || selection !== runSelectionSequence)
+      return false;
+    const { runResults, runResultStatus } = get();
+    const cached = runResults[runId];
+    // A pending recent-list/retention fetch must not remove this older run.
+    runsRefreshSequence++;
+    set({
+      view: 'runs',
+      activeRunId: runId,
+      runs: [run, ...get().runs.filter((existing) => existing.id !== runId)],
+      runResults:
+        cached !== undefined && sameNodeResults(cached, results)
+          ? runResults
+          : { ...runResults, [runId]: results },
+      runResultStatus: { ...runResultStatus, [runId]: run.status },
+    });
+    return true;
+  },
 
   updateActiveWorkflow: (workflow) => {
     if (get().overlayRunId !== null) return;
@@ -498,6 +554,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   selectRun: async (id) => {
     const request = ++runSelectionSequence;
+    runsRefreshSequence++;
     set({ activeRunId: id });
     if (id === null) return;
     const backend = getBackend();

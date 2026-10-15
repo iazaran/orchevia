@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Notice } from './Notice';
 import { errorMessage } from '../lib/errors';
 import { getBackend } from '../lib/backend';
@@ -9,30 +9,77 @@ export function InboxView(): React.JSX.Element {
   const notifications = useAppStore((s) => s.notifications);
   const refreshNotifications = useAppStore((s) => s.refreshNotifications);
   const setView = useAppStore((s) => s.setView);
-  const openRun = useAppStore((s) => s.openRunOnCanvas);
+  const openRunInRuns = useAppStore((s) => s.openRunInRuns);
   const [showRead, setShowRead] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const [pendingIds, setPendingIds] = useState<Set<number>>(new Set());
+  const [markingAll, setMarkingAll] = useState(false);
+  // Synchronous guard: duplicate clicks in the same tick must not both fire.
+  const busyRef = useRef(new Set<number>());
   const visible = notifications.filter((n) => showRead || !n.read);
-  const act = async (action: () => Promise<unknown>): Promise<void> => {
-    if (pending) return;
-    setPending(true);
-    setMessage(null);
-    try {
-      await action();
-      await refreshNotifications();
-    } catch (err) {
-      setMessage(errorMessage(err));
-      if (useAppStore.getState().view !== 'inbox')
-        useAppStore.getState().setError(errorMessage(err));
-    } finally {
-      setPending(false);
-    }
+
+  const track = (id: number, busy: boolean): void => {
+    if (busy) busyRef.current.add(id);
+    else busyRef.current.delete(id);
+    setPendingIds(new Set(busyRef.current));
   };
+
+  const openRun = (notificationId: number, runId: string): void => {
+    if (busyRef.current.has(notificationId)) return;
+    track(notificationId, true);
+    setMessage(null);
+    void (async () => {
+      try {
+        // Mark read only after successful committed navigation; a late or
+        // failed request leaves the notification unread.
+        if (await openRunInRuns(runId)) {
+          await getBackend().markNotificationRead(notificationId);
+          await refreshNotifications();
+        }
+      } catch (err) {
+        setMessage(errorMessage(err));
+        if (useAppStore.getState().view !== 'inbox')
+          useAppStore.getState().setError(errorMessage(err));
+      } finally {
+        track(notificationId, false);
+      }
+    })();
+  };
+
+  const markRead = (notificationId: number): void => {
+    if (busyRef.current.has(notificationId)) return;
+    track(notificationId, true);
+    setMessage(null);
+    void (async () => {
+      try {
+        await getBackend().markNotificationRead(notificationId);
+        await refreshNotifications();
+      } catch (err) {
+        setMessage(errorMessage(err));
+        if (useAppStore.getState().view !== 'inbox')
+          useAppStore.getState().setError(errorMessage(err));
+      } finally {
+        track(notificationId, false);
+      }
+    })();
+  };
+
   const unread = notifications.filter((n) => !n.read).length;
 
   const markAllRead = (): void => {
-    void act(() => getBackend().markAllNotificationsRead());
+    if (markingAll) return;
+    setMarkingAll(true);
+    setMessage(null);
+    void (async () => {
+      try {
+        await getBackend().markAllNotificationsRead();
+        await refreshNotifications();
+      } catch (err) {
+        setMessage(errorMessage(err));
+      } finally {
+        setMarkingAll(false);
+      }
+    })();
   };
 
   return (
@@ -52,10 +99,10 @@ export function InboxView(): React.JSX.Element {
           </button>
           <button
             className="btn"
-            disabled={pending || unread === 0}
+            disabled={markingAll || unread === 0}
             onClick={markAllRead}
           >
-            Mark all read
+            {markingAll ? 'Marking…' : 'Mark all read'}
           </button>
           <button
             className="btn btn-ghost"
@@ -78,45 +125,66 @@ export function InboxView(): React.JSX.Element {
             </p>
           </div>
         )}
-        {visible.slice(0, 100).map((n) => (
-          <div key={n.id} className="run-row" style={{ opacity: n.read ? 0.65 : 1 }}>
-            <span className={`status-pill ${notificationPill(n.kind)}`}>{n.kind}</span>
-            <span style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>{n.title}</div>
-              <div className="wf-card-meta">{n.body}</div>
-              <div className="wf-card-meta" title={formatTime(n.createdAt)}>
-                {formatDate(n.createdAt)}
-              </div>
-            </span>
-            {n.runId !== undefined && n.runId !== '' && (
-              <button
-                className="btn"
-                disabled={pending}
-                onClick={() => {
-                  const runId = n.runId;
-                  if (runId === undefined) return;
-                  void act(async () => {
-                    if (await openRun(runId))
-                      await getBackend().markNotificationRead(n.id);
-                  });
-                }}
+        <div className="inbox-list">
+          {visible.slice(0, 100).map((n) => {
+            const busy = pendingIds.has(n.id);
+            const hasRun = n.runId !== undefined && n.runId !== '';
+            return (
+              <article
+                key={n.id}
+                className={`inbox-card${n.read ? ' is-read' : ''}`}
+                aria-label={`${n.kind} notification: ${n.title}`}
               >
-                Open run
-              </button>
-            )}
-            {!n.read && (
-              <button
-                className="btn btn-ghost"
-                disabled={pending}
-                onClick={() => {
-                  void act(() => getBackend().markNotificationRead(n.id));
-                }}
-              >
-                Mark read
-              </button>
-            )}
-          </div>
-        ))}
+                <span className="inbox-kind">
+                  <span className={`status-pill ${notificationPill(n.kind)}`}>
+                    {n.kind}
+                  </span>
+                  {!n.read && (
+                    <span className="inbox-unread" aria-label="Unread">
+                      Unread
+                    </span>
+                  )}
+                </span>
+                <span className="inbox-content">
+                  <div className="inbox-title">{n.title}</div>
+                  <div className="wf-card-meta inbox-body">{n.body}</div>
+                  {hasRun && (
+                    <div className="wf-card-meta inbox-run-id" title={n.runId}>
+                      Run {n.runId}
+                    </div>
+                  )}
+                  <div className="wf-card-meta" title={formatTime(n.createdAt)}>
+                    {formatDate(n.createdAt)}
+                  </div>
+                </span>
+                <span className="inbox-actions">
+                  {hasRun && (
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        const runId = n.runId;
+                        if (runId === undefined || runId === '') return;
+                        openRun(n.id, runId);
+                      }}
+                    >
+                      {busy ? 'Opening…' : 'Open run'}
+                    </button>
+                  )}
+                  {!n.read && (
+                    <button
+                      className="btn btn-ghost"
+                      disabled={busy}
+                      onClick={() => markRead(n.id)}
+                    >
+                      Mark read
+                    </button>
+                  )}
+                </span>
+              </article>
+            );
+          })}
+        </div>
       </div>
     </>
   );

@@ -51,22 +51,24 @@ it('shows profile usage with current names, saved IDs and explicit unknown USD c
   };
   vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
   render(<UsageView />);
-  const section = await screen.findByRole('region', { name: 'By AI profile' });
+  const tab = await screen.findByRole('tab', { name: 'AI profile' });
+  await userEvent.setup().click(tab);
+  const section = await screen.findByRole('tabpanel', { name: 'By AI profile' });
   const current = within(section).getByRole('row', { name: /Renamed profile/ });
   expect(current).toHaveTextContent('current name');
-  expect(current).toHaveTextContent('1.2500');
+  expect(current).toHaveTextContent('USD 1.25');
   expect(current).toHaveTextContent('2/3 reports');
   expect(current).toHaveTextContent('1 unknown');
   expect(current).toHaveTextContent('2s');
   expect(within(current).getByTitle('2026-10-01T00:00:00.000Z')).toBeInTheDocument();
   const deleted = within(section).getByRole('row', { name: /deleted-profile/ });
-  expect(deleted).toHaveTextContent('0.0000');
+  expect(deleted).toHaveTextContent('USD 0.00');
   expect(deleted).toHaveTextContent('1/1 reports');
   expect(deleted).toHaveTextContent('2m');
   const unknown = within(section).getByRole('row', { name: /^Unknown/ });
   expect(unknown).toHaveTextContent('0/1 reports');
   expect(unknown).toHaveTextContent('1 unknown');
-  expect(unknown).not.toHaveTextContent('0.0000');
+  expect(unknown).not.toHaveTextContent('USD 0.00');
   expect(within(section).getByText(/saved run snapshot/)).toBeInTheDocument();
 });
 
@@ -153,8 +155,12 @@ it('allocates full overlapping billing periods while retaining outside and legac
       'USD 60.00',
     ),
   );
-  expect(screen.getByText(/Past · USD 120.00/)).toHaveTextContent('outside allocation');
-  expect(screen.getByText(/Legacy · USD 50.00/)).toHaveTextContent('outside allocation');
+  const past = screen.getByRole('row', { name: /Past/ });
+  expect(past).toHaveTextContent('USD 120.00');
+  expect(past).toHaveTextContent('outside allocation');
+  const legacy = screen.getByRole('row', { name: /Legacy/ });
+  expect(legacy).toHaveTextContent('USD 50.00');
+  expect(legacy).toHaveTextContent('outside allocation');
 });
 
 function workflowWithAgent(name: string): ReturnType<typeof createEmptyWorkflow> {
@@ -193,11 +199,12 @@ it('aggregates mock history with honest unknown coverage and separate money lane
   render(<UsageView />);
   await waitFor(() => expect(screen.getByText('Workflow runs')).toBeInTheDocument());
   // Mock agent rows carry no CLI usage envelope: attempts exist, USD unknown.
-  expect(screen.getByText(/Agent attempts/)).toBeInTheDocument();
-  expect(screen.getByText(/Estimated API value/)).toBeInTheDocument();
+  // The label appears on the overview card and the daily table header.
+  expect(screen.getAllByText('Agent attempts', { exact: true })).toHaveLength(2);
+  expect(screen.getByText('Estimated API value', { exact: true })).toBeInTheDocument();
   expect(screen.getByText(/legacy unknown/)).toBeInTheDocument();
   // Money lanes stay visibly separate.
-  expect(screen.getByText(/Subscription fees \(you enter these\)/)).toBeInTheDocument();
+  expect(screen.getByText(/Subscription & allocation settings/)).toBeInTheDocument();
   expect(screen.getByText(/API-equivalent target/)).toBeInTheDocument();
   // Thin history offers no fabricated rates.
   expect(screen.getByText(/Insufficient history/)).toBeInTheDocument();
@@ -210,21 +217,317 @@ it('saves subscription fees and shows an explicitly labeled allocation', async (
   render(<UsageView />);
   const user = userEvent.setup();
   await user.type(screen.getByLabelText('Fee label'), 'Claude');
-  await user.type(screen.getByLabelText('Fee amount USD'), '120');
-  await user.type(screen.getByLabelText('Billing period'), '2026-10-01/2026-11-01');
+  await user.type(screen.getByLabelText('Fee amount (USD)'), '120');
+  await user.type(
+    screen.getByLabelText('Billing period (UTC range)'),
+    '2026-10-01/2026-11-01',
+  );
   await user.click(screen.getByRole('button', { name: 'Add fee' }));
+  expect(screen.getByText(/Unsaved changes/)).toBeInTheDocument();
   await user.type(screen.getByLabelText('Orchevia share %'), '50');
   await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
   await waitFor(() =>
     expect(screen.getByText(/Allocated to Orchevia-tracked work/)).toBeInTheDocument(),
   );
   expect(screen.getByText(/Outside or untracked usage is excluded/)).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  expect(
+    screen.getByRole('button', { name: 'Save subscription settings' }),
+  ).toBeDisabled();
   const backend = __setMockBackendForTests();
   // Settings persist through the backend contract (mock twin included).
   await waitFor(async () =>
     expect(await backend.getSetting('usage.subscriptionFees')).toContain('Claude'),
   );
+});
+
+function usageSummaryWithDays(): UsageSummary {
+  const summary = emptyUsageSummary();
+  summary.runsScanned = 2;
+  summary.totals.runs = 2;
+  summary.totals.agentAttempts = 4;
+  summary.days = [
+    {
+      day: '2026-10-01',
+      runs: 1,
+      agentAttempts: 3,
+      reportedUsd: 1.5,
+      inputTokens: 100,
+      outputTokens: 50,
+    },
+    {
+      day: '2026-10-05',
+      runs: 1,
+      agentAttempts: 1,
+      reportedUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    },
+  ];
+  return summary;
+}
+
+it('fills sparse days with explicit zeroes, draws no bar for zero, and tables exact values', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(usageSummaryWithDays());
+  const { container } = render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-01' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-10-05' },
+  });
+  const chart = await screen.findByRole('img', {
+    name: /Agent attempts per UTC day from 2026-10-01 to 2026-10-05/,
+  });
+  // Only nonzero days produce a bar; zero days have no positive-looking rect.
+  const bars = container.querySelectorAll('rect.usage-bar');
+  expect(bars).toHaveLength(2);
+  const titles = [...bars].map((bar) => bar.querySelector('title')?.textContent ?? '');
+  expect(titles.some((t) => t.includes('2026-10-01'))).toBe(true);
+  expect(titles.some((t) => t.includes('2026-10-03'))).toBe(false);
+  // Visible axes: zero baseline tick plus horizontal date labels.
+  expect(within(chart).getByText('0')).toBeInTheDocument();
+  expect(
+    screen.getByText(/Metric: agent attempts per UTC calendar day/),
+  ).toBeInTheDocument();
+  // The gap day is labeled on the axis and tabulated with exact values.
+  expect(within(chart).getByText('10-03')).toBeInTheDocument();
+  const tableToggle = screen.getByText(/Daily table \(5 days, UTC\)/);
+  await userEvent.setup().click(tableToggle);
+  const table = screen.getByRole('table', {
+    name: /reported USD subtotal per UTC day/i,
+  });
+  const gapRow = within(table).getByRole('row', { name: /2026-10-03/ });
+  expect(gapRow).toHaveTextContent('0');
+  expect(within(table).getByRole('row', { name: /2026-10-01/ })).toHaveTextContent(
+    'USD 1.50',
+  );
+  expect(screen.getAllByText(/missing reports excluded/)).toHaveLength(2);
+});
+
+it('renders a bounded single-day chart without giant blocks', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  const summary = emptyUsageSummary();
+  summary.runsScanned = 1;
+  summary.totals.runs = 1;
+  summary.totals.agentAttempts = 2;
+  summary.days = [
+    {
+      day: '2026-10-07',
+      runs: 1,
+      agentAttempts: 2,
+      reportedUsd: 0.4,
+      inputTokens: 10,
+      outputTokens: 5,
+    },
+  ];
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  const { container } = render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-07' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-10-07' },
+  });
+  await screen.findByRole('img', {
+    name: /Agent attempts per UTC day from 2026-10-07 to 2026-10-07/,
+  });
+  const bars = container.querySelectorAll('rect.usage-bar');
+  expect(bars).toHaveLength(1);
+  const svg = container.querySelector('svg.usage-chart');
+  expect(svg?.getAttribute('style')).toContain('height: 240');
+  // A two-attempt day uses integer ticks only — never fractional steps.
+  const ticks = [...(svg?.querySelectorAll('text') ?? [])].map((t) => t.textContent);
+  expect(ticks).toContain('0');
+  expect(ticks).toContain('2');
+  expect(ticks.every((t) => /^\d+$/.test(t) || /^\d{2}-\d{2}$/.test(t))).toBe(true);
+});
+
+it('rejects reversed dates with inline validation before requesting', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  const usage = vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  render(<UsageView />);
+  await waitFor(() => expect(usage).toHaveBeenCalledTimes(1));
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-10' },
+  });
+  await waitFor(() => expect(usage).toHaveBeenCalledTimes(2));
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-10-05' },
+  });
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Start date must be on or before the end date.',
+  );
+  expect(usage).toHaveBeenCalledTimes(2);
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-10-12' },
+  });
+  await waitFor(() => expect(usage).toHaveBeenCalledTimes(3));
+});
+
+it('applies date presets and resets every filter', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  render(<UsageView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Last 7 days' }));
+  const weekAgo = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+  await waitFor(() =>
+    expect(screen.getByLabelText('From (inclusive)')).toHaveValue(weekAgo),
+  );
+  await user.selectOptions(screen.getByLabelText('Provider'), 'codex');
+  await user.type(screen.getByLabelText('Model'), 'gpt-x');
+  await user.click(screen.getByRole('button', { name: 'Reset filters' }));
+  expect(screen.getByLabelText('Provider')).toHaveValue('');
+  expect(screen.getByLabelText('Model')).toHaveValue('');
+});
+
+it('keeps subscription drafts and reports failure without claiming success', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  vi.spyOn(backend, 'setSetting').mockRejectedValueOnce(new Error('disk full'));
+  render(<UsageView />);
+  const user = userEvent.setup();
+  await screen.findByText(/No runs in this range/);
+  await user.type(screen.getByLabelText('Fee label'), 'Claude');
+  await user.type(screen.getByLabelText('Fee amount (USD)'), '120');
+  await user.type(
+    screen.getByLabelText('Billing period (UTC range)'),
+    '2026-10-01/2026-11-01',
+  );
+  await user.click(screen.getByRole('button', { name: 'Add fee' }));
+  await user.type(screen.getByLabelText('Orchevia share %'), '50');
+  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('disk full');
+  expect(screen.queryByText(/Subscription settings saved/)).not.toBeInTheDocument();
+  // The draft survives the failure and still needs saving.
+  expect(screen.getByRole('row', { name: /Claude/ })).toHaveTextContent('USD 120.00');
+  expect(screen.getByText(/Unsaved changes/)).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Save subscription settings' }),
+  ).toBeEnabled();
+});
+
+function modelSummary(): UsageSummary {
+  const summary = emptyUsageSummary();
+  summary.runsScanned = 3;
+  summary.totals.runs = 3;
+  summary.totals.agentAttempts = 9;
+  const coverage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningOutputTokens: 0,
+    toolCalls: 0,
+    subagents: 0,
+  };
+  summary.byModel = [
+    {
+      adapter: 'claude',
+      model: 'opus-full',
+      agentAttempts: 4,
+      inputTokens: 1000,
+      outputTokens: 500,
+      reportedUsd: 2,
+      reportedUsdAttempts: 4,
+      unknownUsdAttempts: 0,
+      observedToolCalls: 8,
+      observedSubagents: 0,
+      cachedInputTokens: 0,
+      cacheReadInputTokens: 200,
+      cacheCreationInputTokens: 100,
+      reasoningOutputTokens: 50,
+      coverage: {
+        ...coverage,
+        inputTokens: 4,
+        outputTokens: 4,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 4,
+        reasoningOutputTokens: 2,
+        toolCalls: 4,
+        subagents: 4,
+      },
+    },
+    {
+      adapter: 'codex',
+      model: 'gpt-partial',
+      agentAttempts: 4,
+      inputTokens: 300,
+      outputTokens: 0,
+      reportedUsd: 0,
+      reportedUsdAttempts: 0,
+      unknownUsdAttempts: 4,
+      observedToolCalls: 0,
+      observedSubagents: 0,
+      cachedInputTokens: 120,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      coverage: { ...coverage, inputTokens: 2, cachedInputTokens: 2 },
+    },
+    {
+      adapter: 'custom',
+      model: 'tiny',
+      agentAttempts: 1,
+      inputTokens: 10,
+      outputTokens: 5,
+      reportedUsd: 0.001,
+      reportedUsdAttempts: 1,
+      unknownUsdAttempts: 0,
+      observedToolCalls: 0,
+      observedSubagents: 0,
+      cachedInputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: 0,
+      coverage: { ...coverage, inputTokens: 1, outputTokens: 1 },
+    },
+  ];
+  return summary;
+}
+
+it('separates partial, unknown and measured-zero provider figures without inventing support', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(modelSummary());
+  render(<UsageView />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole('tab', { name: 'Provider & model' }));
+  const section = await screen.findByRole('tabpanel', {
+    name: 'By provider and model',
+  });
+  const full = within(section).getByRole('row', { name: /opus-full/ });
+  // Thousands separators and full-report values render plainly.
+  expect(full).toHaveTextContent('1,000');
+  expect(full).toHaveTextContent('USD 2.00');
+  // Reasoning reported 2/4 is genuinely partial; fully-reported subagents with
+  // value 0 render as measured zero, not Unknown.
+  expect(full).toHaveTextContent('partial');
+  expect(full).toHaveTextContent('Observed subagents0');
+  const partial = within(section).getByRole('row', { name: /gpt-partial/ });
+  // Partial input coverage is flagged; missing USD is unknown, not zero.
+  expect(partial).toHaveTextContent('partial');
+  expect(partial).toHaveTextContent('Unknown');
+  expect(partial).not.toHaveTextContent('unsupported');
+  expect(partial).not.toHaveTextContent('not applicable');
+  const tiny = within(section).getByRole('row', { name: /tiny/ });
+  // A small positive amount never reads as measured zero; exact in tooltip.
+  expect(tiny).toHaveTextContent('< USD 0.01');
+  expect(tiny.innerHTML).toContain('USD 0.0010');
 });
 
 it('shows an empty state when no runs exist in range', async () => {
@@ -235,4 +538,137 @@ it('shows an empty state when no runs exist in range', async () => {
   await waitFor(() =>
     expect(screen.getByText(/No runs in this range/)).toBeInTheDocument(),
   );
+});
+
+it('distinguishes unknown overview counters from measured zero and no attempts', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const summary = emptyUsageSummary();
+  summary.runsScanned = 1;
+  summary.totals.agentAttempts = 2;
+  summary.totals.coverage.subagents = 2;
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  render(<UsageView />);
+  const overview = await screen.findByRole('region', { name: 'Overview' });
+  const tools = within(overview).getByText('Observed tool calls').closest('.usage-card');
+  const subs = within(overview).getByText('Observed subagents').closest('.usage-card');
+  expect(tools?.querySelector('.usage-card-value')).toHaveTextContent('Unknown');
+  expect(subs?.querySelector('.usage-card-value')).toHaveTextContent('0');
+});
+
+it('keeps a year-long chart coordinate width bounded so its axes remain readable', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(usageSummaryWithDays());
+  render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-01-01' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-12-31' },
+  });
+  const chart = await screen.findByRole('img', { name: /from 2026-01-01 to 2026-12-31/ });
+  const width = Number(chart.getAttribute('viewBox')?.split(' ')[2]);
+  expect(width).toBeLessThanOrEqual(800);
+  expect(within(chart).getByText('0')).toBeInTheDocument();
+});
+
+it('retries failed subscription loading before allowing edits and saves', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  vi.spyOn(backend, 'getSetting').mockRejectedValueOnce(new Error('read failed'));
+  render(<UsageView />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('read failed');
+  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole('button', { name: 'Retry loading subscription settings' }),
+  );
+  await waitFor(() => expect(screen.getByLabelText('Orchevia share %')).toBeEnabled());
+  await user.type(screen.getByLabelText('Orchevia share %'), '50');
+  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  expect(await screen.findByText('Subscription settings saved.')).toBeInTheDocument();
+});
+
+it('locks subscription drafts during loading and saving', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  let finishLoad: (value: string | null) => void = () => {};
+  vi.spyOn(backend, 'getSetting').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishLoad = resolve;
+      }),
+  );
+  render(<UsageView />);
+  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  await act(async () => {
+    finishLoad(null);
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(screen.getByLabelText('Fee label')).toBeEnabled());
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText('Orchevia share %'), '50');
+  let finishSave: () => void = () => {};
+  vi.spyOn(backend, 'setSetting').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishSave = resolve;
+      }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  expect(screen.getByLabelText('Orchevia share %')).toBeDisabled();
+  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  await act(async () => {
+    finishSave();
+    await Promise.resolve();
+  });
+  expect(await screen.findByText('Subscription settings saved.')).toBeInTheDocument();
+});
+
+it('supports keyboard navigation between breakdown tabs', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(modelSummary());
+  render(<UsageView />);
+  const workflow = await screen.findByRole('tab', { name: 'Workflow' });
+  workflow.focus();
+  await userEvent.setup().keyboard('{ArrowRight}');
+  const profile = screen.getByRole('tab', { name: 'AI profile' });
+  expect(profile).toHaveFocus();
+  expect(profile).toHaveAttribute('aria-selected', 'true');
+  expect(workflow).toHaveAttribute('tabindex', '-1');
+  expect(screen.getByRole('tabpanel', { name: 'By AI profile' })).toHaveAttribute(
+    'id',
+    profile.getAttribute('aria-controls'),
+  );
+});
+
+it('keeps later active dates available in the daily table when the chart span is capped', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const summary = usageSummaryWithDays();
+  summary.days.push({
+    day: '2027-10-02',
+    runs: 1,
+    agentAttempts: 2,
+    reportedUsd: 0.000001,
+    inputTokens: 0,
+    outputTokens: 0,
+  });
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-01' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2027-10-02' },
+  });
+  await screen.findByRole('img');
+  await userEvent.setup().click(screen.getByText(/Daily table \(/));
+  const row = screen.getByRole('row', { name: /2027-10-02/ });
+  expect(row).toHaveTextContent('2');
+  expect(within(row).getByTitle('USD 0.000001')).toBeInTheDocument();
 });

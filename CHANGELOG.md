@@ -6,6 +6,57 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-10-15
+
+### Added
+
+- Inbox **Open run** now opens the exact run in Runs with its details selected:
+  it fetches by run ID (so older runs outside the recent 100 still resolve,
+  including runs whose workflow was deleted), retains the selected run across
+  list refreshes, guards navigation/selection races, blocks duplicate clicks,
+  and marks the notification read only after successful committed navigation.
+  Missing runs and backend failures surface an error and leave the item unread.
+  The workflow canvas overlay path (`Show on canvas`) is unchanged.
+- Usage date presets (Last 7 / 30 days), a reset-filters action, and inline
+  validation that blocks summary requests for invalid or reversed ranges.
+- An expandable daily data table (day, runs, attempts, reported USD subtotal)
+  backing the activity chart, plus a Workflow / AI profile / Provider & model
+  tabbed breakdown, thousands separators, right-aligned tabular numerals, and
+  two-decimal USD with exact precision in tooltips.
+- Subscription settings now track unsaved changes, disable Save while clean or
+  saving, confirm fee/extra removal, and report save failures without claiming
+  success or losing drafts.
+
+### Changed
+
+- The daily activity chart is a bounded-height panel with a labeled attempts
+  axis, integer ticks, gridlines, a zero baseline, capped bar widths, adaptive
+  date labels, and explicit zero-filled UTC days — sparse activity no longer
+  implies consecutive dates, and zero-attempt days draw no bar.
+- Usage overview cards carry one prominent value each with CLI-reported
+  coverage stated alongside; lengthy accounting explanations moved into
+  disclosures. `Unknown USD` is now `Attempts missing USD`; provider rows show
+  only reported cache/reasoning metrics with full counters behind disclosure.
+- Inbox rows use a dedicated kind/content/actions layout with a restrained
+  read/unread treatment instead of dimming the whole card.
+- Shared table headers, row hover, numeric alignment, and light-theme form
+  error contrast were polished without changing the dark-first identity.
+
+### Fixed
+
+- Zero-attempt days no longer render a positive-looking bar in the usage chart.
+- Selected older runs can no longer be dropped from Runs by a list refresh or
+  poll, and a late Inbox navigation can no longer override a newer selection.
+- Subscription fee/extra inputs use labeled field groups with stable alignment
+  and narrow amount/percentage widths instead of stretching full-width.
+- Inbox waits for run details before navigating, so the Runs mount refresh cannot
+  cancel notification read marking. Late list refreshes and transient retention
+  failures preserve the selected older run.
+- Unreported overview tool/subagent counts stay unknown; long-range charts retain
+  readable axes, and the daily table preserves later activity beyond the chart cap.
+- Subscription loading failures can be retried, draft controls lock during loading
+  and saving, and breakdown tabs support keyboard navigation.
+
 ## [0.1.14] - 2026-10-12
 
 ### Added
