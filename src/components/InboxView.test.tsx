@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { InboxView } from './InboxView';
+import { RunsView } from './RunsView';
 import { __setMockBackendForTests } from '../lib/backend';
 import { createEmptyWorkflow, type StoredRun } from '../lib/workflow';
 import { useAppStore } from '../store';
@@ -178,4 +179,51 @@ it('ignores duplicate Open run clicks while navigation is pending', async () => 
     await Promise.resolve();
   });
   await waitFor(() => expect(mark).toHaveBeenCalledTimes(1));
+});
+
+it('marks read when Runs mounts and refreshes the directly opened run', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'inbox-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-15T10:00:00Z',
+  };
+  let finish: (rows: []) => void = () => {};
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  const results = vi
+    .spyOn(backend, 'getRunResults')
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue([]);
+  const mark = vi.spyOn(backend, 'markNotificationRead').mockResolvedValue(undefined);
+  useAppStore.setState({
+    view: 'inbox',
+    notifications: [{ ...notification, runId: run.id }],
+    runs: [],
+    activeRunId: null,
+    runResults: {},
+    runResultStatus: {},
+  });
+  function NavigationHarness(): React.JSX.Element {
+    const view = useAppStore((state) => state.view);
+    return view === 'runs' ? <RunsView /> : <InboxView />;
+  }
+  render(<NavigationHarness />);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Open run' }));
+  await waitFor(() => expect(results).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    finish([]);
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(mark).toHaveBeenCalledWith(notification.id));
+  expect(useAppStore.getState().view).toBe('runs');
+  expect(useAppStore.getState().activeRunId).toBe(run.id);
 });

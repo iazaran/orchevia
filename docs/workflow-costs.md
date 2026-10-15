@@ -224,7 +224,10 @@ profile and Provider & model breakdown. Boundaries are inclusive start /
 exclusive end, grouped by UTC day with the display timezone shown. The chart is
 a bounded panel of agent attempts per UTC day with zero-filled gaps and an
 expandable daily table; daily USD stays a reported subtotal, not proven
-coverage. Workflow names and adapter/model identity are recorded
+coverage. The filled chart span is capped at 366 days; longer ranges retain all
+actual days with runs in the daily table. Unreported tool/subagent counters stay
+unknown. Subscription settings can retry loading and lock draft controls while
+loading or saving. Workflow names and adapter/model identity are recorded
 at execution time; legacy rows stay “unknown”, never zero. Fixtures and reused
 outputs contribute no new consumption; duplicate terminal events and
 parent/subagent wrapper rows are not double-counted. Workflow-run counts are

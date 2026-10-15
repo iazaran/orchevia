@@ -46,7 +46,7 @@ Release v0.1.15 is being prepared. The permanent installer links below target th
 version; they become available after the matching tag's release workflow succeeds
 (pending publication).
 See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.15).
-Until then, use the [published v0.1.11 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.11).
+Until then, use the [published v0.1.14 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.14).
 A merged PR alone does not build installers.
 
 The repository and release files are **private for now**: sign in to GitHub with an

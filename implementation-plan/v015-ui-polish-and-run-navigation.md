@@ -34,14 +34,17 @@ Application version `0.1.14` → `0.1.15`. Workflow schema unchanged (no bump).
    table (label, amount, period, allocation status, Remove with confirmDialog),
    legacy/outside-allocation entries preserved, UTC billing semantics kept,
    dirty tracking with Save disabled while clean/saving, "Unsaved changes"
-   hint, stale "saved" feedback cleared on edit, all-or-nothing success claim,
-   drafts preserved on failure. Sections render even with no matching history.
+   hint, stale "saved" feedback cleared on edit, success reported only after
+   every required write succeeds, drafts preserved on failure. Sections render
+   even with no matching history. Loading and saving lock the draft controls;
+   failed initial loading has an explicit retry action.
 4. **Inbox navigation** (`store.ts`, `InboxView.tsx`): new `openRunInRuns`
    store action fetches by run ID (works outside `listRuns(100)` and for runs
-   whose workflow was deleted — only the run row is read), commits view/runs/
-   selection/results under navigation+selection sequence guards, and returns
-   false (no commit) when superseded. `refreshRuns` retains the selected run by
-   fetching it when absent from the recent list. Inbox uses an inbox-specific
+   whose workflow was deleted), loads run details before atomically committing
+   view/runs/selection/results under navigation+selection sequence guards, and
+   returns false (no commit) when superseded. `refreshRuns` retains the selected
+   run by fetching it when absent from the recent list, preserves cached rows on
+   transient failures, and cannot drop a newer selection. Inbox uses an inbox-specific
    kind/content/actions layout (shared `.run-row` untouched), restrained
    read/unread treatment (accent edge + marker, no whole-card dimming),
    per-item pending with a ref guard against duplicate clicks, mark-read only
@@ -82,6 +85,27 @@ Application version `0.1.14` → `0.1.15`. Workflow schema unchanged (no bump).
 - Browser/mock validation only: no installed-desktop check, no paid CLI
   sessions, no real provider data (all usage figures above are mock/seeded).
 - CSS layout correctness is asserted by screenshot inspection, not jsdom.
-- Daily table caps its zero-filled span at 366 days with an explicit note.
+- The chart caps its zero-filled span at 366 days with an explicit note; for
+  longer ranges, the daily table retains every actual day with runs.
 - Toast popups from the app's 5s notification poll are a separate pre-existing
   behavior, unaffected by the Inbox layout change.
+
+## Independent review fixes
+
+- Reproduced eight failing regressions before fixes: premature Inbox navigation,
+  newer-selection races, late retention refreshes, transient retention failures,
+  unknown overview counters displayed as zero, shrinking long-span chart axes,
+  settings loading without retry, and unlocked drafts during loading/saving.
+- Added a mounted Inbox/Runs integration regression, keyboard tab coverage, and
+  a daily-table/tiny-USD precision regression. Fixed coordinates keep chart labels
+  readable as the date span grows; bar widths shrink instead of the whole plot.
+- Browser fixtures confirmed aligned allocation controls at 960/1280/1685px,
+  readable chart geometry, dark/light styling, no page overflow, equal Inbox
+  action columns for read/unread rows, and exact-run navigation with an orphaned
+  run outside the recent list. The temporary fixture was removed after review.
+- Final review validation passed: `pnpm check` (329 UI tests, 15 delivery tests),
+  `pnpm build`, 403 core tests, Clippy with warnings denied, Rust formatting,
+  desktop compilation, 5 desktop tests, version/tag consistency, and whitespace
+  checks. Delivery tests required an unsandboxed rerun because the sandbox denied
+  their temporary Git subprocess. The independent re-review found no remaining
+  P1/P2 issues. Native installed-desktop/provider verification remains unperformed.

@@ -240,13 +240,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
         const retained = await backend.getRun(selected);
         if (request !== runsRefreshSequence) return;
         if (get().activeRunId !== selected) {
-          set({ runs });
           return;
         }
         set({ runs: retained === null ? runs : [retained, ...runs] });
       } catch {
         if (request !== runsRefreshSequence) return;
-        set({ runs });
+        // A transient fetch failure is not evidence that the selected run was
+        // deleted. Keep its cached row instead of blanking its detail pane.
+        const cached = get().runs.find((run) => run.id === selected);
+        if (get().activeRunId === selected)
+          set({ runs: cached === undefined ? runs : [cached, ...runs] });
       }
       return;
     }
@@ -430,30 +433,26 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const backend = getBackend();
     const run = await backend.getRun(runId);
     if (run === null) throw new Error(`Unknown run '${runId}'.`);
-    if (request !== navigationSequence) return false;
-    set((current) => ({
-      view: 'runs',
-      activeRunId: runId,
-      runs: current.runs.some((r) => r.id === runId)
-        ? current.runs.map((r) => (r.id === runId ? run : r))
-        : [run, ...current.runs],
-    }));
-    const status = run.status;
+    if (request !== navigationSequence || selection !== runSelectionSequence)
+      return false;
+    // Load before mounting Runs: its mount refresh selects the run again and
+    // would otherwise invalidate this navigation before Inbox can mark read.
     const results = await backend.getRunResults(runId);
-    if (
-      request !== navigationSequence ||
-      selection !== runSelectionSequence ||
-      get().activeRunId !== runId
-    )
+    if (request !== navigationSequence || selection !== runSelectionSequence)
       return false;
     const { runResults, runResultStatus } = get();
     const cached = runResults[runId];
+    // A pending recent-list/retention fetch must not remove this older run.
+    runsRefreshSequence++;
     set({
+      view: 'runs',
+      activeRunId: runId,
+      runs: [run, ...get().runs.filter((existing) => existing.id !== runId)],
       runResults:
         cached !== undefined && sameNodeResults(cached, results)
           ? runResults
           : { ...runResults, [runId]: results },
-      runResultStatus: { ...runResultStatus, [runId]: status },
+      runResultStatus: { ...runResultStatus, [runId]: run.status },
     });
     return true;
   },
@@ -555,6 +554,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   selectRun: async (id) => {
     const request = ++runSelectionSequence;
+    runsRefreshSequence++;
     set({ activeRunId: id });
     if (id === null) return;
     const backend = getBackend();

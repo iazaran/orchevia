@@ -49,6 +49,13 @@ All notable changes are recorded here, following
   poll, and a late Inbox navigation can no longer override a newer selection.
 - Subscription fee/extra inputs use labeled field groups with stable alignment
   and narrow amount/percentage widths instead of stretching full-width.
+- Inbox waits for run details before navigating, so the Runs mount refresh cannot
+  cancel notification read marking. Late list refreshes and transient retention
+  failures preserve the selected older run.
+- Unreported overview tool/subagent counts stay unknown; long-range charts retain
+  readable axes, and the daily table preserves later activity beyond the chart cap.
+- Subscription loading failures can be retried, draft controls lock during loading
+  and saving, and breakdown tabs support keyboard navigation.
 
 ## [0.1.14] - 2026-10-12
 

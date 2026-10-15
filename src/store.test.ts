@@ -661,3 +661,97 @@ it('refreshRuns falls back to the listed runs when the selected run is gone', as
   await useAppStore.getState().refreshRuns();
   expect(useAppStore.getState().runs.map((run) => run.id)).toEqual([second.runId]);
 });
+
+it('loads Inbox run details before mounting Runs so its refresh cannot cancel navigation', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'inbox-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-15T10:00:00Z',
+  };
+  let finish: (rows: StoredNodeResult[]) => void = () => {};
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  const loadResults = vi.spyOn(backend, 'getRunResults').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  useAppStore.setState({ view: 'inbox', runs: [], activeRunId: null, runResults: {} });
+  const opening = useAppStore.getState().openRunInRuns(run.id);
+  await vi.waitFor(() => expect(loadResults).toHaveBeenCalled());
+  expect(useAppStore.getState().view).toBe('inbox');
+  finish([resultRow(run.id)]);
+  expect(await opening).toBe(true);
+  expect(useAppStore.getState().view).toBe('runs');
+  expect(useAppStore.getState().runResults[run.id]).toEqual([resultRow(run.id)]);
+});
+
+it('does not let a pending Inbox fetch replace a newer run selection', async () => {
+  const backend = __setMockBackendForTests();
+  let finish: (run: StoredRun | null) => void = () => {};
+  vi.spyOn(backend, 'getRun').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  useAppStore.setState({ view: 'inbox', runs: [], activeRunId: null });
+  const opening = useAppStore.getState().openRunInRuns('old');
+  await useAppStore.getState().selectRun('new');
+  finish({
+    id: 'old',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-15T10:00:00Z',
+  });
+  expect(await opening).toBe(false);
+  expect(useAppStore.getState().activeRunId).toBe('new');
+});
+
+it('does not let an older retention refresh drop a newly opened older run', async () => {
+  const backend = __setMockBackendForTests();
+  const old: StoredRun = {
+    id: 'old-a',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-01T10:00:00Z',
+  };
+  const newer = { ...old, id: 'old-b' };
+  const recent = { ...old, id: 'recent' };
+  let finish: (run: StoredRun | null) => void = () => {};
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([recent]);
+  const getRetainedRun = vi.spyOn(backend, 'getRun').mockImplementation((id) =>
+    id === old.id
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(newer),
+  );
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  useAppStore.setState({ view: 'inbox', runs: [old], activeRunId: old.id });
+  const refresh = useAppStore.getState().refreshRuns();
+  await vi.waitFor(() => expect(getRetainedRun).toHaveBeenCalledWith(old.id));
+  expect(await useAppStore.getState().openRunInRuns(newer.id)).toBe(true);
+  finish(old);
+  await refresh;
+  expect(useAppStore.getState().activeRunId).toBe(newer.id);
+  expect(useAppStore.getState().runs.some((run) => run.id === newer.id)).toBe(true);
+});
+
+it('keeps a cached selected older run when its retention fetch temporarily fails', async () => {
+  const backend = __setMockBackendForTests();
+  const selected: StoredRun = {
+    id: 'old',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-01T10:00:00Z',
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRun').mockRejectedValue(new Error('temporarily unavailable'));
+  useAppStore.setState({ runs: [selected], activeRunId: selected.id });
+  await useAppStore.getState().refreshRuns();
+  expect(useAppStore.getState().runs).toContainEqual(selected);
+});

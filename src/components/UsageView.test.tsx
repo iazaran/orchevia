@@ -539,3 +539,136 @@ it('shows an empty state when no runs exist in range', async () => {
     expect(screen.getByText(/No runs in this range/)).toBeInTheDocument(),
   );
 });
+
+it('distinguishes unknown overview counters from measured zero and no attempts', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const summary = emptyUsageSummary();
+  summary.runsScanned = 1;
+  summary.totals.agentAttempts = 2;
+  summary.totals.coverage.subagents = 2;
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  render(<UsageView />);
+  const overview = await screen.findByRole('region', { name: 'Overview' });
+  const tools = within(overview).getByText('Observed tool calls').closest('.usage-card');
+  const subs = within(overview).getByText('Observed subagents').closest('.usage-card');
+  expect(tools?.querySelector('.usage-card-value')).toHaveTextContent('Unknown');
+  expect(subs?.querySelector('.usage-card-value')).toHaveTextContent('0');
+});
+
+it('keeps a year-long chart coordinate width bounded so its axes remain readable', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(usageSummaryWithDays());
+  render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-01-01' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2026-12-31' },
+  });
+  const chart = await screen.findByRole('img', { name: /from 2026-01-01 to 2026-12-31/ });
+  const width = Number(chart.getAttribute('viewBox')?.split(' ')[2]);
+  expect(width).toBeLessThanOrEqual(800);
+  expect(within(chart).getByText('0')).toBeInTheDocument();
+});
+
+it('retries failed subscription loading before allowing edits and saves', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  vi.spyOn(backend, 'getSetting').mockRejectedValueOnce(new Error('read failed'));
+  render(<UsageView />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('read failed');
+  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole('button', { name: 'Retry loading subscription settings' }),
+  );
+  await waitFor(() => expect(screen.getByLabelText('Orchevia share %')).toBeEnabled());
+  await user.type(screen.getByLabelText('Orchevia share %'), '50');
+  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  expect(await screen.findByText('Subscription settings saved.')).toBeInTheDocument();
+});
+
+it('locks subscription drafts during loading and saving', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
+  let finishLoad: (value: string | null) => void = () => {};
+  vi.spyOn(backend, 'getSetting').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishLoad = resolve;
+      }),
+  );
+  render(<UsageView />);
+  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  await act(async () => {
+    finishLoad(null);
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(screen.getByLabelText('Fee label')).toBeEnabled());
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText('Orchevia share %'), '50');
+  let finishSave: () => void = () => {};
+  vi.spyOn(backend, 'setSetting').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishSave = resolve;
+      }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  expect(screen.getByLabelText('Orchevia share %')).toBeDisabled();
+  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  await act(async () => {
+    finishSave();
+    await Promise.resolve();
+  });
+  expect(await screen.findByText('Subscription settings saved.')).toBeInTheDocument();
+});
+
+it('supports keyboard navigation between breakdown tabs', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(modelSummary());
+  render(<UsageView />);
+  const workflow = await screen.findByRole('tab', { name: 'Workflow' });
+  workflow.focus();
+  await userEvent.setup().keyboard('{ArrowRight}');
+  const profile = screen.getByRole('tab', { name: 'AI profile' });
+  expect(profile).toHaveFocus();
+  expect(profile).toHaveAttribute('aria-selected', 'true');
+  expect(workflow).toHaveAttribute('tabindex', '-1');
+  expect(screen.getByRole('tabpanel', { name: 'By AI profile' })).toHaveAttribute(
+    'id',
+    profile.getAttribute('aria-controls'),
+  );
+});
+
+it('keeps later active dates available in the daily table when the chart span is capped', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const summary = usageSummaryWithDays();
+  summary.days.push({
+    day: '2027-10-02',
+    runs: 1,
+    agentAttempts: 2,
+    reportedUsd: 0.000001,
+    inputTokens: 0,
+    outputTokens: 0,
+  });
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  render(<UsageView />);
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-01' },
+  });
+  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
+    target: { value: '2027-10-02' },
+  });
+  await screen.findByRole('img');
+  await userEvent.setup().click(screen.getByText(/Daily table \(/));
+  const row = screen.getByRole('row', { name: /2027-10-02/ });
+  expect(row).toHaveTextContent('2');
+  expect(within(row).getByTitle('USD 0.000001')).toBeInTheDocument();
+});
