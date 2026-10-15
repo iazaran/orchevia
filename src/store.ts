@@ -98,6 +98,7 @@ interface AppState {
   selectNode: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
   openRunOnCanvas: (runId: string) => Promise<boolean>;
+  openRunInRuns: (runId: string) => Promise<boolean>;
   refreshRunOverlay: () => Promise<void>;
   showRunOverlay: (runId: string | null) => Promise<void>;
   updateActiveWorkflow: (workflow: Workflow) => void;
@@ -230,7 +231,26 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const backend = getBackend();
     const request = ++runsRefreshSequence;
     const runs = await backend.listRuns(100);
-    if (request === runsRefreshSequence) set({ runs });
+    if (request !== runsRefreshSequence) return;
+    // A directly opened older run may sit outside the recent list. Retain the
+    // selection across refreshes so polling cannot remove it from under Runs.
+    const selected = get().activeRunId;
+    if (selected !== null && !runs.some((run) => run.id === selected)) {
+      try {
+        const retained = await backend.getRun(selected);
+        if (request !== runsRefreshSequence) return;
+        if (get().activeRunId !== selected) {
+          set({ runs });
+          return;
+        }
+        set({ runs: retained === null ? runs : [retained, ...runs] });
+      } catch {
+        if (request !== runsRefreshSequence) return;
+        set({ runs });
+      }
+      return;
+    }
+    set({ runs });
   },
 
   refreshTools: async () => {
@@ -399,6 +419,43 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     await get().openRunOnCanvas(runId);
+  },
+  openRunInRuns: async (runId) => {
+    // Inbox "Open run": show this exact run in Runs, not the canvas overlay.
+    // Fetches by run ID so older runs outside listRuns(100) still resolve,
+    // and runs whose workflow was deleted still open (the stored run row is
+    // what Runs renders; its snapshot workflow loads like any selection).
+    const request = ++navigationSequence;
+    const selection = ++runSelectionSequence;
+    const backend = getBackend();
+    const run = await backend.getRun(runId);
+    if (run === null) throw new Error(`Unknown run '${runId}'.`);
+    if (request !== navigationSequence) return false;
+    set((current) => ({
+      view: 'runs',
+      activeRunId: runId,
+      runs: current.runs.some((r) => r.id === runId)
+        ? current.runs.map((r) => (r.id === runId ? run : r))
+        : [run, ...current.runs],
+    }));
+    const status = run.status;
+    const results = await backend.getRunResults(runId);
+    if (
+      request !== navigationSequence ||
+      selection !== runSelectionSequence ||
+      get().activeRunId !== runId
+    )
+      return false;
+    const { runResults, runResultStatus } = get();
+    const cached = runResults[runId];
+    set({
+      runResults:
+        cached !== undefined && sameNodeResults(cached, results)
+          ? runResults
+          : { ...runResults, [runId]: results },
+      runResultStatus: { ...runResultStatus, [runId]: status },
+    });
+    return true;
   },
 
   updateActiveWorkflow: (workflow) => {
