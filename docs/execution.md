@@ -153,10 +153,12 @@ name validity and uniqueness. See `workflow-schema.md` for the code list.
 
 Inbox shows unread notifications by default. Mark read removes an item from
 that view; Show read history makes it accessible again. Open run retrieves that
-specific run directly, including runs beyond the recent list, and opens its
-saved graph and results. A successful navigation marks the item read; errors
-remain visible and leave it unread. Show on canvas in Runs uses the same path.
-Run graphs are read-only snapshots and refresh their outputs while displayed.
+specific run directly, including runs beyond the recent list, and opens it in
+Runs with its details selected; the selection survives list refreshes. A
+successful navigation marks the item read; errors remain visible and leave it
+unread. Show on canvas in Runs opens the same run's saved graph and results as
+a read-only overlay instead. Run graphs are read-only snapshots and refresh
+their outputs while displayed.
 Use Edit saved workflow to return to the editable definition. Historical runs
 created before snapshots use the saved definition as their existing fallback.
 

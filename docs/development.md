@@ -124,11 +124,13 @@ Finder workaround is applied without evidence of the underlying error.
 2. Merge after **CI result** and **Validate docs site** pass. Main CI checks the
    merged source; Pages deploys changed site files. Neither builds installers.
 3. Fetch the merged commit and check its version before creating a new tag.
-   For this release, the application, both Cargo manifests, Tauri configuration,
-   Cargo lock workspace packages and dated changelog entry must read `0.1.12`.
-4. The maintainer creates `v0.1.12` on that merged commit and pushes the tag. Do not
-   move or recreate an existing version tag. The Release workflow builds all
-   supported platforms from the tag and publishes permanent GitHub assets.
+   The application version, both Cargo manifests, Tauri configuration,
+   Cargo lock workspace packages and dated changelog entry must all read the
+   release version being prepared (e.g. `0.1.15` for the v0.1.15 release).
+4. The maintainer creates `v<version>` (e.g. `v0.1.15`) on that merged commit
+   and pushes the tag. Do not move or recreate an existing version tag. The
+   Release workflow builds all supported platforms from the tag and publishes
+   permanent GitHub assets.
 5. Verify the successful Release run and all four nonempty installer assets plus
    `SHA256SUMS`. Check that the README's versioned URLs match the exact filenames.
    Download the checksum file and compare its hashes with GitHub's asset digests;
@@ -136,16 +138,17 @@ Finder workaround is applied without evidence of the underlying error.
 6. Smoke-test installation and a small real workflow on Linux, Apple Silicon and
    Intel macOS before claiming those native paths are verified.
 
-Example maintainer commands, **after merge** and after checking the intended commit:
+Example maintainer commands, **after merge** and after checking the intended commit
+(substitute the release version for `<version>`):
 
 ```bash
 git switch main
 git pull --ff-only
-pnpm version:check v0.1.12
-git tag v0.1.12
-git push origin v0.1.12
+pnpm version:check v<version>
+git tag v<version>
+git push origin v<version>
 gh run list --workflow release.yml --limit 5
-gh release view v0.1.12 --json url,assets
+gh release view v<version> --json url,assets
 ```
 
 Use the [README's permanent versioned installer links](../README.md#install) for `.deb`,
@@ -215,9 +218,11 @@ cargo clippy -p orchevia-core --all-targets -- -D warnings
 cargo fmt --check
 cargo check -p orchevia
 cargo test -p orchevia
-pnpm version:check v0.1.12
+pnpm version:check v<version>
 git diff --check
 ```
+
+Substitute the release version under preparation for `<version>`.
 
 When changing behavior, find the existing implementation pattern first, add a
 regression that fails for the original issue, and run it after the fix. Keep

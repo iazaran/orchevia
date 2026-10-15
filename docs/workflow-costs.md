@@ -218,10 +218,13 @@ manufacture enforcement that does not exist.
 ## Usage & costs page
 
 **Usage & costs** (after Environment) aggregates run history in the backend over
-every stored run — never a capped recent list — with date range,
-workflow/provider/model filters, a daily chart, and workflow, AI profile and model tables.
-Boundaries are inclusive start / exclusive end, grouped by UTC day with the
-display timezone shown. Workflow names and adapter/model identity are recorded
+every stored run — never a capped recent list — with date presets and range,
+workflow/provider/model filters, a daily chart, and a tabbed Workflow, AI
+profile and Provider & model breakdown. Boundaries are inclusive start /
+exclusive end, grouped by UTC day with the display timezone shown. The chart is
+a bounded panel of agent attempts per UTC day with zero-filled gaps and an
+expandable daily table; daily USD stays a reported subtotal, not proven
+coverage. Workflow names and adapter/model identity are recorded
 at execution time; legacy rows stay “unknown”, never zero. Fixtures and reused
 outputs contribute no new consumption; duplicate terminal events and
 parent/subagent wrapper rows are not double-counted. Workflow-run counts are
