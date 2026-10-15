@@ -109,3 +109,12 @@ Application version `0.1.14` → `0.1.15`. Workflow schema unchanged (no bump).
   checks. Delivery tests required an unsandboxed rerun because the sandbox denied
   their temporary Git subprocess. The independent re-review found no remaining
   P1/P2 issues. Native installed-desktop/provider verification remains unperformed.
+
+## CI follow-up
+
+CI caught a stale public-documentation assertion that still required the README's
+fallback installer link to point to v0.1.11. The README correctly points to the
+published v0.1.14 predecessor while v0.1.15 remains pending. Updated the assertion
+without relaxing publication/private-access checks, reproduced its original
+failure, and verified all eight documentation tests pass with the locked
+dependencies installed. Full local gates were rerun before pushing the correction.
