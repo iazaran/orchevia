@@ -3,8 +3,10 @@ import { getBackend } from '../lib/backend';
 import { ADAPTER_LABELS, referencedVariables } from '../lib/agents';
 import { parseCondition, renderCondition, type ConditionOp } from '../lib/conditions';
 import { NODE_KIND_META, setWorkflowDefaults, type Workflow } from '../lib/workflow';
+import { profileGrants } from '../lib/permissions';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
+import { ToolRulesField } from './ToolRulesField';
 import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
@@ -1345,6 +1347,29 @@ export function NodeInspector(): React.JSX.Element | null {
               })()}
             </span>
           </div>
+          <ToolRulesField
+            key={`required-tools-${node.id}`}
+            id="node-required-tools"
+            label="Required tools (optional)"
+            value={node.config.requiredTools ?? []}
+            placeholder={'mcp__jira\nBash(git status *)'}
+            onChange={(rules) => {
+              const config = { ...node.config };
+              if (rules.length === 0) delete config.requiredTools;
+              else config.requiredTools = rules;
+              patch(config, node.label);
+            }}
+            hint={(() => {
+              const profile = profiles.find((p) => p.id === node.config.agentProfileId);
+              const missing =
+                profile?.adapter === 'claude'
+                  ? (node.config.requiredTools ?? []).filter(
+                      (rule) => !profileGrants(profile, rule),
+                    )
+                  : [];
+              return `Claude Code allow rules this step needs, one per line. Exports and templates carry them; import and run start offer to add missing ones to the chosen profile.${missing.length > 0 && profile !== undefined ? ` ${profile.name} does not grant: ${missing.join(', ')}.` : ''}`;
+            })()}
+          />
           <div className="field">
             <label className="field-label" htmlFor="node-session-group">
               Session group

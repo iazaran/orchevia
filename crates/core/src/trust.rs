@@ -5,6 +5,7 @@
 //! anything above read-only requires an explicit per-schedule `trusted`
 //! opt-in. Imported/created schedules start disabled regardless.
 
+use crate::agents::AgentProfile;
 use crate::workflow::{NodeKind, Workflow};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -17,6 +18,10 @@ pub enum RiskCategory {
     RepositoryMutation,
     RemoteWrite,
     ExternalTool,
+    /// An Agent node's profile bypasses every CLI permission check (the Full
+    /// access level, or extra arguments that do the same). High risk: the
+    /// CLI may run any tool, unattended.
+    FullAccessAgent,
 }
 
 impl RiskCategory {
@@ -27,6 +32,9 @@ impl RiskCategory {
             RiskCategory::RepositoryMutation => "Create commits / branches",
             RiskCategory::RemoteWrite => "Push / create or comment on PRs",
             RiskCategory::ExternalTool => "Invoke external tools (AI CLI / MCP)",
+            RiskCategory::FullAccessAgent => {
+                "Run AI CLI with full access (permission checks bypassed)"
+            }
         }
     }
 }
@@ -87,10 +95,49 @@ pub fn workflow_risks(workflow: &Workflow) -> BTreeSet<RiskCategory> {
     risks
 }
 
+/// [`workflow_risks`] plus what the configured Agent Profiles allow: a node
+/// whose profile has full access adds [`RiskCategory::FullAccessAgent`]. A
+/// node that names only a role counts every profile with that role.
+pub fn workflow_risks_with_profiles(
+    workflow: &Workflow,
+    profiles: &[AgentProfile],
+) -> BTreeSet<RiskCategory> {
+    let mut risks = workflow_risks(workflow);
+    let full_access = workflow
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Agent)
+        .any(|node| {
+            let id = node
+                .config
+                .agent_profile_id
+                .as_deref()
+                .filter(|id| !id.trim().is_empty());
+            profiles
+                .iter()
+                .filter(|profile| match id {
+                    Some(id) => profile.id == id,
+                    None => {
+                        node.config.agent_role.is_some() && profile.role == node.config.agent_role
+                    }
+                })
+                .any(AgentProfile::has_full_access)
+        });
+    if full_access {
+        risks.insert(RiskCategory::FullAccessAgent);
+    }
+    risks
+}
+
 /// Whether a schedule may be enabled: read-only always; anything else needs
-/// the explicit trusted opt-in.
-pub fn may_enable_schedule(workflow: &Workflow, trusted: bool) -> Result<(), String> {
-    let risks = workflow_risks(workflow);
+/// the explicit trusted opt-in. Profiles decide whether an Agent node runs
+/// with full access, which is listed as its own risk.
+pub fn may_enable_schedule(
+    workflow: &Workflow,
+    profiles: &[AgentProfile],
+    trusted: bool,
+) -> Result<(), String> {
+    let risks = workflow_risks_with_profiles(workflow, profiles);
     let write = risks.iter().any(|r| *r != RiskCategory::ReadOnly);
     if write && !trusted {
         let labels: Vec<&str> = risks
@@ -137,14 +184,14 @@ mod tests {
     #[test]
     fn read_only_workflow_needs_no_trust() {
         let wf = workflow_with(vec![node("a", NodeKind::Start), node("b", NodeKind::End)]);
-        assert!(may_enable_schedule(&wf, false).is_ok());
+        assert!(may_enable_schedule(&wf, &[], false).is_ok());
     }
 
     #[test]
     fn command_workflow_requires_trust() {
         let wf = workflow_with(vec![node("a", NodeKind::Command)]);
-        assert!(may_enable_schedule(&wf, false).is_err());
-        assert!(may_enable_schedule(&wf, true).is_ok());
+        assert!(may_enable_schedule(&wf, &[], false).is_err());
+        assert!(may_enable_schedule(&wf, &[], true).is_ok());
     }
 
     #[test]
@@ -161,7 +208,7 @@ mod tests {
         let mut n = node("g", NodeKind::Git);
         n.config.git_op = Some(GitOp::Status);
         let wf = workflow_with(vec![n]);
-        assert!(may_enable_schedule(&wf, false).is_ok());
+        assert!(may_enable_schedule(&wf, &[], false).is_ok());
     }
 
     #[test]
@@ -183,6 +230,60 @@ mod tests {
         let risks = workflow_risks(&wf);
         assert!(risks.contains(&RiskCategory::RepositoryMutation));
         assert!(risks.contains(&RiskCategory::RemoteWrite));
-        assert!(may_enable_schedule(&wf, false).is_err());
+        assert!(may_enable_schedule(&wf, &[], false).is_err());
+    }
+
+    fn profile(id: &str, role: &str, level: crate::agents::PermissionLevel) -> AgentProfile {
+        let mut profile: AgentProfile = serde_json::from_value(serde_json::json!({
+            "id": id, "name": id, "adapter": "claude", "role": role,
+            "extraArgs": [], "workingDirMode": "node", "defaultTimeoutSecs": 60
+        }))
+        .unwrap();
+        profile.permission_level = level;
+        profile
+    }
+
+    #[test]
+    fn full_access_profiles_are_a_separate_high_risk() {
+        use crate::agents::PermissionLevel;
+        let mut agent = node("a", NodeKind::Agent);
+        agent.config.agent_profile_id = Some("full".into());
+        let wf = workflow_with(vec![agent]);
+        let profiles = vec![
+            profile("full", "implementation", PermissionLevel::FullAccess),
+            profile("tools", "fastReview", PermissionLevel::AllowedTools),
+        ];
+        let risks = workflow_risks_with_profiles(&wf, &profiles);
+        assert!(risks.contains(&RiskCategory::FullAccessAgent));
+        let err = may_enable_schedule(&wf, &profiles, false).unwrap_err();
+        assert!(
+            err.contains("Run AI CLI with full access (permission checks bypassed)"),
+            "{err}"
+        );
+        assert!(may_enable_schedule(&wf, &profiles, true).is_ok());
+
+        // The same node on a profile that keeps the CLI's own settings or a
+        // tool list is the ordinary agent risk.
+        let mut narrow = wf.clone();
+        narrow.nodes[0].config.agent_profile_id = Some("tools".into());
+        let risks = workflow_risks_with_profiles(&narrow, &profiles);
+        assert!(!risks.contains(&RiskCategory::FullAccessAgent));
+        assert!(risks.contains(&RiskCategory::ExternalTool));
+    }
+
+    #[test]
+    fn role_only_nodes_count_every_profile_with_that_role() {
+        use crate::agents::PermissionLevel;
+        let mut agent = node("a", NodeKind::Agent);
+        agent.config.agent_role = Some("implementation".into());
+        let wf = workflow_with(vec![agent]);
+        let mut extra = profile("old", "implementation", PermissionLevel::CliSettings);
+        extra.extra_args = vec!["--dangerously-skip-permissions".into()];
+        assert!(workflow_risks_with_profiles(&wf, &[extra.clone()])
+            .contains(&RiskCategory::FullAccessAgent));
+        extra.role = Some("planning".into());
+        assert!(
+            !workflow_risks_with_profiles(&wf, &[extra]).contains(&RiskCategory::FullAccessAgent)
+        );
     }
 }

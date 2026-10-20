@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
+import { missingToolGrants } from './permissions';
 import type { NodeConfig } from './workflow';
 
 it('creates independent workflow clones on repeated template use', () => {
@@ -201,4 +202,70 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
     ))
       expect(node.config.contextMaxChars).toBe(12000);
   }
+});
+
+it('imports declared tools and reports which ones the mapped profiles lack', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const reviewer = {
+    ...createDefaultProfile('claude'),
+    id: 'prof-review',
+    role: 'deepReview',
+    name: 'Reviewer',
+    permissionLevel: 'allowedTools' as const,
+    allowedTools: ['Bash(git *)'],
+  };
+  await backend.saveAgentProfile(reviewer);
+  const document = {
+    version: 1,
+    name: 'Ticket review',
+    nodes: [
+      { key: 'start', type: 'start', config: {} },
+      {
+        key: 'review',
+        type: 'agent',
+        role: 'deepReview',
+        config: {
+          prompt: 'Review',
+          requiredTools: ['mcp__jira', 'Bash(git status *)'],
+        },
+      },
+      { key: 'end', type: 'end', config: {} },
+    ],
+    edges: [
+      { from: 'start', to: 'review' },
+      { from: 'review', to: 'end' },
+    ],
+  };
+  // Wrapper and inner document both stay version 1.
+  const json = JSON.stringify({ version: 1, name: 'Ticket review', workflow: document });
+  const imported = await backend.importTemplate(json);
+  expect(imported.version).toBe(1);
+  const agent = imported.workflow.nodes.find((n) => n.type === 'agent');
+  expect(agent?.config.requiredTools).toEqual(['mcp__jira', 'Bash(git status *)']);
+  const roleMap = await backend.roleMapDefault();
+  const missing = missingToolGrants(imported.workflow, [reviewer], roleMap);
+  expect(missing.map((m) => [m.profile.id, m.rules, m.nodes])).toEqual([
+    ['prof-review', ['mcp__jira'], ['review']],
+  ]);
+  // Exports carry the declaration and import again unchanged.
+  const exported = await backend.exportTemplate(imported.id, false);
+  expect(exported).toContain('requiredTools');
+  expect(
+    (await backend.importTemplate(exported)).workflow.nodes.find(
+      (n) => n.type === 'agent',
+    )?.config.requiredTools,
+  ).toEqual(['mcp__jira', 'Bash(git status *)']);
+  // Invalid declarations and smuggled credentials are refused.
+  const invalid = structuredClone(document);
+  const node = invalid.nodes[1];
+  if (node === undefined) throw new Error('fixture');
+  node.config.requiredTools = ['not a rule'];
+  await expect(backend.importTemplate(JSON.stringify(invalid))).rejects.toThrow(
+    'Invalid allowed tool',
+  );
+  node.config.requiredTools = ["Bash(curl -H 'Authorization: Bearer x' *)"];
+  await expect(backend.importTemplate(JSON.stringify(invalid))).rejects.toThrow(
+    /credential/i,
+  );
 });

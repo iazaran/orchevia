@@ -3513,6 +3513,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 let mut code = code;
                 let mut metadata = serde_json::json!({});
                 let mut incomplete = false;
+                let mut denied: Option<String> = None;
                 if let Some(Ok(mut decoded)) = stream.as_ref().filter(|_| started).map(|s| s.lock())
                 {
                     decoded.finish();
@@ -3542,6 +3543,26 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     }
                     metadata["agentUsage"] = decoded.usage.clone();
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    if !decoded.permission_denials.is_empty() {
+                        // Its own failure kind: the run view offers to add
+                        // the suggested rules to this profile.
+                        metadata["failureKind"] = serde_json::json!("permissionDenied");
+                        let mut record = serde_json::json!({
+                            "denials": decoded.permission_denials,
+                            "rules": crate::permissions::denied_rules(&decoded.permission_denials),
+                        });
+                        if let Some(id) = policy
+                            .as_ref()
+                            .map(|p| p.profile.id.as_str())
+                            .or_else(|| agent.map(|a| a.profile.id.as_str()))
+                        {
+                            record["profileId"] = serde_json::json!(id);
+                        }
+                        metadata["permissionDenied"] = record;
+                        denied = Some(crate::permissions::denial_message(
+                            &decoded.permission_denials,
+                        ));
+                    }
                 }
                 if started {
                     stamp_agent_meta(&mut metadata, &agent_meta);
@@ -3587,8 +3608,12 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     );
                     return TaskOutcome::Succeeded;
                 }
-                let last = attempt == max_attempts;
-                let error = if last {
+                // A refusal is not retried: the same profile would be
+                // refused again. Failure routes and recovery still apply.
+                let last = attempt == max_attempts || denied.is_some();
+                let error = if let Some(message) = denied {
+                    message
+                } else if last {
                     if agent.is_some_and(|a| a.resume_id.is_some()) {
                         format!("Resumed agent exited with status {}. Automatic retries are disabled for resumed turns; the next node in this group starts fresh.", code.unwrap_or(-1))
                     } else {
@@ -5018,6 +5043,8 @@ mod tests {
             working_dir: None,
             default_timeout_secs: 60,
             role: None,
+            permission_level: Default::default(),
+            allowed_tools: vec![],
         }
     }
 
@@ -5550,6 +5577,56 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_
             agent.stdout,
             format!("FINAL received {} bytes", stdin.len())
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refused_tools_fail_the_agent_node_without_retrying() {
+        // Claude reports refused tools only on its final result, which still
+        // says success: the node must fail and name the rules that would help.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"TICKET_STATUS=none","usage":{"input_tokens":5},"permission_denials":[{"tool_name":"mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue","tool_use_id":"toolu_1","tool_input":{"issueIdOrKey":"VAC-1"}},{"tool_name":"Bash","tool_use_id":"toolu_2","tool_input":{"command":"git status"}}]}'"#;
+        let profile =
+            structured_profile(dir.path(), crate::agents::AdapterKind::Claude, Some(events));
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.retry = Some(RetryPolicy {
+            max_attempts: 3,
+            delay_ms: 0,
+            backoff: false,
+        });
+        wf.nodes
+            .push(command_node("recover", "echo", &["recovered"], 150.0));
+        wf.edges = vec![
+            edge("1", "start", "agent1", None),
+            edge("2", "agent1", "end", None),
+            edge("3", "agent1", "recover", Some("failure")),
+        ];
+        run_to_end(&db, &engine, wf, "refused").await;
+        let rows = db.list_node_results("refused").unwrap();
+        let attempts: Vec<_> = rows.iter().filter(|r| r.node_id == "agent1").collect();
+        assert_eq!(attempts.len(), 1, "refusals are not retried");
+        let agent = attempts[0];
+        assert_eq!(agent.status, "failed");
+        assert_eq!(agent.stdout, "TICKET_STATUS=none");
+        let error = agent.error.as_deref().unwrap();
+        assert!(error.starts_with("Claude refused 2 tool calls"), "{error}");
+        assert!(error.contains("(allow with mcp__claude_ai_Atlassian_Rovo_2)"));
+        assert!(error.contains("Bash (allow with Bash(git status *))"));
+        let metadata: serde_json::Value = serde_json::from_str(&agent.structured_json).unwrap();
+        assert_eq!(metadata["failureKind"], "permissionDenied");
+        let denied = &metadata["permissionDenied"];
+        assert_eq!(denied["profileId"], profile.id.as_str());
+        assert_eq!(
+            denied["rules"],
+            serde_json::json!(["mcp__claude_ai_Atlassian_Rovo_2", "Bash(git status *)"])
+        );
+        assert_eq!(denied["denials"][1]["detail"], "git status");
+        assert_eq!(metadata["agentUsage"]["input_tokens"], 5);
+        // The failure route runs exactly as for any other agent failure.
+        let recover = rows.iter().find(|r| r.node_id == "recover").unwrap();
+        assert_eq!(recover.status, "succeeded");
     }
 
     #[cfg(unix)]

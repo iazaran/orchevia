@@ -13,6 +13,9 @@ import {
   mergeModelSuggestions,
   composeAgentContext,
   structuredOutputConflict,
+  hasFullAccess,
+  permissionArgs,
+  permissionLevels,
   type AdapterKind,
 } from './agents';
 
@@ -231,12 +234,15 @@ it('mirrors native structured-output conflicts for ordinary Agent nodes', () => 
   ).toContain("'--output-format'");
   expect(
     structuredOutputConflict({ ...claude, extraArgs: ['--output-format=text'] }),
-  ).toContain('no token or cost data');
+  ).toContain('no token or cost data, and refused tool calls go undetected');
   const codex = createDefaultProfile('codex');
   expect(
     structuredOutputConflict({ ...codex, extraArgs: ['--sandbox', 'read-only'] }),
   ).toBeNull();
   expect(structuredOutputConflict({ ...codex, extraArgs: ['--json'] })).not.toBeNull();
+  expect(structuredOutputConflict({ ...codex, extraArgs: ['--json'] })).not.toContain(
+    'refused',
+  );
   expect(
     structuredOutputConflict({
       ...createDefaultProfile('custom'),
@@ -246,4 +252,102 @@ it('mirrors native structured-output conflicts for ordinary Agent nodes', () => 
   expect(
     structuredOutputConflict({ ...claude, extraArgs: ['--input-format', 'stream-json'] }),
   ).toContain('passed as an argument');
+});
+
+describe('profile permissions', () => {
+  it('reads a missing setting as the CLI settings level with no flag', () => {
+    const legacy = createDefaultProfile('claude');
+    expect(legacy.permissionLevel).toBeUndefined();
+    expect(permissionArgs(legacy)).toEqual([]);
+    expect(validateProfile(legacy)).toEqual([]);
+    expect(hasFullAccess(legacy)).toBe(false);
+  });
+
+  it('maps each level to the same flags as the core adapter', () => {
+    const claude = profile({
+      permissionLevel: 'allowedTools',
+      allowedTools: ['mcp__claude_ai_Atlassian_Rovo_2', 'Bash(git status *)', 'Edit'],
+    });
+    expect(validateProfile(claude)).toEqual([]);
+    expect(permissionArgs(claude)).toEqual([
+      '--allowedTools',
+      'mcp__claude_ai_Atlassian_Rovo_2,Bash(git status *),Edit',
+    ]);
+    expect(permissionArgs({ ...claude, permissionLevel: 'fullAccess' })).toEqual([
+      '--permission-mode',
+      'bypassPermissions',
+    ]);
+    const codex = {
+      ...createDefaultProfile('codex'),
+      permissionLevel: 'fullAccess' as const,
+    };
+    expect(permissionArgs(codex)).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+    expect(permissionLevels('codex')).toEqual(['cliSettings', 'fullAccess']);
+    expect(permissionLevels('custom')).toEqual(['cliSettings']);
+  });
+
+  it('mirrors the core permission validation messages', () => {
+    expect(validateProfile(profile({ permissionLevel: 'allowedTools' }))).toEqual([
+      'Allowed tools needs at least one tool.',
+    ]);
+    expect(
+      validateProfile(
+        profile({
+          permissionLevel: 'allowedTools',
+          allowedTools: ['Edit', 'Edit', '--dangerously-skip-permissions'],
+        }),
+      ),
+    ).toEqual([
+      "Duplicate allowed tool 'Edit'.",
+      "Invalid allowed tool '--dangerously-skip-permissions'. Use a tool name such as Edit, mcp__server, or Bash(git *).",
+    ]);
+    expect(
+      validateProfile(
+        profile({
+          permissionLevel: 'fullAccess',
+          extraArgs: ['--permission-mode', 'acceptEdits'],
+        }),
+      ),
+    ).toEqual([
+      "Extra argument '--permission-mode' conflicts with the profile's permission setting. Remove it or use the CLI settings level.",
+    ]);
+    // At the default level the user's own permission flags stay allowed.
+    expect(
+      validateProfile(profile({ extraArgs: ['--permission-mode', 'acceptEdits'] })),
+    ).toEqual([]);
+    const codex = createDefaultProfile('codex');
+    expect(
+      validateProfile({
+        ...codex,
+        permissionLevel: 'allowedTools',
+        allowedTools: ['Edit'],
+      }),
+    ).toEqual([
+      'Allowed tools apply only to Claude Code profiles.',
+      'Codex has no tool allow-list. Use Codex settings or Full access.',
+    ]);
+    expect(
+      validateProfile({
+        ...createDefaultProfile('custom'),
+        executable: '/usr/local/bin/aichat',
+        permissionLevel: 'fullAccess',
+      }),
+    ).toEqual(['Permission levels apply only to Claude Code and Codex profiles.']);
+  });
+
+  it('recognises full access set through extra arguments', () => {
+    expect(
+      hasFullAccess(profile({ extraArgs: ['--dangerously-skip-permissions'] })),
+    ).toBe(true);
+    expect(
+      hasFullAccess(profile({ extraArgs: ['--permission-mode', 'bypassPermissions'] })),
+    ).toBe(true);
+    const codex = createDefaultProfile('codex');
+    expect(
+      hasFullAccess({ ...codex, extraArgs: ['--sandbox', 'danger-full-access'] }),
+    ).toBe(true);
+    expect(hasFullAccess({ ...codex, extraArgs: ['--sandbox', 'workspace-write'] })).toBe(
+      false,
+    );
+  });
 });

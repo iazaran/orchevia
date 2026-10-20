@@ -7,6 +7,7 @@ import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
+import { ToolGrantNotice } from './ToolGrantNotice';
 import { errorMessage } from '../lib/errors';
 
 export function TemplatesView(): React.JSX.Element {
@@ -27,6 +28,11 @@ export function TemplatesView(): React.JSX.Element {
     { mode: 'import' } | { mode: 'export'; name: string; json: string } | null
   >(null);
   const [copied, setCopied] = useState(false);
+  // The last imported template, checked against the profiles its roles map to.
+  const [imported, setImported] = useState<{
+    template: WorkflowTemplate;
+    roleMap: Record<string, string>;
+  } | null>(null);
 
   const reload = (): void => {
     void refreshLibrary();
@@ -93,11 +99,15 @@ export function TemplatesView(): React.JSX.Element {
     }
     void getBackend()
       .importTemplate(importText)
-      .then((t) => {
+      .then(async (t) => {
         setImportText('');
         setIoModal(null);
         setMessage(`Imported template '${t.name}'.`);
         reload();
+        const roleMap = await getBackend()
+          .roleMapDefault()
+          .catch(() => ({}));
+        setImported({ template: t, roleMap });
       })
       .catch((err: unknown) => {
         setMessage(errorMessage(err), 'error');
@@ -203,6 +213,16 @@ export function TemplatesView(): React.JSX.Element {
           >
             <span>{message}</span>{' '}
           </Notice>
+        )}
+        {imported !== null && (
+          <ToolGrantNotice
+            workflow={imported.template.workflow}
+            roleMap={imported.roleMap}
+            style={{ marginBottom: 12 }}
+            onDismiss={() => {
+              setImported(null);
+            }}
+          />
         )}
         {setupNeeded !== null && (
           <Notice variant="warn" style={{ marginBottom: 12 }}>

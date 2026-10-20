@@ -15,6 +15,7 @@ pub mod github;
 pub mod mcp;
 pub mod memory;
 pub mod notify;
+pub mod permissions;
 pub mod process;
 pub mod prompt;
 pub mod review;

@@ -572,12 +572,19 @@ export function UsageView(): React.JSX.Element {
         </details>
         <section aria-label="Filters" className="usage-filters-section">
           <div className="usage-filter-actions">
-            <button className="btn btn-ghost" onClick={() => applyPreset(7)}>
-              Last 7 days
-            </button>
-            <button className="btn btn-ghost" onClick={() => applyPreset(30)}>
-              Last 30 days
-            </button>
+            {[7, 30].map((days) => {
+              const selected = from === isoDay(days - 1) && to === isoDay(0);
+              return (
+                <button
+                  key={days}
+                  className={`btn btn-ghost${selected ? ' active-tab' : ''}`}
+                  aria-pressed={selected}
+                  onClick={() => applyPreset(days)}
+                >
+                  Last {days} days
+                </button>
+              );
+            })}
             <button
               className="btn btn-ghost"
               onClick={resetFilters}

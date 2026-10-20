@@ -165,9 +165,14 @@ impl Scheduler {
                     // Trust gate: re-check risk at fire time (workflow may
                     // have changed since the schedule was enabled).
                     let trust = match self.db.get_workflow(&schedule.workflow_id) {
-                        Ok(Some(wf)) => {
-                            crate::trust::may_enable_schedule(&wf.definition, schedule.trusted)
-                        }
+                        Ok(Some(wf)) => match self.db.list_agent_profiles() {
+                            Ok(profiles) => crate::trust::may_enable_schedule(
+                                &wf.definition,
+                                &profiles,
+                                schedule.trusted,
+                            ),
+                            Err(e) => Err(e.to_string()),
+                        },
                         Ok(None) => Err(format!(
                             "Workflow '{}' no longer exists.",
                             schedule.workflow_id

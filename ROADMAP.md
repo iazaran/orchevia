@@ -10,7 +10,7 @@ private while public access is prepared.
 | Area            | Current capabilities                                                                                                  |
 | --------------- | --------------------------------------------------------------------------------------------------------------------- |
 | Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays                  |
-| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, command previews                          |
+| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, tool permissions, command previews        |
 | Execution       | Parallel paths/joins, bounded loops/retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard |
 | Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                           |
 | Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history     |

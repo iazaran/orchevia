@@ -72,7 +72,10 @@ somehow reached at runtime, fail the node instead of guessing a branch.
 is a history row: non-final failures are `retrying`, the final one is
 `succeeded`/`failed`. Backoff doubles the delay per attempt (capped at 60 s).
 Delays are cancellation-aware. Timeouts count as failures and are retried under
-the same policy.
+the same policy. A Claude node whose tool calls were refused
+([refused tool calls](agents.md#refused-tool-calls)) fails without automatic
+retries, because the same profile would be refused again. Its failure route still
+runs.
 
 ## Loops
 

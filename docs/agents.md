@@ -27,6 +27,7 @@ A profile is a persisted, inspectable recipe for invoking one CLI:
 | Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                                                                       |
 | Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                                                 |
 | Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                                      |
+| Permissions            | Use the CLI's settings (default), Allowed tools (Claude Code), or Full access; see [Tool permissions](#tool-permissions)                        |
 | Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator`, `workflowAssistance`, `generalPurpose` |
 
 Manage profiles in the **Agents** tab: create, rename, reconfigure, **Test** (probes the
@@ -49,8 +50,8 @@ until remapped).
 
 Command shapes (built by the adapter, never by the engine or UI):
 
-- Claude: `claude -p --output-format stream-json --verbose [--model <model>] [--effort <level>] [extra args…]`, prompt on stdin
-- Codex: `codex exec --json [--model <model>] [-c model_reasoning_effort="high"] [extra args…] -`, prompt on stdin
+- Claude: `claude -p --output-format stream-json --verbose [--model <model>] [--effort <level>] [permission flags] [extra args…]`, prompt on stdin
+- Codex: `codex exec --json [--model <model>] [-c model_reasoning_effort="high"] [permission flag] [extra args…] -`, prompt on stdin
 - Custom: `<executable> [--model <model>] [extra args…] <prompt>`
 
 Claude and Codex nodes decode the structured stream into the final response
@@ -77,6 +78,71 @@ flags, is not limited by the operating system's argument size (128 KiB per argum
 on Linux), and does not appear in process listings. Previews show
 `<prompt via stdin, N chars>`. Custom CLIs receive it as the final argv element.
 
+## Tool permissions
+
+Each Claude Code or Codex profile has a permission setting. Orchevia passes it only
+as command-line flags for that run. It never writes `~/.claude/settings.json`, Codex
+config, or any project settings file, because those also govern your interactive
+sessions.
+
+| Level                                      | Claude Code                                     | Codex                                        |
+| ------------------------------------------ | ----------------------------------------------- | -------------------------------------------- |
+| Use Claude Code / Codex settings (default) | no flag                                         | no flag                                      |
+| Allowed tools                              | `--allowedTools <rules>` on top of the settings | not offered: Codex has no tool allow-list    |
+| Full access                                | `--permission-mode bypassPermissions`           | `--dangerously-bypass-approvals-and-sandbox` |
+
+- **Use the CLI's settings** is the default. Profiles saved before v0.1.16 keep it,
+  so upgrading widens nothing. Headless `claude -p` still refuses any tool the
+  settings do not allow; it does not apply `defaultMode: bypassPermissions` from a
+  project's `.claude/settings.local.json`.
+- **Allowed tools** lists Claude Code allow rules: a tool name (`Edit`, `Write`), an
+  MCP server (`mcp__<server>`) or one of its tools, or a tool with a specifier
+  (`Bash(git status *)`, `WebFetch(domain:example.com)`). What the Claude Code
+  settings already allow still applies. Rules are validated: at most 64, no
+  duplicates, no commas or nested parentheses, and nothing that looks like a
+  credential.
+- **Full access** skips every permission check. Never the default. A workflow
+  whose Agent nodes use such a profile (or whose extra arguments bypass checks,
+  such as `--dangerously-skip-permissions`) lists **Run AI CLI with full access**
+  among its automation risks, and its schedules need the per-schedule trusted
+  opt-in.
+
+While a profile uses a permission level other than the CLI settings, extra
+arguments that set permissions themselves (`--permission-mode`, `--allowedTools`,
+`--dangerously-skip-permissions`; Codex `--sandbox`, `--full-auto`) are rejected.
+
+## Refused tool calls
+
+Headless `claude -p` never asks for permission. A tool that the Claude Code
+settings do not allow is refused, the model carries on without it, and Claude's
+final result still reports success. Claude lists the refusals only in that
+result's `permission_denials`, so Orchevia reads them:
+
+- A non-empty list fails the Agent node with the failure kind `permissionDenied`.
+  Failure routes and run recovery behave as for any other agent failure. The node
+  is not retried automatically, because the same profile would be refused again.
+- The error names each refused tool and the allow rule that would admit it: an
+  MCP tool suggests its server rule `mcp__<server>`, a Bash command suggests
+  `Bash(<command prefix> *)` for each command in the line (`git status`,
+  `pnpm test`, `touch`), and any other tool suggests its own name (`Write`).
+- The refusals stay in the node's structured result. Runs marks the step **tools
+  refused**, lists each refused call with its suggested rule, and offers a button
+  that adds the missing rules to the step's profile after you confirm. Then use
+  **Recover failed run** to retry the step. The confirmation also lists any saved
+  allowed tools that switching the profile to Allowed tools applies again. A
+  profile whose extra arguments set permissions itself (for example
+  `--allowedTools`) is not changed automatically: move those rules into Allowed
+  tools in Agents first.
+
+Text-output invocations (a profile whose extra arguments set `--output-format` or
+`--input-format`, and workflow generation) have no result event, so refused
+tools there go undetected. Runs says so in the step's output note.
+
+Codex has no equivalent signal. In `codex exec --json` (checked with Codex CLI
+0.162.1), a command blocked by the sandbox produced no `command_execution` item
+and no error event, and the turn ended with `turn.completed`. Only the model's
+own message said that the command failed. Orchevia does not guess from that text.
+
 ## Prompt composition
 
 Agent prompts are small deterministic templates:
@@ -92,7 +158,8 @@ There is no expression language, no conditionals, no script evaluation — by de
 
 Stored locally in SQLite (`agent_profiles`, `known_folders` tables):
 
-- profile configuration (adapter, model, args, directory mode, timeout, role)
+- profile configuration (adapter, model, args, directory mode, timeout, role,
+  permission level and allowed tools)
 - recently used project folders (paths only, local-only)
 
 Orchevia has no credential configuration fields and does not save environment

@@ -1194,6 +1194,79 @@ mod tests {
     }
 
     #[test]
+    fn templates_declare_the_tools_their_agents_need() {
+        let mut template = builtin_templates().remove(0);
+        let agent = template
+            .workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == NodeKind::Agent)
+            .unwrap();
+        agent.config.required_tools = vec![
+            "mcp__claude_ai_Atlassian_Rovo_2".into(),
+            "Bash(git status *)".into(),
+        ];
+        // Both export forms keep version 1 and carry the declaration; the
+        // field name trips none of the credential markers.
+        for json in [
+            export_developer_template(&template, &[]).unwrap(),
+            export_template(&template).unwrap(),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value["version"], 1);
+            if value["workflow"].get("schemaVersion").is_none() {
+                assert_eq!(value["workflow"]["version"], 1);
+            }
+            assert!(json.contains("requiredTools"));
+            let imported = import_developer_template(&json, &[]).unwrap();
+            let agent = imported
+                .workflow
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Agent)
+                .unwrap();
+            assert_eq!(
+                agent.config.required_tools,
+                ["mcp__claude_ai_Atlassian_Rovo_2", "Bash(git status *)"]
+            );
+        }
+        // Files exported before the field existed still import unchanged.
+        let legacy = export_developer_template(&builtin_templates().remove(0), &[]).unwrap();
+        assert!(!legacy.contains("requiredTools"));
+        assert!(import_developer_template(&legacy, &[]).is_ok());
+        // A declared tool can never smuggle a credential past the scan.
+        let mut secret = template.clone();
+        secret
+            .workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == NodeKind::Agent)
+            .unwrap()
+            .config
+            .required_tools = vec!["Bash(curl -H 'Authorization: Bearer x' *)".into()];
+        assert!(import_developer_template(&serde_json::to_string(&secret).unwrap(), &[]).is_err());
+    }
+
+    #[test]
+    fn declared_tools_are_validated_where_they_apply() {
+        let mut wf = crate::workflow::sample_workflow();
+        wf.nodes[1].kind = NodeKind::Agent;
+        wf.nodes[1].config.agent_profile_id = Some("p".into());
+        wf.nodes[1].config.prompt = Some("Work".into());
+        wf.nodes[1].config.required_tools = vec!["Edit".into(), "not a rule".into()];
+        let codes: Vec<String> = validate_workflow(&wf).into_iter().map(|i| i.code).collect();
+        assert!(
+            codes.contains(&"agent-required-tools-invalid".to_string()),
+            "{codes:?}"
+        );
+        wf.nodes[1].config.required_tools = vec!["Edit".into()];
+        wf.nodes[0].config.required_tools = vec!["Write".into()];
+        let codes: Vec<String> = validate_workflow(&wf).into_iter().map(|i| i.code).collect();
+        assert!(!codes.contains(&"agent-required-tools-invalid".to_string()));
+        assert!(codes.contains(&"agent-required-tools-misplaced".to_string()));
+    }
+
+    #[test]
     fn browser_template_fixture_matches_core() {
         let mirrored: Vec<Template> =
             serde_json::from_str(include_str!("../../../src/lib/builtin-templates.json")).unwrap();

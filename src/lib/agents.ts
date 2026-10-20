@@ -7,6 +7,7 @@
  * templating for a responsive UI.
  */
 import { MAX_TIMEOUT_SECS, type StoredNodeResult } from './workflow';
+import { validateToolRules } from './permissions';
 
 export type AdapterKind = 'claude' | 'codex' | 'custom';
 export type WorkingDirMode = 'node' | 'profile' | 'inherit';
@@ -14,6 +15,104 @@ export type WorkingDirMode = 'node' | 'profile' | 'inherit';
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 export const EFFORT_LEVELS: AgentEffort[] = ['low', 'medium', 'high', 'xhigh'];
+
+/**
+ * What a profile's CLI may do without asking (Rust `PermissionLevel`). Passed
+ * only as CLI flags; Orchevia never writes Claude Code or Codex settings files.
+ * Absent means `cliSettings`, which every profile saved before v0.1.16 keeps.
+ */
+export type PermissionLevel = 'cliSettings' | 'allowedTools' | 'fullAccess';
+
+/** Levels each adapter can express: Codex has no tool allow-list. */
+export function permissionLevels(adapter: AdapterKind): PermissionLevel[] {
+  if (adapter === 'claude') return ['cliSettings', 'allowedTools', 'fullAccess'];
+  if (adapter === 'codex') return ['cliSettings', 'fullAccess'];
+  return ['cliSettings'];
+}
+
+export function permissionLevelLabel(
+  adapter: AdapterKind,
+  level: PermissionLevel | undefined,
+): string {
+  switch (level ?? 'cliSettings') {
+    case 'allowedTools':
+      return 'Allowed tools';
+    case 'fullAccess':
+      return 'Full access';
+    default:
+      return adapter === 'codex' ? 'Use Codex settings' : 'Use Claude Code settings';
+  }
+}
+
+/** Mirror of Rust `permission_flags`: extra arguments that set permissions. */
+function permissionFlags(adapter: AdapterKind): string[] {
+  if (adapter === 'claude')
+    return [
+      '--permission-mode',
+      '--allowedTools',
+      '--allowed-tools',
+      '--dangerously-skip-permissions',
+      '--allow-dangerously-skip-permissions',
+    ];
+  if (adapter === 'codex')
+    return [
+      '--sandbox',
+      '-s',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--yolo',
+      '--full-auto',
+      '--approve-for-me',
+    ];
+  return [];
+}
+
+/** The profile's first extra argument that sets permissions itself, if any. */
+export function permissionArgument(profile: AgentProfile): string | null {
+  const flags = permissionFlags(profile.adapter);
+  return (
+    profile.extraArgs.find((arg) =>
+      flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
+    ) ?? null
+  );
+}
+
+/** Mirror of Rust `push_permissions`: the argv for the profile's level. */
+export function permissionArgs(profile: AgentProfile): string[] {
+  const level = profile.permissionLevel ?? 'cliSettings';
+  if (profile.adapter === 'claude' && level === 'allowedTools')
+    return ['--allowedTools', (profile.allowedTools ?? []).join(',')];
+  if (profile.adapter === 'claude' && level === 'fullAccess')
+    return ['--permission-mode', 'bypassPermissions'];
+  if (profile.adapter === 'codex' && level === 'fullAccess')
+    return ['--dangerously-bypass-approvals-and-sandbox'];
+  return [];
+}
+
+/** Mirror of Rust `AgentProfile::has_full_access`. */
+export function hasFullAccess(profile: AgentProfile): boolean {
+  if (profile.permissionLevel === 'fullAccess') return true;
+  const args = profile.extraArgs;
+  return args.some((arg, index) => {
+    const next = args[index + 1];
+    if (profile.adapter === 'claude')
+      return (
+        arg === '--dangerously-skip-permissions' ||
+        arg === '--permission-mode=bypassPermissions' ||
+        (arg === '--permission-mode' && next === 'bypassPermissions')
+      );
+    if (profile.adapter === 'codex')
+      return (
+        [
+          '--dangerously-bypass-approvals-and-sandbox',
+          '--yolo',
+          '--sandbox=danger-full-access',
+          '-sdanger-full-access',
+        ].includes(arg) ||
+        ((arg === '--sandbox' || arg === '-s') && next === 'danger-full-access')
+      );
+    return false;
+  });
+}
 
 /**
  * Model name suggestions per adapter. These are conveniences for a free-form
@@ -65,6 +164,10 @@ export interface AgentProfile {
   workingDir?: string | undefined;
   defaultTimeoutSecs: number;
   role?: string | undefined;
+  /** Absent reads as `cliSettings` (no permission flag). */
+  permissionLevel?: PermissionLevel | undefined;
+  /** Claude Code allow rules, used at the `allowedTools` level. */
+  allowedTools?: string[] | undefined;
 }
 
 export interface AdapterInfo {
@@ -96,9 +199,14 @@ export function composeSkillPrompt(profile: AgentProfile, prompt: string): strin
  * is used. Custom CLIs are never parsed and return `null`.
  */
 export function structuredOutputConflict(profile: AgentProfile): string | null {
+  // Claude reports refused tools only on its structured result event.
+  const missing =
+    profile.adapter === 'claude'
+      ? 'no token or cost data, and refused tool calls go undetected'
+      : 'no token or cost data';
   const input = claudeInputFormatArg(profile);
   if (input !== null)
-    return `Text output used: the profile's extra argument '${input}' changes how Claude reads its prompt, so the prompt is passed as an argument and this run reports no token or cost data. Remove it to enable usage reporting.`;
+    return `Text output used: the profile's extra argument '${input}' changes how Claude reads its prompt, so the prompt is passed as an argument and this run reports ${missing}. Remove it to enable usage reporting.`;
   const flags =
     profile.adapter === 'claude'
       ? ['--output-format']
@@ -110,7 +218,7 @@ export function structuredOutputConflict(profile: AgentProfile): string | null {
   );
   return arg === undefined
     ? null
-    : `Text output used: the profile's extra argument '${arg}' sets the CLI output format, so this run reports no token or cost data. Remove it to enable usage reporting.`;
+    : `Text output used: the profile's extra argument '${arg}' sets the CLI output format, so this run reports ${missing}. Remove it to enable usage reporting.`;
 }
 
 /** Claude `--input-format` argument that keeps the prompt as an argument (agents.rs mirror). */
@@ -313,6 +421,24 @@ export function validateProfile(profile: AgentProfile): string[] {
     if (profile.model.trim() === '') errors.push('Model must not be blank when set.');
     if (profile.model.length > 120)
       errors.push('Model value is too long (max 120 chars).');
+  }
+  const allowedTools = profile.allowedTools ?? [];
+  if (profile.adapter !== 'claude' && allowedTools.length > 0)
+    errors.push('Allowed tools apply only to Claude Code profiles.');
+  errors.push(...validateToolRules(allowedTools, 'Allowed tools'));
+  const level = profile.permissionLevel ?? 'cliSettings';
+  if (level !== 'cliSettings') {
+    if (profile.adapter === 'custom')
+      errors.push('Permission levels apply only to Claude Code and Codex profiles.');
+    else if (profile.adapter === 'codex' && level === 'allowedTools')
+      errors.push('Codex has no tool allow-list. Use Codex settings or Full access.');
+    else if (level === 'allowedTools' && allowedTools.length === 0)
+      errors.push('Allowed tools needs at least one tool.');
+    const conflict = permissionArgument(profile);
+    if (conflict !== null)
+      errors.push(
+        `Extra argument '${conflict}' conflicts with the profile's permission setting. Remove it or use the CLI settings level.`,
+      );
   }
   if (profile.effort !== undefined) {
     const trimmed = profile.effort.trim().toLowerCase();

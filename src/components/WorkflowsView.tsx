@@ -31,6 +31,7 @@ import { BranchPicker } from './BranchPicker';
 import { NodeInspector } from './NodeInspector';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import { Notice, useNoticeMessage } from './Notice';
+import { ToolGrantNotice } from './ToolGrantNotice';
 import { Modal } from './Modal';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
@@ -106,6 +107,8 @@ export function WorkflowsView(): React.JSX.Element {
   const [starting, setStarting] = useState(false);
   const [startMode, setStartMode] = useState<'dry' | 'live' | null>(null);
   const [limitsOpen, setLimitsOpen] = useState(false);
+  // Dismissing the declared-tools notice hides it for that workflow this session.
+  const [grantNoticeHiddenFor, setGrantNoticeHiddenFor] = useState<string | null>(null);
   const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   // Previously entered input values, kept per workflow so reopening the
   // start form restores them and switching workflows never leaks them.
@@ -956,6 +959,16 @@ export function WorkflowsView(): React.JSX.Element {
         >
           <span>{runMessage}</span>
         </Notice>
+      )}
+      {active !== null && overlayRunId === null && grantNoticeHiddenFor !== active.id && (
+        <div style={{ padding: '12px 20px 0' }}>
+          <ToolGrantNotice
+            workflow={active.definition}
+            onDismiss={() => {
+              setGrantNoticeHiddenFor(active.id);
+            }}
+          />
+        </div>
       )}
       {overlayRunId !== null && (
         <div style={{ padding: '12px 20px 0' }}>
