@@ -30,15 +30,17 @@ All notable changes are recorded here, following
     missing Claude Code permission shows up when the template is used, not as a
     refused step mid-run.
 - A clean review no longer reads as a blocking one. `node.<id>.severity` now
-  comes from finding blocks first; plain-text `P0`–`P3` tags no longer count when
-  they are part of a list or range (`P0/P1`, `P0–P3`) or negated ("No P0/P1
-  issues found"). A review without findings reads as an empty severity instead of
-  failing the condition with an unknown variable, and a later clean visit
-  replaces an earlier finding.
+  comes from finding blocks first; a plain-text `P0`–`P3` tag no longer counts
+  when it names the scale (`P0–P3`) or is negated right before it ("No P0/P1
+  issues found"), while "Found P0/P1 issues" still reports P0. A review without
+  findings reads as an empty severity instead of failing the condition with an
+  unknown variable, and a later clean visit replaces an earlier finding.
 - A loop whose fix step returns to the reviews through another step
   (`gate -true-> fix -> tests -> … -> gate`) no longer skips the exit path on the
   first round. Before, such a run could end as succeeded without ever running the
-  steps after the loop.
+  steps after the loop. If the loop ends another way (a failure route), the
+  waiting exit is skipped instead of stalling the run. The browser demo follows
+  the same rules.
 - AI steps without their own working directory run in the workflow's repository
   directory, like Command, Git and GitHub steps. Before, they ran in Orchevia's
   own folder.

@@ -68,9 +68,11 @@ somehow reached at runtime, fail the node instead of guessing a branch.
 
 `node.<id>.severity` is the highest severity an Agent step reported. ```finding
 blocks win when present; otherwise a `P0`–`P3` tag in the prose counts unless it
-is part of a list or range (`P0/P1`, `P0–P3`) or negated (`no P1`, `zero P0 or
-P1`). A review with no findings reads as an empty string, so `severity contains
-P1` is simply false, and a later visit replaces an earlier one.
+names the scale (`P0–P3`) or is negated right before it (`no P1`, `zero P0 or
+P1`, `no blocking (P0/P1)`), so "No P0/P1 issues found" reports nothing while
+"Found P0/P1 issues" reports P0. When in doubt it reports the tag rather than
+hiding it. A review with no findings reads as an empty string, so `severity
+contains P1` is simply false, and a later visit replaces an earlier one.
 
 ## Retries
 

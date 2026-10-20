@@ -67,6 +67,27 @@ partly in the engine.
   Review pull request sample checks P0/P1 for both reviewers and asks for
   approval before posting.
 
+## Review follow-ups
+
+- **Severity.** Slash lists count again unless negated. "Found P0/P1 issues"
+  must not read as clean. Negation:
+  - must sit right before the tag group, with at most one word in between;
+  - stops at clause breaks (including spaced dashes) and at contrast words;
+  - ranges (`P0–P3`) are the only scale mentions ignored.
+
+  When in doubt the reader reports the tag. Both tables (21 cases) are identical.
+- **Feedback.** Address Review Feedback loads feedback with `gh pr view
+  <n> --json title,body,reviews,comments`. `PrDetails` carries no reviews or
+  comments.
+- **Mock parity.** The browser `replayGraph` mirrors both loop-exit rules.
+- **Waiting exits.** At quiescence, the engine resolves still-waiting exits as
+  untaken, so a loop that ends through a failure route skips its exit instead of
+  failing with "Scheduler deadlock".
+- **Use template** keeps a saved template's default branch and prefills its
+  repository.
+- **Replay test.** It logs prompts (ticket title and PR feedback must reach the
+  agents) and resets `ORCHEVIA_GH_BIN` with a drop guard.
+
 ## Tests
 
 - `templates::tests::builtins_run_end_to_end` replays all nine templates in the
