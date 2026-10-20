@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createDefaultProfile } from './agents';
+import { createEmptyWorkflow, type NodeConfig, type WorkflowNode } from './workflow';
 import {
+  missingToolGrants,
   permissionDeniedFrom,
   profileGrants,
   ruleCovers,
@@ -104,5 +106,47 @@ describe('tool permissions', () => {
     expect(withAllowedTools(createDefaultProfile('codex'), ['Write'])).toBeNull();
     // At the settings level the profile itself grants nothing.
     expect(profileGrants({ ...claude, allowedTools: ['Write'] }, 'Write')).toBe(false);
+  });
+
+  it('lists declared tools each chosen Claude profile does not grant', () => {
+    const settings = {
+      ...createDefaultProfile('claude'),
+      id: 'p-settings',
+      name: 'Impl',
+    };
+    const full = {
+      ...createDefaultProfile('claude'),
+      id: 'p-full',
+      name: 'Full',
+      permissionLevel: 'fullAccess' as const,
+    };
+    const codex = { ...createDefaultProfile('codex'), id: 'p-codex', name: 'Codex' };
+    const workflow = createEmptyWorkflow('Declared');
+    const agent = (id: string, config: NodeConfig): WorkflowNode => ({
+      id,
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      label: id,
+      config: { prompt: 'Work', ...config },
+    });
+    workflow.nodes.push(
+      agent('fetch', { agentProfileId: 'p-settings', requiredTools: ['mcp__jira'] }),
+      agent('impl', {
+        agentRole: 'implementation',
+        requiredTools: ['mcp__jira', 'Bash(git status *)'],
+      }),
+      agent('free', { agentProfileId: 'p-full', requiredTools: ['Write'] }),
+      agent('codex', { agentProfileId: 'p-codex', requiredTools: ['Write'] }),
+      agent('none', { agentProfileId: 'p-settings' }),
+    );
+    const grants = missingToolGrants(workflow, [settings, full, codex], {
+      implementation: 'p-settings',
+    });
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.rules).toEqual(['mcp__jira', 'Bash(git status *)']);
+    expect(grants[0]?.nodes).toEqual(['fetch', 'impl']);
+    const granted = withAllowedTools(settings, grants[0]?.rules ?? []);
+    if (granted === null) throw new Error('expected a widened profile');
+    expect(missingToolGrants(workflow, [granted, full, codex], {})).toEqual([]);
   });
 });

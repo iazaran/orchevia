@@ -8,6 +8,7 @@ import type { RunExecution } from './run-controls';
  */
 
 import { referencedVariables } from './agents';
+import { validateToolRules } from './permissions';
 
 export const CURRENT_SCHEMA_VERSION = 6;
 
@@ -111,6 +112,12 @@ export interface NodeConfig {
   maxToolCalls?: number;
   /** Advisory per-node nested-subagent allowance. */
   maxSubagents?: number;
+  /**
+   * Claude Code allow rules this Agent node needs, declared by the workflow
+   * or template author. Import and run start show which ones the chosen
+   * profile does not grant and offer to add them; nothing is granted implicitly.
+   */
+  requiredTools?: string[];
   timeoutSecs?: number;
   extendOnOutput?: boolean;
   retry?: RetryPolicy;
@@ -788,6 +795,17 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
           });
         }
       }
+      for (const message of validateToolRules(
+        node.config.requiredTools ?? [],
+        'Required tools',
+      )) {
+        issues.push({
+          code: 'agent-required-tools-invalid',
+          message,
+          severity: 'error',
+          nodeId: node.id,
+        });
+      }
     }
     if (
       node.type !== 'agent' &&
@@ -796,6 +814,14 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
       issues.push({
         code: 'agent-allowance-misplaced',
         message: 'Tool-call and subagent allowances only apply to AI Agent nodes.',
+        severity: 'error',
+        nodeId: node.id,
+      });
+    }
+    if (node.type !== 'agent' && (node.config.requiredTools ?? []).length > 0) {
+      issues.push({
+        code: 'agent-required-tools-misplaced',
+        message: 'Required tools only apply to AI Agent nodes.',
         severity: 'error',
         nodeId: node.id,
       });

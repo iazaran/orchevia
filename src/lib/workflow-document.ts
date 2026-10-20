@@ -41,6 +41,7 @@ const configKeys = [
   'contextMaxChars',
   'maxToolCalls',
   'maxSubagents',
+  'requiredTools',
   'inputRefs',
   'timeoutSecs',
   'extendOnOutput',
@@ -114,6 +115,7 @@ function configShape(value: unknown, raw = false): void {
   stringsField(config, 'args');
   stringsField(config, 'inputRefs');
   stringsField(config, 'contextRefs');
+  stringsField(config, 'requiredTools');
   uintField(config, 'sessionMaxTurns', false, 4294967295);
   uintField(config, 'contextMaxChars', false, 4294967295);
   uintField(config, 'maxToolCalls', false, 4294967295);

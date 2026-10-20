@@ -187,6 +187,23 @@ inspector and Simple JSON. They require no schema migration. Session variables
 and handoff IDs are validated/remapped with existing workflow references.
 See [workflow cost controls](workflow-costs.md) for execution semantics.
 
+## Declared Agent tools
+
+`requiredTools?: string[]` on an Agent node lists the Claude Code allow rules the
+step needs (`mcp__jira`, `Bash(git status *)`, `Edit`). It is optional and grants
+nothing by itself. Rules use the same syntax and validation as a profile's
+[allowed tools](agents.md#tool-permissions) (`agent-required-tools-invalid`), and
+the field is rejected on other node kinds (`agent-required-tools-misplaced`).
+
+Simple JSON and template exports carry the field inside the node `config`. The
+template wrapper `version` and the inner document `version` stay 1, so earlier
+exports import unchanged. When a template is imported, a workflow is opened, or a
+run starts, Orchevia lists the declared tools that the chosen Claude Code profile
+does not grant and offers to add them to that profile's allowed tools. A node
+that names only a role is checked against the profile the role maps to. Codex and
+custom profiles have no tool list and are not checked. No schema migration is
+needed.
+
 ## Run controls
 
 Workflow schema remains v6. Controls belong to run history rather than exported

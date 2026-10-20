@@ -554,3 +554,27 @@ it('validates workflow limits and node allowances with mirrored codes', () => {
   expect(codes).toContain('agent-tool-allowance-invalid');
   expect(codes).toContain('agent-subagent-allowance-invalid');
 });
+
+describe('declared agent tools', () => {
+  it('mirrors the core validation codes', () => {
+    const workflow = createEmptyWorkflow('Declared');
+    workflow.nodes.push({
+      id: 'agent',
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { agentProfileId: 'p', prompt: 'Work', requiredTools: ['Edit', 'Edit'] },
+    });
+    const codes = (wf: typeof workflow): string[] =>
+      validateWorkflowLocal(wf).map((issue) => issue.code);
+    expect(codes(workflow)).toContain('agent-required-tools-invalid');
+    const valid = structuredClone(workflow);
+    const agent = valid.nodes.find((n) => n.id === 'agent');
+    if (agent === undefined) throw new Error('fixture');
+    agent.config.requiredTools = ['Edit'];
+    expect(codes(valid)).not.toContain('agent-required-tools-invalid');
+    const start = valid.nodes[0];
+    if (start === undefined) throw new Error('fixture');
+    start.config.requiredTools = ['Write'];
+    expect(codes(valid)).toContain('agent-required-tools-misplaced');
+  });
+});

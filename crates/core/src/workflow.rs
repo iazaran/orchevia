@@ -147,6 +147,12 @@ pub struct NodeConfig {
     /// The agent is instructed not to spawn subagents unless allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_subagents: Option<u32>,
+    /// Claude Code allow rules this Agent node needs (`mcp__jira`,
+    /// `Bash(git *)`), declared by a workflow or template author. Advisory:
+    /// import and run start show which ones the chosen profile does not
+    /// grant and offer to add them; nothing is granted implicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tools: Vec<String>,
     /// Node ids whose outputs are exposed as `{{node.<id>.output}}` plus
     /// their raw stdout under `{{node.<id>}}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -854,6 +860,17 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         );
                     }
                 }
+                for message in crate::permissions::validate_tool_rules(
+                    &node.config.required_tools,
+                    "Required tools",
+                ) {
+                    push_error(
+                        &mut issues,
+                        "agent-required-tools-invalid",
+                        message,
+                        Some(node.id.clone()),
+                    );
+                }
                 validate_retry(node, &mut issues);
                 validate_max_visits(node, &mut issues);
             }
@@ -1052,6 +1069,14 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 &mut issues,
                 "agent-allowance-misplaced",
                 "Tool-call and subagent allowances only apply to AI Agent nodes.".to_string(),
+                Some(node.id.clone()),
+            );
+        }
+        if node.kind != NodeKind::Agent && !node.config.required_tools.is_empty() {
+            push_error(
+                &mut issues,
+                "agent-required-tools-misplaced",
+                "Required tools only apply to AI Agent nodes.".to_string(),
                 Some(node.id.clone()),
             );
         }

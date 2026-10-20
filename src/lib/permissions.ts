@@ -4,6 +4,7 @@
  * node result, and helpers that add rules to a Claude Code profile.
  */
 import type { AgentProfile } from './agents';
+import type { Workflow } from './workflow';
 
 /** At most this many allow rules per profile or node declaration. */
 export const MAX_TOOL_RULES = 64;
@@ -173,4 +174,48 @@ export function withAllowedTools(
     permissionLevel: 'allowedTools',
     allowedTools: [...existing, ...missing.filter((rule) => !existing.includes(rule))],
   };
+}
+
+/** Declared tools one profile does not grant, and the nodes that need them. */
+export interface MissingToolGrant {
+  profile: AgentProfile;
+  rules: string[];
+  nodes: string[];
+}
+
+/**
+ * The tools a workflow's Agent nodes declare (`requiredTools`) that their
+ * chosen Claude Code profile does not grant itself. A node naming only a role
+ * uses `roleMap` (role → profile id), as template instantiation does. Codex
+ * and custom profiles have no allow list and are not checked. A profile at
+ * the Claude Code settings level may still allow a listed tool through those
+ * settings, which Orchevia does not read.
+ */
+export function missingToolGrants(
+  workflow: Workflow,
+  profiles: AgentProfile[],
+  roleMap: Record<string, string> = {},
+): MissingToolGrant[] {
+  const grants = new Map<string, MissingToolGrant>();
+  for (const node of workflow.nodes) {
+    const required = node.config.requiredTools ?? [];
+    if (node.type !== 'agent' || required.length === 0) continue;
+    const explicit = (node.config.agentProfileId ?? '').trim();
+    const role = node.config.agentRole;
+    const id =
+      explicit !== ''
+        ? explicit
+        : role !== undefined && Object.hasOwn(roleMap, role)
+          ? roleMap[role]
+          : undefined;
+    const profile = profiles.find((p) => p.id === id);
+    if (profile?.adapter !== 'claude') continue;
+    const missing = required.filter((rule) => !profileGrants(profile, rule));
+    if (missing.length === 0) continue;
+    const grant = grants.get(profile.id) ?? { profile, rules: [], nodes: [] };
+    for (const rule of missing) if (!grant.rules.includes(rule)) grant.rules.push(rule);
+    grant.nodes.push(node.label ?? node.id);
+    grants.set(profile.id, grant);
+  }
+  return [...grants.values()];
 }
