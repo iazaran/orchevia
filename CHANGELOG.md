@@ -6,6 +6,51 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-20
+
+### Added
+
+- The project page was rebuilt for the public launch:
+  - an interactive, in-browser replay of a ticket → reviewed draft PR run that
+    pauses for your approval, reviews in parallel, loops once for a fix and opens
+    a draft PR;
+  - a step-by-step guide to the workflow generator;
+  - a tabbed tour of real app screens (editor, runs, usage, agents);
+  - download cards that recommend the installers for the visitor's OS, and a
+    link-preview image.
+
+  It loads nothing from other sites and never calls the GitHub API.
+
+- The README was rewritten for the public repository: badges, downloads from the
+  latest release, screenshots, a generator guide, the safety model and current
+  limits.
+- `docs/images/` holds screenshots of real app screens (WebP) and
+  `social-preview.jpg` for link previews and the repository's social preview.
+
+### Changed
+
+- Download links in the README and on the project page point to
+  `releases/latest/download/<file>`, so they stay valid for every release without
+  edits. The private-repository notices are gone.
+- Release builds use less of the account's Actions minutes and storage:
+  - Both macOS DMGs build on Apple Silicon runners. The Intel one is
+    cross-compiled, and every app binary must report exactly the requested
+    architecture before it is staged.
+  - Release builds no longer save dependency caches, which a later tag could never
+    restore.
+  - Installer artifacts are kept for one day instead of 14.
+- The Pages workflow runs only when the site or its workflow changes. Its
+  validation checks the latest-release links and that every referenced image
+  exists.
+- Dependabot checks for updates monthly instead of weekly.
+- Dependencies were updated:
+  - frontend: React 19.3.1, `@tauri-apps/api` 2.12.4, `@tauri-apps/cli` 2.12.3,
+    `@tauri-apps/plugin-dialog` 2.8.3, Vitest 5.0.5, Prettier 3.9.10,
+    typescript-eslint 8.71.2 and jsdom 30.1.3, among others;
+  - Rust: tauri-build 2.7.2, tauri-plugin-dialog 2.8.3, tokio 1.53.3,
+    serde_json 1.0.154 and uuid 1.28.0.
+- Examples, placeholders and tests use generic ticket keys.
+
 ## [0.1.16] - 2026-10-20
 
 ### Added
@@ -524,7 +569,15 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/iazaran/orchevia/compare/v0.1.16...v0.1.17
+[0.1.16]: https://github.com/iazaran/orchevia/compare/v0.1.15...v0.1.16
+[0.1.15]: https://github.com/iazaran/orchevia/compare/v0.1.14...v0.1.15
+[0.1.14]: https://github.com/iazaran/orchevia/compare/v0.1.13...v0.1.14
+[0.1.13]: https://github.com/iazaran/orchevia/compare/v0.1.12...v0.1.13
+[0.1.12]: https://github.com/iazaran/orchevia/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/iazaran/orchevia/compare/v0.1.10...v0.1.11
+[0.1.10]: https://github.com/iazaran/orchevia/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/iazaran/orchevia/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/iazaran/orchevia/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/iazaran/orchevia/compare/v0.1.6...v0.1.7
