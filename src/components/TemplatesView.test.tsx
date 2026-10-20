@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
+import { createDefaultProfile } from '../lib/agents';
 import { TemplatesView } from './TemplatesView';
 
 afterEach(() => vi.restoreAllMocks());
@@ -60,4 +61,57 @@ it('leaves invalid pasted JSON editable with a clear validation error', async ()
   expect(await screen.findByText('Template workflow has no nodes.')).toBeInTheDocument();
   expect(input).toHaveValue(text);
   expect((await backend.listTemplates()).user).toHaveLength(0);
+});
+
+it('lists declared tools the mapped profile lacks right after import', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const reviewer = {
+    ...createDefaultProfile('claude'),
+    id: 'prof-review',
+    name: 'Reviewer',
+    role: 'deepReview',
+  };
+  await backend.saveAgentProfile(reviewer);
+  useAppStore.setState({
+    builtinTemplates: [],
+    userTemplates: [],
+    activeWorkflowId: null,
+    profiles: [reviewer],
+  });
+  render(<TemplatesView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Import JSON…' }));
+  await user.click(screen.getByRole('textbox', { name: 'Workflow or template JSON' }));
+  await user.paste(
+    JSON.stringify({
+      version: 1,
+      name: 'Ticket review',
+      workflow: {
+        version: 1,
+        name: 'Ticket review',
+        nodes: [
+          { key: 'start', type: 'start', config: {} },
+          {
+            key: 'review',
+            type: 'agent',
+            role: 'deepReview',
+            config: { prompt: 'Review', requiredTools: ['mcp__jira'] },
+          },
+          { key: 'end', type: 'end', config: {} },
+        ],
+        edges: [
+          { from: 'start', to: 'review' },
+          { from: 'review', to: 'end' },
+        ],
+      },
+    }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Import into my library' }));
+  const list = await screen.findByRole('list', { name: 'Tools not granted' });
+  expect(list).toHaveTextContent('Reviewer');
+  expect(list).toHaveTextContent('mcp__jira');
+  expect(
+    screen.getByRole('button', { name: 'Add to allowed tools' }),
+  ).toBeInTheDocument();
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Notice } from './Notice';
+import { ToolGrantNotice } from './ToolGrantNotice';
 import { errorMessage } from '../lib/errors';
 import { getBackend } from '../lib/backend';
 import {
@@ -133,6 +134,7 @@ export function StartRunDialog({
         />{' '}
         Dry run (simulated fixtures; never measures real usage)
       </label>
+      {!dryRun && <ToolGrantNotice workflow={workflow} style={{ marginBottom: 12 }} />}
       {dryRun && (
         <p className="field-hint">
           Test conditions, loops, joins and retries with supplied results. No developer

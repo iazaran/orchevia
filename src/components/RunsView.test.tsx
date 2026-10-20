@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests, type Backend } from '../lib/backend';
+import { createDefaultProfile } from '../lib/agents';
 import { useAppStore } from '../store';
 import type { GroupedFinding } from '../lib/scheduler';
 import type { RunStatus, StoredNodeResult, StoredRun } from '../lib/workflow';
@@ -714,4 +715,106 @@ it('keeps unverified plain-text dollar hints inside collapsed usage details', as
   expect(details).not.toHaveAttribute('open');
   expect(details).toHaveTextContent('Unverified text hints');
   expect(details).toHaveTextContent('not your subscription bill');
+});
+
+it('shows refused tool calls and adds the suggested rules to the profile', async () => {
+  const backend = __setMockBackendForTests();
+  const profile = {
+    ...createDefaultProfile('claude'),
+    id: 'prof-jira',
+    name: 'Ticket reader',
+  };
+  await backend.saveAgentProfile(profile);
+  const run: StoredRun = {
+    id: 'refused-run',
+    workflowId: 'refused-wf',
+    status: 'failed',
+    startedAt: new Date().toISOString(),
+  };
+  const result: StoredNodeResult = {
+    id: 801,
+    runId: run.id,
+    nodeId: 'fetch',
+    status: 'failed',
+    stdout: 'TICKET_STATUS=none',
+    stderr: '',
+    error: 'Claude refused 2 tool calls under this profile’s permissions.',
+    startedAt: run.startedAt,
+    structuredJson: JSON.stringify({
+      failureKind: 'permissionDenied',
+      permissionDenied: {
+        profileId: 'prof-jira',
+        denials: [
+          {
+            toolName: 'mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue',
+            toolUseId: 'toolu_1',
+            rules: ['mcp__claude_ai_Atlassian_Rovo_2'],
+          },
+          {
+            toolName: 'Bash',
+            toolUseId: 'toolu_2',
+            detail: 'git status',
+            rules: ['Bash(git status *)'],
+          },
+        ],
+        rules: ['mcp__claude_ai_Atlassian_Rovo_2', 'Bash(git status *)'],
+      },
+    }),
+  };
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(useAppStore.getState().runResults[id] ?? []),
+  );
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'refused-wf',
+    name: 'Jira ticket to reviewed PR',
+    edges: [],
+    nodes: [
+      {
+        id: 'fetch',
+        type: 'agent',
+        label: 'Fetch ticket',
+        position: { x: 0, y: 0 },
+        config: { agentProfileId: 'prof-jira' },
+      },
+    ],
+  });
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [result] },
+    workflows: [],
+    profiles: [profile],
+  });
+  const { ConfirmHost } = await import('./ConfirmDialog');
+  render(
+    <>
+      <RunsView />
+      <ConfirmHost />
+    </>,
+  );
+  const panel = await screen.findByRole('region', { name: 'Refused tool calls' });
+  expect(panel).toHaveTextContent('mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue');
+  expect(panel).toHaveTextContent('git status');
+  expect(screen.getByText('tools refused')).toBeInTheDocument();
+  const user = userEvent.setup();
+  await user.click(
+    within(panel).getByRole('button', { name: 'Add 2 rules to Ticket reader' }),
+  );
+  await user.click(await screen.findByRole('button', { name: 'Add to allowed tools' }));
+  await waitFor(async () => {
+    const saved = (await backend.listAgentProfiles()).find((p) => p.id === 'prof-jira');
+    expect(saved?.permissionLevel).toBe('allowedTools');
+    expect(saved?.allowedTools).toEqual([
+      'mcp__claude_ai_Atlassian_Rovo_2',
+      'Bash(git status *)',
+    ]);
+  });
+  expect(
+    await within(panel).findByText(/Ticket reader now allows these tools/),
+  ).toBeInTheDocument();
 });

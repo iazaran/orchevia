@@ -125,9 +125,10 @@ result's `permission_denials`, so Orchevia reads them:
   MCP tool suggests its server rule `mcp__<server>`, a Bash command suggests
   `Bash(<command prefix> *)` for each command in the line (`git status`,
   `pnpm test`, `touch`), and any other tool suggests its own name (`Write`).
-- The refusals stay in the node's structured result. Runs shows them on the step
-  with **Add to allowed tools**, which adds the suggested rules to the profile
-  after you confirm.
+- The refusals stay in the node's structured result. Runs marks the step **tools
+  refused**, lists each refused call with its suggested rule, and offers a button
+  that adds the missing rules to the step's profile after you confirm. Then use
+  **Recover failed run** to retry the step.
 
 Text-output invocations (a profile whose extra arguments set `--output-format` or
 `--input-format`, and workflow generation) have no result event, so refused

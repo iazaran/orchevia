@@ -3,6 +3,9 @@ import { expect, it, vi } from 'vitest';
 import { StartRunDialog, UsageContinueDialog, UsageLimitsDialog } from './RunControls';
 import { __setMockBackendForTests } from '../lib/backend';
 import { createEmptyWorkflow } from '../lib/workflow';
+import { createDefaultProfile } from '../lib/agents';
+import { useAppStore } from '../store';
+import { ConfirmHost } from './ConfirmDialog';
 
 it('submits dry-run fixtures and declared inputs without spend or attempt controls', async () => {
   const workflow = createEmptyWorkflow('Fixture test');
@@ -288,4 +291,56 @@ it('saves workflow limits and clears them when every field is empty', async () =
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(undefined));
+});
+
+it('shows declared tools the profile lacks before a live run and adds them', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = {
+    ...createDefaultProfile('claude'),
+    id: 'prof-impl',
+    name: 'Implementer',
+  };
+  await backend.saveAgentProfile(profile);
+  useAppStore.setState({ profiles: [profile] });
+  const workflow = createEmptyWorkflow('Declared tools');
+  workflow.nodes.splice(1, 0, {
+    id: 'impl',
+    type: 'agent',
+    label: 'Implement',
+    position: { x: 0, y: 0 },
+    config: {
+      agentProfileId: 'prof-impl',
+      prompt: 'Work',
+      requiredTools: ['mcp__jira', 'Bash(gh pr *)'],
+    },
+  });
+  render(
+    <>
+      <StartRunDialog
+        workflow={workflow}
+        initialDryRun={false}
+        onStart={vi.fn()}
+        onClose={() => undefined}
+      />
+      <ConfirmHost />
+    </>,
+  );
+  const notice = screen.getByText(
+    'This workflow declares tools its Agent Profiles do not grant.',
+  ).parentElement as HTMLElement;
+  expect(notice).toHaveTextContent('Implementer');
+  expect(notice).toHaveTextContent('Bash(gh pr *)');
+  fireEvent.click(screen.getByRole('button', { name: 'Add to allowed tools' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Add tools' }));
+  await waitFor(() =>
+    expect(
+      screen.queryByText('This workflow declares tools its Agent Profiles do not grant.'),
+    ).not.toBeInTheDocument(),
+  );
+  const [saved] = await backend.listAgentProfiles();
+  expect(saved?.allowedTools).toEqual(['mcp__jira', 'Bash(gh pr *)']);
+  // Dry runs never call the CLI, so they show no permission notice.
+  fireEvent.click(screen.getByLabelText(/Dry run/));
+  expect(screen.queryByText(/declares tools/)).not.toBeInTheDocument();
 });

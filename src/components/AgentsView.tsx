@@ -9,13 +9,17 @@ import {
   createDefaultProfile,
   effectiveExecutable,
   effortLabel,
+  permissionLevelLabel,
+  permissionLevels,
   validateProfile,
   type AdapterKind,
   type AgentProfile,
   type AgentSkillInfo,
+  type PermissionLevel,
   type WorkingDirMode,
 } from '../lib/agents';
 import { DirPicker } from './DirPicker';
+import { ToolRulesField } from './ToolRulesField';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
@@ -68,6 +72,25 @@ export function AgentsView(): React.JSX.Element {
       setMessage(errors[0] ?? 'Invalid profile.', 'error');
       return;
     }
+    const before = profiles.find((p) => p.id === profile.id);
+    if (
+      profile.permissionLevel === 'fullAccess' &&
+      before?.permissionLevel !== 'fullAccess'
+    ) {
+      void confirmDialog({
+        title: `Give '${profile.name}' full access?`,
+        message: `${ADAPTER_LABELS[profile.adapter]} will skip every permission check for runs with this profile: it can run any command, change any file and call any MCP tool without asking. Schedules that use it need the trusted opt-in.`,
+        confirmLabel: 'Allow full access',
+        danger: true,
+      }).then((ok) => {
+        if (ok) persist(profile);
+      });
+      return;
+    }
+    persist(profile);
+  };
+
+  const persist = (profile: AgentProfile): void => {
     // Observe role-default changes for memory suggestions: if this profile
     // takes over a role from another profile, that is a repeated-edit signal.
     const previous = profiles.find((p) => p.role === profile.role && p.id !== profile.id);
@@ -368,6 +391,29 @@ export function AgentsView(): React.JSX.Element {
                     <dt>Timeout</dt>
                     <dd>{p.defaultTimeoutSecs}s</dd>
                   </div>
+                  {p.adapter !== 'custom' && (
+                    <div>
+                      <dt>Permissions</dt>
+                      <dd
+                        className={
+                          p.permissionLevel === 'fullAccess'
+                            ? 'profile-fact-risk'
+                            : undefined
+                        }
+                        title={
+                          p.permissionLevel === 'allowedTools'
+                            ? (p.allowedTools ?? []).join('\n')
+                            : permissionLevelLabel(p.adapter, p.permissionLevel)
+                        }
+                      >
+                        {p.permissionLevel === 'allowedTools'
+                          ? `Allowed tools (${String((p.allowedTools ?? []).length)})`
+                          : p.permissionLevel === 'fullAccess'
+                            ? 'Full access'
+                            : 'CLI settings'}
+                      </dd>
+                    </div>
+                  )}
                 </dl>
                 <div className="profile-actions">
                   <button
@@ -377,6 +423,9 @@ export function AgentsView(): React.JSX.Element {
                         ...p,
                         extraArgs: [...p.extraArgs],
                         skills: [...(p.skills ?? [])],
+                        ...(p.allowedTools === undefined
+                          ? {}
+                          : { allowedTools: [...p.allowedTools] }),
                       })
                     }
                   >
@@ -643,7 +692,17 @@ function ProfileEditor({
             className="input"
             value={form.adapter}
             onChange={(e) => {
-              set({ adapter: e.target.value as AdapterKind, skills: [] });
+              const adapter = e.target.value as AdapterKind;
+              const level = form.permissionLevel ?? 'cliSettings';
+              set({
+                adapter,
+                skills: [],
+                // Keep only what the new CLI can express (agents.rs validation).
+                permissionLevel: permissionLevels(adapter).includes(level)
+                  ? level
+                  : 'cliSettings',
+                allowedTools: adapter === 'claude' ? form.allowedTools : undefined,
+              });
             }}
           >
             <option value="claude">Claude Code</option>
@@ -863,6 +922,19 @@ function ProfileEditor({
           </span>
         </div>
       )}
+      {form.adapter !== 'custom' && (
+        <PermissionsEditor
+          adapter={form.adapter}
+          level={form.permissionLevel ?? 'cliSettings'}
+          allowedTools={form.allowedTools ?? []}
+          onLevel={(permissionLevel) => {
+            set({ permissionLevel });
+          }}
+          onTools={(allowedTools) => {
+            set({ allowedTools: allowedTools.length > 0 ? allowedTools : undefined });
+          }}
+        />
+      )}
       <div className="field">
         <label className="field-label" htmlFor="prof-args">
           Additional arguments (one per line, no secrets)
@@ -954,6 +1026,83 @@ function ProfileEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+function permissionHint(level: PermissionLevel, cli: string): React.ReactNode {
+  if (level === 'allowedTools')
+    return (
+      <>
+        Passes <code>--allowedTools</code> with these rules. What the Claude Code settings
+        already allow still applies. Orchevia never edits settings files.
+      </>
+    );
+  return `No permission flag: ${cli} decides from its own settings. Headless runs cannot ask, so any tool those settings do not allow is refused and the step fails.`;
+}
+
+function PermissionsEditor({
+  adapter,
+  level,
+  allowedTools,
+  onLevel,
+  onTools,
+}: {
+  adapter: AdapterKind;
+  level: PermissionLevel;
+  allowedTools: string[];
+  onLevel: (level: PermissionLevel) => void;
+  onTools: (tools: string[]) => void;
+}): React.JSX.Element {
+  const cli = ADAPTER_LABELS[adapter];
+  return (
+    <div className="field">
+      <label className="field-label" htmlFor="prof-permissions">
+        Permissions
+      </label>
+      <select
+        id="prof-permissions"
+        className="input"
+        value={level}
+        onChange={(e) => {
+          onLevel(e.target.value as PermissionLevel);
+        }}
+      >
+        {permissionLevels(adapter).map((option) => (
+          <option key={option} value={option}>
+            {permissionLevelLabel(adapter, option)}
+          </option>
+        ))}
+      </select>
+      {level === 'fullAccess' ? (
+        <Notice inline variant="warn" style={{ marginTop: 8 }}>
+          Full access skips every permission check (
+          <code>
+            {adapter === 'codex'
+              ? '--dangerously-bypass-approvals-and-sandbox'
+              : '--permission-mode bypassPermissions'}
+          </code>
+          ): {cli} can run any command, change any file and call any MCP tool without
+          asking. Use it only for repositories and tools you trust. Schedules that use
+          this profile need the trusted opt-in.
+        </Notice>
+      ) : (
+        <span className="field-hint">
+          {permissionHint(level, cli)}
+          {adapter === 'codex' &&
+            ' Codex has no tool allow-list, so only its settings or full access apply.'}
+        </span>
+      )}
+      {adapter === 'claude' && level === 'allowedTools' && (
+        <ToolRulesField
+          id="prof-allowed-tools"
+          label="Allowed tools (one per line)"
+          value={allowedTools}
+          onChange={onTools}
+          placeholder={'Edit\nmcp__jira\nBash(git status *)'}
+          hint="A tool (Edit, Write), an MCP server (mcp__server) or one of its tools, or a tool with a pattern such as Bash(git status *). Refused runs suggest the exact rules."
+        />
+      )}
     </div>
   );
 }

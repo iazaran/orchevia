@@ -4,11 +4,11 @@
 :root {
   color-scheme: dark;
   --bg-0: #0b0d12;
-  --bg-1: #10141b;
-  --bg-2: #161c26;
-  --bg-3: #1d2532;
-  --border: #263042;
-  --border-soft: #1c2431;
+  --bg-1: #141b27;
+  --bg-2: #1c2433;
+  --bg-3: #263146;
+  --border: #3a4864;
+  --border-soft: #263247;
   --text-0: #f2f5f9;
   --text-1: #c3ccd9;
   --text-2: #8b96a9;
@@ -24,6 +24,21 @@
     'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  /* Controls and surfaces. Dark values keep cards, buttons and selected tabs
+     distinct from the page (button borders >= 3:1 against cards and page); the
+     light theme maps every token to its existing look. */
+  --border-card: #3f4e6c;
+  --input-border: #44547a;
+  --btn-bg: #222c3e;
+  --btn-bg-hover: #2c3850;
+  --btn-border: #5a6a8f;
+  --btn-ghost-border: #4a5a80;
+  --btn-ghost-bg-hover: var(--bg-3);
+  --btn-disabled-opacity: 0.6;
+  --tab-selected-bg: color-mix(in srgb, var(--accent) 24%, var(--bg-1));
+  --tab-selected-border: var(--accent);
+  --tab-selected-text: #ffffff;
+  --tab-selected-shadow: inset 0 -2px 0 var(--accent);
 }
 
 [data-theme='light'] {
@@ -40,6 +55,18 @@
   --accent: #2f6fed;
   --accent-strong: #2059cc;
   --shadow: 0 8px 24px rgba(20, 30, 50, 0.1);
+  --border-card: var(--border-soft);
+  --input-border: var(--border);
+  --btn-bg: var(--bg-2);
+  --btn-bg-hover: var(--bg-3);
+  --btn-border: var(--border);
+  --btn-ghost-border: transparent;
+  --btn-ghost-bg-hover: var(--bg-2);
+  --btn-disabled-opacity: 0.5;
+  --tab-selected-bg: var(--bg-3);
+  --tab-selected-border: var(--accent);
+  --tab-selected-text: var(--text-0);
+  --tab-selected-shadow: none;
 }
 
 * {
@@ -271,8 +298,8 @@ textarea {
 
 /* Buttons / inputs */
 .btn {
-  border: 1px solid var(--border);
-  background: var(--bg-2);
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
   border-radius: var(--radius-m);
   padding: 7px 13px;
   cursor: pointer;
@@ -283,11 +310,11 @@ textarea {
 }
 
 .btn:hover {
-  background: var(--bg-3);
+  background: var(--btn-bg-hover);
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  opacity: var(--btn-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -308,20 +335,34 @@ textarea {
 
 .btn-ghost {
   background: transparent;
-  border-color: transparent;
+  border-color: var(--btn-ghost-border);
   color: var(--text-1);
 }
 
 .btn-ghost:hover {
-  background: var(--bg-2);
+  background: var(--btn-ghost-bg-hover);
   color: var(--text-0);
+}
+
+/* A ✕ inside a pill stays borderless. */
+.status-pill .btn-ghost {
+  border-color: transparent;
+}
+
+/* Selected tab or segment: distinct fill, accent edge and (dark) underline. */
+.btn.active-tab,
+.btn.active-tab:hover {
+  background: var(--tab-selected-bg);
+  border-color: var(--tab-selected-border);
+  color: var(--tab-selected-text);
+  box-shadow: var(--tab-selected-shadow);
 }
 
 .input,
 .select,
 .textarea {
   background: var(--bg-1);
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border);
   border-radius: var(--radius-m);
   padding: 7px 10px;
   width: 100%;
@@ -671,7 +712,7 @@ textarea {
 }
 
 .tool-card {
-  border: 1px solid var(--border-soft);
+  border: 1px solid var(--border-card);
   background: var(--bg-1);
   border-radius: var(--radius-l);
   padding: 16px;
@@ -757,8 +798,8 @@ textarea {
 }
 
 .tool-chip.selected {
-  border-color: var(--accent);
-  background: var(--bg-3);
+  border-color: var(--tab-selected-border);
+  background: var(--tab-selected-bg);
 }
 
 /* Native controls follow the theme (popups, checkboxes, scrollbars). */
@@ -1560,6 +1601,11 @@ details[open] > .gen-summary::after {
   white-space: nowrap;
 }
 
+.profile-facts dd.profile-fact-risk {
+  color: var(--warning);
+  font-weight: 700;
+}
+
 .profile-actions {
   display: flex;
   gap: 8px;
@@ -1935,7 +1981,7 @@ details[open] > .gen-summary::after {
   gap: 12px;
 }
 .usage-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-card);
   border-radius: var(--radius-m);
   background: var(--bg-1);
   padding: 12px 14px;
@@ -1979,11 +2025,6 @@ details[open] > .gen-summary::after {
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 12px;
-}
-.usage-tabs .active-tab {
-  border-color: var(--accent);
-  color: var(--text-0);
-  background: var(--bg-3);
 }
 /* Daily activity chart: fixed panel height (~240px) regardless of date span. */
 .usage-chart-panel {
@@ -2236,4 +2277,44 @@ details[open] > .gen-summary::after {
 [data-theme='light'] .form-error {
   /* --danger is tuned for dark surfaces; darken it on light backgrounds. */
   color: #b4232a;
+}
+
+/* Tool permissions: refused calls on a run step, declared tools not granted. */
+.permission-denials {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-1));
+}
+.permission-denials h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.permission-denials ul,
+.tool-grant-list {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+.permission-denials li,
+.tool-grant-list li {
+  overflow-wrap: anywhere;
+  margin-bottom: 2px;
+}
+.denial-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-1);
+  display: inline-block;
+  max-width: min(60ch, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.permission-denials-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
 }

@@ -378,10 +378,20 @@ it('applies date presets and resets every filter', async () => {
   vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
   render(<UsageView />);
   const user = userEvent.setup();
+  // The default range is the last 30 days, shown as the selected preset.
+  expect(screen.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   await user.click(screen.getByRole('button', { name: 'Last 7 days' }));
   const weekAgo = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
   await waitFor(() =>
     expect(screen.getByLabelText('From (inclusive)')).toHaveValue(weekAgo),
+  );
+  expect(screen.getByRole('button', { name: 'Last 7 days' })).toHaveClass('active-tab');
+  expect(screen.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
   );
   await user.selectOptions(screen.getByLabelText('Provider'), 'codex');
   await user.type(screen.getByLabelText('Model'), 'gpt-x');

@@ -20,6 +20,8 @@ import { Modal } from './Modal';
 import { confirmDialog } from './ConfirmDialog';
 import { CloseButton } from './CloseButton';
 import { Notice, useNoticeMessage } from './Notice';
+import { PermissionDenials } from './PermissionDenials';
+import { permissionDeniedFrom } from '../lib/permissions';
 import { errorMessage } from '../lib/errors';
 import { countAgentAttempts, reportedSpend } from '../lib/run-controls';
 import type { StoredNodeResult, StoredRun } from '../lib/workflow';
@@ -989,6 +991,7 @@ export function RunsView(): React.JSX.Element {
                 {results.map((r, index) => {
                   const node = nodeFor(r.nodeId);
                   const context = agentContextDetails(r.structuredJson);
+                  const denied = permissionDeniedFrom(r.structuredJson);
                   const textUsageHints = extractUsageHints(r.stdout, r.stderr);
                   // The last step (usually the report) opens expanded; the rest
                   // collapse long logs behind a toggle.
@@ -1021,6 +1024,14 @@ export function RunsView(): React.JSX.Element {
                         <span className={`status-pill status-${r.status}`}>
                           {r.status}
                         </span>
+                        {denied !== null && (
+                          <span
+                            className="status-pill status-failed"
+                            title="Claude refused tool calls under this profile's permissions"
+                          >
+                            tools refused
+                          </span>
+                        )}
                         <strong>{node?.label ?? r.nodeId}</strong>
                         {activeRun.status === 'succeeded' &&
                           node?.type === 'command' &&
@@ -1092,6 +1103,15 @@ export function RunsView(): React.JSX.Element {
                         <Notice inline variant="error">
                           {r.error}
                         </Notice>
+                      )}
+                      {denied !== null && (
+                        <PermissionDenials
+                          denied={denied}
+                          profileId={
+                            runWorkflow?.nodes.find((n) => n.id === r.nodeId)?.config
+                              .agentProfileId
+                          }
+                        />
                       )}
                       <ReviewFindings findings={findingsByResult.get(r.id) ?? []} />
                       {((context?.usageHints.length ?? 0) > 0 ||
