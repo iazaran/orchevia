@@ -1,10 +1,19 @@
 name: Pages
 
-# Validate every PR; gate deployment at job level instead of filtering checks.
+# Only site changes start this workflow; Markdown-only docs edits validate but
+# never redeploy (the job-level gate below), and CI checks the page on every PR.
 on:
   push:
     branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+      - 'scripts/ci-changes.mjs'
   pull_request:
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+      - 'scripts/ci-changes.mjs'
   workflow_dispatch:
 
 permissions:
@@ -37,13 +46,18 @@ jobs:
           grep -qi "orchevia" docs/index.html
           python3 - <<'PY'
           import html.parser
+          import re
           from pathlib import Path
           content = Path('docs/index.html').read_text()
           html.parser.HTMLParser().feed(content)
-          assert 'public soon' in content.lower()
-          assert 'private' in content.lower()
-          assert '/releases/download/' not in content
           assert 'api.github.com' not in content
+          assert '/releases/download/v' not in content
+          for asset in ('Orchevia-macos-arm64.dmg', 'Orchevia-macos-x86_64.dmg',
+                        'Orchevia-linux-x86_64.AppImage', 'Orchevia-linux-x86_64.deb',
+                        'SHA256SUMS'):
+              assert f'/releases/latest/download/{asset}' in content, asset
+          for src in re.findall(r'src="\./([^"]+)"', content):
+              assert (Path('docs') / src).is_file(), src
           print('docs OK')
           PY
 

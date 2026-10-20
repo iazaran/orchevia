@@ -31,10 +31,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Check tag and application versions
         run: pnpm version:check "$GITHUB_REF_NAME"
+      # Restore main's dependency cache; a tag-scoped copy is never restored again.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
           shared-key: core-checks
+          save-if: false
       - run: pnpm test:delivery
       - run: pnpm format:check
       - run: pnpm lint
@@ -45,7 +47,7 @@ jobs:
       - run: cargo test -p orchevia-core --locked
 
   build:
-    name: Build release (${{ matrix.os }})
+    name: Build release (${{ matrix.os }} ${{ matrix.arch }})
     needs: [validate]
     strategy:
       fail-fast: false
@@ -53,14 +55,22 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
+            target: ''
             bundles: deb,appimage
+          # Both DMGs build on Apple Silicon: the Intel one is cross-compiled,
+          # which is several times faster than an Intel runner. Each binary's
+          # architecture is checked before staging.
           - os: macos-15
             arch: arm64
+            target: aarch64-apple-darwin
             bundles: dmg
-          - os: macos-15-intel
+          - os: macos-15
             arch: x86_64
+            target: x86_64-apple-darwin
             bundles: dmg
     runs-on: ${{ matrix.os }}
+    # No dependency caches: a tag run can only restore caches saved by the same
+    # tag or by main, so a release-scoped cache is never reused by the next tag.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -69,19 +79,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: . -> target
-          shared-key: release-build
-          # A packaging/upload failure should not force dependencies to compile again.
-          cache-on-failure: true
+          targets: ${{ matrix.target }}
       - name: Install Linux deps
         if: runner.os == 'Linux'
         run: bash scripts/install-linux-deps.sh
       - run: pnpm install --frozen-lockfile
-      - name: Verify runner architecture
+      - name: Verify Linux runner architecture
+        if: runner.os == 'Linux'
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: test "$(uname -m)" = "$EXPECTED_ARCH"
@@ -90,49 +96,72 @@ jobs:
         shell: bash
         env:
           RELEASE_BUNDLES: ${{ matrix.bundles }}
-        run: pnpm tauri build --ci --verbose --bundles "$RELEASE_BUNDLES" -- --locked 2>&1 | tee build.log
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: pnpm tauri build --ci --verbose --bundles "$RELEASE_BUNDLES" ${RELEASE_TARGET:+--target "$RELEASE_TARGET"} -- --locked 2>&1 | tee build.log
       - name: macOS packaging diagnostics
         if: failure() && runner.os == 'macOS' && steps.package.outcome == 'failure'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
         run: |
           sw_vers
           uname -m
           xcodebuild -version
           df -h
           hdiutil info
-          find target/release/bundle -maxdepth 3 -type f -print
+          find "target/$RELEASE_TARGET/release/bundle" -maxdepth 3 -type f -print
       - name: Retain packaging failure evidence
         if: failure() && steps.package.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
-          name: packaging-diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          name: packaging-diagnostics-${{ matrix.os }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: |
             build.log
-            target/release/bundle/dmg/bundle_dmg.sh
+            target/*/release/bundle/dmg/bundle_dmg.sh
           retention-days: 7
           if-no-files-found: error
       - name: Stage artifacts
+        env:
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_TARGET: ${{ matrix.target }}
         run: |
+          bundle=target/release/bundle
+          if [ -n "$RELEASE_TARGET" ]; then
+            bundle="target/$RELEASE_TARGET/release/bundle"
+          fi
           mkdir -p release-artifacts
           if [ "$RUNNER_OS" = Linux ]; then
-            deb=$(find target/release/bundle -type f -name '*.deb' -print -quit)
-            appimage=$(find target/release/bundle -type f -name '*.AppImage' -print -quit)
-            test -n "$deb" && test -n "$appimage"
-            cp "$deb" release-artifacts/Orchevia-linux-x86_64.deb
-            cp "$appimage" release-artifacts/Orchevia-linux-x86_64.AppImage
+            deb=$(find "$bundle" -type f -name '*.deb' -print -quit)
+            appimage=$(find "$bundle" -type f -name '*.AppImage' -print -quit)
+            test -n "$deb"
+            test -n "$appimage"
+            cp "$deb" "release-artifacts/Orchevia-linux-$RELEASE_ARCH.deb"
+            cp "$appimage" "release-artifacts/Orchevia-linux-$RELEASE_ARCH.AppImage"
           else
-            dmg=$(find target/release/bundle -type f -name '*.dmg' -print -quit)
+            app=$(find "$bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)
+            test -n "$app"
+            binaries=0
+            while IFS= read -r -d '' binary; do
+              archs=$(lipo -archs "$binary")
+              echo "$binary: $archs"
+              test "$archs" = "$RELEASE_ARCH"
+              binaries=$((binaries + 1))
+            done < <(find "$app/Contents/MacOS" -type f -perm -u+x -print0)
+            test "$binaries" -gt 0
+            dmg=$(find "$bundle/dmg" -type f -name '*.dmg' -print -quit)
             test -n "$dmg"
-            cp "$dmg" "release-artifacts/Orchevia-macos-$(uname -m).dmg"
+            cp "$dmg" "release-artifacts/Orchevia-macos-$RELEASE_ARCH.dmg"
           fi
           ls -la release-artifacts
+      # Publication follows within minutes; one day is enough to rerun it and
+      # keeps duplicate installers out of the account's Actions storage.
       - name: Upload release installers
         id: upload
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: release-${{ matrix.os }}
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
           path: release-artifacts/
-          retention-days: 14
+          retention-days: 1
           if-no-files-found: error
           compression-level: 0
       # Retry only the upload once on transient network failures; never rebuild here.
@@ -140,9 +169,9 @@ jobs:
         if: steps.upload.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
-          name: release-${{ matrix.os }}
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
           path: release-artifacts/
-          retention-days: 14
+          retention-days: 1
           if-no-files-found: error
           compression-level: 0
           overwrite: true

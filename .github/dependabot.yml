@@ -1,9 +1,11 @@
 version: 2
+# Monthly grouped updates keep CI runs (and private-repo Actions minutes) low;
+# security updates are not limited by this schedule.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       frontend:
         patterns: ['*']
@@ -15,7 +17,7 @@ updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       rust:
         patterns: ['*']
@@ -23,7 +25,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       actions:
         patterns: ['*']

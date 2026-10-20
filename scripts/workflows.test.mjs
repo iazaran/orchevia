@@ -117,3 +117,78 @@ test('publication requires all four nonempty installers and produces their exact
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const stage = runBlock('.github/workflows/release.yml', 'Stage artifacts');
+
+function stagingFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'orchevia-stage-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  const lipo = (archs) =>
+    writeFileSync(join(bin, 'lipo'), `#!/bin/sh\necho '${archs}'\n`, { mode: 0o755 });
+  return { dir, lipo, path: `${bin}:${String(process.env.PATH)}` };
+}
+
+test('macOS staging names the DMG by its target architecture and rejects any other binary', () => {
+  const { dir, lipo, path } = stagingFixture();
+  try {
+    const bundle = join(dir, 'target/x86_64-apple-darwin/release/bundle');
+    const executables = join(bundle, 'macos/Orchevia.app/Contents/MacOS');
+    mkdirSync(executables, { recursive: true });
+    writeFileSync(join(executables, 'orchevia'), 'binary', { mode: 0o755 });
+    mkdirSync(join(bundle, 'dmg'));
+    writeFileSync(join(bundle, 'dmg/Orchevia_0.1.17_x64.dmg'), 'intel dmg');
+    const env = {
+      PATH: path,
+      RUNNER_OS: 'macOS',
+      RELEASE_ARCH: 'x86_64',
+      RELEASE_TARGET: 'x86_64-apple-darwin',
+    };
+    for (const archs of ['arm64', 'x86_64 arm64']) {
+      lipo(archs);
+      assert.notEqual(
+        execute(stage, { cwd: dir, env }).status,
+        0,
+        `a ${archs} binary must not ship as the Intel DMG`,
+      );
+    }
+    lipo('x86_64');
+    assert.equal(execute(stage, { cwd: dir, env }).status, 0);
+    assert.equal(
+      readFileSync(join(dir, 'release-artifacts/Orchevia-macos-x86_64.dmg'), 'utf8'),
+      'intel dmg',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Linux staging requires both packages from the host bundle', () => {
+  const { dir, path } = stagingFixture();
+  try {
+    const bundle = join(dir, 'target/release/bundle');
+    mkdirSync(join(bundle, 'deb'), { recursive: true });
+    mkdirSync(join(bundle, 'appimage'), { recursive: true });
+    writeFileSync(join(bundle, 'deb/orchevia_0.1.17_amd64.deb'), 'deb');
+    const env = {
+      PATH: path,
+      RUNNER_OS: 'Linux',
+      RELEASE_ARCH: 'x86_64',
+      RELEASE_TARGET: '',
+    };
+    assert.notEqual(
+      execute(stage, { cwd: dir, env }).status,
+      0,
+      'a missing AppImage must block staging',
+    );
+    writeFileSync(join(bundle, 'appimage/orchevia_0.1.17_amd64.AppImage'), 'appimage');
+    assert.equal(execute(stage, { cwd: dir, env }).status, 0);
+    for (const [name, content] of [
+      ['Orchevia-linux-x86_64.deb', 'deb'],
+      ['Orchevia-linux-x86_64.AppImage', 'appimage'],
+    ])
+      assert.equal(readFileSync(join(dir, 'release-artifacts', name), 'utf8'), content);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
