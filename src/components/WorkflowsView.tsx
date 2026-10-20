@@ -1062,7 +1062,7 @@ export function WorkflowsView(): React.JSX.Element {
                 id="gen-goal"
                 className="textarea generator-input"
                 rows={4}
-                placeholder="Implement DEV-6012 with Claude, review with Codex, draft PR… (be specific: branches, commands, acceptance criteria)"
+                placeholder="Implement DEV-1234 with Claude, review with Codex, draft PR… (be specific: branches, commands, acceptance criteria)"
                 value={goal}
                 onChange={(e) => setGoal(e.target.value)}
               />

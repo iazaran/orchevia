@@ -1811,7 +1811,7 @@ Good luck!"#;
 {"version":1,"name":"W","explanation":"x","nodes":[
 {"key":"start","type":"start","label":"S","config":{}},
 {"key":"t","type":"ticket","label":"Load ticket","config":{"ticketKey":"{{input.ticket}}"}},
-{"key":"m","type":"mcp","label":"Call tool","config":{"mcpTool":"jira_get_issue","mcpArgs":{"issueKey":"VAC-1"}}},
+{"key":"m","type":"mcp","label":"Call tool","config":{"mcpTool":"jira_get_issue","mcpArgs":{"issueKey":"DEV-1234"}}},
 {"key":"g","type":"git","label":"Check repo","config":{"gitOp":{"op":"status"}}},
 {"key":"end","type":"end","label":"E","config":{}}],
 "edges":[{"from":"start","to":"t"},{"from":"t","to":"m"},{"from":"m","to":"g"},{"from":"g","to":"end"}]}
@@ -1849,7 +1849,7 @@ Good luck!"#;
                 .as_ref()
                 .and_then(|args| args.get("issueKey"))
                 .map(String::as_str),
-            Some("VAC-1")
+            Some("DEV-1234")
         );
         assert!(
             preview.repairs.iter().any(|r| r.contains("MCP server")),
