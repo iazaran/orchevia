@@ -1446,7 +1446,10 @@ for arg in "$@"; do
   if [ "$next" = 1 ]; then sid=$arg; next=0; fi
   case "$arg" in --resume) next=1;; esac
 done
-[ -n "$sid" ] || sid=00000000-0000-4000-8000-$(date +%N | cut -c1-9)000
+if [ -z "$sid" ]; then
+  n=$(cat {state_dir}/sessions 2>/dev/null || echo 0); n=$((n+1)); echo $n > {state_dir}/sessions
+  sid=$(printf '00000000-0000-4000-8000-%012d' "$n")
+fi
 case "$prompt" in
   *"Deep review"*)
     n=$(cat {state_dir}/deep 2>/dev/null || echo 0); n=$((n+1)); echo $n > {state_dir}/deep
