@@ -66,6 +66,16 @@ function permissionFlags(adapter: AdapterKind): string[] {
   return [];
 }
 
+/** The profile's first extra argument that sets permissions itself, if any. */
+export function permissionArgument(profile: AgentProfile): string | null {
+  const flags = permissionFlags(profile.adapter);
+  return (
+    profile.extraArgs.find((arg) =>
+      flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
+    ) ?? null
+  );
+}
+
 /** Mirror of Rust `push_permissions`: the argv for the profile's level. */
 export function permissionArgs(profile: AgentProfile): string[] {
   const level = profile.permissionLevel ?? 'cliSettings';
@@ -424,11 +434,8 @@ export function validateProfile(profile: AgentProfile): string[] {
       errors.push('Codex has no tool allow-list. Use Codex settings or Full access.');
     else if (level === 'allowedTools' && allowedTools.length === 0)
       errors.push('Allowed tools needs at least one tool.');
-    const flags = permissionFlags(profile.adapter);
-    const conflict = profile.extraArgs.find((arg) =>
-      flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)),
-    );
-    if (conflict !== undefined)
+    const conflict = permissionArgument(profile);
+    if (conflict !== null)
       errors.push(
         `Extra argument '${conflict}' conflicts with the profile's permission setting. Remove it or use the CLI settings level.`,
       );

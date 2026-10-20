@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultProfile } from './agents';
 import { createEmptyWorkflow, type NodeConfig, type WorkflowNode } from './workflow';
 import {
+  allowedToolsBlocker,
+  dormantAllowedTools,
   missingToolGrants,
   permissionDeniedFrom,
   profileGrants,
@@ -148,5 +150,40 @@ describe('tool permissions', () => {
     const granted = withAllowedTools(settings, grants[0]?.rules ?? []);
     if (granted === null) throw new Error('expected a widened profile');
     expect(missingToolGrants(workflow, [granted, full, codex], {})).toEqual([]);
+  });
+
+  it('leaves profiles whose own arguments set permissions to manual editing', () => {
+    const legacy = {
+      ...createDefaultProfile('claude'),
+      name: 'Legacy',
+      extraArgs: ['--allowedTools', 'Read'],
+    };
+    // Switching it to Allowed tools would fail validation, so nothing is built.
+    expect(withAllowedTools(legacy, ['Write'])).toBeNull();
+    expect(allowedToolsBlocker(legacy)).toContain(
+      "Legacy sets permissions in its extra argument '--allowedTools'",
+    );
+    expect(allowedToolsBlocker(createDefaultProfile('claude'))).toBeNull();
+    expect(allowedToolsBlocker(createDefaultProfile('codex'))).toContain(
+      'not a Claude Code profile',
+    );
+    // A profile bypassing checks through its arguments already grants everything.
+    const bypass = {
+      ...createDefaultProfile('claude'),
+      extraArgs: ['--dangerously-skip-permissions'],
+    };
+    expect(profileGrants(bypass, 'mcp__jira')).toBe(true);
+  });
+
+  it('reports saved rules that switching levels would reactivate', () => {
+    const saved = { ...createDefaultProfile('claude'), allowedTools: ['Bash'] };
+    expect(dormantAllowedTools(saved)).toEqual(['Bash']);
+    expect(dormantAllowedTools({ ...saved, permissionLevel: 'allowedTools' })).toEqual(
+      [],
+    );
+    expect(withAllowedTools(saved, ['mcp__jira'])?.allowedTools).toEqual([
+      'Bash',
+      'mcp__jira',
+    ]);
   });
 });

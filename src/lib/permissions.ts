@@ -3,7 +3,7 @@
  * `permissions.rs`): allow-rule validation, refused tool calls recorded on a
  * node result, and helpers that add rules to a Claude Code profile.
  */
-import type { AgentProfile } from './agents';
+import { hasFullAccess, permissionArgument, type AgentProfile } from './agents';
 import type { Workflow } from './workflow';
 
 /** At most this many allow rules per profile or node declaration. */
@@ -147,25 +147,52 @@ export function ruleCovers(granted: string, required: string): boolean {
   );
 }
 
-/** Whether a profile already admits a rule through its own permission setting. */
+/**
+ * Whether a profile already admits a rule through its own permission setting,
+ * including extra arguments that bypass every check.
+ */
 export function profileGrants(profile: AgentProfile, rule: string): boolean {
-  const level = profile.permissionLevel ?? 'cliSettings';
-  if (level === 'fullAccess') return true;
-  if (level !== 'allowedTools') return false;
+  if (hasFullAccess(profile)) return true;
+  if ((profile.permissionLevel ?? 'cliSettings') !== 'allowedTools') return false;
   return (profile.allowedTools ?? []).some((granted) => ruleCovers(granted, rule));
+}
+
+/**
+ * Why rules cannot be added to a profile automatically, or `null`. A Claude
+ * profile whose extra arguments set permissions themselves would become
+ * invalid at the Allowed tools level, so it has to be edited by hand.
+ */
+export function allowedToolsBlocker(profile: AgentProfile): string | null {
+  if (profile.adapter !== 'claude')
+    return `${profile.name} is not a Claude Code profile, so it has no allowed-tools list.`;
+  const argument = permissionArgument(profile);
+  if (argument !== null)
+    return `${profile.name} sets permissions in its extra argument '${argument}'. Edit the profile in Agents: move those rules into Allowed tools and remove the argument, then add these rules.`;
+  return null;
+}
+
+/**
+ * Saved rules that switching to the Allowed tools level would reactivate: a
+ * profile at the CLI settings level keeps its list unused until then.
+ */
+export function dormantAllowedTools(profile: AgentProfile): string[] {
+  return (profile.permissionLevel ?? 'cliSettings') === 'cliSettings'
+    ? (profile.allowedTools ?? [])
+    : [];
 }
 
 /**
  * The profile with `rules` added to its allowed tools, switching a profile
  * that uses the Claude Code settings to the Allowed tools level (those
- * settings still apply on top). Returns `null` when nothing would change or
- * the profile cannot take an allow list (Codex, custom CLIs).
+ * settings still apply on top, and a saved list applies again; see
+ * `dormantAllowedTools`). Returns `null` when nothing would change or the
+ * profile cannot take the rules (`allowedToolsBlocker`).
  */
 export function withAllowedTools(
   profile: AgentProfile,
   rules: string[],
 ): AgentProfile | null {
-  if (profile.adapter !== 'claude') return null;
+  if (allowedToolsBlocker(profile) !== null) return null;
   const missing = [...new Set(rules)].filter((rule) => !profileGrants(profile, rule));
   if (missing.length === 0) return null;
   const existing = profile.allowedTools ?? [];

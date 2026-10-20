@@ -128,7 +128,11 @@ result's `permission_denials`, so Orchevia reads them:
 - The refusals stay in the node's structured result. Runs marks the step **tools
   refused**, lists each refused call with its suggested rule, and offers a button
   that adds the missing rules to the step's profile after you confirm. Then use
-  **Recover failed run** to retry the step.
+  **Recover failed run** to retry the step. The confirmation also lists any saved
+  allowed tools that switching the profile to Allowed tools applies again. A
+  profile whose extra arguments set permissions itself (for example
+  `--allowedTools`) is not changed automatically: move those rules into Allowed
+  tools in Agents first.
 
 Text-output invocations (a profile whose extra arguments set `--output-format` or
 `--input-format`, and workflow generation) have no result event, so refused

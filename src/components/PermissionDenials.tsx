@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { getBackend } from '../lib/backend';
 import { errorMessage } from '../lib/errors';
 import {
+  allowedToolsBlocker,
+  dormantAllowedTools,
   profileGrants,
   withAllowedTools,
   type PermissionDenied,
@@ -32,16 +34,23 @@ export function PermissionDenials({
     profile === undefined
       ? denied.rules
       : denied.rules.filter((rule) => !profileGrants(profile, rule));
+  const blocker = profile === undefined ? null : allowedToolsBlocker(profile);
 
   const add = (): void => {
     if (profile === undefined) return;
     const next = withAllowedTools(profile, pending);
     if (next === null) return;
+    const dormant = dormantAllowedTools(profile);
+    const switching = (profile.permissionLevel ?? 'cliSettings') === 'cliSettings';
     void confirmDialog({
       title: `Allow ${String(pending.length)} tool rule${pending.length === 1 ? '' : 's'} for '${profile.name}'?`,
       message: `Adds ${pending.join(', ')} to the profile's allowed tools.${
-        (profile.permissionLevel ?? 'cliSettings') === 'cliSettings'
+        switching
           ? ' The profile switches to Allowed tools; what the Claude Code settings allow still applies.'
+          : ''
+      }${
+        dormant.length > 0
+          ? ` Its saved list (${dormant.join(', ')}) applies again too.`
           : ''
       } Every workflow that uses this profile gets these permissions.`,
       confirmLabel: 'Add to allowed tools',
@@ -103,14 +112,12 @@ export function PermissionDenials({
           The step&apos;s Agent Profile no longer exists. Add the rules to the profile you
           use in Agents.
         </p>
-      ) : profile.adapter !== 'claude' ? (
-        <p className="field-hint">
-          {profile.name} is not a Claude Code profile, so it has no allowed-tools list.
-        </p>
       ) : pending.length === 0 ? (
         <p className="field-hint">
           {profile.name} now allows these tools. Use Recover failed run to retry the step.
         </p>
+      ) : blocker !== null ? (
+        <p className="field-hint">{blocker}</p>
       ) : (
         <div className="permission-denials-actions">
           <button className="btn" disabled={busy} onClick={add}>

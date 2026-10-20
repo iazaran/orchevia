@@ -1,7 +1,12 @@
 import { useState, type CSSProperties } from 'react';
 import { getBackend } from '../lib/backend';
 import { errorMessage } from '../lib/errors';
-import { missingToolGrants, withAllowedTools } from '../lib/permissions';
+import {
+  allowedToolsBlocker,
+  dormantAllowedTools,
+  missingToolGrants,
+  withAllowedTools,
+} from '../lib/permissions';
 import type { Workflow } from '../lib/workflow';
 import { useAppStore } from '../store';
 import { confirmDialog } from './ConfirmDialog';
@@ -31,16 +36,15 @@ export function ToolGrantNotice({
   const [error, setError] = useState<string | null>(null);
   const grants = missingToolGrants(workflow, profiles, roleMap);
   if (grants.length === 0) return null;
+  // Profiles whose own extra arguments set permissions must be edited by hand.
+  const addable = grants.filter((grant) => allowedToolsBlocker(grant.profile) === null);
 
   const add = (): void => {
-    const changes = grants.map((grant) => {
-      const saved = grant.profile.allowedTools ?? [];
-      const dormant =
-        (grant.profile.permissionLevel ?? 'cliSettings') === 'cliSettings' &&
-        saved.length > 0
-          ? ` (its saved list ${saved.join(', ')} applies too)`
-          : '';
-      return `${grant.profile.name}: ${grant.rules.join(', ')}${dormant}`;
+    const changes = addable.map((grant) => {
+      const dormant = dormantAllowedTools(grant.profile);
+      return `${grant.profile.name}: ${grant.rules.join(', ')}${
+        dormant.length > 0 ? ` (its saved list ${dormant.join(', ')} applies too)` : ''
+      }`;
     });
     void confirmDialog({
       title: 'Add declared tools to Agent Profiles?',
@@ -51,7 +55,7 @@ export function ToolGrantNotice({
       setBusy(true);
       setError(null);
       try {
-        for (const grant of grants) {
+        for (const grant of addable) {
           const next = withAllowedTools(grant.profile, grant.rules);
           if (next !== null) await getBackend().saveAgentProfile(next);
         }
@@ -97,9 +101,18 @@ export function ToolGrantNotice({
           {error}
         </p>
       )}
-      <button className="btn" disabled={busy} onClick={add}>
-        {busy ? 'Adding…' : 'Add to allowed tools'}
-      </button>
+      {grants
+        .filter((grant) => !addable.includes(grant))
+        .map((grant) => (
+          <p key={grant.profile.id} className="field-hint">
+            {allowedToolsBlocker(grant.profile)}
+          </p>
+        ))}
+      {addable.length > 0 && (
+        <button className="btn" disabled={busy} onClick={add}>
+          {busy ? 'Adding…' : 'Add to allowed tools'}
+        </button>
+      )}
     </Notice>
   );
 }
