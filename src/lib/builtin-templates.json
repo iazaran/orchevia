@@ -1293,18 +1293,21 @@
         },
         {
           "id": "feedback",
-          "type": "github",
+          "type": "command",
           "position": {
             "x": 80.0,
             "y": 240.0
           },
           "config": {
-            "args": [],
-            "extendOnOutput": false,
-            "githubOp": {
-              "op": "prDetails",
-              "number": 0
-            }
+            "executable": "gh",
+            "args": [
+              "pr",
+              "view",
+              "{{input.prNumber}}",
+              "--json",
+              "title,body,reviews,comments"
+            ],
+            "extendOnOutput": false
           },
           "label": "Load feedback"
         },

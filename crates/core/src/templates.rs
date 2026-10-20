@@ -1016,7 +1016,6 @@ fn create_draft_pr() -> Template {
 }
 
 fn address_feedback() -> Template {
-    use crate::workflow::GitHubOp;
     let mut template = template(
         "watch-feedback",
         "Address Review Feedback",
@@ -1033,7 +1032,20 @@ fn address_feedback() -> Template {
                 "gh",
                 &["pr", "checkout", "{{input.prNumber}}"],
             ),
-            github("feedback", row(2), "Load feedback", GitHubOp::PrDetails { number: 0 }),
+            command(
+                "feedback",
+                MAIN,
+                row(2),
+                "Load feedback",
+                "gh",
+                &[
+                    "pr",
+                    "view",
+                    "{{input.prNumber}}",
+                    "--json",
+                    "title,body,reviews,comments",
+                ],
+            ),
             implementer(
                 "address",
                 MAIN,
@@ -1440,6 +1452,7 @@ mod tests {
             format!(
                 r#"#!/bin/sh
 prompt=$(cat)
+printf '%s\n' "$prompt" >> {state_dir}/prompts
 sid=
 next=0
 for arg in "$@"; do
@@ -1499,6 +1512,14 @@ done
             .to_string(),
         );
         std::env::set_var("ORCHEVIA_GH_BIN", &gh);
+        // Restore the process-global override even when an assertion fails.
+        struct ResetGhBin;
+        impl Drop for ResetGhBin {
+            fn drop(&mut self) {
+                std::env::remove_var("ORCHEVIA_GH_BIN");
+            }
+        }
+        let _reset_gh_bin = ResetGhBin;
         let git = |dir: &Path, args: &[&str]| {
             let out = std::process::Command::new("git")
                 .args(args)
@@ -1664,6 +1685,11 @@ done
             };
             match template.id.as_str() {
                 "ticket-to-pr" => {
+                    let prompts = std::fs::read_to_string(state.join("prompts")).unwrap();
+                    assert!(
+                        prompts.contains("Implement DEV-1234: Cart bug"),
+                        "{prompts}"
+                    );
                     // One fix round: Codex's P1 is fixed, both reviewers re-review.
                     assert_eq!(
                         (visits("fix"), visits("rev_deep"), visits("rev_fast")),
@@ -1697,11 +1723,18 @@ done
                     assert!(comment.contains("Missing empty-cart check"), "{comment}");
                 }
                 "multi-agent-review" => assert_eq!(visits("triage"), 0),
-                "watch-feedback" => assert_eq!(visits("fix"), 0),
+                "watch-feedback" => {
+                    assert_eq!(visits("fix"), 0);
+                    // The PR's review feedback reaches the agent that addresses it.
+                    let prompts = std::fs::read_to_string(state.join("prompts")).unwrap();
+                    assert!(
+                        prompts.contains("Please handle an empty cart."),
+                        "{prompts}"
+                    );
+                }
                 _ => {}
             }
         }
-        std::env::remove_var("ORCHEVIA_GH_BIN");
     }
 
     #[test]
