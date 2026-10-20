@@ -6,6 +6,7 @@ import {
   createCommitPrWorkflow,
   createEmptyWorkflow,
   createReviewLoopDemoWorkflow,
+  createReviewWorkflow,
   createSampleWorkflow,
   CURRENT_SCHEMA_VERSION,
   bypassedEdgeIds,
@@ -577,4 +578,39 @@ describe('declared agent tools', () => {
     start.config.requiredTools = ['Write'];
     expect(codes(valid)).toContain('agent-required-tools-misplaced');
   });
+});
+
+it('samples re-review with both reviewers and confirm before posting findings', () => {
+  const loop = createReviewLoopDemoWorkflow({
+    implement: 'impl',
+    reviewA: 'review-a',
+    reviewB: 'review-b',
+  });
+  const byLabel = (wf: Workflow, label: string): WorkflowNode =>
+    wf.nodes.find((n) => n.label === label)!;
+  const fix = byLabel(loop, 'Fix');
+  const reviewers = [byLabel(loop, 'Claude Review').id, byLabel(loop, 'Codex Review').id];
+  // A fix round re-runs both reviews, so neither keeps a stale finding.
+  expect(loop.edges.filter((e) => e.source === fix.id).map((e) => e.target)).toEqual(
+    reviewers,
+  );
+  const gate = byLabel(loop, 'P0/P1 found?').config.condition!;
+  expect(gate.clauses.map((c) => `${c.left} ${c.right}`)).toEqual(
+    reviewers.flatMap((id) => [`node.${id}.severity P0`, `node.${id}.severity P1`]),
+  );
+
+  const review = createReviewWorkflow({ fastReview: 'fast', deepReview: 'deep' });
+  const post = byLabel(review, 'Post draft note');
+  const approve = byLabel(review, 'Post findings?');
+  expect(approve.type).toBe('approval');
+  expect(review.edges.some((e) => e.source === approve.id && e.target === post.id)).toBe(
+    true,
+  );
+  expect(review.edges.filter((e) => e.target === post.id)).toHaveLength(1);
+  // Only the repository (picked when the sample is created) is missing.
+  expect(
+    validateWorkflowLocal(review)
+      .filter((i) => i.severity === 'error')
+      .map((i) => i.code),
+  ).toEqual(['git-dir-required', 'git-dir-required', 'git-dir-required']);
 });

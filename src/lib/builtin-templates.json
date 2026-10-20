@@ -2,13 +2,13 @@
   {
     "id": "implement-ticket",
     "version": 1,
-    "name": "Implement Ticket",
-    "description": "Plan → approve → implement → test → review → draft PR.",
+    "name": "Implement a Task",
+    "description": "Plan → you approve → implement → test → review. Works from a ticket key, a link or a plain description; no Jira setup needed. Leaves the change uncommitted for you.",
     "category": "feature",
     "workflow": {
       "schemaVersion": 6,
       "id": "tpl-implement-ticket",
-      "name": "Implement Ticket",
+      "name": "Implement a Task",
       "nodes": [
         {
           "id": "start",
@@ -33,7 +33,7 @@
           "config": {
             "args": [],
             "agentRole": "planning",
-            "prompt": "Read the repository instructions first. Plan {{workflow.name}}: {{ticket.key}} {{ticket.title}}. List files and risks.",
+            "prompt": "Read the repository instructions first. Plan this task: {{input.task}}. If it is a ticket key or link you can open, read it first. List the files to change, the tests to add and the risks. Do not edit any files.",
             "extendOnOutput": false
           },
           "label": "Plan"
@@ -47,7 +47,7 @@
           },
           "config": {
             "args": [],
-            "message": "Review the plan.",
+            "message": "Check the plan before any file changes.",
             "extendOnOutput": false
           },
           "label": "Approve plan"
@@ -62,10 +62,11 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Implement the approved plan with tests.",
-            "extendOnOutput": false,
+            "prompt": "Read the repository instructions first. Implement the approved plan for: {{input.task}}. Keep the change focused and add or update tests. Do not run the test suite or commit; the workflow does both.",
             "contextRefs": ["plan"],
-            "contextMaxChars": 12000
+            "contextMaxChars": 12000,
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false
           },
           "label": "Implement"
         },
@@ -81,7 +82,7 @@
             "args": ["-c", "{{input.testCommand}}"],
             "extendOnOutput": false
           },
-          "label": "Project tests"
+          "label": "Run tests"
         },
         {
           "id": "review",
@@ -93,10 +94,10 @@
           "config": {
             "args": [],
             "agentRole": "deepReview",
-            "prompt": "Read the repository instructions first. Review for P0/P1; tag severities.",
-            "extendOnOutput": false,
+            "prompt": "Read the repository instructions first. Review the uncommitted changes in this repository (run `git diff`) for this task: {{input.task}}. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
             "contextRefs": ["impl", "tests"],
-            "contextMaxChars": 12000
+            "contextMaxChars": 12000,
+            "extendOnOutput": false
           },
           "label": "Review"
         },
@@ -148,8 +149,13 @@
       ],
       "inputs": [
         {
+          "name": "task",
+          "label": "Task: ticket key, link or description",
+          "required": true
+        },
+        {
           "name": "testCommand",
-          "label": "Project test command (required)",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
           "required": true
         }
       ]
@@ -159,7 +165,7 @@
     "id": "review-pr",
     "version": 1,
     "name": "Review Pull Request",
-    "description": "Load PR → parallel Claude/Codex reviews → actionable? → note or checked.",
+    "description": "Load a PR and its diff → Claude and Codex review in parallel → if they find P0/P1 problems, you approve posting one comment; otherwise it is marked clean.",
     "category": "review",
     "workflow": {
       "schemaVersion": 6,
@@ -180,7 +186,7 @@
           "label": "Start"
         },
         {
-          "id": "files",
+          "id": "details",
           "type": "github",
           "position": {
             "x": 80.0,
@@ -190,52 +196,66 @@
             "args": [],
             "extendOnOutput": false,
             "githubOp": {
-              "op": "prFiles",
+              "op": "prDetails",
               "number": 0
             }
           },
-          "label": "Changed files"
+          "label": "Load PR"
+        },
+        {
+          "id": "diff",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "executable": "gh",
+            "args": ["pr", "diff", "{{input.prNumber}}"],
+            "extendOnOutput": false
+          },
+          "label": "Fetch diff"
         },
         {
           "id": "revA",
           "type": "agent",
           "position": {
-            "x": 80.0,
-            "y": 240.0
+            "x": -200.0,
+            "y": 360.0
           },
           "config": {
             "args": [],
             "agentRole": "fastReview",
-            "prompt": "Read the repository instructions first. Fast review with ```finding blocks.",
-            "extendOnOutput": false,
-            "contextRefs": ["files"],
-            "contextMaxChars": 12000
+            "prompt": "Read the repository instructions first. Review pull request #{{input.prNumber}} using its details and diff above. Open files in this repository for context when the diff is not enough. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["details", "diff"],
+            "contextMaxChars": 48000,
+            "extendOnOutput": false
           },
-          "label": "Claude Review"
+          "label": "Claude review"
         },
         {
           "id": "revB",
           "type": "agent",
           "position": {
-            "x": 80.0,
-            "y": 240.0
+            "x": 360.0,
+            "y": 360.0
           },
           "config": {
             "args": [],
             "agentRole": "deepReview",
-            "prompt": "Read the repository instructions first. Deep review with ```finding blocks.",
-            "extendOnOutput": false,
-            "contextRefs": ["files"],
-            "contextMaxChars": 12000
+            "prompt": "Read the repository instructions first. Deep review of pull request #{{input.prNumber}} (details and diff above): correctness, security and missing tests. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["details", "diff"],
+            "contextMaxChars": 48000,
+            "extendOnOutput": false
           },
-          "label": "Codex Review"
+          "label": "Codex review"
         },
         {
-          "id": "cond",
+          "id": "gate",
           "type": "condition",
           "position": {
             "x": 80.0,
-            "y": 360.0
+            "y": 480.0
           },
           "config": {
             "args": [],
@@ -249,6 +269,16 @@
                   "right": "P0"
                 },
                 {
+                  "left": "node.revA.severity",
+                  "op": "contains",
+                  "right": "P1"
+                },
+                {
+                  "left": "node.revB.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
                   "left": "node.revB.severity",
                   "op": "contains",
                   "right": "P1"
@@ -256,14 +286,28 @@
               ]
             }
           },
-          "label": "Actionable?"
+          "label": "P0/P1 found?"
+        },
+        {
+          "id": "approve",
+          "type": "approval",
+          "position": {
+            "x": -200.0,
+            "y": 600.0
+          },
+          "config": {
+            "args": [],
+            "message": "The reviews found P0/P1 problems. Approve to post them as one comment on the PR; reject to stop without posting.",
+            "extendOnOutput": false
+          },
+          "label": "Post findings?"
         },
         {
           "id": "note",
           "type": "github",
           "position": {
-            "x": 80.0,
-            "y": 480.0
+            "x": -200.0,
+            "y": 720.0
           },
           "config": {
             "args": [],
@@ -271,31 +315,31 @@
             "githubOp": {
               "op": "postComment",
               "number": 0,
-              "body": "Automated review found P0/P1 items.\n\n<sub>posted by Orchevia</sub>"
+              "body": "Review findings from Orchevia (Claude and Codex)\n\n### Claude\n\n{{node.revA.output}}\n\n### Codex\n\n{{node.revB.output}}"
             }
           },
-          "label": "Post note"
+          "label": "Post comment"
         },
         {
-          "id": "checked",
+          "id": "clean",
           "type": "command",
           "position": {
-            "x": 80.0,
-            "y": 480.0
+            "x": 360.0,
+            "y": 600.0
           },
           "config": {
             "executable": "echo",
-            "args": ["no actionable findings"],
+            "args": ["No P0/P1 findings in pull request {{input.prNumber}}."],
             "extendOnOutput": false
           },
-          "label": "Mark checked"
+          "label": "No blocking findings"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 600.0
+            "y": 840.0
           },
           "config": {
             "args": [],
@@ -308,49 +352,66 @@
         {
           "id": "e0",
           "source": "start",
-          "target": "files"
+          "target": "details"
         },
         {
           "id": "e1",
-          "source": "files",
-          "target": "revA"
+          "source": "details",
+          "target": "diff"
         },
         {
           "id": "e2",
-          "source": "files",
-          "target": "revB"
+          "source": "diff",
+          "target": "revA"
         },
         {
           "id": "e3",
-          "source": "revA",
-          "target": "cond"
+          "source": "diff",
+          "target": "revB"
         },
         {
           "id": "e4",
-          "source": "revB",
-          "target": "cond"
+          "source": "revA",
+          "target": "gate"
         },
         {
           "id": "e5",
-          "source": "cond",
-          "target": "note",
-          "label": "true"
+          "source": "revB",
+          "target": "gate"
         },
         {
           "id": "e6",
-          "source": "cond",
-          "target": "checked",
-          "label": "false"
+          "source": "gate",
+          "target": "approve",
+          "label": "true"
         },
         {
           "id": "e7",
+          "source": "gate",
+          "target": "clean",
+          "label": "false"
+        },
+        {
+          "id": "e8",
+          "source": "approve",
+          "target": "note"
+        },
+        {
+          "id": "e9",
           "source": "note",
           "target": "end"
         },
         {
-          "id": "e8",
-          "source": "checked",
+          "id": "e10",
+          "source": "clean",
           "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "prNumber",
+          "label": "Pull request number (e.g. 128)",
+          "required": true
         }
       ]
     }
@@ -359,7 +420,7 @@
     "id": "investigate-bug",
     "version": 1,
     "name": "Investigate Bug",
-    "description": "Reproduce → hypothesize → verify with tests.",
+    "description": "Find the root cause and add a failing regression test → you confirm → fix → test. Leaves the change uncommitted for you.",
     "category": "bugfix",
     "workflow": {
       "schemaVersion": 6,
@@ -389,10 +450,11 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Reproduce the bug with a failing test first.",
+            "prompt": "Read the repository instructions first. Investigate this bug: {{input.bug}}. Find the root cause and add a regression test that fails because of it, but do not fix the bug yet. Explain the cause and name the new test. Do not run the test suite or commit; the workflow does both.",
+            "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false
           },
-          "label": "Reproduce"
+          "label": "Find the cause"
         },
         {
           "id": "gate",
@@ -403,9 +465,10 @@
           },
           "config": {
             "args": [],
+            "message": "Check the explanation and the new regression test before the fix.",
             "extendOnOutput": false
           },
-          "label": "Confirm repro"
+          "label": "Confirm the cause"
         },
         {
           "id": "fix",
@@ -417,19 +480,34 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Fix the root cause; keep the regression test green.",
-            "extendOnOutput": false,
+            "prompt": "Read the repository instructions first. Fix the root cause described above. Keep the new regression test and do not weaken existing tests. Do not run the test suite or commit; the workflow does both.",
             "contextRefs": ["repro"],
-            "contextMaxChars": 12000
+            "contextMaxChars": 12000,
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false
           },
-          "label": "Fix + verify"
+          "label": "Fix"
+        },
+        {
+          "id": "tests",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Run tests"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 480.0
+            "y": 600.0
           },
           "config": {
             "args": [],
@@ -457,7 +535,24 @@
         {
           "id": "e3",
           "source": "fix",
+          "target": "tests"
+        },
+        {
+          "id": "e4",
+          "source": "tests",
           "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "bug",
+          "label": "Bug: issue key, link or description",
+          "required": true
+        },
+        {
+          "name": "testCommand",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
+          "required": true
         }
       ]
     }
@@ -466,7 +561,7 @@
     "id": "refactor",
     "version": 1,
     "name": "Refactor",
-    "description": "Scoped refactor with test gates before and after.",
+    "description": "Run the tests → refactor without changing behavior → run the tests again → review. Leaves the change uncommitted for you.",
     "category": "refactor",
     "workflow": {
       "schemaVersion": 6,
@@ -487,7 +582,7 @@
           "label": "Start"
         },
         {
-          "id": "base",
+          "id": "before",
           "type": "command",
           "position": {
             "x": 80.0,
@@ -498,7 +593,7 @@
             "args": ["-c", "{{input.testCommand}}"],
             "extendOnOutput": false
           },
-          "label": "Project tests"
+          "label": "Run tests (before)"
         },
         {
           "id": "ref",
@@ -510,15 +605,16 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Refactor {{workflow.name}} without behavior change.",
-            "extendOnOutput": false,
-            "contextRefs": ["base"],
-            "contextMaxChars": 12000
+            "prompt": "Read the repository instructions first. Refactor without changing behavior: {{input.target}}. Keep public interfaces and existing tests unchanged. Do not run the test suite or commit; the workflow does both.",
+            "contextRefs": ["before"],
+            "contextMaxChars": 12000,
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false
           },
           "label": "Refactor"
         },
         {
-          "id": "verify",
+          "id": "after",
           "type": "command",
           "position": {
             "x": 80.0,
@@ -529,14 +625,31 @@
             "args": ["-c", "{{input.testCommand}}"],
             "extendOnOutput": false
           },
-          "label": "Project tests"
+          "label": "Run tests (after)"
+        },
+        {
+          "id": "review",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Review the uncommitted refactor (run `git diff`) for any change in behavior. The goal was: {{input.target}}. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["ref", "after"],
+            "contextMaxChars": 12000,
+            "extendOnOutput": false
+          },
+          "label": "Review"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 480.0
+            "y": 600.0
           },
           "config": {
             "args": [],
@@ -549,28 +662,38 @@
         {
           "id": "e0",
           "source": "start",
-          "target": "base"
+          "target": "before"
         },
         {
           "id": "e1",
-          "source": "base",
+          "source": "before",
           "target": "ref"
         },
         {
           "id": "e2",
           "source": "ref",
-          "target": "verify"
+          "target": "after"
         },
         {
           "id": "e3",
-          "source": "verify",
+          "source": "after",
+          "target": "review"
+        },
+        {
+          "id": "e4",
+          "source": "review",
           "target": "end"
         }
       ],
       "inputs": [
         {
+          "name": "target",
+          "label": "What to refactor and the goal (e.g. split src/cart.ts into smaller modules)",
+          "required": true
+        },
+        {
           "name": "testCommand",
-          "label": "Project test command (required)",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
           "required": true
         }
       ]
@@ -580,7 +703,7 @@
     "id": "dependency-upgrade",
     "version": 1,
     "name": "Dependency Upgrade",
-    "description": "Upgrade one dependency, run tests, review the diff.",
+    "description": "Update the manifest and adapt the code → install → test → review the upgrade. Leaves the change uncommitted for you.",
     "category": "maintenance",
     "workflow": {
       "schemaVersion": 6,
@@ -610,13 +733,14 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Upgrade {{input.dependency}}; keep the lockfile consistent.",
+            "prompt": "Read the repository instructions first. Upgrade {{input.dependency}}: change the version in the dependency manifest and adapt the code to its breaking changes. Do not run the package manager; the workflow installs next. Do not run the test suite or commit; the workflow does both.",
+            "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false
           },
           "label": "Upgrade"
         },
         {
-          "id": "tests",
+          "id": "install",
           "type": "command",
           "position": {
             "x": 80.0,
@@ -624,34 +748,48 @@
           },
           "config": {
             "executable": "sh",
-            "args": ["-c", "{{input.testCommand}}"],
+            "args": ["-c", "{{input.installCommand}}"],
             "extendOnOutput": false
           },
-          "label": "Project tests"
+          "label": "Install dependencies"
         },
         {
-          "id": "rev",
-          "type": "agent",
+          "id": "tests",
+          "type": "command",
           "position": {
             "x": 80.0,
             "y": 360.0
           },
           "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false
+          },
+          "label": "Run tests"
+        },
+        {
+          "id": "review",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
             "args": [],
             "agentRole": "fastReview",
-            "prompt": "Read the repository instructions first. Review the upgrade diff for breaking changes.",
-            "extendOnOutput": false,
+            "prompt": "Read the repository instructions first. Review the upgrade of {{input.dependency}} (run `git diff`) for breaking changes and risky API use. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
             "contextRefs": ["up", "tests"],
-            "contextMaxChars": 12000
+            "contextMaxChars": 12000,
+            "extendOnOutput": false
           },
-          "label": "Review diff"
+          "label": "Review upgrade"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 480.0
+            "y": 600.0
           },
           "config": {
             "args": [],
@@ -669,28 +807,38 @@
         {
           "id": "e1",
           "source": "up",
-          "target": "tests"
+          "target": "install"
         },
         {
           "id": "e2",
-          "source": "tests",
-          "target": "rev"
+          "source": "install",
+          "target": "tests"
         },
         {
           "id": "e3",
-          "source": "rev",
+          "source": "tests",
+          "target": "review"
+        },
+        {
+          "id": "e4",
+          "source": "review",
           "target": "end"
         }
       ],
       "inputs": [
         {
-          "name": "testCommand",
-          "label": "Project test command (required)",
+          "name": "dependency",
+          "label": "Dependency and target version (e.g. react to 19.3)",
           "required": true
         },
         {
-          "name": "dependency",
-          "label": "Dependency",
+          "name": "installCommand",
+          "label": "Install command that updates the lockfile (e.g. pnpm install, npm install, cargo update)",
+          "required": true
+        },
+        {
+          "name": "testCommand",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
           "required": true
         }
       ]
@@ -700,7 +848,7 @@
     "id": "multi-agent-review",
     "version": 1,
     "name": "Run Multi-Agent Review",
-    "description": "Parallel Claude + Codex reviews joined, then a severity gate.",
+    "description": "Diff this branch and your uncommitted work against a base branch → Claude and Codex review in parallel → triage P0/P1 findings or mark it clean.",
     "category": "review",
     "workflow": {
       "schemaVersion": 6,
@@ -721,51 +869,55 @@
           "label": "Start"
         },
         {
-          "id": "revA",
-          "type": "agent",
+          "id": "diff",
+          "type": "command",
           "position": {
             "x": 80.0,
             "y": 120.0
           },
           "config": {
-            "args": [],
-            "agentRole": "fastReview",
-            "prompt": "Read the repository instructions first. Fast review with ```finding blocks.",
+            "executable": "git",
+            "args": ["diff", "{{input.base}}"],
             "extendOnOutput": false
           },
-          "label": "Claude Review"
+          "label": "Collect diff"
+        },
+        {
+          "id": "revA",
+          "type": "agent",
+          "position": {
+            "x": -200.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Review the changes in the diff above (this branch and uncommitted work compared with {{input.base}}). Open files in this repository for context when the diff is not enough. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["diff"],
+            "contextMaxChars": 48000,
+            "extendOnOutput": false
+          },
+          "label": "Claude review"
         },
         {
           "id": "revB",
           "type": "agent",
           "position": {
-            "x": 80.0,
-            "y": 120.0
+            "x": 360.0,
+            "y": 240.0
           },
           "config": {
             "args": [],
             "agentRole": "deepReview",
-            "prompt": "Read the repository instructions first. Deep review with ```finding blocks.",
+            "prompt": "Read the repository instructions first. Deep review of the diff above (compared with {{input.base}}): correctness, security and missing tests. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["diff"],
+            "contextMaxChars": 48000,
             "extendOnOutput": false
           },
-          "label": "Codex Review"
+          "label": "Codex review"
         },
         {
-          "id": "join",
-          "type": "command",
-          "position": {
-            "x": 80.0,
-            "y": 240.0
-          },
-          "config": {
-            "executable": "echo",
-            "args": ["reviews complete"],
-            "extendOnOutput": false
-          },
-          "label": "Combine"
-        },
-        {
-          "id": "cond",
+          "id": "gate",
           "type": "condition",
           "position": {
             "x": 80.0,
@@ -783,6 +935,16 @@
                   "right": "P0"
                 },
                 {
+                  "left": "node.revA.severity",
+                  "op": "contains",
+                  "right": "P1"
+                },
+                {
+                  "left": "node.revB.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
                   "left": "node.revB.severity",
                   "op": "contains",
                   "right": "P1"
@@ -790,34 +952,35 @@
               ]
             }
           },
-          "label": "Actionable?"
+          "label": "P0/P1 found?"
         },
         {
-          "id": "yes",
+          "id": "triage",
           "type": "approval",
           "position": {
-            "x": 80.0,
+            "x": -200.0,
             "y": 480.0
           },
           "config": {
             "args": [],
+            "message": "The reviews found P0/P1 problems. Read them in Runs, then approve to finish.",
             "extendOnOutput": false
           },
           "label": "Triage P0/P1"
         },
         {
-          "id": "no",
+          "id": "clean",
           "type": "command",
           "position": {
-            "x": 80.0,
+            "x": 360.0,
             "y": 480.0
           },
           "config": {
             "executable": "echo",
-            "args": ["clean"],
+            "args": ["No P0/P1 findings."],
             "extendOnOutput": false
           },
-          "label": "Done"
+          "label": "No blocking findings"
         },
         {
           "id": "end",
@@ -837,49 +1000,57 @@
         {
           "id": "e0",
           "source": "start",
-          "target": "revA"
+          "target": "diff"
         },
         {
           "id": "e1",
-          "source": "start",
-          "target": "revB"
+          "source": "diff",
+          "target": "revA"
         },
         {
           "id": "e2",
-          "source": "revA",
-          "target": "join"
+          "source": "diff",
+          "target": "revB"
         },
         {
           "id": "e3",
-          "source": "revB",
-          "target": "join"
+          "source": "revA",
+          "target": "gate"
         },
         {
           "id": "e4",
-          "source": "join",
-          "target": "cond"
+          "source": "revB",
+          "target": "gate"
         },
         {
           "id": "e5",
-          "source": "cond",
-          "target": "yes",
+          "source": "gate",
+          "target": "triage",
           "label": "true"
         },
         {
           "id": "e6",
-          "source": "cond",
-          "target": "no",
+          "source": "gate",
+          "target": "clean",
           "label": "false"
         },
         {
           "id": "e7",
-          "source": "yes",
+          "source": "triage",
           "target": "end"
         },
         {
           "id": "e8",
-          "source": "no",
+          "source": "clean",
           "target": "end"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "base",
+          "label": "Compare against branch",
+          "default": "main",
+          "required": false
         }
       ]
     }
@@ -888,7 +1059,7 @@
     "id": "create-draft-pr",
     "version": 1,
     "name": "Create Draft PR",
-    "description": "Final test + review, then an explicit draft PR.",
+    "description": "Check out your branch → test → review → you approve → push and open a draft PR.",
     "category": "feature",
     "workflow": {
       "schemaVersion": 6,
@@ -909,63 +1080,109 @@
           "label": "Start"
         },
         {
+          "id": "checkout",
+          "type": "git",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "gitOp": {
+              "op": "checkout",
+              "name": "{{input.branch}}",
+              "allowDirty": false
+            }
+          },
+          "label": "Check out branch"
+        },
+        {
           "id": "tests",
           "type": "command",
           "position": {
             "x": 80.0,
-            "y": 120.0
+            "y": 240.0
           },
           "config": {
             "executable": "sh",
             "args": ["-c", "{{input.testCommand}}"],
             "extendOnOutput": false
           },
-          "label": "Project tests"
+          "label": "Run tests"
         },
         {
-          "id": "rev",
+          "id": "review",
           "type": "agent",
-          "position": {
-            "x": 80.0,
-            "y": 240.0
-          },
-          "config": {
-            "args": [],
-            "agentRole": "fastReview",
-            "prompt": "Read the repository instructions first. Final pass with ```finding blocks.",
-            "extendOnOutput": false,
-            "contextRefs": ["tests"],
-            "contextMaxChars": 12000
-          },
-          "label": "Final review"
-        },
-        {
-          "id": "pr",
-          "type": "github",
           "position": {
             "x": 80.0,
             "y": 360.0
           },
           "config": {
             "args": [],
+            "agentRole": "fastReview",
+            "prompt": "Read the repository instructions first. Review the commits on this branch compared with {{input.base}} (run `git diff {{input.base}}...HEAD`). Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["tests"],
+            "contextMaxChars": 12000,
+            "extendOnOutput": false
+          },
+          "label": "Review"
+        },
+        {
+          "id": "approve",
+          "type": "approval",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "message": "Check the review. Approving pushes the branch and opens a draft pull request.",
+            "extendOnOutput": false
+          },
+          "label": "Open the PR?"
+        },
+        {
+          "id": "push",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 600.0
+          },
+          "config": {
+            "executable": "git",
+            "args": ["push", "-u", "origin", "{{input.branch}}"],
+            "extendOnOutput": false
+          },
+          "label": "Push branch"
+        },
+        {
+          "id": "pr",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 720.0
+          },
+          "config": {
+            "args": [],
             "extendOnOutput": false,
             "githubOp": {
               "op": "createPr",
-              "title": "{{workflow.name}}",
-              "body": "Automated draft.",
-              "base": "main",
+              "title": "{{input.title}}",
+              "body": "Tested with `{{input.testCommand}}` and reviewed in Orchevia.",
+              "base": "{{input.base}}",
               "head": "{{input.branch}}",
               "draft": true
             }
           },
-          "label": "Draft PR"
+          "label": "Open draft PR"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 480.0
+            "y": 840.0
           },
           "config": {
             "args": [],
@@ -978,34 +1195,60 @@
         {
           "id": "e0",
           "source": "start",
-          "target": "tests"
+          "target": "checkout"
         },
         {
           "id": "e1",
-          "source": "tests",
-          "target": "rev"
+          "source": "checkout",
+          "target": "tests"
         },
         {
           "id": "e2",
-          "source": "rev",
-          "target": "pr"
+          "source": "tests",
+          "target": "review"
         },
         {
           "id": "e3",
+          "source": "review",
+          "target": "approve"
+        },
+        {
+          "id": "e4",
+          "source": "approve",
+          "target": "push"
+        },
+        {
+          "id": "e5",
+          "source": "push",
+          "target": "pr"
+        },
+        {
+          "id": "e6",
           "source": "pr",
           "target": "end"
         }
       ],
       "inputs": [
         {
-          "name": "testCommand",
-          "label": "Project test command (required)",
+          "name": "branch",
+          "label": "Branch with your committed work",
           "required": true
         },
         {
-          "name": "branch",
-          "label": "Head branch",
+          "name": "title",
+          "label": "Pull request title",
           "required": true
+        },
+        {
+          "name": "testCommand",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
+          "required": true
+        },
+        {
+          "name": "base",
+          "label": "Base branch for the pull request",
+          "default": "main",
+          "required": false
         }
       ]
     }
@@ -1013,13 +1256,13 @@
   {
     "id": "watch-feedback",
     "version": 1,
-    "name": "Watch Review Feedback",
-    "description": "Poll PR feedback; fix + re-test while actionable (bounded).",
+    "name": "Address Review Feedback",
+    "description": "Check out a PR → address its review feedback → test → re-review, with up to two fix rounds. A feedback watcher can run it with the PR number. Leaves the change uncommitted for you.",
     "category": "review",
     "workflow": {
       "schemaVersion": 6,
       "id": "tpl-watch-feedback",
-      "name": "Watch Review Feedback",
+      "name": "Address Review Feedback",
       "nodes": [
         {
           "id": "start",
@@ -1035,20 +1278,53 @@
           "label": "Start"
         },
         {
-          "id": "fix",
-          "type": "agent",
+          "id": "checkout",
+          "type": "command",
           "position": {
             "x": 80.0,
             "y": 120.0
           },
           "config": {
+            "executable": "gh",
+            "args": ["pr", "checkout", "{{input.prNumber}}"],
+            "extendOnOutput": false
+          },
+          "label": "Check out PR branch"
+        },
+        {
+          "id": "feedback",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "githubOp": {
+              "op": "prDetails",
+              "number": 0
+            }
+          },
+          "label": "Load feedback"
+        },
+        {
+          "id": "address",
+          "type": "agent",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Address the latest review feedback with tests. Inspect current PR feedback each turn; do not assume the previous findings are still current.",
-            "extendOnOutput": false,
-            "maxVisits": 3,
-            "sessionGroup": "feedback-fixes",
-            "sessionMaxTurns": 4
+            "prompt": "Read the repository instructions first. Address the review feedback on pull request #{{input.prNumber}} shown above. Change only what the feedback asks for and add tests where needed. Do not run the test suite or commit; the workflow does both.",
+            "sessionGroup": "feedback-{{input.prNumber}}",
+            "sessionMaxTurns": 4,
+            "contextRefs": ["feedback"],
+            "contextMaxChars": 12000,
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false
           },
           "label": "Address feedback"
         },
@@ -1057,7 +1333,7 @@
           "type": "command",
           "position": {
             "x": 80.0,
-            "y": 240.0
+            "y": 480.0
           },
           "config": {
             "executable": "sh",
@@ -1065,56 +1341,82 @@
             "extendOnOutput": false,
             "maxVisits": 3
           },
-          "label": "Project tests"
+          "label": "Run tests"
         },
         {
-          "id": "rev",
+          "id": "review",
           "type": "agent",
           "position": {
             "x": 80.0,
-            "y": 360.0
+            "y": 600.0
           },
           "config": {
             "args": [],
             "agentRole": "fastReview",
-            "prompt": "Re-review the current diff with ```finding blocks.",
+            "prompt": "Read the repository instructions first. Review the uncommitted changes (run `git diff`) against the PR feedback above. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["feedback", "tests"],
+            "contextMaxChars": 12000,
             "extendOnOutput": false,
-            "maxVisits": 3,
-            "contextRefs": ["fix", "tests"],
-            "contextMaxChars": 12000
+            "maxVisits": 3
           },
           "label": "Re-review"
         },
         {
-          "id": "cond",
+          "id": "gate",
           "type": "condition",
           "position": {
             "x": 80.0,
-            "y": 480.0
+            "y": 720.0
           },
           "config": {
             "args": [],
             "extendOnOutput": false,
             "maxVisits": 3,
             "condition": {
-              "logic": "and",
+              "logic": "or",
               "clauses": [
                 {
-                  "left": "node.rev.severity",
+                  "left": "node.review.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
+                  "left": "node.review.severity",
                   "op": "contains",
                   "right": "P1"
                 }
               ]
             }
           },
-          "label": "Still actionable?"
+          "label": "P0/P1 found?"
+        },
+        {
+          "id": "fix",
+          "type": "agent",
+          "position": {
+            "x": -200.0,
+            "y": 720.0
+          },
+          "config": {
+            "args": [],
+            "agentRole": "implementation",
+            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from the review above. Do not run the test suite or commit; the workflow does both.",
+            "sessionGroup": "feedback-{{input.prNumber}}",
+            "sessionMaxTurns": 4,
+            "contextRefs": ["review"],
+            "contextMaxChars": 12000,
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false,
+            "maxVisits": 2
+          },
+          "label": "Fix findings"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 600.0
+            "y": 840.0
           },
           "config": {
             "args": [],
@@ -1127,40 +1429,60 @@
         {
           "id": "e0",
           "source": "start",
-          "target": "fix"
+          "target": "checkout"
         },
         {
           "id": "e1",
-          "source": "fix",
-          "target": "tests"
+          "source": "checkout",
+          "target": "feedback"
         },
         {
           "id": "e2",
-          "source": "tests",
-          "target": "rev"
+          "source": "feedback",
+          "target": "address"
         },
         {
           "id": "e3",
-          "source": "rev",
-          "target": "cond"
+          "source": "address",
+          "target": "tests"
         },
         {
           "id": "e4",
-          "source": "cond",
+          "source": "tests",
+          "target": "review"
+        },
+        {
+          "id": "e5",
+          "source": "review",
+          "target": "gate"
+        },
+        {
+          "id": "e6",
+          "source": "gate",
           "target": "fix",
           "label": "true"
         },
         {
-          "id": "e5",
-          "source": "cond",
+          "id": "e7",
+          "source": "gate",
           "target": "end",
           "label": "false"
+        },
+        {
+          "id": "e8",
+          "source": "fix",
+          "target": "tests"
         }
       ],
       "inputs": [
         {
+          "name": "prNumber",
+          "label": "Pull request number (e.g. 128)",
+          "required": true
+        },
+        {
           "name": "testCommand",
-          "label": "Project test command (required)",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
           "required": true
         }
       ]
@@ -1170,7 +1492,7 @@
     "id": "ticket-to-pr",
     "version": 1,
     "name": "Ticket to Draft PR",
-    "description": "Ticket → branch → implement → Claude/Codex reviews → fix loop → human review → draft PR.",
+    "description": "Jira ticket → branch → implement → test → Claude and Codex review → fix loop → you review → commit, push and open a draft PR. Needs a Jira MCP server.",
     "category": "feature",
     "workflow": {
       "schemaVersion": 6,
@@ -1202,7 +1524,7 @@
             "extendOnOutput": false,
             "ticketKey": "{{input.ticket}}"
           },
-          "label": "Load ticket"
+          "label": "Load Jira ticket"
         },
         {
           "id": "branch",
@@ -1231,53 +1553,69 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Implement {{ticket.key}}: {{ticket.title}}. Keep commits small with short messages; run the project's tests before finishing.",
-            "extendOnOutput": false,
+            "prompt": "Read the repository instructions first. Implement {{ticket.key}}: {{ticket.title}} using the ticket details above. Keep the change focused and add or update tests. Do not run the test suite or commit; the workflow does both.",
+            "sessionGroup": "implementation-{{input.ticket}}",
+            "sessionMaxTurns": 4,
             "contextRefs": ["ticket"],
             "contextMaxChars": 12000,
-            "sessionGroup": "implementation-{{input.ticket}}",
-            "sessionMaxTurns": 4
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false
           },
           "label": "Implement"
         },
         {
-          "id": "rev_fast",
-          "type": "agent",
+          "id": "tests",
+          "type": "command",
           "position": {
             "x": 80.0,
             "y": 480.0
           },
           "config": {
+            "executable": "sh",
+            "args": ["-c", "{{input.testCommand}}"],
+            "extendOnOutput": false,
+            "maxVisits": 3
+          },
+          "label": "Run tests"
+        },
+        {
+          "id": "rev_fast",
+          "type": "agent",
+          "position": {
+            "x": -200.0,
+            "y": 600.0
+          },
+          "config": {
             "args": [],
             "agentRole": "fastReview",
-            "prompt": "Fast review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.",
+            "prompt": "Read the repository instructions first. Review the uncommitted changes for {{ticket.key}} (run `git diff`) against the ticket above. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["ticket", "tests"],
+            "contextMaxChars": 12000,
             "extendOnOutput": false,
-            "maxVisits": 2,
-            "contextRefs": ["impl"],
-            "contextMaxChars": 12000
+            "maxVisits": 3
           },
-          "label": "Claude Review"
+          "label": "Claude review"
         },
         {
           "id": "rev_deep",
           "type": "agent",
           "position": {
-            "x": 80.0,
+            "x": 360.0,
             "y": 600.0
           },
           "config": {
             "args": [],
             "agentRole": "deepReview",
-            "prompt": "Deep review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Do not re-run tests that already passed.",
+            "prompt": "Read the repository instructions first. Deep review of the uncommitted changes for {{ticket.key}} (run `git diff`): correctness, security and missing tests. Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "contextRefs": ["ticket", "tests"],
+            "contextMaxChars": 12000,
             "extendOnOutput": false,
-            "maxVisits": 2,
-            "contextRefs": ["impl"],
-            "contextMaxChars": 12000
+            "maxVisits": 3
           },
-          "label": "Codex Review"
+          "label": "Codex review"
         },
         {
-          "id": "cond",
+          "id": "gate",
           "type": "condition",
           "position": {
             "x": 80.0,
@@ -1286,12 +1624,22 @@
           "config": {
             "args": [],
             "extendOnOutput": false,
-            "maxVisits": 2,
+            "maxVisits": 3,
             "condition": {
               "logic": "or",
               "clauses": [
                 {
                   "left": "node.rev_fast.severity",
+                  "op": "contains",
+                  "right": "P0"
+                },
+                {
+                  "left": "node.rev_fast.severity",
+                  "op": "contains",
+                  "right": "P1"
+                },
+                {
+                  "left": "node.rev_deep.severity",
                   "op": "contains",
                   "right": "P0"
                 },
@@ -1309,19 +1657,20 @@
           "id": "fix",
           "type": "agent",
           "position": {
-            "x": 80.0,
-            "y": 840.0
+            "x": -460.0,
+            "y": 720.0
           },
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Address the P0/P1 findings above with tests; keep commits small.",
-            "extendOnOutput": false,
-            "maxVisits": 2,
+            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from both reviews above. Do not run the test suite or commit; the workflow does both.",
+            "sessionGroup": "implementation-{{input.ticket}}",
+            "sessionMaxTurns": 4,
             "contextRefs": ["rev_fast", "rev_deep"],
             "contextMaxChars": 12000,
-            "sessionGroup": "implementation-{{input.ticket}}",
-            "sessionMaxTurns": 4
+            "requiredTools": ["Edit", "Write"],
+            "extendOnOutput": false,
+            "maxVisits": 2
           },
           "label": "Fix findings"
         },
@@ -1330,18 +1679,35 @@
           "type": "approval",
           "position": {
             "x": 80.0,
-            "y": 960.0
+            "y": 840.0
           },
           "config": {
             "args": [],
-            "message": "A human reviews the implementation and findings before the draft PR is opened.",
+            "message": "Check the change and the review findings. Approving commits the change, pushes the branch and opens a draft pull request.",
             "extendOnOutput": false
           },
           "label": "Human review"
         },
         {
-          "id": "pr",
-          "type": "github",
+          "id": "stage",
+          "type": "git",
+          "position": {
+            "x": 80.0,
+            "y": 960.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
+            "gitOp": {
+              "op": "stage",
+              "paths": ["."]
+            }
+          },
+          "label": "Stage changes"
+        },
+        {
+          "id": "commit",
+          "type": "git",
           "position": {
             "x": 80.0,
             "y": 1080.0
@@ -1349,23 +1715,54 @@
           "config": {
             "args": [],
             "extendOnOutput": false,
+            "gitOp": {
+              "op": "commit",
+              "message": "{{ticket.key}}: {{ticket.title}}"
+            }
+          },
+          "label": "Commit"
+        },
+        {
+          "id": "push",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 1200.0
+          },
+          "config": {
+            "executable": "git",
+            "args": ["push", "-u", "origin", "{{input.branch}}"],
+            "extendOnOutput": false
+          },
+          "label": "Push branch"
+        },
+        {
+          "id": "pr",
+          "type": "github",
+          "position": {
+            "x": 80.0,
+            "y": 1320.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false,
             "githubOp": {
               "op": "createPr",
-              "title": "{{input.branch}}",
-              "body": "Draft for {{ticket.key}}: {{ticket.title}}.",
-              "base": "main",
+              "title": "{{ticket.key}}: {{ticket.title}}",
+              "body": "Implements {{ticket.key}}. Tested with `{{input.testCommand}}` and reviewed by Claude and Codex in Orchevia.",
+              "base": "{{input.base}}",
               "head": "{{input.branch}}",
               "draft": true
             }
           },
-          "label": "Draft PR"
+          "label": "Open draft PR"
         },
         {
           "id": "end",
           "type": "end",
           "position": {
             "x": 80.0,
-            "y": 1200.0
+            "y": 1440.0
           },
           "config": {
             "args": [],
@@ -1393,47 +1790,67 @@
         {
           "id": "e3",
           "source": "impl",
-          "target": "rev_fast"
+          "target": "tests"
         },
         {
           "id": "e4",
-          "source": "impl",
-          "target": "rev_deep"
+          "source": "tests",
+          "target": "rev_fast"
         },
         {
           "id": "e5",
-          "source": "rev_fast",
-          "target": "cond"
+          "source": "tests",
+          "target": "rev_deep"
         },
         {
           "id": "e6",
-          "source": "rev_deep",
-          "target": "cond"
+          "source": "rev_fast",
+          "target": "gate"
         },
         {
           "id": "e7",
-          "source": "cond",
+          "source": "rev_deep",
+          "target": "gate"
+        },
+        {
+          "id": "e8",
+          "source": "gate",
           "target": "fix",
           "label": "true"
         },
         {
-          "id": "e8",
-          "source": "cond",
+          "id": "e9",
+          "source": "gate",
           "target": "approve",
           "label": "false"
         },
         {
-          "id": "e9",
-          "source": "fix",
-          "target": "rev_fast"
-        },
-        {
           "id": "e10",
-          "source": "approve",
-          "target": "pr"
+          "source": "fix",
+          "target": "tests"
         },
         {
           "id": "e11",
+          "source": "approve",
+          "target": "stage"
+        },
+        {
+          "id": "e12",
+          "source": "stage",
+          "target": "commit"
+        },
+        {
+          "id": "e13",
+          "source": "commit",
+          "target": "push"
+        },
+        {
+          "id": "e14",
+          "source": "push",
+          "target": "pr"
+        },
+        {
+          "id": "e15",
           "source": "pr",
           "target": "end"
         }
@@ -1441,13 +1858,24 @@
       "inputs": [
         {
           "name": "ticket",
-          "label": "Ticket key (e.g. DEV-1234)",
+          "label": "Jira ticket key or URL (e.g. DEV-1234)",
           "required": true
         },
         {
           "name": "branch",
-          "label": "Branch name",
+          "label": "New branch name (e.g. dev-1234-short-title)",
           "required": true
+        },
+        {
+          "name": "testCommand",
+          "label": "Test command (e.g. npm test, cargo test, make test)",
+          "required": true
+        },
+        {
+          "name": "base",
+          "label": "Base branch for the pull request",
+          "default": "main",
+          "required": false
         }
       ]
     }

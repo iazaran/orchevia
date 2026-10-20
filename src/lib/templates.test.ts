@@ -193,14 +193,17 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
   const fix = preview.workflow.nodes.find((n) => n.label === 'Fix findings')!;
   expect(fix.config.contextRefs).toEqual(
     preview.workflow.nodes
-      .filter((n) => ['Claude Review', 'Codex Review'].includes(n.label ?? ''))
+      .filter((n) => ['Claude review', 'Codex review'].includes(n.label ?? ''))
       .map((n) => n.id),
   );
   for (const template of templates) {
     for (const node of template.workflow.nodes.filter(
       (n) => n.config.contextRefs?.length,
     ))
-      expect(node.config.contextMaxChars).toBe(12000);
+      // Reviewers fed a whole PR or branch diff get a larger handoff.
+      expect(node.config.contextMaxChars).toBe(
+        node.config.contextRefs?.includes('diff') === true ? 48000 : 12000,
+      );
   }
 });
 

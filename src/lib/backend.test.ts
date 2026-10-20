@@ -1093,6 +1093,7 @@ it('runs the built-in ticket implementation with simulated ticket aliases', asyn
   const { runId } = await backend.runWorkflow(workflow.id, {
     ticket: 'DEV-1',
     branch: 'fix/dev-1',
+    testCommand: 'true',
   });
   await vi.waitFor(
     async () => expect((await backend.getRun(runId))?.status).toBe('succeeded'),
