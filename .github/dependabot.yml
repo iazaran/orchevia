@@ -1,27 +1,22 @@
 version: 2
-# Monthly grouped updates keep CI runs (and private-repo Actions minutes) low;
-# security updates are not limited by this schedule.
+# npm and Cargo are refreshed in every release PR with `pnpm deps:update`, so
+# their version-update PRs are disabled (limit 0). Security updates are separate
+# and unaffected. Workflow actions are pinned by major tag and change rarely.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
-    groups:
-      frontend:
-        patterns: ['*']
     ignore:
       # typescript-eslint does not support the TypeScript 7 compiler API yet.
       - dependency-name: typescript
         versions: ['7.x']
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 0
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: monthly
-    groups:
-      rust:
-        patterns: ['*']
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: /
     schedule:

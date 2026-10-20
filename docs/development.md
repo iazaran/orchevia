@@ -145,7 +145,8 @@ Finder workaround is applied without evidence of the underlying error.
 
 ### Merge is the beginning of release verification
 
-1. Run the complete local gate below and open a PR against `main`.
+1. Run `pnpm deps:update`, fold in any open Dependabot PR, run the complete local
+   gate below, and open a PR against `main`.
 2. Merge after **CI result** passes (and **Validate docs site**, when the PR changes
    the site). Main CI checks the
    merged source; Pages deploys changed site files. Neither builds installers.
@@ -210,18 +211,29 @@ change. `social-preview.jpg` (1280×640) is the link-preview image; upload it un
 
 ## Dependency updates
 
-Dependabot (`.github/dependabot.yml`) runs monthly, with one grouped version-update
-PR per ecosystem (npm, Cargo and GitHub Actions); monthly batches keep CI runs low.
-The open version-PR limit is one per ecosystem; it does not delay security updates.
-Keep compiler, lint and test-tool compatibility verified together. Do not accept an
-ecosystem upgrade merely because a package manager resolves it. Run frozen
-installation and the full gate; no test or security rule is relaxed.
+Dependencies are refreshed in every release PR, not by separate bot PRs:
 
-Update the Rust `tauri` crate and npm `@tauri-apps/api` together: their major and
-minor versions must match. Dependabot groups npm and Cargo separately, so combine
-paired Tauri upgrades in a reviewed change. Update `@tauri-apps/cli` and the related
-Cargo lockfile too, then run local validation before paying for tag builds. Never
-ignore a Tauri version mismatch to get a green build.
+```bash
+pnpm deps:update   # pnpm update + cargo update within declared ranges, then checks
+```
+
+It updates npm packages and the Cargo lockfile within the ranges in `package.json`
+and `Cargo.toml`, re-runs `pnpm version:check`, and lists what it did not update:
+`pnpm outdated` for npm, and Cargo's `Unchanged … (available: …)` lines for crates
+held back by their ranges. Treat those as deliberate upgrades in their own change.
+Then run the complete gate below; no test or security rule is relaxed.
+
+Dependabot (`.github/dependabot.yml`) keeps version-update PRs only for GitHub
+Actions (monthly, grouped). npm and Cargo version updates are disabled with
+`open-pull-requests-limit: 0`; security updates are separate and still open PRs
+when Dependabot security updates are enabled for the repository. If a bot PR is
+open when a release PR is prepared, include its commit and close it with a link.
+
+`pnpm version:check` fails when a Tauri npm package and its Rust crate differ in
+major.minor (`@tauri-apps/api` ↔ `tauri`, `@tauri-apps/plugin-<name>` ↔
+`tauri-plugin-<name>`), because Tauri refuses to build that combination. Upgrade
+both sides together, along with `@tauri-apps/cli`. Never ignore a Tauri version
+mismatch to get a green build.
 
 ## Generation and release checks
 
