@@ -23,6 +23,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "version:check": "node scripts/check-version.mjs",
+    "deps:update": "node scripts/update-deps.mjs",
     "check": "pnpm version:check && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:delivery && pnpm test",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

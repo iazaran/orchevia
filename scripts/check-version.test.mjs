@@ -25,6 +25,7 @@ function fixture(run) {
       'src-tauri/Cargo.toml',
       'crates/core/Cargo.toml',
       'Cargo.lock',
+      'pnpm-lock.yaml',
       'CHANGELOG.md',
     ])
       cpSync(path, join(dir, path));
@@ -70,5 +71,28 @@ test('version drift in either workspace lockfile package is rejected', () => {
       );
       assert.notEqual(check().status, 0, `${name} must match the manifests`);
     });
+  }
+});
+
+test('Tauri npm packages and their Rust crates must share major.minor', () => {
+  const lock = readFileSync('pnpm-lock.yaml', 'utf8');
+  const locked = (name) =>
+    new RegExp(`^  '${name}@(\\d+\\.\\d+\\.\\d+)':`, 'm').exec(lock)?.[1];
+  for (const name of ['@tauri-apps/api', '@tauri-apps/plugin-dialog']) {
+    const current = locked(name);
+    assert.ok(current, `${name} is locked`);
+    const [major, minor, patch] = current.split('.').map(Number);
+    for (const [next, accepted] of [
+      [`${major}.${minor}.${patch + 1}`, true],
+      [`${major}.${minor + 1}.0`, false],
+    ])
+      fixture((dir, check) => {
+        const path = join(dir, 'pnpm-lock.yaml');
+        writeFileSync(
+          path,
+          readFileSync(path, 'utf8').replaceAll(`${name}@${current}`, `${name}@${next}`),
+        );
+        assert.equal(check().status === 0, accepted, `${name} ${next}`);
+      });
   }
 });

@@ -6,6 +6,19 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies are refreshed in each release PR with the new `pnpm deps:update`
+  (npm and Cargo within their declared ranges, then a version check and a list of
+  what was held back). Dependabot now opens version-update PRs only for GitHub
+  Actions; security updates are unaffected.
+- `pnpm version:check` fails when a Tauri npm package and its Rust crate differ in
+  major.minor (`@tauri-apps/api` and `tauri`, `@tauri-apps/plugin-*` and
+  `tauri-plugin-*`), which Tauri refuses to build.
+- Dependencies were updated within their ranges: eslint 10.13.0,
+  typescript-eslint 8.72.0, tauri 2.12.4, tauri-build 2.7.3, tokio 1.54.0, and
+  current patch releases of their dependencies.
+
 ## [0.1.17] - 2026-10-20
 
 ### Added
