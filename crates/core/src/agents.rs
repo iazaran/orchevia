@@ -451,11 +451,17 @@ fn claude_reads_custom_input(profile: &AgentProfile) -> Option<String> {
 
 /// Whether ordinary Agent nodes for `profile` can use structured output.
 pub fn structured_output(profile: &AgentProfile) -> StructuredOutput {
+    // Claude reports refused tools only on its structured result event.
+    let missing = if profile.adapter == AdapterKind::Claude {
+        "no token or cost data, and refused tool calls go undetected"
+    } else {
+        "no token or cost data"
+    };
     if let Some(arg) = claude_reads_custom_input(profile) {
         return StructuredOutput::Conflict(format!(
             "Text output used: the profile's extra argument '{arg}' changes how Claude \
              reads its prompt, so the prompt is passed as an argument and this run reports \
-             no token or cost data. Remove it to enable usage reporting."
+             {missing}. Remove it to enable usage reporting."
         ));
     }
     let flags: &[&str] = match profile.adapter {
@@ -467,8 +473,7 @@ pub fn structured_output(profile: &AgentProfile) -> StructuredOutput {
         if let Some(arg) = has_flag(profile, flag) {
             return StructuredOutput::Conflict(format!(
                 "Text output used: the profile's extra argument '{arg}' sets the CLI output \
-                 format, so this run reports no token or cost data. Remove it to enable \
-                 usage reporting."
+                 format, so this run reports {missing}. Remove it to enable usage reporting."
             ));
         }
     }
@@ -806,6 +811,7 @@ mod tests {
             panic!("--output-format must conflict");
         };
         assert!(note.contains("--output-format") && note.contains("no token or cost data"));
+        assert!(note.contains("refused tool calls go undetected"));
         let spec = build_agent_command(&claude, "hi", None).unwrap();
         assert_eq!(
             spec.args,

@@ -96,9 +96,14 @@ export function composeSkillPrompt(profile: AgentProfile, prompt: string): strin
  * is used. Custom CLIs are never parsed and return `null`.
  */
 export function structuredOutputConflict(profile: AgentProfile): string | null {
+  // Claude reports refused tools only on its structured result event.
+  const missing =
+    profile.adapter === 'claude'
+      ? 'no token or cost data, and refused tool calls go undetected'
+      : 'no token or cost data';
   const input = claudeInputFormatArg(profile);
   if (input !== null)
-    return `Text output used: the profile's extra argument '${input}' changes how Claude reads its prompt, so the prompt is passed as an argument and this run reports no token or cost data. Remove it to enable usage reporting.`;
+    return `Text output used: the profile's extra argument '${input}' changes how Claude reads its prompt, so the prompt is passed as an argument and this run reports ${missing}. Remove it to enable usage reporting.`;
   const flags =
     profile.adapter === 'claude'
       ? ['--output-format']
@@ -110,7 +115,7 @@ export function structuredOutputConflict(profile: AgentProfile): string | null {
   );
   return arg === undefined
     ? null
-    : `Text output used: the profile's extra argument '${arg}' sets the CLI output format, so this run reports no token or cost data. Remove it to enable usage reporting.`;
+    : `Text output used: the profile's extra argument '${arg}' sets the CLI output format, so this run reports ${missing}. Remove it to enable usage reporting.`;
 }
 
 /** Claude `--input-format` argument that keeps the prompt as an argument (agents.rs mirror). */

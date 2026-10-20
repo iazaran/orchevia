@@ -231,12 +231,15 @@ it('mirrors native structured-output conflicts for ordinary Agent nodes', () => 
   ).toContain("'--output-format'");
   expect(
     structuredOutputConflict({ ...claude, extraArgs: ['--output-format=text'] }),
-  ).toContain('no token or cost data');
+  ).toContain('no token or cost data, and refused tool calls go undetected');
   const codex = createDefaultProfile('codex');
   expect(
     structuredOutputConflict({ ...codex, extraArgs: ['--sandbox', 'read-only'] }),
   ).toBeNull();
   expect(structuredOutputConflict({ ...codex, extraArgs: ['--json'] })).not.toBeNull();
+  expect(structuredOutputConflict({ ...codex, extraArgs: ['--json'] })).not.toContain(
+    'refused',
+  );
   expect(
     structuredOutputConflict({
       ...createDefaultProfile('custom'),

@@ -77,6 +77,33 @@ flags, is not limited by the operating system's argument size (128 KiB per argum
 on Linux), and does not appear in process listings. Previews show
 `<prompt via stdin, N chars>`. Custom CLIs receive it as the final argv element.
 
+## Refused tool calls
+
+Headless `claude -p` never asks for permission. A tool that the Claude Code
+settings do not allow is refused, the model carries on without it, and Claude's
+final result still reports success. Claude lists the refusals only in that
+result's `permission_denials`, so Orchevia reads them:
+
+- A non-empty list fails the Agent node with the failure kind `permissionDenied`.
+  Failure routes and run recovery behave as for any other agent failure. The node
+  is not retried automatically, because the same profile would be refused again.
+- The error names each refused tool and the allow rule that would admit it: an
+  MCP tool suggests its server rule `mcp__<server>`, a Bash command suggests
+  `Bash(<command prefix> *)` for each command in the line (`git status`,
+  `pnpm test`, `touch`), and any other tool suggests its own name (`Write`).
+- The refusals stay in the node's structured result. Runs shows them on the step
+  with **Add to allowed tools**, which adds the suggested rules to the profile
+  after you confirm.
+
+Text-output invocations (a profile whose extra arguments set `--output-format` or
+`--input-format`, and workflow generation) have no result event, so refused
+tools there go undetected. Runs says so in the step's output note.
+
+Codex has no equivalent signal. In `codex exec --json` (checked with Codex CLI
+0.162.1), a command blocked by the sandbox produced no `command_execution` item
+and no error event, and the turn ended with `turn.completed`. Only the model's
+own message said that the command failed. Orchevia does not guess from that text.
+
 ## Prompt composition
 
 Agent prompts are small deterministic templates:

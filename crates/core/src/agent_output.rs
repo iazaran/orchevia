@@ -1,5 +1,6 @@
 //! Incremental decoding for managed CLI conversations. No provider calls here.
 use crate::agents::AdapterKind;
+use crate::permissions::{claude_denials, denial_message, PermissionDenial};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -25,6 +26,10 @@ pub(crate) struct AgentOutput {
     pub incomplete: bool,
     /// A structured provider cap, distinct from a process killed by Orchevia.
     pub limit_exhausted: bool,
+    /// Tool calls the CLI refused under its permission settings (Claude
+    /// `permission_denials`). Non-empty fails the node even though the CLI
+    /// itself reports success.
+    pub permission_denials: Vec<PermissionDenial>,
     complete: bool,
     /// Observed tool calls inside this CLI invocation (Claude `tool_use`
     /// blocks, Codex `command_execution` items). Advisory companion to the
@@ -51,6 +56,7 @@ impl AgentOutput {
             error: None,
             incomplete: false,
             limit_exhausted: false,
+            permission_denials: Vec::new(),
             complete: false,
             tool_calls: 0,
             subagents: 0,
@@ -288,6 +294,17 @@ impl AgentOutput {
                             .collect(),
                     );
                 }
+                // Refused tools leave `subtype: success`; only this list says
+                // the gated work never ran.
+                self.permission_denials =
+                    claude_denials(value.get("permission_denials").unwrap_or(&Value::Null));
+                if !self.permission_denials.is_empty() {
+                    let denied = denial_message(&self.permission_denials);
+                    self.error = Some(match self.error.take() {
+                        Some(previous) => format!("{denied}\n{previous}"),
+                        None => denied,
+                    });
+                }
             }
             (AdapterKind::Codex, "item.completed") => {
                 let item = &value["item"];
@@ -386,6 +403,41 @@ mod tests {
         out.finish();
         assert!(out.error.as_deref().unwrap().contains("budget reached"));
         assert!(!out.success());
+    }
+
+    #[test]
+    fn refused_tools_fail_a_result_that_claims_success() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(b"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"TICKET_STATUS=none\",\"usage\":{},\"permission_denials\":[{\"tool_name\":\"mcp__jira__getIssue\",\"tool_use_id\":\"t1\",\"tool_input\":{}}]}\n");
+        out.finish();
+        assert!(!out.success());
+        assert!(
+            !out.incomplete,
+            "a refusal is an ordinary failure, not a cap"
+        );
+        assert_eq!(out.text.as_deref(), Some("TICKET_STATUS=none"));
+        assert_eq!(out.permission_denials.len(), 1);
+        assert_eq!(out.permission_denials[0].rules, ["mcp__jira"]);
+        assert!(out
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("allow with mcp__jira"));
+
+        // An explicit CLI error is kept after the refusal summary.
+        let mut both = AgentOutput::new(AdapterKind::Claude);
+        both.push(b"{\"type\":\"result\",\"is_error\":true,\"errors\":[\"boom\"],\"permission_denials\":[{\"tool_name\":\"Write\"}]}\n");
+        both.finish();
+        let error = both.error.unwrap();
+        assert!(error.starts_with("Claude refused 1 tool call "), "{error}");
+        assert!(error.ends_with("[\"boom\"]"), "{error}");
+
+        // An empty list changes nothing.
+        let mut clean = AgentOutput::new(AdapterKind::Claude);
+        clean.push(b"{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\",\"usage\":{},\"permission_denials\":[]}\n");
+        clean.finish();
+        assert!(clean.success());
+        assert!(clean.permission_denials.is_empty());
     }
 
     #[test]
