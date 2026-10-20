@@ -1372,10 +1372,21 @@ impl Engine {
         }
         // Untaken branches resolve immediately — except while a loop
         // continues: sibling targets must wait for the exit visit, otherwise
-        // they would be skipped prematurely and block the loop exit.
+        // they would be skipped prematurely and block the loop exit. A
+        // condition also continues a loop when its taken branch leads back to
+        // it (gate -true-> fix -> tests -> gate); then only exits, branches
+        // that cannot lead back, wait for the visit that takes them.
+        let loops_back = is_condition
+            && taken_loop.is_empty()
+            && taken_normal
+                .iter()
+                .any(|edge| can_reach_graph(graph, &edge.target, node_id));
         if taken_loop.is_empty() {
             for edge in &untaken_normal {
                 if state.terminal.contains_key(&edge.target) {
+                    continue;
+                }
+                if loops_back && !can_reach_graph(graph, &edge.target, node_id) {
                     continue;
                 }
                 self.resolve_edge(graph, state, run_id, &edge.target, false, record)?;
@@ -1988,13 +1999,12 @@ async fn execute_agent_task(
         Ok(prompt) => prompt,
         Err(e) => return agent_failure(db, task, node_id, &e),
     };
-    let mut spec =
-        match build_agent_command(&profile, &rendered, task.node.config.working_dir.as_deref()) {
-            Ok(spec) => spec,
-            Err(e) => {
-                return agent_failure(db, task, node_id, &e);
-            }
-        };
+    let mut spec = match build_agent_command(&profile, &rendered, command_working_dir(task)) {
+        Ok(spec) => spec,
+        Err(e) => {
+            return agent_failure(db, task, node_id, &e);
+        }
+    };
     let mut managed = None;
     let mut group_guard = None;
     if let Some(template) = task.node.config.session_group.as_deref() {
@@ -2089,7 +2099,7 @@ async fn execute_agent_task(
         spec = match build_session_command(
             &profile,
             &rendered,
-            task.node.config.working_dir.as_deref(),
+            command_working_dir(task),
             resume_id.as_deref(),
         ) {
             Ok(spec) => spec,
@@ -2099,7 +2109,7 @@ async fn execute_agent_task(
         managed = Some(ManagedAgent {
             profile: profile.clone(),
             prompt: rendered.clone(),
-            node_dir: task.node.config.working_dir.clone(),
+            node_dir: command_working_dir(task).map(str::to_string),
             key,
             group,
             resume_id,
@@ -2217,8 +2227,9 @@ fn resolve_repo_root(task: &TaskInput) -> Result<String, String> {
     crate::git::discover_root(dir).ok_or_else(|| format!("Not a git repository: {dir}"))
 }
 
-/// Working directory for command nodes: explicit node dir wins, blank
-/// inherits the workflow default (repo-bound commands run in the repo).
+/// Working directory for command and agent nodes: explicit node dir wins,
+/// blank inherits the workflow default (repo-bound work runs in the repo).
+/// Agent profiles in `profile` or `inherit` mode ignore it.
 fn command_working_dir(task: &TaskInput) -> Option<&str> {
     let node_dir = task.node.config.working_dir.as_deref().unwrap_or("").trim();
     if node_dir.is_empty() {
@@ -3575,7 +3586,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(note) = output_note {
                     metadata["agentOutputNote"] = serde_json::json!(note);
                 }
-                if let Some(severity) = severity_scan(&stdout) {
+                if let Some(severity) = crate::review::reported_severity(&stdout) {
                     metadata["severity"] = serde_json::json!(severity);
                 }
                 let structured = metadata.to_string();
@@ -3739,35 +3750,6 @@ async fn sleep_interruptible(duration: Duration, flag: &Arc<AtomicBool>) -> bool
 
 /// Scan output for severity tokens (P0 highest). Convention-based: prompts
 /// ask agents to tag findings; matching is substring with boundaries.
-fn severity_scan(text: &str) -> Option<&str> {
-    ["P0", "P1", "P2", "P3"]
-        .into_iter()
-        .find(|severity| contains_token(text, severity))
-}
-
-fn contains_token(text: &str, token: &str) -> bool {
-    let bytes = text.as_bytes();
-    let needle = token.as_bytes();
-    if needle.len() > bytes.len() {
-        return false;
-    }
-    for i in 0..=(bytes.len() - needle.len()) {
-        if &bytes[i..i + needle.len()] != needle {
-            continue;
-        }
-        let before = i.checked_sub(1).map(|j| bytes[j]);
-        let after = bytes.get(i + needle.len()).copied();
-        let boundary = |c: Option<u8>| {
-            c.map(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
-                .unwrap_or(true)
-        };
-        if boundary(before) && boundary(after) {
-            return true;
-        }
-    }
-    false
-}
-
 fn severity_from_json(structured_json: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(structured_json)
         .ok()
@@ -3793,9 +3775,12 @@ fn insert_row_vars(vars: &mut HashMap<String, String>, row: &StoredNodeResult) {
         vars.insert(format!("node.{}.exitCode", row.node_id), code.to_string());
     }
     vars.insert(format!("node.{}.status", row.node_id), row.status.clone());
-    if let Some(severity) = severity_from_json(&row.structured_json) {
-        vars.insert(format!("node.{}.severity", row.node_id), severity);
-    }
+    // Always set, so a later clean visit replaces an earlier finding and a
+    // review without findings reads as "" rather than an unknown variable.
+    vars.insert(
+        format!("node.{}.severity", row.node_id),
+        severity_from_json(&row.structured_json).unwrap_or_default(),
+    );
 }
 
 /// Variables for prompts/conditions: workflow identity, inputs, every
@@ -4356,6 +4341,36 @@ mod tests {
         .unwrap();
         let engine = Engine::new(db, Default::default());
         assert_eq!(engine.actionable_finding_count(&wf, "findings"), 0);
+    }
+
+    #[test]
+    fn severity_variable_follows_the_latest_visit_and_defaults_to_empty() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let wf = Workflow::from_json(&serde_json::json!({"schemaVersion":6,"id":"sev","name":"Severity","nodes":[{"id":"review","type":"agent"},{"id":"quiet","type":"agent"}],"edges":[]}).to_string()).unwrap();
+        db.upsert_workflow(&wf).unwrap();
+        db.create_run("sev", &wf.id, &Default::default()).unwrap();
+        for (node, structured) in [
+            ("review", r#"{"severity":"P1"}"#),
+            ("review", "{}"),
+            ("quiet", "{}"),
+        ] {
+            db.record_node_result(NewNodeResult {
+                structured_json: structured,
+                ..NewNodeResult::simple("sev", node, "succeeded", Some(0), None)
+            })
+            .unwrap();
+        }
+        let vars = build_vars(&db, "sev", "Severity", "sev", &HashMap::new()).unwrap();
+        // The clean second review replaces the first one's P1.
+        assert_eq!(
+            vars.get("node.review.severity").map(String::as_str),
+            Some("")
+        );
+        // A review without findings is "", not an unknown condition variable.
+        assert_eq!(
+            vars.get("node.quiet.severity").map(String::as_str),
+            Some("")
+        );
     }
 
     #[test]
@@ -5046,6 +5061,30 @@ mod tests {
             permission_level: Default::default(),
             allowed_tools: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn agent_without_node_dir_runs_in_the_workflow_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = std::fs::canonicalize(dir.path()).unwrap();
+        let (db, engine) = harness();
+        // `sh -c pwd <prompt>`: the custom adapter appends the prompt as $0.
+        let mut profile = echo_profile("pwd-profile");
+        profile.adapter = crate::agents::AdapterKind::Custom;
+        profile.executable = Some("sh".into());
+        profile.extra_args = vec!["-c".into(), "pwd".into()];
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.defaults = Some(crate::workflow::WorkflowDefaults {
+            repo_dir: Some(repo.to_string_lossy().into_owned()),
+            branch: None,
+        });
+        run_to_end(&db, &engine, wf, "agent-repo").await;
+        let rows = db.list_node_results("agent-repo").unwrap();
+        let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(agent.status, "succeeded", "{:?}", agent.error);
+        assert_eq!(agent.stdout.trim(), repo.to_string_lossy());
     }
 
     fn agent_workflow(profile_id: &str) -> Workflow {
@@ -6220,6 +6259,75 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             .as_deref()
             .unwrap_or("")
             .contains("Loop limit"));
+    }
+
+    #[tokio::test]
+    async fn loop_exit_runs_when_the_fix_branch_loops_back_through_another_node() {
+        // Start -> work -> gate -true-> fix -> work (loop back from fix)
+        //                       -false-> after -> End
+        let (db, engine) = harness();
+        let mut work = command_node("work", "echo", &["work"], 100.0);
+        work.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            id: "gate".into(),
+            kind: NodeKind::Condition,
+            position: Position { x: 80.0, y: 200.0 },
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            label: Some("Again?".into()),
+        };
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-loop-back".to_string(),
+            name: "Loop back".to_string(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                work,
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            edges: vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "gate", "after", Some("false")),
+                edge("e4", "fix", "work", None),
+                edge("e5", "after", "end", None),
+            ],
+        };
+        run_to_end(&db, &engine, wf, "run-loop-back").await;
+        assert_eq!(db.list_runs(10).unwrap()[0].status, RunStatus::Succeeded);
+        let rows = db.list_node_results("run-loop-back").unwrap();
+        let ran = |id: &str| {
+            rows.iter()
+                .filter(|r| r.node_id == id && r.status == "succeeded")
+                .count()
+        };
+        assert_eq!(
+            (ran("work"), ran("fix"), ran("after"), ran("end")),
+            (2, 1, 1, 1)
+        );
+        // The exit waited for the visit that took it: it was never skipped.
+        assert!(!rows
+            .iter()
+            .any(|r| r.node_id == "after" && r.status == "skipped"));
     }
 
     #[tokio::test]

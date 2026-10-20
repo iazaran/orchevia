@@ -14,6 +14,7 @@ import {
   type RecoveryChoice,
   type RecoveryPlan,
 } from './run-controls';
+import { reportedSeverity } from './severity';
 import { errorMessage } from './errors';
 import {
   projectScope,
@@ -1273,10 +1274,8 @@ class MockBackend implements Backend {
     result.stdout = stdout;
     result.finishedAt = new Date().toISOString();
     if (status === 'succeeded') result.exitCode = 0;
-    const severity = ['P0', 'P1', 'P2', 'P3'].find((level) =>
-      new RegExp(`(?<![a-zA-Z0-9_])${level}(?![a-zA-Z0-9_])`).test(stdout),
-    );
-    if (severity) {
+    const severity = reportedSeverity(stdout);
+    if (severity !== null) {
       const data: unknown = JSON.parse(result.structuredJson ?? '{}');
       result.structuredJson = JSON.stringify({
         ...(typeof data === 'object' && data !== null ? data : {}),
@@ -2444,8 +2443,10 @@ function mockVariables(
         severity?: unknown;
         ticket?: Record<string, unknown>;
       };
-      if (typeof data.severity === 'string')
-        vars[`node.${r.nodeId}.severity`] = data.severity;
+      // Always set (mirrors the engine): a later clean visit replaces an
+      // earlier finding, and no findings read as "" instead of an unknown variable.
+      vars[`node.${r.nodeId}.severity`] =
+        typeof data.severity === 'string' ? data.severity : '';
       if (r.status === 'succeeded' && data.ticket) {
         for (const field of ['key', 'title', 'description', 'status'])
           vars[`ticket.${field}`] =

@@ -1203,7 +1203,7 @@ export function NodeInspector(): React.JSX.Element | null {
             id="node-cwd"
             label="Working directory (optional)"
             value={node.config.workingDir ?? ''}
-            placeholder="/path/to/project"
+            placeholder={workflow.defaults?.repoDir ?? '/path/to/project'}
             onChange={(v) => {
               const value = v.trim();
               const config = { ...node.config };
@@ -1542,7 +1542,7 @@ export function NodeInspector(): React.JSX.Element | null {
               id="node-agent-cwd"
               label="Working directory (optional, overrides profile)"
               value={node.config.workingDir ?? ''}
-              placeholder="/path/to/project"
+              placeholder={workflow.defaults?.repoDir ?? '/path/to/project'}
               onChange={(v) => {
                 const value = v.trim();
                 const config = { ...node.config };
@@ -1555,8 +1555,8 @@ export function NodeInspector(): React.JSX.Element | null {
               }}
             />
             <span className="field-hint">
-              Must exist before execution. Repository changes happen here — the profile’s
-              mode decides the default.
+              Must exist before execution. Repository changes happen here. Blank uses the
+              workflow’s repository directory, unless the profile sets its own folder.
             </span>
           </div>
           <div className="field">
@@ -1616,7 +1616,7 @@ export function NodeInspector(): React.JSX.Element | null {
                   .previewAgentCommand(
                     profileId,
                     node.config.prompt ?? '',
-                    node.config.workingDir,
+                    node.config.workingDir ?? workflow.defaults?.repoDir,
                   )
                   .then((p) => {
                     setAgentPreview(p.preview);
