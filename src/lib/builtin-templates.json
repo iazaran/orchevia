@@ -3,7 +3,7 @@
     "id": "implement-ticket",
     "version": 1,
     "name": "Implement a Task",
-    "description": "Plan → you approve → implement → test → review. Works from a ticket key, a link or a plain description; no Jira setup needed. Leaves the change uncommitted for you.",
+    "description": "Plan → you approve → implement → test → review. Works from a description or pasted ticket text; no Jira setup needed. Leaves the change uncommitted for you.",
     "category": "feature",
     "workflow": {
       "schemaVersion": 6,
@@ -33,7 +33,7 @@
           "config": {
             "args": [],
             "agentRole": "planning",
-            "prompt": "Read the repository instructions first. Plan this task: {{input.task}}. If it is a ticket key or link you can open, read it first. List the files to change, the tests to add and the risks. Do not edit any files.",
+            "prompt": "Read the repository instructions first. Plan this task: {{input.task}}. Work from that text and this repository; do not open links or fetch tickets. List the files to change, the tests to add and the risks. Do not edit any files.",
             "extendOnOutput": false
           },
           "label": "Plan"
@@ -62,7 +62,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Implement the approved plan for: {{input.task}}. Keep the change focused and add or update tests. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Implement the approved plan for: {{input.task}}. Keep the change focused and add or update tests. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "contextRefs": ["plan"],
             "contextMaxChars": 12000,
             "requiredTools": ["Edit", "Write"],
@@ -150,7 +150,7 @@
       "inputs": [
         {
           "name": "task",
-          "label": "Task: ticket key, link or description",
+          "label": "Task: describe it, or paste the ticket's title and text",
           "required": true
         },
         {
@@ -450,7 +450,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Investigate this bug: {{input.bug}}. Find the root cause and add a regression test that fails because of it, but do not fix the bug yet. Explain the cause and name the new test. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Investigate this bug: {{input.bug}}. Work from that text and this repository; do not open links or fetch issues. Find the root cause and add a regression test that should fail because of it, without running it, and do not fix the bug yet. Explain the cause and name the new test. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false
           },
@@ -480,7 +480,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Fix the root cause described above. Keep the new regression test and do not weaken existing tests. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Fix the root cause described above. Keep the new regression test and do not weaken existing tests. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "contextRefs": ["repro"],
             "contextMaxChars": 12000,
             "requiredTools": ["Edit", "Write"],
@@ -546,7 +546,7 @@
       "inputs": [
         {
           "name": "bug",
-          "label": "Bug: issue key, link or description",
+          "label": "Bug: describe it, or paste the issue's title and text",
           "required": true
         },
         {
@@ -605,7 +605,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Refactor without changing behavior: {{input.target}}. Keep public interfaces and existing tests unchanged. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Refactor without changing behavior: {{input.target}}. Keep public interfaces and existing tests unchanged. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "contextRefs": ["before"],
             "contextMaxChars": 12000,
             "requiredTools": ["Edit", "Write"],
@@ -733,7 +733,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Upgrade {{input.dependency}}: change the version in the dependency manifest and adapt the code to its breaking changes. Do not run the package manager; the workflow installs next. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Upgrade {{input.dependency}}: change the version in the dependency manifest and adapt the code to its breaking changes. Do not run the package manager; the workflow installs next. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false
           },
@@ -1092,7 +1092,7 @@
             "gitOp": {
               "op": "checkout",
               "name": "{{input.branch}}",
-              "allowDirty": false
+              "allowDirty": true
             }
           },
           "label": "Check out branch"
@@ -1150,8 +1150,15 @@
             "y": 600.0
           },
           "config": {
-            "executable": "git",
-            "args": ["push", "-u", "origin", "{{input.branch}}"],
+            "executable": "env",
+            "args": [
+              "GIT_TERMINAL_PROMPT=0",
+              "git",
+              "push",
+              "-u",
+              "origin",
+              "{{input.branch}}"
+            ],
             "extendOnOutput": false
           },
           "label": "Push branch"
@@ -1321,7 +1328,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Address the review feedback on pull request #{{input.prNumber}} shown above. Change only what the feedback asks for and add tests where needed. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Address the review feedback on pull request #{{input.prNumber}} shown above. Change only what the feedback asks for and add tests where needed. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "sessionGroup": "feedback-{{input.prNumber}}",
             "sessionMaxTurns": 4,
             "contextRefs": ["feedback"],
@@ -1403,7 +1410,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from the review above. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from the review above. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "sessionGroup": "feedback-{{input.prNumber}}",
             "sessionMaxTurns": 4,
             "contextRefs": ["review"],
@@ -1556,7 +1563,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Implement {{ticket.key}}: {{ticket.title}} using the ticket details above. Keep the change focused and add or update tests. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Implement {{ticket.key}}: {{ticket.title}} using the ticket details above. Keep the change focused and add or update tests. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "sessionGroup": "implementation-{{input.ticket}}",
             "sessionMaxTurns": 4,
             "contextRefs": ["ticket"],
@@ -1666,7 +1673,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from both reviews above. Do not run the test suite or commit; the workflow does both.",
+            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from both reviews above. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "sessionGroup": "implementation-{{input.ticket}}",
             "sessionMaxTurns": 4,
             "contextRefs": ["rev_fast", "rev_deep"],
@@ -1733,8 +1740,15 @@
             "y": 1200.0
           },
           "config": {
-            "executable": "git",
-            "args": ["push", "-u", "origin", "{{input.branch}}"],
+            "executable": "env",
+            "args": [
+              "GIT_TERMINAL_PROMPT=0",
+              "git",
+              "push",
+              "-u",
+              "origin",
+              "{{input.branch}}"
+            ],
             "extendOnOutput": false
           },
           "label": "Push branch"

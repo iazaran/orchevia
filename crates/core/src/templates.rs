@@ -270,7 +270,8 @@ const FINDINGS: &str = "Report each problem as a ```finding block with the lines
 
 /// Implementation steps leave tests and commits to the workflow, so they need
 /// only file-edit permissions.
-const NO_RUN: &str = "Do not run the test suite or commit; the workflow does both.";
+const NO_RUN: &str =
+    "Do not run tests, builds or package managers, and do not commit; the workflow does that.";
 
 /// Claude Code allow rules every implementation step declares.
 const EDIT_TOOLS: [&str; 2] = ["Edit", "Write"];
@@ -512,14 +513,22 @@ fn severity_gate(id: &str, y: f64, reviewers: &[&str]) -> Node {
     )
 }
 
+/// Fails fast instead of waiting for a credential prompt no one can answer.
 fn push_branch(y: f64) -> Node {
     command(
         "push",
         MAIN,
         y,
         "Push branch",
-        "git",
-        &["push", "-u", "origin", "{{input.branch}}"],
+        "env",
+        &[
+            "GIT_TERMINAL_PROMPT=0",
+            "git",
+            "push",
+            "-u",
+            "origin",
+            "{{input.branch}}",
+        ],
     )
 }
 
@@ -583,9 +592,13 @@ fn implement_task() -> Template {
         "implement-ticket",
         "Implement a Task",
         "feature",
-        "Plan → you approve → implement → test → review. Works from a ticket key, a link or a plain description; no Jira setup needed. Leaves the change uncommitted for you.",
+        "Plan → you approve → implement → test → review. Works from a description or pasted ticket text; no Jira setup needed. Leaves the change uncommitted for you.",
         vec![
-            input("task", "Task: ticket key, link or description", None),
+            input(
+                "task",
+                "Task: describe it, or paste the ticket's title and text",
+                None,
+            ),
             test_input(),
         ],
         vec![
@@ -595,7 +608,7 @@ fn implement_task() -> Template {
                 (MAIN, row(1)),
                 "Plan",
                 "planning",
-                "Plan this task: {{input.task}}. If it is a ticket key or link you can open, read it first. List the files to change, the tests to add and the risks. Do not edit any files.",
+                "Plan this task: {{input.task}}. Work from that text and this repository; do not open links or fetch tickets. List the files to change, the tests to add and the risks. Do not edit any files.",
                 &[],
                 12000,
             ),
@@ -729,7 +742,11 @@ fn investigate_bug() -> Template {
         "bugfix",
         "Find the root cause and add a failing regression test → you confirm → fix → test. Leaves the change uncommitted for you.",
         vec![
-            input("bug", "Bug: issue key, link or description", None),
+            input(
+                "bug",
+                "Bug: describe it, or paste the issue's title and text",
+                None,
+            ),
             test_input(),
         ],
         vec![
@@ -739,7 +756,7 @@ fn investigate_bug() -> Template {
                 MAIN,
                 row(1),
                 "Find the cause",
-                "Investigate this bug: {{input.bug}}. Find the root cause and add a regression test that fails because of it, but do not fix the bug yet. Explain the cause and name the new test.",
+                "Investigate this bug: {{input.bug}}. Work from that text and this repository; do not open links or fetch issues. Find the root cause and add a regression test that should fail because of it, without running it, and do not fix the bug yet. Explain the cause and name the new test.",
                 &[],
             ),
             approval(
@@ -966,9 +983,11 @@ fn create_draft_pr() -> Template {
                 "checkout",
                 row(1),
                 "Check out branch",
+                // Untracked files must not block this; git itself still
+                // refuses a checkout that would overwrite local changes.
                 GitOp::Checkout {
                     name: "{{input.branch}}".into(),
-                    allow_dirty: false,
+                    allow_dirty: true,
                 },
             ),
             run_tests("tests", row(2), "Run tests"),
