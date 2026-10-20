@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
-import { createDefaultProfile } from '../lib/agents';
+import { createDefaultProfile, recommendedProfiles } from '../lib/agents';
 import { TemplatesView } from './TemplatesView';
 
 afterEach(() => vi.restoreAllMocks());
@@ -114,4 +114,49 @@ it('lists declared tools the mapped profile lacks right after import', async () 
   expect(
     screen.getByRole('button', { name: 'Add to allowed tools' }),
   ).toBeInTheDocument();
+});
+
+it('asks for the repository before creating a workflow from a template', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  for (const profile of recommendedProfiles([])) await backend.saveAgentProfile(profile);
+  const jira = { id: 'jira', name: 'Jira', command: 'uvx', args: [], enabled: true };
+  await backend.saveMcpServer(jira);
+  const { builtin } = await backend.listTemplates();
+  useAppStore.setState({
+    builtinTemplates: builtin,
+    userTemplates: [],
+    activeWorkflowId: null,
+    profiles: await backend.listAgentProfiles(),
+    mcpServers: [jira],
+    knownFolders: [],
+    view: 'templates',
+  });
+  render(<TemplatesView />);
+  const user = userEvent.setup();
+  const card = screen.getByRole('heading', { name: 'Ticket to Draft PR' }).parentElement;
+  if (!card) throw new Error('template card');
+  await user.click(within(card).getByRole('button', { name: 'Use template' }));
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Use template Ticket to Draft PR',
+  });
+  const create = within(dialog).getByRole('button', { name: 'Create workflow' });
+  expect(create).toBeDisabled();
+  expect(within(dialog).getByRole('combobox', { name: 'Jira / MCP server' })).toHaveValue(
+    'jira',
+  );
+  expect(dialog).toHaveTextContent('Jira ticket key or URL');
+  await user.type(
+    within(dialog).getByRole('textbox', { name: 'Repository folder (required)' }),
+    '/work/shop',
+  );
+  await user.click(create);
+  await waitFor(() => expect(useAppStore.getState().view).toBe('workflows'));
+  const created = (await backend.listWorkflows()).find(
+    (w) => w.name === 'Ticket to Draft PR',
+  );
+  expect(created?.definition.defaults?.repoDir).toBe('/work/shop');
+  for (const node of created?.definition.nodes.filter((n) => n.type === 'ticket') ?? [])
+    expect(node.config.mcpServerId).toBe('jira');
+  expect(useAppStore.getState().activeWorkflowId).toBe(created?.id);
 });

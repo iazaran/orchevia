@@ -9,6 +9,8 @@ import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
 import { ToolGrantNotice } from './ToolGrantNotice';
 import { errorMessage } from '../lib/errors';
+import { setWorkflowDefaults, validateWorkflowLocal } from '../lib/workflow';
+import { DirPicker } from './DirPicker';
 
 export function TemplatesView(): React.JSX.Element {
   const builtinTemplates = useAppStore((s) => s.builtinTemplates);
@@ -23,6 +25,14 @@ export function TemplatesView(): React.JSX.Element {
     name: string;
     items: string[];
   } | null>(null);
+  const [useTarget, setUseTarget] = useState<{
+    template: WorkflowTemplate;
+    builtin: boolean;
+    repoDir: string;
+    mcpServerId: string;
+  } | null>(null);
+  const [useRoleMap, setUseRoleMap] = useState<Record<string, string> | undefined>();
+  const mcpServers = useAppStore((s) => s.mcpServers);
   const [importText, setImportText] = useState('');
   const [ioModal, setIoModal] = useState<
     { mode: 'import' } | { mode: 'export'; name: string; json: string } | null
@@ -38,17 +48,55 @@ export function TemplatesView(): React.JSX.Element {
     void refreshLibrary();
   };
 
-  const instantiate = (template: WorkflowTemplate, builtin: boolean): void => {
+  const openUse = (template: WorkflowTemplate, builtin: boolean): void => {
+    const servers = useAppStore.getState().mcpServers.filter((s) => s.enabled);
+    setUseTarget({
+      template,
+      builtin,
+      repoDir: useAppStore.getState().knownFolders[0] ?? '',
+      mcpServerId: servers.length === 1 ? (servers[0]?.id ?? '') : '',
+    });
+    setUseRoleMap(undefined);
+    void getBackend()
+      .roleMapDefault()
+      .then(setUseRoleMap)
+      .catch(() => {
+        setUseRoleMap({});
+      });
+  };
+
+  const instantiate = (): void => {
+    if (useTarget === null) return;
+    const { template, builtin, repoDir, mcpServerId } = useTarget;
+    setUseTarget(null);
     void getBackend()
       .instantiateTemplate(template.id, builtin)
       .then((preview) => {
-        if (preview.setupNeeded.length > 0) {
-          setSetupNeeded({ name: template.name, items: preview.setupNeeded });
-        }
+        // The template works in the chosen repository; ticket and MCP steps
+        // use the chosen server unless the template already names one.
+        let workflow = setWorkflowDefaults(preview.workflow, repoDir, '');
+        if (mcpServerId !== '')
+          workflow = {
+            ...workflow,
+            nodes: workflow.nodes.map((n) =>
+              (n.type === 'ticket' || n.type === 'mcp') &&
+              (n.config.mcpServerId ?? '') === ''
+                ? { ...n, config: { ...n.config, mcpServerId } }
+                : n,
+            ),
+          };
+        const remaining = validateWorkflowLocal(workflow)
+          .filter((issue) => issue.severity === 'error')
+          .map((issue) => issue.message);
+        setSetupNeeded(
+          remaining.length > 0
+            ? { name: template.name, items: [...new Set(remaining)] }
+            : null,
+        );
         const profiles = useAppStore.getState().profiles;
         const chosen = [
           ...new Set(
-            preview.workflow.nodes
+            workflow.nodes
               .filter((n) => n.type === 'agent')
               .map((n) => n.config.agentProfileId),
           ),
@@ -60,7 +108,7 @@ export function TemplatesView(): React.JSX.Element {
             : `Missing profile: ${id ?? 'none'}`;
         });
         return getBackend()
-          .saveWorkflow(preview.workflow)
+          .saveWorkflow(workflow)
           .then((stored) => {
             if (details.length)
               useAppStore.getState().pushUiNotice({
@@ -151,18 +199,19 @@ export function TemplatesView(): React.JSX.Element {
       </div>
       <p className="field-hint">{template.description}</p>
       <div className="tool-version">{template.workflow.nodes.length} nodes</div>
-      {template.workflow.inputs?.some((i) => i.name === 'testCommand' && i.required) ===
-        true && (
+      {(template.workflow.inputs?.length ?? 0) > 0 && (
         <p className="field-hint">
-          Supply your project test command when running this workflow. Empty commands
-          cannot run.
+          Asks when run:{' '}
+          {template.workflow.inputs?.map((i) => i.label ?? i.name).join(' · ')}
         </p>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'nowrap' }}>
         <button
           className="btn btn-primary"
           style={{ whiteSpace: 'nowrap' }}
-          onClick={() => instantiate(template, builtin)}
+          onClick={() => {
+            openUse(template, builtin);
+          }}
         >
           Use template
         </button>
@@ -251,6 +300,112 @@ export function TemplatesView(): React.JSX.Element {
           above. Every card can also <strong>Export JSON</strong> for sharing.
         </p>
       </div>
+      {useTarget !== null && (
+        <Modal
+          label={`Use template ${useTarget.template.name}`}
+          onClose={() => {
+            setUseTarget(null);
+          }}
+          closeLabel="Close template setup"
+          onBackdrop={() => {
+            setUseTarget(null);
+          }}
+        >
+          <div>
+            <h3 style={{ marginTop: 0 }}>Use “{useTarget.template.name}”</h3>
+            <p className="field-hint">{useTarget.template.description}</p>
+            <DirPicker
+              id="tpl-repo"
+              label="Repository folder (required)"
+              value={useTarget.repoDir}
+              placeholder="/path/to/your/project"
+              onChange={(repoDir) => {
+                setUseTarget({ ...useTarget, repoDir });
+              }}
+            />
+            <p className="field-hint">
+              Every step works here: AI agents edit and review this repository, and
+              commands, Git and GitHub steps run in it. You can change it later in the
+              workflow settings.
+            </p>
+            {useTarget.template.workflow.nodes.some(
+              (n) => n.type === 'ticket' || n.type === 'mcp',
+            ) && (
+              <div className="field">
+                <label className="field-label" htmlFor="tpl-mcp">
+                  Jira / MCP server
+                </label>
+                {mcpServers.some((s) => s.enabled) ? (
+                  <select
+                    id="tpl-mcp"
+                    className="input"
+                    value={useTarget.mcpServerId}
+                    onChange={(e) => {
+                      setUseTarget({ ...useTarget, mcpServerId: e.target.value });
+                    }}
+                  >
+                    <option value="">Choose later</option>
+                    {mcpServers
+                      .filter((s) => s.enabled)
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                  </select>
+                ) : (
+                  <p className="field-hint">
+                    No MCP server yet: add your Jira server under Environment → MCP
+                    servers, then pick it on the ticket step.
+                  </p>
+                )}
+              </div>
+            )}
+            {(useTarget.template.workflow.inputs?.length ?? 0) > 0 && (
+              <div className="field">
+                <span className="field-label">Each run asks for</span>
+                <ul className="preview-checklist">
+                  {useTarget.template.workflow.inputs?.map((input) => (
+                    <li key={input.name}>
+                      {input.label ?? input.name}
+                      {input.default !== undefined && ` (default: ${input.default})`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {useRoleMap !== undefined && (
+              <ToolGrantNotice
+                workflow={useTarget.template.workflow}
+                roleMap={useRoleMap}
+                style={{ marginBottom: 12 }}
+              />
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                disabled={useTarget.repoDir.trim() === ''}
+                title={
+                  useTarget.repoDir.trim() === ''
+                    ? 'Choose the repository this workflow works in'
+                    : 'Create the workflow and open it on the canvas'
+                }
+                onClick={instantiate}
+              >
+                Create workflow
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setUseTarget(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {ioModal !== null && (
         <Modal
           label={
