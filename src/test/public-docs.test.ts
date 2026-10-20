@@ -47,7 +47,7 @@ describe('public documentation before launch', () => {
       "become available after the matching tag's release workflow succeeds",
     );
     // The fallback is the published predecessor, not the release under preparation.
-    expect(readme).toContain('/releases/tag/v0.1.14');
+    expect(readme).toContain('/releases/tag/v0.1.15');
     expect(readme).not.toContain('/releases/latest/download/');
     const linkedVersions = Array.from(
       readme.matchAll(/\/releases\/download\/v([^/]+)\//g),

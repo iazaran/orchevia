@@ -6,6 +6,55 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-10-20
+
+### Added
+
+- Agent Profiles have a **Permissions** setting, passed only as CLI flags (no
+  Claude Code, Codex or project settings file is ever written):
+  **Use Claude Code / Codex settings** (default, no flag), **Allowed tools**
+  (Claude Code `--allowedTools`, on top of what its settings allow) and
+  **Full access** (Claude `--permission-mode bypassPermissions`, Codex
+  `--dangerously-bypass-approvals-and-sandbox`). Codex has no tool allow-list,
+  so it offers only its settings and full access. Saving Full access asks for
+  confirmation; it is never a default.
+- Agent nodes can declare the tools they need (`requiredTools`, Claude Code allow
+  rules) in the inspector, Simple JSON and templates. Template import, the open
+  workflow and the start-run form list declared tools the chosen profile does not
+  grant and offer to add them. Template and document versions stay 1, so earlier
+  exports import unchanged.
+- Runs marks a step whose tools were refused, lists each refused call with the
+  allow rule that would admit it, and offers to add the missing rules to the
+  step's profile.
+
+### Changed
+
+- Profiles saved before v0.1.16 read as **Use Claude Code settings**, so upgrading
+  widens no permissions.
+- A workflow whose Agent node runs on a full-access profile (or one whose extra
+  arguments bypass permission checks) lists the high-risk automation category
+  **Run AI CLI with full access**; its schedules need the trusted opt-in, and the
+  trust message names the risk.
+- Dark theme: buttons have a visible resting border and fill, ghost buttons an
+  outline, cards a distinct edge, and selected tabs and segments (Usage
+  breakdown, Last 7 / 30 days, selected chips) a filled accent state. The light
+  theme is unchanged.
+
+### Fixed
+
+- A Claude agent whose tool calls were refused no longer reports success. Headless
+  `claude -p` refuses tools its settings do not allow, ignores
+  `defaultMode: bypassPermissions` from a project's settings file, and still ends
+  with `"subtype":"success"`. Orchevia now reads the result's `permission_denials`,
+  fails the node with the `permissionDenied` failure kind, and names each refused
+  tool with the rule that would admit it (`mcp__<server>`,
+  `Bash(<command prefix> *)`, or the tool name). Failure routes and recovery work
+  as for other agent failures; the node is not retried automatically.
+- Text-output Claude runs (profiles whose extra arguments choose the output or
+  input format) say in their output note that refused tools go undetected.
+  Codex `exec --json` reports no event for a sandbox-blocked command, so Codex
+  refusals stay undetected; see [refused tool calls](docs/agents.md#refused-tool-calls).
+
 ## [0.1.15] - 2026-10-15
 
 ### Added
