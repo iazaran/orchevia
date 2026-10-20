@@ -120,7 +120,8 @@ and both macOS DMGs. The two DMGs build on Apple Silicon `macos-15` runners:
 `aarch64-apple-darwin` natively and `x86_64-apple-darwin` cross-compiled, which is
 much faster than an Intel runner. Before staging, every executable in the `.app`
 must report exactly the requested architecture (`lipo -archs`), so an Apple Silicon
-binary can never ship as the Intel DMG. The Linux runner's architecture is checked
+binary can never ship as the Intel DMG. The macOS jobs request `app,dmg`: with `dmg`
+alone, Tauri deletes the `.app` after packaging and there would be nothing to check. The Linux runner's architecture is checked
 too. Each build uploads only its staged installers. A transient upload failure gets
 one upload-only retry in the same job, without rebuilding. Release concurrency
 serializes attempts for the same tag without cancelling an active build.

@@ -59,15 +59,16 @@ jobs:
             bundles: deb,appimage
           # Both DMGs build on Apple Silicon: the Intel one is cross-compiled,
           # which is several times faster than an Intel runner. Each binary's
-          # architecture is checked before staging.
+          # architecture is checked before staging, so keep the `app` bundle:
+          # with `dmg` alone, Tauri deletes the .app after packaging.
           - os: macos-15
             arch: arm64
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - os: macos-15
             arch: x86_64
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
     runs-on: ${{ matrix.os }}
     # No dependency caches: a tag run can only restore caches saved by the same
     # tag or by main, so a release-scoped cache is never reused by the next tag.

@@ -192,3 +192,31 @@ test('Linux staging requires both packages from the host bundle', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function releaseMatrix() {
+  const lines = readFileSync('.github/workflows/release.yml', 'utf8').split('\n');
+  const start = lines.findIndex((line) => line.trim() === 'include:');
+  const entries = [];
+  for (const line of lines.slice(start + 1)) {
+    const item = /^ {10}- (\w+): (.*)$/.exec(line);
+    const field = /^ {12}(\w+): (.*)$/.exec(line);
+    if (item) entries.push({ [item[1]]: item[2] });
+    else if (field && entries.length) entries[entries.length - 1][field[1]] = field[2];
+    else if (line.trim() && !line.trim().startsWith('#')) break;
+  }
+  return entries;
+}
+
+test('macOS release builds keep the .app that staging inspects, for the right targets', () => {
+  const mac = releaseMatrix().filter((entry) => entry.os?.startsWith('macos'));
+  assert.deepEqual(
+    mac.map(({ arch, target }) => [arch, target]),
+    [
+      ['arm64', 'aarch64-apple-darwin'],
+      ['x86_64', 'x86_64-apple-darwin'],
+    ],
+  );
+  // Requesting `dmg` alone makes Tauri delete the .app after packaging.
+  for (const entry of mac)
+    assert.deepEqual(entry.bundles.split(',').sort(), ['app', 'dmg']);
+});
