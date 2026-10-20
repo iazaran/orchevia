@@ -3,16 +3,15 @@
  * severity a step's output reports, for `node.<id>.severity`.
  *
  * Structured ```finding blocks win when present. Otherwise a `P0`–`P3` tag in
- * prose counts, except when it is part of a list or range (`P0/P1`, `P0–P3`)
- * or negated (`no P1`, `zero P0 or P1`): a clean review that says
- * "No P0/P1 issues found" reports no severity.
+ * prose counts unless it names the scale (`P0–P3`) or is negated right before
+ * it (`no P1`, `zero P0 or P1`, `no blocking (P0/P1)`): a clean review that says
+ * "No P0/P1 issues found" reports no severity, while "Found P0/P1 issues" does.
  */
 const LEVELS = ['P0', 'P1', 'P2', 'P3'] as const;
 type Level = (typeof LEVELS)[number];
 
 const isWordChar = (c: string | undefined): boolean =>
   c !== undefined && /[\p{L}\p{N}_]/u.test(c);
-const isLetter = (c: string): boolean => /\p{L}/u.test(c);
 const lastChar = (text: string): string | undefined => Array.from(text).at(-1);
 const firstChar = (text: string): string | undefined => Array.from(text)[0];
 
@@ -54,33 +53,49 @@ function startsWithLevel(text: string): boolean {
 }
 
 function endsWithLevel(text: string): boolean {
-  return /P[0-3]$/.test(text);
+  return /(?<![\p{L}\p{N}_])P[0-3]$/u.test(text);
 }
 
-function negated(before: string): boolean {
-  let rest = before;
+/** The clause a tag sits in: after the last `.` `;` `:` `!` `?` or spaced dash. */
+function clause(before: string): string {
+  let start = 0;
+  for (let i = 0; i < before.length; i += 1) {
+    const c = before[i];
+    const spacedDash =
+      (c === '-' || c === '–' || c === '—') &&
+      before[i - 1] === ' ' &&
+      before[i + 1] === ' ';
+    if (c === '.' || c === ';' || c === ':' || c === '!' || c === '?' || spacedDash)
+      start = i + 1;
+  }
+  return before.slice(start);
+}
+
+/**
+ * A negation right before the tag group ("no P1", "zero P0, P1 or P2",
+ * "no blocking (P0/P1)"); at most one other word in between, and a contrast
+ * ("but", "except") ends the search.
+ */
+function negated(clauseText: string): boolean {
+  let rest = clauseText;
+  let words = 0;
   for (;;) {
-    const trimmed = rest.replace(/[\s*_`([,/&\-–—]+$/u, '');
-    const lower = trimmed.toLowerCase();
-    const connector = ['or', 'and', 'nor'].find(
-      (word) =>
-        lower.endsWith(word) &&
-        !isWordChar(lastChar(lower.slice(0, lower.length - word.length))),
-    );
-    if (connector !== undefined) {
-      rest = trimmed.slice(0, trimmed.length - connector.length);
-    } else if (endsWithLevel(trimmed) && !isWordChar(lastChar(trimmed.slice(0, -2)))) {
-      rest = trimmed.slice(0, -2);
-    } else {
-      const chars = Array.from(trimmed);
-      const word: string[] = [];
-      while (chars.length > 0 && isLetter(chars[chars.length - 1] ?? '')) {
-        word.unshift(chars.pop() ?? '');
-      }
-      return ['no', 'zero', 'without', 'not', 'nor'].includes(
-        word.join('').toLowerCase(),
-      );
+    rest = rest.replace(/[\s*_`([)\],/&]+$/u, '');
+    if (endsWithLevel(rest)) {
+      if (words > 0) return false;
+      rest = rest.slice(0, -2);
+      continue;
     }
+    const match = /[\p{L}\p{N}'-]+$/u.exec(rest);
+    const word = (match?.[0] ?? '').toLowerCase();
+    rest = rest.slice(0, rest.length - (match?.[0].length ?? 0));
+    if (word === '') return false;
+    if (['no', 'none', 'zero', 'without', 'not', 'nothing'].includes(word)) return true;
+    if (['or', 'and', 'nor'].includes(word) && words === 0) continue;
+    if (['but', 'except', 'however', 'although', 'though', 'yet'].includes(word))
+      return false;
+    words += 1;
+    if (words > 1) return false;
   }
 }
 
@@ -95,14 +110,12 @@ function tagged(line: string, level: Level): boolean {
     const before = lastChar(beforeText);
     const after = firstChar(afterText);
     if (isWordChar(before) || isWordChar(after)) continue;
-    const joined = (c: string | undefined): boolean =>
-      c === '/' || c === '-' || c === '–' || c === '—';
-    const listed =
-      before === '/' ||
-      after === '/' ||
-      (joined(before) && endsWithLevel(Array.from(beforeText).slice(0, -1).join(''))) ||
-      (joined(after) && startsWithLevel(Array.from(afterText).slice(1).join('')));
-    if (!listed && !negated(beforeText)) return true;
+    // "P0–P3" names the scale, not a finding.
+    const dash = (c: string | undefined): boolean => c === '-' || c === '–' || c === '—';
+    const range =
+      (dash(before) && endsWithLevel(Array.from(beforeText).slice(0, -1).join(''))) ||
+      (dash(after) && startsWithLevel(Array.from(afterText).slice(1).join('')));
+    if (!range && !negated(clause(beforeText))) return true;
   }
   return false;
 }
