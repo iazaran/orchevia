@@ -1213,6 +1213,14 @@ impl Engine {
                 if all_terminal(&graph, &state) {
                     return Ok(RunOutcome::Finished(RunStatus::Succeeded));
                 }
+                // A loop exit waits while its condition loops back; when the
+                // loop ended another way (a failure route, say) nothing can
+                // take it any more. Resolve such waiting edges as untaken —
+                // skipping their targets, or releasing joins another branch
+                // already took — and keep scheduling.
+                if self.release_waiting_exits(&graph, &mut state, run_id, workflow)? {
+                    continue 'schedule;
+                }
                 // Nothing ready, nothing flying, work remains: this cannot
                 // happen for validated workflows; fail loudly, not silently.
                 let stuck: Vec<String> = workflow
@@ -1402,6 +1410,37 @@ impl Engine {
             effect.run_failed = Some(format!("Node '{label}' failed with no failure route."));
         }
         Ok(effect)
+    }
+
+    /// Resolve, as untaken, the edges still pending into nodes whose sources
+    /// have all finished. Returns whether anything changed.
+    fn release_waiting_exits(
+        &self,
+        graph: &Graph,
+        state: &mut RunState,
+        run_id: &str,
+        workflow: &Workflow,
+    ) -> Result<bool, EngineError> {
+        let waiting: Vec<(String, usize)> = workflow
+            .nodes
+            .iter()
+            .filter(|node| !state.terminal.contains_key(&node.id))
+            .filter_map(|node| {
+                let edges = graph.incoming.get(&node.id)?;
+                let settled = !edges.is_empty()
+                    && edges.iter().all(|edge| {
+                        graph.is_loop_edge(&edge.id) || state.terminal.contains_key(&edge.source)
+                    });
+                let pending = state.pending.get(&node.id).copied().unwrap_or(0);
+                (settled && pending > 0).then(|| (node.id.clone(), pending))
+            })
+            .collect();
+        for (node_id, pending) in &waiting {
+            for _ in 0..*pending {
+                self.resolve_edge(graph, state, run_id, node_id, false, true)?;
+            }
+        }
+        Ok(!waiting.is_empty())
     }
 
     /// Mark one incoming edge resolved for `target`; cascade skip when the
@@ -6328,6 +6367,73 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         assert!(!rows
             .iter()
             .any(|r| r.node_id == "after" && r.status == "skipped"));
+    }
+
+    #[tokio::test]
+    async fn waiting_loop_exit_is_released_when_the_loop_ends_by_a_failure_route() {
+        // gate -true-> fix -> work (loop back); fix fails and routes to rescue,
+        // so the exit `after` can no longer be taken: it is skipped, and the
+        // join `end` runs after rescue instead of deadlocking.
+        let (db, engine) = harness();
+        let mut work = command_node("work", "echo", &["work"], 100.0);
+        work.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "sh", &["-c", "exit 1"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            id: "gate".into(),
+            kind: NodeKind::Condition,
+            position: Position { x: 80.0, y: 200.0 },
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            label: Some("Again?".into()),
+        };
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-loop-rescue".to_string(),
+            name: "Loop rescue".to_string(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                work,
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            edges: vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "gate", "after", Some("false")),
+                edge("e4", "fix", "work", None),
+                edge("e5", "fix", "rescue", Some("failure")),
+                edge("e6", "after", "end", None),
+                edge("e7", "rescue", "end", None),
+            ],
+        };
+        run_to_end(&db, &engine, wf, "run-loop-rescue").await;
+        let rows = db.list_node_results("run-loop-rescue").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(status_of(&db, "run-loop-rescue", "rescue"), "succeeded");
+        assert_eq!(status_of(&db, "run-loop-rescue", "after"), "skipped");
+        assert_eq!(status_of(&db, "run-loop-rescue", "end"), "succeeded");
     }
 
     #[tokio::test]
