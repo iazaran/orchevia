@@ -61,8 +61,8 @@ and run both stacks as well. Pure prose changes avoid compilers; formatting stil
 before/after range on a main push. Deleted and renamed inputs remain visible.
 Jobs are gated, not PR workflow triggers: skipped jobs have a conclusion and the
 always-running **CI result** check fails if any applicable job fails or is cancelled.
-Use **CI result** and **Validate docs site** as required checks if adding branch
-rules. The old Tauri matrix check names have been retired; no status contexts were
+Use **CI result** as the required check if adding branch rules; **Validate docs site**
+runs only for site changes, so it must not be required. The old Tauri matrix check names have been retired; no status contexts were
 required when this change was prepared. Repository protection is not changed here.
 
 PR/main no longer build or upload installers. Linux desktop compilation uses the

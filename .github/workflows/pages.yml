@@ -19,9 +19,11 @@ on:
 permissions:
   contents: read
 
+# Never cancel a main run: a later Markdown-only push would skip the deployment
+# that the cancelled run owed.
 concurrency:
   group: pages-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
