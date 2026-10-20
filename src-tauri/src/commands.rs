@@ -547,7 +547,8 @@ fn check_schedule_trust(
         .get_workflow(workflow_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown workflow '{workflow_id}'."))?;
-    orchevia_core::trust::may_enable_schedule(&stored.definition, trusted)
+    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+    orchevia_core::trust::may_enable_schedule(&stored.definition, &profiles, trusted)
 }
 
 #[tauri::command]
@@ -711,11 +712,15 @@ pub fn delete_watcher(state: State<AppState>, id: String) -> Result<bool, String
 
 #[tauri::command]
 pub fn workflow_risks(
+    state: State<AppState>,
     workflow: Workflow,
 ) -> Result<Vec<orchevia_core::trust::RiskCategory>, String> {
-    Ok(orchevia_core::trust::workflow_risks(&workflow)
-        .into_iter()
-        .collect())
+    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+    Ok(
+        orchevia_core::trust::workflow_risks_with_profiles(&workflow, &profiles)
+            .into_iter()
+            .collect(),
+    )
 }
 
 #[tauri::command]

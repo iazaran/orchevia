@@ -100,6 +100,10 @@ the boundaries, and the limits of the current application.
 - **Risk categories.** Every workflow is summarized as read-only, local write,
   repository mutation, remote write, and/or external tool use (computed from
   node kinds and ops — inspect it in Automations before enabling anything).
+  An Agent node whose profile bypasses every CLI permission check (the
+  [Full access](agents.md#tool-permissions) level, or extra arguments such as
+  `--dangerously-skip-permissions`) adds the high-risk category **Run AI CLI with
+  full access**, named in the trust message so the opt-in is deliberate.
 - **Explicit opt-in.** Schedules over anything above read-only require the
   Trusted checkbox; the trust check re-runs at fire time (workflows may have
   changed) and blocks with a clear message otherwise.

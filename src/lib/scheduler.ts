@@ -1,5 +1,5 @@
 import { projectScope } from './memory';
-import { referencedVariables } from './agents';
+import { hasFullAccess, referencedVariables } from './agents';
 import type { AgentProfile } from './agents';
 import type { Workflow } from './workflow';
 /**
@@ -68,7 +68,12 @@ export interface NotificationPrefs {
 }
 
 export type RiskCategory =
-  'readOnly' | 'localWrite' | 'repositoryMutation' | 'remoteWrite' | 'externalTool';
+  | 'readOnly'
+  | 'localWrite'
+  | 'repositoryMutation'
+  | 'remoteWrite'
+  | 'externalTool'
+  | 'fullAccessAgent';
 
 export const RISK_LABELS: Record<RiskCategory, string> = {
   readOnly: 'Read repository',
@@ -76,7 +81,88 @@ export const RISK_LABELS: Record<RiskCategory, string> = {
   repositoryMutation: 'Create commits / branches',
   remoteWrite: 'Push / create or comment on PRs',
   externalTool: 'Invoke external tools (AI CLI / MCP)',
+  fullAccessAgent: 'Run AI CLI with full access (permission checks bypassed)',
 };
+
+const RISK_ORDER: RiskCategory[] = [
+  'readOnly',
+  'localWrite',
+  'repositoryMutation',
+  'remoteWrite',
+  'externalTool',
+  'fullAccessAgent',
+];
+
+/**
+ * Mirror of Rust `trust::workflow_risks_with_profiles`: the node mix plus
+ * Agent nodes whose profile bypasses every permission check (a role-only
+ * node counts every profile with that role).
+ */
+export function workflowRisks(
+  workflow: Workflow,
+  profiles: AgentProfile[],
+): RiskCategory[] {
+  const risks = new Set<RiskCategory>(['readOnly']);
+  for (const node of workflow.nodes) {
+    const config = node.config;
+    switch (node.type) {
+      case 'command':
+        risks.add('localWrite');
+        if (config.executable === 'git' && config.args?.[0] === 'push')
+          risks.add('remoteWrite');
+        break;
+      case 'agent': {
+        risks.add('localWrite');
+        risks.add('externalTool');
+        const id = (config.agentProfileId ?? '').trim();
+        const candidates = profiles.filter((p) =>
+          id !== ''
+            ? p.id === id
+            : config.agentRole !== undefined && p.role === config.agentRole,
+        );
+        if (candidates.some(hasFullAccess)) risks.add('fullAccessAgent');
+        break;
+      }
+      case 'mcp':
+      case 'ticket':
+        risks.add('externalTool');
+        break;
+      case 'git':
+        if (
+          [
+            'branchCreate',
+            'checkout',
+            'stage',
+            'commit',
+            'worktreeAdd',
+            'worktreeRemove',
+          ].includes(config.gitOp?.op ?? '')
+        )
+          risks.add('repositoryMutation');
+        break;
+      case 'github':
+        if (['createPr', 'postComment'].includes(config.githubOp?.op ?? ''))
+          risks.add('remoteWrite');
+        break;
+      default:
+        break;
+    }
+  }
+  return RISK_ORDER.filter((risk) => risks.has(risk));
+}
+
+/** Mirror of Rust `trust::may_enable_schedule`: the message, or `null` when allowed. */
+export function scheduleTrustError(
+  workflow: Workflow,
+  profiles: AgentProfile[],
+  trusted: boolean,
+): string | null {
+  const labels = workflowRisks(workflow, profiles)
+    .filter((risk) => risk !== 'readOnly')
+    .map((risk) => RISK_LABELS[risk]);
+  if (labels.length === 0 || trusted) return null;
+  return `Schedule needs explicit trust for: ${labels.join(', ')}. Review the workflow, then opt in.`;
+}
 
 export interface GroupedFinding {
   finding: {

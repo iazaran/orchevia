@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { __setMockBackendForTests } from './backend';
-import { workflowConsumesPrNumber, type Watcher } from './scheduler';
+import { createDefaultProfile } from './agents';
+import {
+  RISK_LABELS,
+  scheduleTrustError,
+  workflowConsumesPrNumber,
+  workflowRisks,
+  type Schedule,
+  type Watcher,
+} from './scheduler';
 import { createEmptyWorkflow } from './workflow';
 
 const watcher: Watcher = {
@@ -121,4 +129,54 @@ it('rejects a watcher targeting a different repository from its native PR nodes'
   await expect(backend.saveWatcher({ ...watcher, enabled: true })).rejects.toThrow(
     'repository',
   );
+});
+
+describe('schedule trust', () => {
+  it('lists a full-access agent profile as its own risk and needs trust', async () => {
+    const backend = __setMockBackendForTests();
+    const profile = {
+      ...createDefaultProfile('claude'),
+      id: 'prof-full',
+      permissionLevel: 'fullAccess' as const,
+    };
+    await backend.saveAgentProfile(profile);
+    const workflow = createEmptyWorkflow('Unattended');
+    workflow.id = 'wf-full';
+    workflow.nodes.push({
+      id: 'agent',
+      type: 'agent',
+      position: { x: 80, y: 200 },
+      config: { agentProfileId: 'prof-full', prompt: 'Work' },
+    });
+    await backend.saveWorkflow(workflow);
+    expect(await backend.workflowRisks(workflow)).toEqual([
+      'readOnly',
+      'localWrite',
+      'externalTool',
+      'fullAccessAgent',
+    ]);
+    const schedule: Schedule = {
+      id: 'sched',
+      name: 'Nightly',
+      workflowId: 'wf-full',
+      kind: { kind: 'daily', hour: 2, minute: 0 },
+      timezone: 'UTC',
+      enabled: true,
+      trusted: false,
+      missedPolicy: 'skip',
+    };
+    await expect(backend.saveSchedule(schedule)).rejects.toThrow(
+      RISK_LABELS.fullAccessAgent,
+    );
+    await expect(backend.saveSchedule({ ...schedule, trusted: true })).resolves.toEqual({
+      ...schedule,
+      trusted: true,
+    });
+    // Disabled schedules never need trust; ordinary profiles add no full-access risk.
+    await backend.saveAgentProfile({ ...profile, permissionLevel: 'cliSettings' });
+    expect(workflowRisks(workflow, await backend.listAgentProfiles())).not.toContain(
+      'fullAccessAgent',
+    );
+    expect(scheduleTrustError(createEmptyWorkflow('Read only'), [], false)).toBeNull();
+  });
 });

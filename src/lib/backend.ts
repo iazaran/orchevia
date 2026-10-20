@@ -72,7 +72,13 @@ import type {
   StoredGeneration,
   WorkflowTemplate,
 } from './generation';
-import { prepareWatcherSave, validateWatcher, validateWatcherScope } from './scheduler';
+import {
+  prepareWatcherSave,
+  scheduleTrustError,
+  validateWatcher,
+  validateWatcherScope,
+  workflowRisks,
+} from './scheduler';
 import type {
   GroupedFinding,
   Notification,
@@ -2062,6 +2068,18 @@ class MockBackend implements Backend {
   }
 
   async saveSchedule(schedule: Schedule): Promise<Schedule> {
+    // Enabling automation over write-capable workflows needs trust (commands.rs).
+    if (schedule.enabled) {
+      const stored = this.workflows.get(schedule.workflowId);
+      if (stored === undefined)
+        throw new Error(`Unknown workflow '${schedule.workflowId}'.`);
+      const error = scheduleTrustError(
+        stored.definition,
+        [...this.profiles.values()],
+        schedule.trusted,
+      );
+      if (error !== null) throw new Error(error);
+    }
     this.schedules.set(schedule.id, schedule);
     return schedule;
   }
@@ -2110,8 +2128,8 @@ class MockBackend implements Backend {
     return this.watchers.delete(id);
   }
 
-  async workflowRisks(): Promise<RiskCategory[]> {
-    return ['readOnly'];
+  async workflowRisks(workflow: Workflow): Promise<RiskCategory[]> {
+    return workflowRisks(workflow, [...this.profiles.values()]);
   }
 
   async getRunFindings(): Promise<GroupedFinding[]> {
