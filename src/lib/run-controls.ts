@@ -600,11 +600,16 @@ export function replayGraph(
       });
       resolve(edge.target, true);
     }
-    edges
-      .filter((e) => !loopEdges.has(e.id) && isTaken(e.label))
-      .forEach((e) => {
-        if (!terminal.has(e.target)) resolve(e.target, true);
-      });
+    for (const e of edges.filter((e) => !loopEdges.has(e.id) && isTaken(e.label))) {
+      if (terminal.has(e.target)) continue;
+      // Mirrors the engine: a branch back into an exhausted loop step ends the run.
+      const used = visits.get(e.target) ?? 0;
+      if (used > 0 && used >= (nodes.get(e.target)?.config.maxVisits ?? 1)) {
+        error = `Loop limit exceeded at '${e.target}'.`;
+        return;
+      }
+      resolve(e.target, true);
+    }
     // Mirrors the engine: a condition whose taken branch leads back to it keeps
     // its exits (branches that cannot lead back) waiting for the exit visit.
     const loopsBack =

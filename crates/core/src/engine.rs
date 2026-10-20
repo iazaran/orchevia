@@ -1376,6 +1376,17 @@ impl Engine {
             if state.terminal.contains_key(&edge.target) {
                 continue;
             }
+            // A branch back into a loop step that has used its visits ends the
+            // loop like an exhausted loop edge, instead of stalling the run.
+            let visits = state.visits.get(&edge.target).copied().unwrap_or(0);
+            if visits > 0 && visits >= graph.max_visits(&edge.target) {
+                effect.run_failed = Some(format!(
+                    "Loop limit exceeded at '{}' (max {} visits).",
+                    edge.target,
+                    graph.max_visits(&edge.target)
+                ));
+                return Ok(effect);
+            }
             self.resolve_edge(graph, state, run_id, &edge.target, true, record)?;
         }
         // Untaken branches resolve immediately — except while a loop
@@ -6367,6 +6378,67 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         assert!(!rows
             .iter()
             .any(|r| r.node_id == "after" && r.status == "skipped"));
+    }
+
+    #[tokio::test]
+    async fn exhausted_fix_branch_fails_with_the_loop_limit() {
+        // gate stays true: fix (max 2) runs twice, the third true fails the run
+        // with the loop limit instead of a scheduler deadlock.
+        let (db, engine) = harness();
+        let mut work = command_node("work", "echo", &["work"], 100.0);
+        work.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            id: "gate".into(),
+            kind: NodeKind::Condition,
+            position: Position { x: 80.0, y: 200.0 },
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "workflow.name".into(),
+                        op: ConditionOp::Equals,
+                        right: "Always".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            label: Some("Again?".into()),
+        };
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-loop-exhausted".to_string(),
+            name: "Always".to_string(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                work,
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            edges: vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "gate", "after", Some("false")),
+                edge("e4", "fix", "work", None),
+                edge("e5", "after", "end", None),
+            ],
+        };
+        run_to_end(&db, &engine, wf, "run-loop-exhausted").await;
+        assert_eq!(db.list_runs(10).unwrap()[0].status, RunStatus::Failed);
+        let rows = db.list_node_results("run-loop-exhausted").unwrap();
+        let run = rows.iter().find(|r| r.node_id == "run").unwrap();
+        assert_eq!(
+            run.error.as_deref(),
+            Some("Loop limit exceeded at 'fix' (max 2 visits).")
+        );
     }
 
     #[tokio::test]

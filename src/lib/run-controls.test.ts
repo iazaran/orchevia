@@ -190,6 +190,19 @@ describe('loop exits in the browser replay (parity with the engine)', () => {
     expect(replayGraph(loop, exit).skipped).toEqual(['fix', 'rescue']);
   });
 
+  it('ends with the loop limit when the fix step has used its visits', () => {
+    const rows = [step(1, 's'), step(2, 'work'), step(3, 'gate', 'succeeded', 'true')];
+    for (const round of [0, 1]) {
+      const id = 4 + round * 3;
+      rows.push(
+        step(id, 'fix'),
+        step(id + 1, 'work'),
+        step(id + 2, 'gate', 'succeeded', 'true'),
+      );
+    }
+    expect(replayGraph(loop, rows).error).toBe("Loop limit exceeded at 'fix'.");
+  });
+
   it('releases the waiting exit when the loop ends by a failure route', () => {
     const rows = [
       step(1, 's'),
