@@ -1,65 +1,68 @@
+<div align="center">
+
+<img src="./docs/favicon.png" alt="Orchevia logo: orbit-and-nodes mark on a blue-violet gradient" width="96" height="96" />
+
 # Orchevia
 
-> **Describe the task once. Inspect the plan as a graph. Let your own AI CLIs do the work.**
+**Run your Claude Code and Codex CLIs as reviewable, repeatable pipelines — on your own machine.**
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
+[![CI](https://github.com/iazaran/orchevia/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/iazaran/orchevia/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/iazaran/orchevia?sort=semver&color=6ea8fe)](https://github.com/iazaran/orchevia/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/iazaran/orchevia/total?color=34d399)](https://github.com/iazaran/orchevia/releases)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+![Platforms: macOS and Linux](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey)
+[![Built with Tauri 2](https://img.shields.io/badge/built%20with-Tauri%202%20%C2%B7%20Rust%20%C2%B7%20React-24c8db)](./docs/architecture.md)
+[![GitHub stars](https://img.shields.io/github/stars/iazaran/orchevia?style=flat&color=fbbf24)](https://github.com/iazaran/orchevia/stargazers)
 
-[Download installers](#install) · [Getting started](./docs/getting-started.md) · [Project site](https://iazaran.github.io/orchevia/) · [Documentation](./docs/architecture.md) · [Changelog](./CHANGELOG.md) · [Contributing](./CONTRIBUTING.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
+[**Download**](#download) · [Website](https://iazaran.github.io/orchevia/) ·
+[Getting started](./docs/getting-started.md) · [Docs](./docs/architecture.md) ·
+[Changelog](./CHANGELOG.md) · [Report an issue](https://github.com/iazaran/orchevia/issues/new/choose)
 
-Orchevia is a **local-first** desktop app for visual developer workflows. You describe
-a task — _"implement this ticket with Claude, review with Codex, open a draft PR"_ — inspect
-it as a graph of steps, press **Run**, and each step executes through **tools already
-installed on your machine**: Claude Code, Codex, `git`, `gh`, your test commands.
+<img src="./docs/images/run-on-canvas.webp" alt="Orchevia showing a finished run on the canvas: a Jira ticket is planned by Claude, approved by a human, implemented, tested, reviewed in parallel by Claude and Codex, fixed once and opened as a draft PR. The side panel shows the Codex review's findings." width="100%" />
 
-**Orchevia is not an AI provider.** No Orchevia account, model API key configuration, telemetry, or hosted execution service.
-AI work is delegated to CLIs you installed and authenticated yourself.
+</div>
 
-**Who it's for:** developers who already drive Claude Code / Codex from the terminal and want
-repeatable, inspectable, one-click flows (plan → approve → implement → review, ticket →
-branch → draft PR, nightly review sweeps) without sending code to an Orchevia service. Your AI CLIs may contact their own providers.
+Orchevia is a **local-first desktop app** that turns the work you already do with AI
+coding CLIs into a graph you can inspect, repeat and share. Describe a task —
+_"plan this ticket with Claude, let me approve it, implement, run the tests, have Claude
+and Codex review, fix P0/P1 findings, open a draft PR"_ — check the graph, press **Run**,
+and every step executes through **tools already installed on your machine**: Claude
+Code, Codex, `git`, `gh`, your test commands.
 
-![Example Orchevia workflow: Start → Implement with Claude → Human Approval → Review with Codex → End](./docs/workflow-visual.svg)
+**Orchevia is not an AI provider.** There is no Orchevia account, no model API key
+field, no telemetry and no hosted runner. AI work goes through the CLIs you installed
+and signed in to yourself, so it uses your existing subscription and its limits.
 
-## Why Orchevia
+## Why developers use it
 
-Turn a familiar sequence of terminal tasks into a workflow you can inspect,
-repeat, and share. Keep your existing CLIs and repository conventions while
-making the handoffs visible: which agent plans, when tests run, who reviews,
-and where you approve a write.
+- 🔑 **Your subscriptions, not API bills.** Agent steps call your own `claude` and
+  `codex` CLIs. No keys to paste and no per-token invoice from Orchevia.
+- 🤝 **Claude and Codex in one pipeline.** Let one model implement and the other review,
+  in parallel, with findings normalized to P0–P3.
+- 🧭 **Predictable, not autonomous.** A fixed graph of commands, agents, conditions,
+  approvals, bounded loops and timeouts. Nothing runs until you press Run.
+- ✋ **You stay in the loop.** Durable Human Approval gates, read-only run snapshots,
+  cancel at any time, and deliberate recovery of failed runs.
+- 🔒 **Local and honest.** Workflows and history live in local SQLite, tool permissions
+  are explicit, automation that writes is trust-gated, and CLI-reported usage is kept
+  apart from estimates.
 
-| Developer need                                       | How Orchevia helps                                                    |
-| ---------------------------------------------------- | --------------------------------------------------------------------- |
-| Repeat a task without rebuilding the prompt sequence | Save a workflow or template with typed inputs.                        |
-| Use different agents for implementation and review   | Assign a profile to each step and inspect its output.                 |
-| Stay involved before important decisions             | Put a durable Human Approval gate in the graph.                       |
-| Understand a failed run                              | Inspect live output, per-step results, and the exact saved run graph. |
-| Reuse repository-specific knowledge                  | Save accepted commands and conventions in a project playbook.         |
-| Keep orchestration on your own machine               | Store workflows and history locally; use your own CLI authentication. |
+## Download
 
-Orchevia fits developers who already use local CLIs and want explicit, repeatable
-coordination. It is in beta: start with a small manual flow before scheduling
-writes. CLI usage costs and remote-provider behavior remain with your chosen tools.
+Pick the installer for your machine from the **[latest release](https://github.com/iazaran/orchevia/releases/latest)**:
 
-## Install
+| Platform              | Installer                                                                                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS · Apple Silicon | [Orchevia-macos-arm64.dmg](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-arm64.dmg)                                                                                        |
+| macOS · Intel         | [Orchevia-macos-x86_64.dmg](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-x86_64.dmg)                                                                                      |
+| Linux · x86_64        | [AppImage](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.deb) |
+| Checksums             | [SHA256SUMS](https://github.com/iazaran/orchevia/releases/latest/download/SHA256SUMS)                                                                                                                    |
 
-Release v0.1.16 is being prepared. The permanent installer links below target this
-version; they become available after the matching tag's release workflow succeeds
-(pending publication).
-See the [release notes](https://github.com/iazaran/orchevia/releases/tag/v0.1.16).
-Until then, use the [published v0.1.15 installers](https://github.com/iazaran/orchevia/releases/tag/v0.1.15).
-A merged PR alone does not build installers.
+<details>
+<summary><strong>Install steps and checksum verification</strong></summary>
 
-The repository and release files are **private for now**: sign in to GitHub with an
-account that has repository access. The repository and downloads will be public soon.
-
-| Platform                    | Installer                                                                                                                                                                                                  |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (arm64) | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.16/Orchevia-macos-arm64.dmg)                                                                                                             |
-| macOS Intel (x86_64)        | [.dmg](https://github.com/iazaran/orchevia/releases/download/v0.1.16/Orchevia-macos-x86_64.dmg)                                                                                                            |
-| Linux x86_64                | [AppImage](https://github.com/iazaran/orchevia/releases/download/v0.1.16/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/download/v0.1.16/Orchevia-linux-x86_64.deb) |
-
-Download your installer and [SHA256SUMS](https://github.com/iazaran/orchevia/releases/download/v0.1.16/SHA256SUMS)
-into the same directory, keep the published filenames, then verify your download:
+Download your installer and `SHA256SUMS` into the same folder, keep the published file
+names, and check for an `OK` line:
 
 ```bash
 # Linux
@@ -68,85 +71,136 @@ sha256sum -c SHA256SUMS --ignore-missing
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
-Require an `OK` result for your installer. macOS installers are unsigned and not
-notarized; on first launch, right-click the app and choose **Open**. See the release
-notes for the quarantine-removal command.
+- **macOS:** open the DMG and drag Orchevia to Applications. Builds are not signed or
+  notarized yet, so macOS blocks the first launch. Either run
+  `xattr -d com.apple.quarantine /Applications/Orchevia.app`, or try to open the app once
+  and choose **Open Anyway** in **System Settings → Privacy & Security**.
+- **Linux (.deb):** `sudo apt install ./Orchevia-linux-x86_64.deb`
+- **Linux (AppImage):** `chmod +x Orchevia-linux-x86_64.AppImage`, then run it.
 
-Contributors can inspect [CI checks](https://github.com/iazaran/orchevia/actions/workflows/ci.yml)
-and the [release workflow](https://github.com/iazaran/orchevia/actions/workflows/release.yml)
-while signed in; private workflow badges do not load reliably for readers.
+Orchevia does not update itself yet. To hear about new versions, choose
+**Watch → Custom → Releases** on this repository.
 
-### Build from source
+</details>
 
-Contributors with repository access can also build from source:
-
-```bash
-git clone https://github.com/iazaran/orchevia.git
-cd orchevia
-pnpm install
-pnpm tauri dev
-```
-
-You need Node.js 24+, pnpm 10+, Rust stable, and the platform dependencies listed in
-[the development guide](./docs/development.md). `pnpm dev` opens a browser demo backed
-by localStorage; it does **not** run real CLI processes. The desktop app does.
-
-Optional tools (`git`, `gh`, `claude`, `codex`) are detected locally, including CLIs
-installed through your login shell's `PATH` (nvm, fnm, Homebrew); install and
-authenticate the ones your workflows need.
+**Before your first AI run:** install and sign in to at least one AI CLI
+([Claude Code](https://github.com/anthropics/claude-code) or
+[Codex](https://github.com/openai/codex)). The setup
+wizard detects `git`, `gh`, `claude` and `codex`, including CLIs on your login shell's
+`PATH` (nvm, fnm, Homebrew, `~/.local/bin`). A command-only workflow needs no AI CLI.
 
 ## Your first workflow in 5 minutes
 
-New to the app? The [getting-started guide](./docs/getting-started.md) begins with
-[a small `echo` workflow](./docs/examples/hello-workflow.json) that needs no AI
-profile, then shows how to add agents, tests, approval and reuse.
+1. **Open Orchevia.** The setup wizard detects your tools and creates recommended
+   Claude and Codex profiles.
+2. **Workflows → Samples… → Plan → Implement → Review → Create.** Claude plans, you
+   approve the plan, Claude implements, Codex reviews.
+3. **Select a node** to set its profile, prompt and timeout. Badges on the canvas flag
+   anything missing before you run.
+4. **Press ▶ Run.** Watch progress on the canvas, approve the paused gate, and read each
+   step's live output in **Runs**. Opening a workflow never runs it.
+5. **Go further:** describe a goal with **✦ Generate**, save flows as **Templates**, or
+   schedule them under **Automations**.
 
-1. **Open Orchevia** — the first-run wizard detects your tools and creates Claude + Codex
-   agent profiles. (Reopen it anytime from the sidebar.)
-2. **Workflows → Samples… → Plan → Implement → Review → Create.** A ready-made graph
-   appears on the canvas: Claude plans, **you approve the plan**, Claude implements,
-   Codex reviews.
-3. **Select any node** to configure it (profile, prompt, timeout). Validation badges on
-   the canvas tell you what's missing before you run.
-4. **Press ▶ Run.** Execution is always explicit — opening a workflow never runs it.
-   Watch progress on the canvas, inspect live per-node stdout/stderr under **Runs**, approve
-   the paused gate, or cancel anytime.
-5. **Go further:** describe a goal with **✦ Generate** (your local CLI drafts a validated
-   preview — never auto-runs), save flows as reusable **Templates**, or schedule nightly
-   runs under **Automations**.
+Prefer to start without AI? The [getting-started guide](./docs/getting-started.md)
+begins with a one-node [`echo` workflow](./docs/examples/hello-workflow.json).
 
-```text
-Start → Implement (Claude) → Human Approval → Review (Codex) → End
-```
+> [!TIP]
+> Headless Claude Code refuses tools that its settings don't allow, and Orchevia then
+> fails the step with **tools refused**, listing the exact allow rules. Add them to
+> the profile (**Permissions → Allowed tools**) with one click, or declare them on the
+> node as **Required tools** so imports and runs warn you up front.
+
+## See it in action
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Edit on a canvas.** Every node has an inspector: agent profile, prompt with
+`{{variables}}`, required tools, session reuse, timeouts and loop bounds. Simple JSON
+stays in sync.
+
+<img src="./docs/images/editor-inspector.webp" alt="The workflow editor with the Implement agent node selected; the inspector shows its agent profile, prompt, required tools and session group." />
+
+</td>
+<td width="50%" valign="top">
+
+**Inspect every run.** A timeline shows parallel steps on one time axis, each step's
+output and findings, which context a step resumed, and what each CLI reported.
+
+<img src="./docs/images/run-timeline.webp" alt="The Runs view: a succeeded run with a timeline of 16 step attempts, including parallel Claude and Codex reviews, and a report of the final Codex review." />
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Know what it used.** Agent attempts, tokens and tool calls per workflow, profile and
+model. CLI-reported dollar estimates stay separate from what you actually pay.
+
+<img src="./docs/images/usage.webp" alt="The Usage and costs page: a daily chart of agent attempts over 30 days and a breakdown table by provider and model." />
+
+</td>
+<td width="50%" valign="top">
+
+**Profiles per role.** Planning, implementation, fast and deep review: each with its own
+CLI, model, effort and permission level. CLIs are found on your login shell's `PATH`.
+
+<img src="./docs/images/agents.webp" alt="The Agents page: Claude Code and Codex detected as installed, their known models, and agent profiles for each role." />
+
+</td>
+</tr>
+</table>
+
+## Generate a workflow from a goal
+
+<img align="right" width="380" src="./docs/images/generate-dialog.webp" alt="The Generate workflow dialog: a goal describing a ticket-to-PR flow, a repository directory, and a preview listing 12 steps, 4 risk categories, one setup item, the compiler notes and the proposed steps." />
+
+1. Open **Workflows → ✦ Generate**, pick Claude Code or Codex, and optionally point it at
+   a repository so the draft uses your real paths and conventions. The AI is asked to
+   inspect it without changing anything, but it runs with that profile's permissions.
+2. Write the goal like a short spec. Name the agents, the commands that prove the change
+   works, where you want to approve, and which writes are allowed:
+
+   > Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my
+   > approval. Implement it on branch {{input.branch}}, run pnpm test, and have Claude
+   > and Codex review the diff in parallel. Fix P0/P1 findings (at most twice), then open
+   > a draft PR.
+
+3. Review the preview: steps, risk categories, setup items (such as picking the Jira MCP
+   server) and every compiler repair. **Ask AI to fix** sends blocking problems back for
+   another round.
+4. **Accept & edit** opens it on the canvas. Run it with **Dry run** fixtures first if you
+   want to test the routing without executing anything.
+
+Generation prefers native Agent, Git, GitHub, Ticket, MCP, Condition and Approval nodes;
+Command nodes cover your own tools. Explicit instructions such as "CLI only" win.
+**✦ Assist** improves or rearranges an existing workflow through the same reviewed preview.
+
+<br clear="all" />
 
 ## What you get
 
-- **Visual workflow canvas** — Start, Command, Human Approval, AI Agent, Condition,
-  Git, GitHub, Ticket (Jira via MCP), MCP Tool, End nodes; edge labels, validation
-  badges, run-status overlays, duplication, and a readable starting view for large flows.
-- **Real control flow** — constrained conditions (no scripting), parallel branches with
-  joins, failure-recovery edges, bounded retries with backoff, guarded review/fix loops,
-  per-node timeouts, typed workflow inputs.
-- **Agent Profiles** — per-CLI model/effort/working-directory configuration for Claude
-  Code, Codex, or any custom CLI; optionally select installed CLI skills for a profile
-  or let the CLI choose them. `{{variable}}` prompt templating uses inputs and upstream
-  outputs; missing CLIs fail validation clearly.
-- **Git/GitHub/Jira integrations** — safe git ops (dirty/lossy states refused),
-  GitHub via your own `gh` (draft PRs, checks, comments), Jira tickets via a local MCP
-  server, generic MCP tool calls with provenance.
-- **Local automation** — durable schedules, opt-in tray background mode, GitHub
-  review/feedback watchers with bot-loop guards, normalized P0–P3 findings,
-  trust-gated writes, notification center.
-- **Local-first persistence** — workflows, runs, profiles, schedules, templates, and
-  memory live in SQLite on your machine, with versioned JSON import/export.
-  Authentication stays in your CLI or MCP server configuration.
-- **Explicit execution** — executables and arguments are passed separately; a Command node
-  can explicitly invoke a shell. The active child is stopped
-  on cancel, ticket/PR content is treated as untrusted input.
-
-How it fits together: [docs/architecture.md](./docs/architecture.md) ·
-[workflow schema](./docs/workflow-schema.md) · [security model](./docs/security.md) ·
-[site source](./docs/index.html).
+- **Visual workflow canvas.** Start, Command, Human Approval, AI Agent, Condition, Git,
+  GitHub, Ticket (Jira via MCP), MCP Tool and End nodes; validation badges, run overlays,
+  dependency-aware layout, and Simple/Advanced JSON.
+- **Real control flow.** Constrained conditions (no scripting), parallel branches with
+  joins, failure edges, bounded retries with backoff, guarded review/fix loops, per-node
+  timeouts and typed workflow inputs.
+- **Agent profiles.** Claude Code, Codex or any custom CLI, with model, effort, skills,
+  working directory and a **Permissions** level: your CLI settings, an explicit allow
+  list, or full access (never a default).
+- **Integrations.** Safe Git operations (dirty or lossy states refused), GitHub through
+  your own `gh` (draft PRs, checks, comments), Jira tickets and other tools through your
+  MCP servers.
+- **Local automation.** Durable schedules, PR review and feedback watchers with bot-loop
+  guards, a notification inbox, and an opt-in tray mode. Schedules that write need a
+  per-schedule trust opt-in.
+- **Reuse and memory.** Nine built-in templates plus your own, versioned JSON
+  import/export, and a project playbook of accepted commands and conventions.
+- **Run controls.** Dry runs with fixtures, agent-attempt budgets, an optional guard on
+  CLI-reported spend, and recovery of failed runs from their original inputs.
 
 ## Workflow recipes
 
@@ -155,33 +209,10 @@ How it fits together: [docs/architecture.md](./docs/architecture.md) ·
 | A change you want to make | Plan → Approve → Implement → Test → Review                 | Repository, agent profiles, real test command        |
 | A tracked ticket          | Read Ticket → Plan → Approve → Implement → Test → Draft PR | Jira MCP, `git`/`gh`, profiles, explicit write steps |
 | An existing PR            | Read PR → Independent reviews → Summarize → Human decision | Authenticated `gh`, PR input, reviewer profiles      |
+| A nightly sweep           | Schedule or watcher → Review → Inbox notification          | Trusted schedule, read-only scope, reviewer profiles |
 
-Use supported native nodes for Git, GitHub, Ticket and MCP operations. A Command
-node covers your project's tools and unsupported operations. Keep commit, push,
-comment, and PR creation explicit in the graph. A review or a successful test step
-does not merge anything unless you add an authorized write operation.
-
-## Author, inspect, reuse
-
-**Simple JSON** uses readable node keys and portable profile selections. The
-canvas and JSON editor stay in sync; **Advanced JSON** keeps the full runtime
-format available. Arrange graphs by dependencies when they become hard to follow.
-Save reusable **Templates** with inputs instead of duplicating project-specific
-values. In **Memory**, maintain project commands, conventions and review choices;
-accept suggestions deliberately or promote a command from a successful run.
-
-**Runs** keeps the workflow snapshot used for each execution, so later edits do
-not change the graph you are inspecting. Output and failures belong to individual
-steps. Local **Automations** can repeat a proven flow while the app stays running;
-review scope and trust permissions before enabling writes.
-
-## How generation works
-
-A configured local AI CLI drafts a proposal. Orchevia validates and compiles it into a
-preview you can edit before running. It uses native Agent, Git, GitHub, Ticket, MCP,
-Condition, and Approval nodes when they fit the goal; Command nodes cover local tools
-and unsupported operations. Explicit instructions such as “CLI only” take priority.
-Compiler notes show any repair or setup needed before you accept the workflow.
+Keep commits, pushes, comments and PR creation explicit in the graph. A review or a
+passing test never merges anything unless you add that write step.
 
 ## Choose the right node
 
@@ -195,56 +226,53 @@ Compiler notes show any repair or setup needed before you accept the workflow.
 | Run tests, Docker, or unsupported CLI operations  | Command                    | Executable and separate arguments    |
 | Choose a path or pause for a decision             | Condition / Human Approval | Condition or approval message        |
 
-For example, declare a `ticket` input and ask Generate:
+More: [execution semantics](docs/execution.md), [agent profiles and permissions](docs/agents.md),
+[scheduling](docs/scheduling.md), [workflow costs](docs/workflow-costs.md) and the
+[workflow schema](docs/workflow-schema.md).
 
-> Read Jira ticket {{input.ticket}}, plan its implementation with Claude, pause for
-> my approval, implement and run the repository's tests, then request one Codex
-> review. Use native nodes and leave all changes uncommitted.
+## Safety model
 
-Review the preview's setup checklist, assign the intended profiles, and inspect
-write operations before accepting. A goal is a draft specification; generation is
-not a guarantee that every requested integration operation is supported.
+- **Explicit execution.** Opening, importing or previewing a workflow never runs it.
+  Executables and arguments are passed separately; a shell runs only when a Command node
+  asks for one.
+- **Permissions you can read.** Profiles pass permission flags only on the command line;
+  Orchevia never edits your Claude Code or Codex settings. Tools that Claude Code refuses
+  fail the step instead of passing silently.
+- **Untrusted input stays data.** Ticket text, PR content, imported workflows and AI
+  output are treated as untrusted. Imports refuse files that contain credential-like
+  fields.
+- **Your machine, your permissions.** Steps run with your user permissions and are not
+  sandboxed. Cancel and timeouts stop the step's process group on Linux and macOS.
 
-## Workflow testing and run controls
-
-Use **Dry run** to supply successive node-result fixtures and test routing without
-executing tools. Claude and Codex Agent nodes report CLI token usage (Claude also
-reports an estimated API value in USD). **Run options** adds an optional guard on
-that reported estimate. Dollar values live in collapsed **CLI usage details**;
-they are not your subscription bill or remaining quota. Runs show parallel timing
-and estimate coverage; failed runs offer deliberate recovery
-using the original workflow and inputs. Reused output and simulated tests stay
-separate from actual execution/spend and verified project knowledge.
-
-See [execution semantics](docs/execution.md#dry-run-workflow-tests),
-[reported-spend controls](docs/workflow-costs.md#reported-spend-guard) and
-[the run-control contract](docs/workflow-schema.md#run-controls).
+Details: [security model](./docs/security.md) and [SECURITY.md](./SECURITY.md).
 
 ## Current limits
 
-- **Beta:** source version 0.1.16 targets Linux x86_64 and macOS Apple Silicon/Intel.
-  Windows is not supported. macOS installers are unsigned and not notarized.
-- **Tools and authentication:** install and authenticate CLIs yourself. Orchevia reads
-  only `PATH` from your login shell; Jira and other MCP servers may need credentials
-  in the environment the app itself was started with.
-- **Local scheduling:** the app must stay running; enable background mode to keep
-  schedules active after closing the window. There is no remote worker service.
-- **Execution permissions:** commands and agents run with your user permissions.
-  Orchevia does not sandbox them. A Command node can explicitly invoke a shell.
-- **Profiles and skills:** model availability depends on your CLI/account. Skill
-  discovery reads metadata; use a small workflow to check that a skill loads.
+- **Beta:** Linux x86_64 and macOS (Apple Silicon and Intel). Windows is not supported
+  yet. macOS builds are unsigned and not notarized.
+- **Tools and sign-in:** install and authenticate CLIs yourself. Orchevia reads only
+  `PATH` from your login shell; Jira and other MCP servers may need credentials in the
+  environment the app was started from.
+- **Local scheduling:** the app must be running. Background mode keeps it in the tray
+  when the window closes; there is no cloud worker.
+- **Refusal detection:** Codex reports no refusal events, and neither do Claude profiles
+  whose extra arguments force text output (`--output-format`), so refused tools in
+  those steps are not detected.
 
-## For developers
+## Build from source
 
-- `src/`: React editor and a typed `Backend` interface. `pnpm dev` uses the
-  browser mock to iterate on views and interactions without native processes.
-- `src-tauri/`: desktop shell and thin commands that expose core behavior.
-- `crates/core/`: workflow schema, validation, DAG engine, local SQLite,
-  scheduler, CLI adapters, Git/GitHub/MCP integrations, and generation compiler.
-- `docs/`: architecture, [workflow schema](./docs/workflow-schema.md),
-  [security model](./docs/security.md), and the [development guide](./docs/development.md).
+```bash
+git clone https://github.com/iazaran/orchevia.git
+cd orchevia
+pnpm install
+pnpm tauri dev   # the desktop app; `pnpm dev` is a browser demo with a mock backend
+```
 
-Run the same checks used by CI before a PR:
+You need Node.js 24+, pnpm 10+, Rust stable, and the platform dependencies in
+[the development guide](./docs/development.md). The project is split into `src/`
+(React UI behind a typed `Backend` interface), `src-tauri/` (thin desktop commands) and
+`crates/core/` (workflow model, validation, DAG engine, SQLite, scheduler, CLI adapters
+and the generation compiler). Run the same checks as CI before opening a PR:
 
 ```bash
 pnpm check
@@ -254,32 +282,16 @@ cargo fmt --check
 cargo check -p orchevia
 ```
 
-## Roadmap
+## Contributing and support
 
-Short version: visual editor → agent profiles → advanced engine → Git/GitHub/Jira/MCP →
-scheduling & PR review loops → NL generation + local memory → hardening → public beta.
-Full version: [ROADMAP.md](./ROADMAP.md).
+Contributions are welcome: workflow recipes, clearer setup guidance, accessibility
+improvements, bug reports with a redacted log, or code. Start with
+[CONTRIBUTING.md](./CONTRIBUTING.md), the [Code of Conduct](./CODE_OF_CONDUCT.md) and the
+[roadmap](./ROADMAP.md). Questions go through [SUPPORT.md](./SUPPORT.md); please report
+vulnerabilities privately as described in [SECURITY.md](./SECURITY.md).
 
-## Contributing
-
-Contributions are welcome! Start with [CONTRIBUTING.md](./CONTRIBUTING.md) and the
-[Code of Conduct](./CODE_OF_CONDUCT.md).
-
-## Security
-
-See [SECURITY.md](./SECURITY.md). Orchevia executes local commands on your behalf:
-workflows are explicit, commands can be previewed before running, and ticket/PR
-content is treated as untrusted input. Output is stored locally and may contain
-sensitive data; review it before sharing.
-
-## Support
-
-Questions? See [SUPPORT.md](./SUPPORT.md) for where to ask and how to file useful bug reports.
+If Orchevia saves you a few terminal round-trips, a ⭐ helps other developers find it.
 
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).
-
-Agent nodes can [reuse context and pass bounded handoffs](docs/workflow-costs.md)
-within a run. New AI samples/templates and workflow generation use these optional
-controls while preserving independent reviews.

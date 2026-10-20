@@ -6,8 +6,8 @@ You choose when to run and where a human decision belongs.
 
 ## Start without an AI account
 
-1. Install the desktop app using the [README downloads](../README.md#install).
-   The beta repository and installers require GitHub repository access.
+1. Install the desktop app using the [README downloads](../README.md#download).
+   Pick your platform there; every link points to the latest release.
 2. Open **Workflows**, create a workflow, and open its **JSON** editor in **Simple** mode.
 3. Paste [hello-workflow.json](./examples/hello-workflow.json), save, and close the editor.
    It uses `echo` with a single argument, no shell and no repository changes.

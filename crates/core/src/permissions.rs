@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(
             suggest_rules(
                 "mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue",
-                &json!({"issueIdOrKey": "VAC-1"})
+                &json!({"issueIdOrKey": "DEV-1234"})
             ),
             ["mcp__claude_ai_Atlassian_Rovo_2"]
         );
@@ -436,7 +436,7 @@ mod tests {
             {"tool_name": "Write", "tool_use_id": "toolu_2",
              "tool_input": {"file_path": "/tmp/notes.txt", "content": "hi"}},
             {"tool_name": "mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue", "tool_use_id": "toolu_3",
-             "tool_input": {"cloudId": "c", "issueIdOrKey": "VAC-1"}},
+             "tool_input": {"cloudId": "c", "issueIdOrKey": "DEV-1234"}},
             {"tool_use_id": "missing-name"}
         ]);
         let denials = claude_denials(&result);

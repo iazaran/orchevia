@@ -5586,7 +5586,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_
         // says success: the node must fail and name the rules that would help.
         let dir = tempfile::tempdir().unwrap();
         let (db, engine) = harness();
-        let events = r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"TICKET_STATUS=none","usage":{"input_tokens":5},"permission_denials":[{"tool_name":"mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue","tool_use_id":"toolu_1","tool_input":{"issueIdOrKey":"VAC-1"}},{"tool_name":"Bash","tool_use_id":"toolu_2","tool_input":{"command":"git status"}}]}'"#;
+        let events = r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"TICKET_STATUS=none","usage":{"input_tokens":5},"permission_denials":[{"tool_name":"mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue","tool_use_id":"toolu_1","tool_input":{"issueIdOrKey":"DEV-1234"}},{"tool_name":"Bash","tool_use_id":"toolu_2","tool_input":{"command":"git status"}}]}'"#;
         let profile =
             structured_profile(dir.path(), crate::agents::AdapterKind::Claude, Some(events));
         db.upsert_agent_profile(&profile).unwrap();

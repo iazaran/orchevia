@@ -2,8 +2,8 @@
 
 Orchevia focuses on repeatable developer workflows using local CLI agents and
 integrations. The 0.1.x beta line focuses on reliable orchestration, readable
-workflow authoring and practical adoption. The repository and downloads remain
-private while public access is prepared.
+workflow authoring and practical adoption. Source, installers and the project page
+are public.
 
 ## Implemented
 
@@ -16,11 +16,11 @@ private while public access is prepared.
 | Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history     |
 | Automation      | Bounded local schedules/watchers, requested-review scope, revision tracking, check outcomes, inbox, background mode   |
 | Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                         |
-| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, private-beta project page                     |
+| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, latest-release links, project page with demo  |
 
 ## Current priorities
 
-1. Verify installer smoke tests on supported systems and prepare public access.
+1. Verify installer smoke tests on supported systems and respond quickly to first-user issues.
 2. Use real workflow feedback to improve generation accuracy and setup guidance.
 3. Improve run observability, failure recovery, accessibility, and interface consistency.
 4. Keep documentation, CLI contracts, and installation guidance current.
