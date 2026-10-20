@@ -5,7 +5,7 @@ passing checks.
 
 ## Prerequisites
 
-- **Node.js** 22+ and **pnpm** 10+ (`corepack enable && corepack prepare pnpm@10 --activate`)
+- **Node.js** 24+ and **pnpm** 10+ (`corepack enable && corepack prepare pnpm@10 --activate`)
 - **Rust** stable via [rustup](https://rustup.rs/)
 - **Linux (Debian/Ubuntu) system deps** for Tauri development:
 

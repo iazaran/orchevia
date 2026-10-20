@@ -3,37 +3,52 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Orchevia — Local-first AI workflow automation</title>
+    <title>Orchevia — Your AI coding CLIs as reviewable pipelines</title>
     <meta
       name="description"
-      content="Orchevia is a local-first desktop app that runs developer AI CLIs through visual workflows. No Orchevia account or model API key setup; no telemetry."
+      content="Orchevia is a free, open-source desktop app that runs Claude Code, Codex, git, gh and your test commands as visual, reviewable workflows on your own machine. No account, no API keys, no telemetry."
     />
     <link rel="canonical" href="https://iazaran.github.io/orchevia/" />
     <meta name="robots" content="index, follow" />
+    <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0b0d12" />
-    <meta property="og:title" content="Orchevia — Local-first AI workflow automation" />
+    <meta
+      property="og:title"
+      content="Orchevia — Your AI coding CLIs as reviewable pipelines"
+    />
     <meta
       property="og:description"
-      content="Describe the task once, inspect the plan as a graph, and let your own AI CLIs do the work. No Orchevia account or model API key setup; no telemetry."
+      content="Plan, approve, implement, test and cross-review with Claude Code and Codex, on your own machine. Free and open source; no account, no API keys, no telemetry."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://iazaran.github.io/orchevia/" />
-    <meta property="og:image" content="https://iazaran.github.io/orchevia/favicon.png" />
+    <meta
+      property="og:image"
+      content="https://iazaran.github.io/orchevia/images/social-preview.jpg"
+    />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
     <meta
       property="og:image:alt"
-      content="Orchevia app icon: orbit-and-nodes mark on a blue-violet gradient"
+      content="Orchevia: your AI coding CLIs as reviewable pipelines, next to a finished ticket-to-PR run on the canvas"
     />
     <meta property="og:site_name" content="Orchevia" />
-    <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Orchevia — Local-first AI workflow automation" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Orchevia — Your AI coding CLIs as reviewable pipelines"
+    />
     <meta
       name="twitter:description"
       content="Visual workflows for Claude Code, Codex, git and gh — running locally on your machine."
     />
-    <meta name="twitter:image" content="https://iazaran.github.io/orchevia/favicon.png" />
+    <meta
+      name="twitter:image"
+      content="https://iazaran.github.io/orchevia/images/social-preview.jpg"
+    />
     <meta
       name="twitter:image:alt"
-      content="Orchevia app icon: orbit-and-nodes mark on a blue-violet gradient"
+      content="Orchevia: your AI coding CLIs as reviewable pipelines, next to a finished ticket-to-PR run on the canvas"
     />
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="./favicon.png" />
@@ -48,7 +63,9 @@
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "offers": { "@type": "Offer", "price": 0, "priceCurrency": "USD" },
         "url": "https://iazaran.github.io/orchevia/",
-        "description": "Local-first desktop app that orchestrates developer AI CLIs and tools through visual workflows. No Orchevia account or model API key setup; no telemetry."
+        "downloadUrl": "https://github.com/iazaran/orchevia/releases/latest",
+        "image": "https://iazaran.github.io/orchevia/images/social-preview.jpg",
+        "description": "Local-first desktop app that runs Claude Code, Codex, git, gh and your test commands as visual, reviewable workflows. No account, no API keys, no telemetry."
       }
     </script>
     <style>
@@ -56,18 +73,28 @@
         --bg: #0b0d12;
         --bg1: #10141b;
         --bg2: #161c26;
+        --bg3: #1d2533;
         --border: #263042;
+        --border-strong: #34415a;
         --text: #f2f5f9;
-        --muted: #8b96a9;
+        --muted: #9aa5b8;
         --accent: #6ea8fe;
         --accent-strong: #2f6fed;
         --green: #34d399;
         --amber: #fbbf24;
         --violet: #a78bfa;
+        --pink: #f472b6;
+        --cyan: #22d3ee;
+        --red: #f87171;
         --radius: 14px;
+        --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
       }
       * {
         box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 16px;
       }
       body {
         margin: 0;
@@ -79,18 +106,47 @@
           'Segoe UI',
           Roboto,
           sans-serif;
-        background: var(--bg);
+        background:
+          radial-gradient(
+            1100px 520px at 80% -120px,
+            rgba(110, 168, 254, 0.16),
+            transparent 70%
+          ),
+          radial-gradient(
+            900px 480px at -10% 420px,
+            rgba(167, 139, 250, 0.1),
+            transparent 70%
+          ),
+          var(--bg);
         color: var(--text);
         line-height: 1.6;
       }
       a {
         color: var(--accent);
       }
+      img {
+        max-width: 100%;
+      }
       a:focus-visible,
-      button:focus-visible {
+      button:focus-visible,
+      summary:focus-visible,
+      [tabindex]:focus-visible {
         outline: 2px solid var(--accent);
-        outline-offset: 2px;
+        outline-offset: 3px;
         border-radius: 6px;
+      }
+      code,
+      pre {
+        font-family: var(--mono);
+      }
+      p code,
+      li code,
+      td code {
+        font-size: 0.9em;
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 6px;
       }
       .skip-link {
         position: absolute;
@@ -106,7 +162,7 @@
         left: 0;
       }
       .wrap {
-        max-width: 1020px;
+        max-width: 1120px;
         margin: 0 auto;
         padding: 0 22px;
       }
@@ -115,14 +171,16 @@
         flex-wrap: wrap;
         align-items: center;
         gap: 12px;
-        padding: 22px 0;
+        padding: 20px 0;
       }
       .brand {
         display: flex;
         align-items: center;
         gap: 10px;
-        font-weight: 700;
+        font-weight: 750;
         font-size: 19px;
+        color: var(--text);
+        text-decoration: none;
       }
       .brand img {
         width: 36px;
@@ -133,6 +191,7 @@
       nav.site {
         margin-left: auto;
         display: flex;
+        align-items: center;
         gap: 18px;
         font-size: 14px;
         flex-wrap: wrap;
@@ -144,20 +203,80 @@
       nav.site a:hover {
         color: var(--text);
       }
+      nav.site a.gh {
+        color: var(--text);
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        padding: 4px 12px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--border-strong);
+        background: var(--bg2);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 11px 20px;
+        text-decoration: none;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .btn:hover {
+        border-color: var(--accent);
+      }
+      .btn.primary {
+        background: linear-gradient(180deg, #3b7cf5, var(--accent-strong));
+        border-color: transparent;
+        color: #fff;
+        box-shadow: 0 8px 30px rgba(47, 111, 237, 0.35);
+      }
+      .btn.small {
+        padding: 6px 12px;
+        font-size: 13px;
+        border-radius: 8px;
+      }
+      .btn[disabled] {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        padding: 3px 12px;
+        color: var(--muted);
+        background: rgba(16, 20, 27, 0.7);
+      }
+      .pill b {
+        color: var(--green);
+      }
       .hero {
         text-align: center;
-        padding: 64px 0 32px;
+        padding: 56px 0 24px;
       }
       .hero h1 {
-        font-size: clamp(34px, 5.5vw, 58px);
-        line-height: 1.08;
-        margin: 0 0 18px;
-        letter-spacing: -0.02em;
+        font-size: clamp(36px, 6vw, 64px);
+        line-height: 1.04;
+        margin: 18px auto 18px;
+        letter-spacing: -0.03em;
+        max-width: 900px;
       }
-      .hero p {
+      .grad {
+        background: linear-gradient(90deg, var(--accent), var(--violet));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .hero p.lead {
         color: var(--muted);
-        font-size: 18px;
-        max-width: 680px;
+        font-size: 19px;
+        max-width: 720px;
         margin: 0 auto 28px;
       }
       .cta {
@@ -166,70 +285,105 @@
         justify-content: center;
         flex-wrap: wrap;
       }
-      .btn {
-        border: 1px solid var(--border);
+      .hero .fineprint {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 14px;
+      }
+      .window {
+        margin: 40px auto 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: 16px;
+        background: var(--bg1);
+        overflow: hidden;
+        box-shadow:
+          0 40px 120px rgba(0, 0, 0, 0.55),
+          0 0 0 8px rgba(110, 168, 254, 0.05);
+      }
+      .window-bar {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
         background: var(--bg2);
-        color: var(--text);
-        border-radius: 10px;
-        padding: 11px 22px;
-        text-decoration: none;
-        font-weight: 600;
+        font-size: 12px;
+        color: var(--muted);
       }
-      .btn.primary {
-        background: var(--accent-strong);
-        border-color: transparent;
+      .window-bar i {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: #3a4458;
+        display: inline-block;
       }
-      figure.shot {
-        margin: 36px 0 8px;
+      .window-bar span {
+        margin-left: 8px;
       }
-      figure.shot img {
+      .window img {
+        display: block;
         width: 100%;
         height: auto;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        display: block;
       }
-      figure.shot figcaption {
+      figcaption {
         color: var(--muted);
         font-size: 13px;
         text-align: center;
-        margin-top: 10px;
+        margin-top: 12px;
       }
-      .flow {
-        background: var(--bg1);
+      .proof {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+        margin: 34px 0 10px;
+      }
+      .proof div {
         border: 1px solid var(--border);
         border-radius: var(--radius);
-        padding: 26px;
-        margin: 32px 0;
-        font-family: ui-monospace, Menlo, Consolas, monospace;
+        padding: 14px 16px;
+        background: rgba(16, 20, 27, 0.75);
         font-size: 14px;
-        overflow-x: auto;
-      }
-      .flow .ok {
-        color: var(--green);
-      }
-      .flow .warn {
-        color: var(--amber);
-      }
-      .flow .dim {
         color: var(--muted);
       }
+      .proof strong {
+        display: block;
+        color: var(--text);
+        font-size: 15px;
+      }
       section.block {
-        padding: 34px 0;
+        padding: 46px 0;
       }
       section.block h2 {
-        font-size: 26px;
-        letter-spacing: -0.01em;
-        margin: 0 0 16px;
+        font-size: clamp(26px, 3.4vw, 34px);
+        letter-spacing: -0.02em;
+        line-height: 1.15;
+        margin: 0 0 12px;
       }
       section.block h3 {
         margin: 0 0 8px;
-        font-size: 16px;
+        font-size: 17px;
+      }
+      .eyebrow {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin: 0 0 8px;
+      }
+      .section-intro {
+        color: var(--muted);
+        max-width: 760px;
+        margin: 0 0 26px;
+        font-size: 17px;
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
         gap: 14px;
+      }
+      .grid.three {
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
       }
       .card {
         background: var(--bg1);
@@ -240,60 +394,338 @@
       .card p {
         margin: 0;
         color: var(--muted);
-        font-size: 14px;
-      }
-      .pill {
-        display: inline-block;
-        font-size: 12px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        border: 1px solid var(--green);
-        border-radius: 999px;
-        padding: 2px 10px;
-        margin-bottom: 10px;
-        color: var(--green);
-      }
-      ol.steps {
-        color: var(--muted);
-        max-width: 720px;
-        padding-left: 22px;
-      }
-      ol.steps li {
-        margin-bottom: 10px;
-      }
-      ol.steps strong {
-        color: var(--text);
-      }
-      .install-code {
-        overflow-x: auto;
-        padding: 18px 20px;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        background: var(--bg1);
-        color: var(--text);
-        line-height: 1.8;
-      }
-      .install-code code,
-      p code,
-      li code {
-        font-family: ui-monospace, Menlo, Consolas, monospace;
-        font-size: 0.92em;
-      }
-      .section-intro {
-        color: var(--muted);
-        max-width: 760px;
-        margin: 0 0 22px;
-      }
-      .recipe {
-        color: var(--text);
-        font-family: ui-monospace, Menlo, Consolas, monospace;
-        font-size: 13px;
-        margin: 14px 0;
+        font-size: 14.5px;
       }
       .card p + p {
         margin-top: 12px;
       }
+      .card .icon {
+        font-size: 22px;
+        line-height: 1;
+        margin-bottom: 12px;
+        display: block;
+      }
+      .recipe {
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 12.5px;
+        margin: 12px 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: var(--bg2);
+        border: 1px solid var(--border);
+      }
+      /* Interactive demo */
+      .demo {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+        gap: 16px;
+        align-items: stretch;
+      }
+      .demo-panel {
+        background: var(--bg1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px;
+        min-width: 0;
+      }
+      .demo-panel.log-panel {
+        display: flex;
+        flex-direction: column;
+      }
+      .demo-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      .demo-toolbar .spacer {
+        flex: 1;
+      }
+      .demo-stat {
+        font-size: 12.5px;
+        color: var(--muted);
+        font-family: var(--mono);
+      }
+      .demo-graph {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+      .demo-row {
+        display: flex;
+        gap: 14px;
+        justify-content: center;
+        position: relative;
+        width: 100%;
+      }
+      .demo-row + .demo-row::before {
+        content: '';
+        position: absolute;
+        top: -14px;
+        left: 50%;
+        height: 14px;
+        border-left: 2px solid var(--border-strong);
+      }
+      .demo-node {
+        --kind: var(--accent);
+        position: relative;
+        flex: 0 1 230px;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--kind);
+        border-radius: 10px;
+        background:
+          linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--kind) 16%, transparent),
+            transparent 80%
+          ),
+          var(--bg2);
+        padding: 7px 10px;
+        font-size: 13px;
+        transition:
+          border-color 0.25s,
+          box-shadow 0.25s,
+          opacity 0.25s;
+      }
+      .demo-node .kind span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .demo-node .kind {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .demo-node .title {
+        font-weight: 650;
+      }
+      .demo-node .visits {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+      .demo-status {
+        font-weight: 700;
+      }
+      .demo-node[data-kind='agent'] {
+        --kind: var(--pink);
+      }
+      .demo-node[data-kind='command'] {
+        --kind: var(--accent);
+      }
+      .demo-node[data-kind='approval'] {
+        --kind: var(--amber);
+      }
+      .demo-node[data-kind='condition'] {
+        --kind: var(--cyan);
+      }
+      .demo-node[data-kind='ticket'] {
+        --kind: #a3e635;
+      }
+      .demo-node[data-kind='github'] {
+        --kind: var(--violet);
+      }
+      .demo-node[data-kind='edge'] {
+        --kind: var(--green);
+      }
+      .demo-node[data-state='idle'] {
+        opacity: 0.62;
+      }
+      .demo-node[data-state='running'] {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(110, 168, 254, 0.25);
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      .demo-node[data-state='running'] .demo-status {
+        color: var(--accent);
+      }
+      .demo-node[data-state='paused'] {
+        border-color: var(--amber);
+        box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.25);
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      .demo-node[data-state='paused'] .demo-status {
+        color: var(--amber);
+      }
+      .demo-node[data-state='succeeded'] {
+        border-color: rgba(52, 211, 153, 0.55);
+      }
+      .demo-node[data-state='succeeded'] .demo-status {
+        color: var(--green);
+      }
+      .demo-node[data-state='skipped'] .demo-status {
+        color: var(--muted);
+      }
+      .demo-spacer {
+        visibility: hidden;
+      }
+      @keyframes pulse {
+        50% {
+          box-shadow: 0 0 0 6px rgba(110, 168, 254, 0.08);
+        }
+      }
+      .demo-log {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.55;
+        background: #080a0f;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        flex: 1 1 0;
+        min-height: 320px;
+        overflow: auto;
+        margin: 0;
+        color: #cdd6e4;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .demo-log .t {
+        color: #5f6b80;
+      }
+      .demo-log .ok {
+        color: var(--green);
+      }
+      .demo-log .warn {
+        color: var(--amber);
+      }
+      .demo-log .bad {
+        color: var(--red);
+      }
+      .demo-log .ai {
+        color: var(--pink);
+      }
+      .demo-note {
+        color: var(--muted);
+        font-size: 12.5px;
+        margin: 10px 0 0;
+      }
+      /* Generator guide */
+      .steps-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        gap: 22px;
+        align-items: start;
+      }
+      ol.numbered {
+        list-style: none;
+        counter-reset: step;
+        padding: 0;
+        margin: 0;
+      }
+      ol.numbered li {
+        counter-increment: step;
+        position: relative;
+        padding: 0 0 18px 46px;
+        color: var(--muted);
+      }
+      ol.numbered li::before {
+        content: counter(step);
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-weight: 750;
+        font-size: 14px;
+        color: #fff;
+        background: linear-gradient(180deg, var(--accent), var(--violet));
+      }
+      ol.numbered strong {
+        color: var(--text);
+        display: block;
+      }
+      .goal {
+        position: relative;
+        margin: 6px 0 18px;
+      }
+      .goal pre {
+        margin: 0;
+        padding: 16px 18px;
+        padding-right: 86px;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        background: var(--bg1);
+        color: var(--text);
+        white-space: pre-wrap;
+        font-size: 13.5px;
+        line-height: 1.6;
+      }
+      .goal .btn {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+      }
+      .shot {
+        margin: 0;
+      }
+      .shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+      }
+      /* Tour tabs */
+      [role='tablist'] {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 18px;
+      }
+      [role='tab'] {
+        border: 1px solid var(--border-strong);
+        background: var(--bg1);
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 8px 16px;
+        font: inherit;
+        font-weight: 650;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      [role='tab'][aria-selected='true'] {
+        color: #fff;
+        background: var(--accent-strong);
+        border-color: transparent;
+      }
+      .tour-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+        gap: 22px;
+        align-items: start;
+      }
+      .tour-panel[hidden] {
+        display: none;
+      }
+      .tour-panel + .tour-panel {
+        margin-top: 28px;
+      }
+      .tour-panel ul {
+        margin: 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+      .tour-panel li {
+        margin-bottom: 10px;
+      }
+      .tour-panel li strong {
+        color: var(--text);
+      }
+      /* Tables, FAQ, install */
       .table-scroll {
         margin: 22px 0;
         overflow-x: auto;
@@ -313,7 +745,7 @@
       }
       th,
       td {
-        padding: 14px 16px;
+        padding: 13px 16px;
         border-top: 1px solid var(--border);
         vertical-align: top;
       }
@@ -324,30 +756,110 @@
       td {
         color: var(--muted);
       }
+      .levels .card h3 code {
+        font-size: 12px;
+      }
+      .downloads {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 14px;
+        margin: 8px 0 22px;
+      }
+      .download {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        text-decoration: none;
+        color: var(--text);
+        background: var(--bg1);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px 20px;
+      }
+      .download:hover {
+        border-color: var(--accent);
+      }
+      .download.recommended {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(110, 168, 254, 0.18);
+      }
+      .download .os {
+        font-weight: 700;
+        font-size: 16px;
+      }
+      .download .file {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      .download .tag {
+        align-self: flex-start;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+      .install-code {
+        overflow-x: auto;
+        padding: 16px 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg1);
+        color: var(--text);
+        line-height: 1.7;
+        font-size: 13.5px;
+        margin: 10px 0 16px;
+      }
       details {
         border: 1px solid var(--border);
         border-radius: var(--radius);
-        padding: 16px 20px;
+        padding: 15px 20px;
         background: var(--bg1);
         margin-bottom: 12px;
       }
       summary {
         cursor: pointer;
-        font-weight: 600;
-      }
-      summary:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 4px;
+        font-weight: 650;
       }
       details p {
         color: var(--muted);
         margin-bottom: 0;
       }
-      @media (max-width: 640px) {
-        nav.site {
-          margin-left: 0;
-          width: 100%;
-        }
+      .two-col {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 22px;
+      }
+      ol.steps {
+        color: var(--muted);
+        padding-left: 22px;
+        margin: 0;
+      }
+      ol.steps li {
+        margin-bottom: 10px;
+      }
+      ol.steps strong {
+        color: var(--text);
+      }
+      .star-cta {
+        text-align: center;
+        border: 1px solid var(--border-strong);
+        border-radius: 20px;
+        padding: 40px 22px;
+        background:
+          radial-gradient(
+            600px 220px at 50% 0%,
+            rgba(110, 168, 254, 0.18),
+            transparent 70%
+          ),
+          var(--bg1);
+      }
+      .star-cta p {
+        color: var(--muted);
+        max-width: 640px;
+        margin: 0 auto 22px;
       }
       footer.site {
         border-top: 1px solid var(--border);
@@ -368,16 +880,39 @@
       footer.site a {
         color: var(--muted);
       }
-      @media (max-width: 640px) {
-        .hero {
-          padding: 44px 0 24px;
+      @media (max-width: 900px) {
+        .demo,
+        .steps-grid,
+        .tour-panel {
+          grid-template-columns: minmax(0, 1fr);
         }
+        .demo-log {
+          flex: none;
+          height: 300px;
+        }
+      }
+      @media (max-width: 640px) {
         nav.site {
+          margin-left: 0;
+          width: 100%;
           gap: 12px;
           font-size: 13px;
         }
+        .hero {
+          padding: 36px 0 18px;
+        }
+        .demo-node {
+          font-size: 12px;
+          padding: 6px 8px;
+        }
+        .demo-spacer {
+          display: none;
+        }
       }
       @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
         * {
           animation: none !important;
           transition: none !important;
@@ -389,7 +924,7 @@
     <a class="skip-link" href="#main">Skip to content</a>
     <div class="wrap">
       <header class="site">
-        <div class="brand">
+        <a class="brand" href="#main">
           <img
             src="./favicon.png"
             alt="Orchevia app icon: orbit-and-nodes mark on a blue-violet gradient"
@@ -397,233 +932,546 @@
             height="36"
           />
           <span>Orchevia</span>
-        </div>
+        </a>
         <nav class="site" aria-label="Site">
+          <a href="#demo">Demo</a>
+          <a href="#generate">Generator</a>
+          <a href="#tour">Tour</a>
           <a href="#workflows">Workflows</a>
-          <a href="#features">Features</a>
-          <a href="#start">5-minute start</a>
-          <a href="#local-first">Local-first</a>
+          <a href="#local-first">Safety</a>
           <a href="#install">Install</a>
           <a href="#faq">FAQ</a>
-          <a href="https://github.com/iazaran/orchevia">GitHub</a>
+          <a class="gh" href="https://github.com/iazaran/orchevia">★ GitHub</a>
         </nav>
       </header>
 
       <main id="main">
         <div class="hero">
-          <span class="pill">Local developer workflows</span>
-          <h1>Give your developer workflow a repeatable path.</h1>
-          <p>
-            Orchestrate the AI tools you already use. Describe a task once, inspect the
-            plan as a graph, and execute each step through your installed CLIs — Claude
-            Code, Codex, git, gh, tests.
-            <strong>Your CLI accounts. Your machine. No telemetry.</strong>
+          <span class="pill"><b>●</b> Free &amp; open source · macOS &amp; Linux</span>
+          <h1>
+            Your AI coding CLIs, as
+            <span class="grad">reviewable pipelines</span>.
+          </h1>
+          <p class="lead">
+            Orchevia runs Claude Code, Codex, <code>git</code>, <code>gh</code> and your
+            test commands as a visual workflow on your own machine. Plan, approve,
+            implement, test and cross-review — with the subscriptions you already have.
           </p>
           <div class="cta">
-            <a class="btn primary" href="#install">Installation</a>
-            <a class="btn" href="#workflows">Explore workflows</a>
+            <a class="btn primary" href="#install" data-download-cta>Download Orchevia</a>
+            <a class="btn" href="#demo">▶ See a run</a>
+            <a class="btn" href="https://github.com/iazaran/orchevia">★ Star on GitHub</a>
           </div>
+          <p class="fineprint">No account · No API keys · No telemetry · Apache-2.0</p>
         </div>
 
-        <figure class="shot">
-          <img
-            src="./workflow-visual.svg"
-            alt="Example Orchevia workflow diagram: Start leads to Implement with Claude, then a Human Approval gate, then Review with Codex, then End"
-            width="880"
-            height="300"
-          />
+        <figure class="shot-hero">
+          <div class="window">
+            <div class="window-bar" aria-hidden="true">
+              <i></i><i></i><i></i><span>Orchevia — Ticket → reviewed draft PR</span>
+            </div>
+            <img
+              src="./images/run-on-canvas.webp"
+              alt="Orchevia showing a finished run on the canvas: a Jira ticket is planned by Claude, approved by a human, implemented, tested, reviewed in parallel by Claude and Codex, fixed once and opened as a draft PR. The side panel shows the Codex review findings."
+              width="1440"
+              height="1000"
+            />
+          </div>
           <figcaption>
-            A typical flow: Claude implements, you review the change, Codex reviews —
-            every step explicit, inspectable, and cancellable.
+            A finished run, shown read-only on the canvas: every step, its output and its
+            findings stay attached to the graph that produced them.
           </figcaption>
         </figure>
 
-        <div class="flow" aria-label="Example workflow">
-          <span class="dim">Start</span> → <span class="ok">Implement (Claude)</span> →
-          <span class="warn">Human Approval</span> →
-          <span class="ok">Review (Codex)</span> → <span class="dim">End</span>
-          <span class="dim">— explicit run, full history, cancellable</span>
+        <div class="proof">
+          <div>
+            <strong>🔑 Your subscriptions</strong>Agent steps call your signed-in
+            <code>claude</code> and <code>codex</code>. No keys, no Orchevia bill.
+          </div>
+          <div>
+            <strong>🤝 Claude + Codex together</strong>One implements, the other reviews —
+            in parallel, with P0–P3 findings.
+          </div>
+          <div>
+            <strong>🧭 Predictable</strong>A fixed graph with approvals, bounded loops and
+            timeouts. Nothing runs until you press Run.
+          </div>
+          <div>
+            <strong>🔒 Local-first</strong>Workflows and history in local SQLite. No
+            accounts, no hosted runner, no telemetry.
+          </div>
         </div>
 
-        <section class="block" id="why" aria-labelledby="why-h">
-          <h2 id="why-h">Keep your tools. Make the handoffs visible.</h2>
+        <section class="block" id="demo" aria-labelledby="demo-h">
+          <p class="eyebrow">Try it here</p>
+          <h2 id="demo-h">Watch a ticket become a reviewed draft PR</h2>
           <p class="section-intro">
-            You already know how to ask an agent, run tests, and review a diff. Orchevia
-            puts that sequence in a graph you can inspect, repeat, and share. Choose which
-            agent handles each step, where a human decision belongs, and which repository
-            commands prove the change works.
+            This is the run from the screenshot above, replayed in your browser. Claude
+            plans, the run waits for <em>you</em>, Claude implements, tests run, Claude
+            and Codex review in parallel, a P1 finding loops back once for a fix, and a
+            draft PR opens.
           </p>
-          <div class="grid">
-            <div class="card">
-              <h3>A repeatable starting point</h3>
-              <p>
-                Save the sequence once. Supply new inputs for the next task instead of
-                rebuilding every prompt and command.
-              </p>
+          <div class="demo" data-demo>
+            <div class="demo-panel">
+              <div class="demo-toolbar">
+                <button class="btn small primary" type="button" data-demo-run>
+                  ▶ Run demo
+                </button>
+                <button class="btn small" type="button" data-demo-approve disabled>
+                  ✓ Approve plan
+                </button>
+                <button class="btn small" type="button" data-demo-reset>Reset</button>
+                <span class="spacer"></span>
+                <span class="demo-stat" data-demo-stats>Ready</span>
+              </div>
+              <div class="demo-graph" aria-label="Workflow steps">
+                <div class="demo-row">
+                  <div class="demo-node" data-node="start" data-kind="edge">
+                    <div class="kind">
+                      <span>Start</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Start</div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="ticket" data-kind="ticket">
+                    <div class="kind">
+                      <span>Ticket · MCP</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Load Jira ticket</div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="plan" data-kind="agent">
+                    <div class="kind">
+                      <span>Agent · Claude</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Plan</div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="approve" data-kind="approval">
+                    <div class="kind">
+                      <span>Human approval</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Approve plan</div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="implement" data-kind="agent">
+                    <div class="kind">
+                      <span>Agent · Claude</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Implement <span class="visits"></span></div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="tests" data-kind="command">
+                    <div class="kind">
+                      <span>Command</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">pnpm test <span class="visits"></span></div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="claude-review" data-kind="agent">
+                    <div class="kind">
+                      <span>Agent · Claude</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Claude review <span class="visits"></span></div>
+                  </div>
+                  <div class="demo-node" data-node="codex-review" data-kind="agent">
+                    <div class="kind">
+                      <span>Agent · Codex</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Codex review <span class="visits"></span></div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="fix" data-kind="agent">
+                    <div class="kind">
+                      <span>Agent · loop</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">↺ Fix findings</div>
+                  </div>
+                  <div class="demo-node" data-node="gate" data-kind="condition">
+                    <div class="kind">
+                      <span>Condition</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">P0/P1 found? <span class="visits"></span></div>
+                  </div>
+                  <div class="demo-node demo-spacer" aria-hidden="true"></div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="pr" data-kind="github">
+                    <div class="kind">
+                      <span>GitHub · gh</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">Open draft PR</div>
+                  </div>
+                </div>
+                <div class="demo-row">
+                  <div class="demo-node" data-node="end" data-kind="edge">
+                    <div class="kind">
+                      <span>End</span><span class="demo-status">idle</span>
+                    </div>
+                    <div class="title">End</div>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="card">
-              <h3>Review with a second perspective</h3>
-              <p>
-                Give implementation and review to different profiles. Keep their outputs
-                attached to the steps that produced them.
-              </p>
-            </div>
-            <div class="card">
-              <h3>Stay part of the process</h3>
-              <p>
-                Pause at a Human Approval gate before continuing. Inspect progress and the
-                exact run graph when something needs attention.
+            <div class="demo-panel log-panel">
+              <pre
+                class="demo-log"
+                data-demo-log
+                aria-live="polite"
+                aria-label="Run log"
+                tabindex="0"
+              >
+Press ▶ Run demo to start. The run pauses at the approval gate until you approve.</pre>
+              <p class="demo-note">
+                Simulated in your browser — nothing is installed or sent anywhere. In the
+                app, each step runs your real CLI and keeps its full output.
               </p>
             </div>
           </div>
         </section>
 
+        <section class="block" id="generate" aria-labelledby="generate-h">
+          <p class="eyebrow">Workflow generator</p>
+          <h2 id="generate-h">Describe the task. Get a graph you can check.</h2>
+          <p class="section-intro">
+            ✦ Generate asks your own Claude Code or Codex CLI to draft the workflow.
+            Orchevia validates and compiles the draft into a preview — it never runs it.
+          </p>
+          <div class="steps-grid">
+            <div>
+              <ol class="numbered">
+                <li>
+                  <strong>Open Workflows → ✦ Generate.</strong> Pick Claude Code or Codex
+                  and, optionally, a repository: the AI reads it (never writes) so the
+                  draft uses your real paths and conventions.
+                </li>
+                <li>
+                  <strong>Write the goal like a short spec.</strong> Name the agents, the
+                  commands that prove it works, where you approve, and which writes are
+                  allowed.
+                </li>
+                <li>
+                  <strong>Review the preview.</strong> Steps, risk categories, setup items
+                  and every compiler repair are listed. <em>Ask AI to fix</em> sends
+                  blocking problems back for another round.
+                </li>
+                <li>
+                  <strong>Accept &amp; edit, then Dry run.</strong> The workflow opens on
+                  the canvas; test its routing with fixtures before running real tools.
+                </li>
+              </ol>
+              <div class="goal">
+                <pre data-goal-text>
+Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my approval. Implement it on branch {{input.branch}}, run pnpm test, and have Claude and Codex review the diff in parallel. Fix P0/P1 findings (at most twice), then open a draft PR.</pre>
+                <button class="btn small" type="button" data-copy="[data-goal-text]">
+                  Copy
+                </button>
+              </div>
+              <p class="section-intro" style="font-size: 15px">
+                Generation prefers native Agent, Git, GitHub, Ticket, MCP, Condition and
+                Approval nodes; Command nodes cover your own tools. Instructions such as
+                “CLI only” win. <strong>✦ Assist</strong> improves or rearranges an
+                existing workflow through the same reviewed preview.
+              </p>
+            </div>
+            <figure class="shot">
+              <img
+                src="./images/generate-dialog.webp"
+                alt="The Generate workflow dialog: a goal describing a ticket-to-PR flow, a repository directory, and a preview listing 12 steps, 4 risk categories, one setup item, the compiler notes and the proposed steps."
+                width="778"
+                height="1036"
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>
+                The preview lists what must be set up before running and every repair the
+                compiler made.
+              </figcaption>
+            </figure>
+          </div>
+        </section>
+
+        <section class="block" id="tour" aria-labelledby="tour-h">
+          <p class="eyebrow">Product tour</p>
+          <h2 id="tour-h">Everything a run touched, in one place</h2>
+          <p class="section-intro">
+            Real screens from the desktop app. Edit on the canvas, follow each run step by
+            step, and see what your CLIs reported.
+          </p>
+          <div data-tabs>
+            <div role="tablist" aria-label="Product tour">
+              <button
+                role="tab"
+                type="button"
+                id="tab-editor"
+                aria-controls="panel-editor"
+                aria-selected="true"
+              >
+                Editor
+              </button>
+              <button
+                role="tab"
+                type="button"
+                id="tab-runs"
+                aria-controls="panel-runs"
+                aria-selected="false"
+              >
+                Runs
+              </button>
+              <button
+                role="tab"
+                type="button"
+                id="tab-usage"
+                aria-controls="panel-usage"
+                aria-selected="false"
+              >
+                Usage
+              </button>
+              <button
+                role="tab"
+                type="button"
+                id="tab-agents"
+                aria-controls="panel-agents"
+                aria-selected="false"
+              >
+                Agents
+              </button>
+            </div>
+            <div
+              class="tour-panel"
+              role="tabpanel"
+              id="panel-editor"
+              aria-labelledby="tab-editor"
+            >
+              <figure class="shot">
+                <img
+                  src="./images/editor-inspector.webp"
+                  alt="The workflow editor with the Implement agent node selected; the inspector shows its agent profile, prompt, required tools and session group."
+                  width="1440"
+                  height="1000"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </figure>
+              <ul>
+                <li>
+                  <strong>Ten node kinds:</strong> Start, Command, AI Agent, Condition,
+                  Human Approval, Git, GitHub, Ticket, MCP Tool and End.
+                </li>
+                <li>
+                  <strong>An inspector for every node:</strong> profile, prompt with
+                  <code>{{variables}}</code>, required tools, session reuse, timeouts and
+                  loop bounds.
+                </li>
+                <li>
+                  <strong>Validation before you run:</strong> badges on the canvas, and
+                  Simple JSON that stays in sync with the graph.
+                </li>
+              </ul>
+            </div>
+            <div
+              class="tour-panel"
+              role="tabpanel"
+              id="panel-runs"
+              aria-labelledby="tab-runs"
+            >
+              <figure class="shot">
+                <img
+                  src="./images/run-timeline.webp"
+                  alt="The Runs view: a succeeded run with a timeline of 16 step attempts, including parallel Claude and Codex reviews, and a report of the final Codex review."
+                  width="1440"
+                  height="1000"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </figure>
+              <ul>
+                <li>
+                  <strong>A timeline on one time axis,</strong> so parallel reviews and
+                  loop visits are easy to read.
+                </li>
+                <li>
+                  <strong>Output and findings per step,</strong> with whether the agent
+                  resumed its earlier context.
+                </li>
+                <li>
+                  <strong>Read-only run snapshots</strong> on the canvas, and deliberate
+                  recovery of failed runs from their original inputs.
+                </li>
+              </ul>
+            </div>
+            <div
+              class="tour-panel"
+              role="tabpanel"
+              id="panel-usage"
+              aria-labelledby="tab-usage"
+            >
+              <figure class="shot">
+                <img
+                  src="./images/usage.webp"
+                  alt="The Usage and costs page: a daily chart of agent attempts over 30 days and a breakdown table by provider and model."
+                  width="1280"
+                  height="800"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </figure>
+              <ul>
+                <li>
+                  <strong>Agent attempts, tokens and tool calls</strong> by workflow,
+                  profile, provider and model.
+                </li>
+                <li>
+                  <strong>Honest money lanes:</strong> CLI-reported API estimates stay
+                  apart from the subscription fees you enter.
+                </li>
+                <li>
+                  <strong>Budgets per run:</strong> cap agent attempts or pause at a
+                  reported spend estimate.
+                </li>
+              </ul>
+            </div>
+            <div
+              class="tour-panel"
+              role="tabpanel"
+              id="panel-agents"
+              aria-labelledby="tab-agents"
+            >
+              <figure class="shot">
+                <img
+                  src="./images/agents.webp"
+                  alt="The Agents page: Claude Code and Codex detected as installed, their known models, and agent profiles for each role."
+                  width="1280"
+                  height="800"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </figure>
+              <ul>
+                <li>
+                  <strong>Profiles per role:</strong> planning, implementation, fast and
+                  deep review, generation — each with its own CLI, model and effort.
+                </li>
+                <li>
+                  <strong>Any CLI:</strong> Claude Code, Codex, or a custom binary that
+                  takes the prompt last.
+                </li>
+                <li>
+                  <strong>Detected on your login shell's PATH,</strong> including nvm,
+                  fnm, Homebrew and <code>~/.local/bin</code>.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
         <section class="block" id="workflows" aria-labelledby="workflows-h">
+          <p class="eyebrow">Recipes</p>
           <h2 id="workflows-h">Start with a workflow you already do</h2>
           <p class="section-intro">
             Build a small manual flow first. Add integrations and scheduling once its
-            steps work in your repository.
+            steps work in your repository. Nine built-in templates help you start.
           </p>
           <div class="grid">
             <article class="card">
               <h3>Plan, implement, test, review</h3>
               <div class="recipe">Plan → Approve → Implement → Test → Review</div>
               <p>
-                Turn a change request into an inspected plan, then implementation and
-                independent review. Use your project's actual test command.
-              </p>
-              <p>
-                <strong>Set up:</strong> repository, agent profiles, test command. Keep
-                commit and push as explicit decisions.
+                Turn a change request into an inspected plan, then implementation and an
+                independent review, using your project's real test command.
               </p>
             </article>
             <article class="card">
               <h3>Ticket to draft pull request</h3>
               <div class="recipe">
-                Read Ticket → Plan → Approve → Implement → Test → Draft PR
+                Ticket → Plan → Approve → Implement → Test → Draft PR
               </div>
               <p>
-                Load a Jira ticket through your configured MCP server, then use supported
-                native Git and GitHub operations for the handoffs.
-              </p>
-              <p>
-                <strong>Set up:</strong> Jira MCP, authenticated <code>gh</code>, profiles
-                and branch inputs. Inspect every write step.
+                Load a Jira ticket through your MCP server, then use native Git and GitHub
+                operations for the handoffs. Every write step stays visible.
               </p>
             </article>
             <article class="card">
               <h3>A repeatable PR review</h3>
-              <div class="recipe">
-                Read PR → Parallel reviews → Summarize → Human decision
-              </div>
+              <div class="recipe">Read PR → Parallel reviews → Summarize → Decide</div>
               <p>
-                Assign separate reviewers and inspect their findings. Add a local watcher
-                when you are ready to repeat a proven review flow.
-              </p>
-              <p>
-                <strong>Set up:</strong> PR input, <code>gh</code>, reviewer profiles and
-                explicit permissions for comments.
+                Give each reviewer its own profile, compare their findings, and add a
+                local watcher once the flow is proven.
               </p>
             </article>
           </div>
         </section>
 
         <section class="block" id="features" aria-labelledby="features-h">
-          <h2 id="features-h">Key features</h2>
-          <div class="grid">
+          <p class="eyebrow">Capabilities</p>
+          <h2 id="features-h">Built for real repositories</h2>
+          <div class="grid three">
             <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Visual workflow canvas</h3>
+              <span class="icon" aria-hidden="true">🔀</span>
+              <h3>Real control flow</h3>
               <p>
-                Start, Command, Approval, AI Agent, Condition, Git, GitHub, Ticket, MCP,
-                and End nodes with edge labels, validation badges, run overlays, and a
-                node inspector.
+                Constrained conditions (no scripting), parallel branches with joins,
+                failure edges, bounded retries and guarded review/fix loops.
               </p>
             </div>
             <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Real local execution</h3>
+              <span class="icon" aria-hidden="true">🧠</span>
+              <h3>Context that carries over</h3>
               <p>
-                Executables and arguments are passed separately, prompts reach Claude and
-                Codex on stdin, with live output in Runs, per-node timeouts, cancellation,
-                and persisted run history.
+                Agents can resume their own session within a run and receive bounded
+                handoffs from earlier steps, while reviewers stay independent.
               </p>
             </div>
             <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Agent profiles</h3>
+              <span class="icon" aria-hidden="true">🔗</span>
+              <h3>Git, GitHub, Jira, MCP</h3>
               <p>
-                Claude/Codex adapters plus any custom CLI, reusable profiles with model
-                and effort settings, optional CLI skills, <code>{{variable}}</code> prompt
-                templating, and a plan → approve → implement → review sample.
+                Safe Git operations (dirty states refused), GitHub through your own
+                <code>gh</code>, and Jira or any tool through MCP servers you control.
               </p>
             </div>
             <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Branches, retries, loops</h3>
+              <span class="icon" aria-hidden="true">⏰</span>
+              <h3>Local automation</h3>
               <p>
-                Constrained conditions, parallel branches with joins, failure-recovery
-                edges, bounded retries with backoff, and guarded review/fix loops.
+                Durable schedules, PR review and feedback watchers with bot-loop guards,
+                an inbox, and an opt-in tray mode.
               </p>
             </div>
             <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Git, GitHub, Jira</h3>
+              <span class="icon" aria-hidden="true">🧪</span>
+              <h3>Test before you run</h3>
               <p>
-                Safe git ops (dirty states refused), GitHub via your own
-                <code>gh</code> (draft PRs, checks, comments), Jira tickets via a local
-                MCP server that you control.
+                Dry runs replay node results from fixtures so you can check routing
+                without executing a single tool.
               </p>
             </div>
             <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Automation that stays local</h3>
+              <span class="icon" aria-hidden="true">📚</span>
+              <h3>Reuse and memory</h3>
               <p>
-                Durable schedules, opt-in tray background mode, GitHub review/feedback
-                watchers with bot-loop guards, and trust-gated write automation.
-              </p>
-            </div>
-            <div class="card">
-              <span class="pill">Available now</span>
-              <h3>Generation, templates, memory</h3>
-              <p>
-                Describe a goal to draft a validated preview using Agent, Git, GitHub,
-                Ticket, MCP, and other native nodes. Start from 9 built-in templates or
-                save your own. Reuse accepted project commands and conventions in a local
-                playbook, without copying full run logs into memory.
+                Templates with typed inputs, JSON import/export, and a project playbook of
+                accepted commands and conventions.
               </p>
             </div>
           </div>
         </section>
 
         <section class="block" id="authoring" aria-labelledby="authoring-h">
+          <p class="eyebrow">Authoring</p>
           <h2 id="authoring-h">A graph for inspection. JSON for reuse.</h2>
-          <div class="grid">
-            <div class="card">
-              <h3>Readable workflow documents</h3>
-              <p>
-                Simple JSON uses node keys and portable profile selections. Edit the same
-                workflow on the canvas or in JSON, and arrange it by dependencies as it
-                grows. Advanced JSON keeps the full runtime format available.
-              </p>
-            </div>
-            <div class="card">
-              <h3>A draft you can inspect</h3>
-              <p>
-                Generate asks your local CLI for a proposal. Orchevia validates and
-                compiles it into a preview with setup notes. You can edit or reject it;
-                accepting the preview never runs it.
-              </p>
-            </div>
-            <div class="card">
-              <h3>Knowledge with a project scope</h3>
-              <p>
-                Keep test commands, conventions, and reviewer choices in a project
-                playbook. Accept suggestions deliberately or save a command from a
-                successful run with its evidence.
-              </p>
-            </div>
-          </div>
+          <p class="section-intro">
+            Simple JSON uses readable node keys and portable profile roles; Advanced JSON
+            keeps the full runtime format. Choose a native node when it supports the work
+            and a Command node for your own tools.
+          </p>
           <div
             class="table-scroll"
             tabindex="0"
@@ -632,8 +1480,7 @@
           >
             <table>
               <caption>
-                Choose a native node when it supports the work; use Command for your
-                project's tools.
+                Which node to use
               </caption>
               <thead>
                 <tr>
@@ -671,169 +1518,230 @@
               </tbody>
             </table>
           </div>
-          <h3>Give generation a concrete goal</h3>
-          <pre
-            class="install-code"
-          ><code>Plan {{input.task}} in this repository, then pause for approval.
-Implement the approved plan, run the project's test command,
-and request one independent review. Leave changes uncommitted.</code></pre>
-          <p class="section-intro">
-            Declare the task input, choose your profiles, and inspect the preview.
-            Generation prefers supported native operations and honors explicit
-            instructions such as “CLI only.” Unsupported operations may need a Command
-            node or a manual step.
-          </p>
-        </section>
-
-        <section class="block" id="start" aria-labelledby="start-h">
-          <h2 id="start-h">Your first workflow in 5 minutes</h2>
-          <p class="section-intro">
-            Want to try it without an AI CLI first? The
-            <a
-              href="https://github.com/iazaran/orchevia/blob/main/docs/getting-started.md"
-              >getting-started guide</a
-            >
-            begins with a small <code>echo</code> workflow and then adds agents, tests and
-            approval.
-          </p>
-          <ol class="steps">
-            <li>
-              <strong>Install and open Orchevia.</strong> The first-run wizard detects
-              <code>git</code>, <code>gh</code>, <code>claude</code>, and
-              <code>codex</code>, including CLIs on your login shell's PATH (nvm, fnm,
-              Homebrew), and creates your first agent profiles.
-            </li>
-            <li>
-              <strong>Workflows → Samples… → Plan → Implement → Review → Create.</strong>
-              A ready-made graph appears on the canvas.
-            </li>
-            <li>
-              <strong>Select any node</strong> to configure its profile, prompt, or
-              timeout. Canvas badges flag problems before you run.
-            </li>
-            <li>
-              <strong>Press ▶ Run.</strong> Approve the paused gate, inspect per-node
-              output under Runs, cancel anytime. Opening a workflow never runs it.
-            </li>
-            <li>
-              <strong>Go further:</strong> generate flows from a goal with ✦ Generate,
-              save reusable Templates, or schedule nightly runs under Automations.
-            </li>
-          </ol>
         </section>
 
         <section class="block" id="local-first" aria-labelledby="local-first-h">
-          <h2 id="local-first-h">Local-first, by architecture</h2>
-          <div class="grid">
+          <p class="eyebrow">Safety</p>
+          <h2 id="local-first-h">Local-first, with permissions you can read</h2>
+          <p class="section-intro">
+            Orchevia passes permission flags on the command line and never edits your
+            Claude Code or Codex settings. Each Agent Profile picks one level:
+          </p>
+          <div class="grid levels">
             <div class="card">
-              <h3>Your tools, your auth</h3>
+              <h3>Use the CLI's settings</h3>
               <p>
-                Orchevia delegates AI work to CLIs you installed and authenticated. It
-                never asks for model API keys.
+                The default. No flag is added; your own Claude Code or Codex configuration
+                decides what a step may do.
               </p>
             </div>
             <div class="card">
-              <h3>Your data stays home</h3>
+              <h3>Allowed tools <code>--allowedTools</code></h3>
               <p>
-                Workflows and runs live in a local SQLite database. Orchevia has no
-                telemetry service; the AI CLIs you choose may contact their providers.
+                An explicit Claude Code allow list. Nodes declare the tools they need, and
+                imports and runs warn about anything the profile doesn't grant.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Full access</h3>
+              <p>
+                Bypasses permission checks. Never a default, always confirmed, and a
+                schedule that uses it needs its own trust opt-in.
+              </p>
+            </div>
+          </div>
+          <div class="grid" style="margin-top: 14px">
+            <div class="card">
+              <h3>Refusals fail the step</h3>
+              <p>
+                When headless Claude Code refuses a tool, the step fails with the exact
+                allow rules that would admit it — never a silent “success”.
               </p>
             </div>
             <div class="card">
               <h3>Explicit execution</h3>
               <p>
-                Opening a workflow never executes it. Inspect commands before running;
-                runs are explicit, cancel and timeouts stop the step's process group on
-                Linux and macOS, and authentication stays in your tools. Stored output can
-                contain sensitive data; review it before sharing.
+                Opening, importing or previewing never runs anything. Cancel and timeouts
+                stop the step's process group on Linux and macOS.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Your data stays home</h3>
+              <p>
+                Workflows and runs live in local SQLite. Your AI CLIs, GitHub and MCP
+                servers may still contact their own services.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="block" id="start" aria-labelledby="start-h">
+          <p class="eyebrow">Getting started</p>
+          <h2 id="start-h">Your first workflow in 5 minutes</h2>
+          <div class="two-col">
+            <ol class="steps">
+              <li>
+                <strong>Install and open Orchevia.</strong> The setup wizard detects
+                <code>git</code>, <code>gh</code>, <code>claude</code> and
+                <code>codex</code>
+                and creates recommended agent profiles.
+              </li>
+              <li>
+                <strong
+                  >Workflows → Samples… → Plan → Implement → Review → Create.</strong
+                >
+                A ready-made graph appears on the canvas.
+              </li>
+              <li>
+                <strong>Select any node</strong> to set its profile, prompt or timeout.
+                Canvas badges flag problems before you run.
+              </li>
+              <li>
+                <strong>Press ▶ Run.</strong> Approve the paused gate, follow each step in
+                Runs, cancel at any time.
+              </li>
+              <li>
+                <strong>Go further:</strong> ✦ Generate from a goal, save Templates, or
+                schedule runs under Automations.
+              </li>
+            </ol>
+            <div class="card">
+              <h3>Start without any AI</h3>
+              <p>
+                The
+                <a
+                  href="https://github.com/iazaran/orchevia/blob/main/docs/getting-started.md"
+                  >getting-started guide</a
+                >
+                begins with a one-step <code>echo</code> workflow, then adds an agent,
+                tests, an approval gate and reuse.
+              </p>
+              <p>
+                Headless Claude Code refuses tools its settings don't allow. If a step
+                reports
+                <em>tools refused</em>, add the listed rules to the profile in one click.
               </p>
             </div>
           </div>
         </section>
 
         <section class="block" id="install" aria-labelledby="install-h">
-          <h2 id="install-h">Installation</h2>
-          <p>
-            Orchevia is in beta. The repository and release downloads are private for now
-            and will be public soon. Public installer links will be added here when access
-            opens.
+          <p class="eyebrow">Download</p>
+          <h2 id="install-h">Install Orchevia</h2>
+          <p class="section-intro">
+            Free and open source. The links below always point to the
+            <a href="https://github.com/iazaran/orchevia/releases/latest"
+              >latest release</a
+            >. Windows is not supported yet.
           </p>
-          <p>
-            Available platforms are macOS Apple Silicon/Intel and Linux x86_64. macOS
-            builds are unsigned and not notarized. Workflows execute with your user
-            permissions; review generated or imported commands before running.
-          </p>
-          <h3>For contributors with repository access</h3>
-          <p>
-            Contributors with repository access can build from source with Node.js 24+,
-            pnpm 10+, Rust stable, and the platform dependencies in the development guide.
-          </p>
-          <pre
-            class="install-code"
-          ><code>git clone https://github.com/iazaran/orchevia.git
+          <div class="downloads">
+            <a
+              class="download"
+              data-os="mac"
+              href="https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-arm64.dmg"
+            >
+              <span class="tag">macOS</span>
+              <span class="os">Apple Silicon</span>
+              <span class="file">Orchevia-macos-arm64.dmg</span>
+            </a>
+            <a
+              class="download"
+              data-os="mac"
+              href="https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-x86_64.dmg"
+            >
+              <span class="tag">macOS</span>
+              <span class="os">Intel</span>
+              <span class="file">Orchevia-macos-x86_64.dmg</span>
+            </a>
+            <a
+              class="download"
+              data-os="linux"
+              href="https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.AppImage"
+            >
+              <span class="tag">Linux</span>
+              <span class="os">AppImage · x86_64</span>
+              <span class="file">Orchevia-linux-x86_64.AppImage</span>
+            </a>
+            <a
+              class="download"
+              data-os="linux"
+              href="https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.deb"
+            >
+              <span class="tag">Linux</span>
+              <span class="os">Debian / Ubuntu · x86_64</span>
+              <span class="file">Orchevia-linux-x86_64.deb</span>
+            </a>
+          </div>
+          <div class="two-col">
+            <div>
+              <h3>Verify your download</h3>
+              <p style="color: var(--muted)">
+                Save
+                <a
+                  href="https://github.com/iazaran/orchevia/releases/latest/download/SHA256SUMS"
+                  >SHA256SUMS</a
+                >
+                next to the installer, keep the file names, and look for <code>OK</code>:
+              </p>
+              <pre class="install-code"><code># Linux
+sha256sum -c SHA256SUMS --ignore-missing
+# macOS
+shasum -a 256 -c SHA256SUMS --ignore-missing</code></pre>
+            </div>
+            <div>
+              <h3>First launch</h3>
+              <p style="color: var(--muted)">
+                <strong style="color: var(--text)">macOS:</strong> builds are not signed
+                or notarized yet. Run the command below, or open the app once and choose
+                <em>Open Anyway</em> in System Settings → Privacy &amp; Security.
+              </p>
+              <pre
+                class="install-code"
+              ><code>xattr -d com.apple.quarantine /Applications/Orchevia.app</code></pre>
+              <p style="color: var(--muted)">
+                <strong style="color: var(--text)">Linux:</strong>
+                <code>sudo apt install ./Orchevia-linux-x86_64.deb</code>, or
+                <code>chmod +x</code> the AppImage and run it.
+              </p>
+            </div>
+          </div>
+          <details>
+            <summary>Build from source</summary>
+            <p>
+              Contributors can build from source with Node.js 24+, pnpm 10+, Rust stable
+              and the platform dependencies in
+              <a href="https://github.com/iazaran/orchevia/blob/main/docs/development.md"
+                >the development guide</a
+              >. <code>pnpm dev</code> opens a browser demo with a mock backend;
+              <code>pnpm tauri dev</code> runs real workflows in the desktop app.
+            </p>
+            <pre
+              class="install-code"
+            ><code>git clone https://github.com/iazaran/orchevia.git
 cd orchevia
 pnpm install
 pnpm tauri dev</code></pre>
-          <p style="color: var(--muted)">
-            <code>pnpm dev</code> opens the browser demo with a local mock backend;
-            <code>pnpm tauri dev</code> runs real workflows in the desktop app. See
-            <a href="https://github.com/iazaran/orchevia/blob/main/docs/development.md"
-              >the development guide</a
-            >.
-          </p>
-        </section>
-
-        <section class="block" id="develop" aria-labelledby="develop-h">
-          <h2 id="develop-h">Build and contribute</h2>
-          <p>
-            The React editor in <code>src/</code> talks to a typed backend interface.
-            <code>pnpm dev</code> uses its mock so contributors can work on the UI without
-            launching native processes. The Tauri commands in
-            <code>src-tauri/</code> delegate execution, validation, scheduling, and SQLite
-            storage to <code>crates/core/</code>.
-          </p>
-          <p>
-            Start with
-            <a href="https://github.com/iazaran/orchevia/blob/main/docs/development.md"
-              >the development guide</a
-            >,
-            <a href="https://github.com/iazaran/orchevia/blob/main/docs/architecture.md"
-              >architecture</a
-            >, and
-            <a
-              href="https://github.com/iazaran/orchevia/blob/main/docs/workflow-schema.md"
-              >workflow schema</a
-            >. Run <code>pnpm check</code>, <code>cargo test -p orchevia-core</code>,
-            <code>cargo clippy -p orchevia-core --all-targets -- -D warnings</code>,
-            <code>cargo fmt --check</code>, and <code>cargo check -p orchevia</code>
-            before opening a PR. GitHub Actions validates applicable frontend, Rust, and
-            Linux desktop changes on PRs. Version tags build Linux, Apple Silicon, and
-            Intel installers; downloads require a successful release and repository
-            access.
-          </p>
-        </section>
-
-        <section class="block" id="roadmap" aria-labelledby="roadmap-h">
-          <h2 id="roadmap-h">Roadmap</h2>
-          <p style="color: var(--muted)">
-            Core workflows, integrations, and local automation are implemented. The
-            current focus is generation quality, run visibility, and preparing the first
-            public release. See the full roadmap in the
-            <a href="https://github.com/iazaran/orchevia/blob/main/ROADMAP.md"
-              >repository</a
-            >.
-          </p>
+          </details>
         </section>
 
         <section class="block" id="faq" aria-labelledby="faq-h">
+          <p class="eyebrow">FAQ</p>
           <h2 id="faq-h">Before you start</h2>
           <details>
-            <summary>Do I need an Orchevia account or model API key?</summary>
+            <summary>Do I need an Orchevia account or a model API key?</summary>
             <p>
-              No. Orchevia orchestrates CLIs you install and authenticate yourself. Model
-              access and usage costs belong to those tools and providers; Runs show the
-              token counts and USD that a CLI reports. A command-only workflow needs no AI
-              profile.
+              No. Orchevia orchestrates CLIs you install and sign in to yourself, so AI
+              steps use your existing Claude or ChatGPT/Codex plan and its limits. A
+              command-only workflow needs no AI CLI at all.
+            </p>
+          </details>
+          <details>
+            <summary>What does it cost?</summary>
+            <p>
+              Orchevia is free and open source (Apache-2.0). Usage of your AI CLIs is
+              billed by their providers as usual. Runs show the tokens and any dollar
+              estimate a CLI reports; those estimates are not your subscription bill or
+              remaining quota.
             </p>
           </details>
           <details>
@@ -845,80 +1753,402 @@ pnpm tauri dev</code></pre>
             </p>
           </details>
           <details>
-            <summary>Can I use my own CLI or repository's test commands?</summary>
+            <summary>Can I use my own CLI or my repository's commands?</summary>
             <p>
-              Yes. Configure a custom CLI profile or a Command node with an executable and
-              separate arguments. Built-in templates are language neutral. You provide the
-              commands, model choices and repository conventions that work in your
-              project.
+              Yes. Add a custom CLI profile, or use a Command node with an executable and
+              separate arguments. Templates are language neutral; you supply the commands,
+              models and conventions that work in your project.
             </p>
           </details>
           <details>
             <summary>What happens when a step fails or I cancel?</summary>
             <p>
               Inspect per-step errors and partial output in Runs. Workflows can define
-              explicit retries and failure paths. Cancellation stops the active step and
-              the processes it started in its process group on Linux and macOS; it does
-              not undo earlier file edits, commits or remote writes. A tool that detaches
-              its own processes from that group can leave them running. Review side
-              effects before rerunning.
+              retries and failure paths. Cancelling stops the active step and its process
+              group on Linux and macOS; it does not undo earlier file edits, commits or
+              remote writes, so review side effects before rerunning.
             </p>
           </details>
           <details>
             <summary>Will schedules run with the app closed?</summary>
             <p>
-              Schedules and watchers need the app running. Opt into background mode to
-              keep it in the system tray when the window closes. Quitting the app or
-              shutting down the machine stops local automation; there is no cloud worker.
+              Schedules and watchers need the app running. Background mode keeps it in the
+              system tray when the window closes. Quitting the app or shutting down the
+              machine stops local automation; there is no cloud worker.
             </p>
           </details>
           <details>
-            <summary>Which platforms and limitations should I know about?</summary>
+            <summary>Which platforms are supported?</summary>
             <p>
-              The beta targets Linux x86_64 and macOS Apple Silicon/Intel. Windows is not
-              supported. macOS installers are unsigned and not notarized. Execution uses
-              your user permissions without a sandbox. Review imported workflows and
-              stored output before running or sharing them.
+              Linux x86_64 and macOS on Apple Silicon and Intel. Windows is not supported
+              yet. macOS installers are not signed or notarized. Steps run with your user
+              permissions and are not sandboxed.
             </p>
           </details>
         </section>
 
         <section class="block" id="contribute" aria-labelledby="contribute-h">
-          <h2 id="contribute-h">Contribute</h2>
-          <p style="color: var(--muted)">
-            The repository will be public soon under Apache-2.0. Useful contributions
-            include a workflow recipe, clearer setup guidance, accessibility improvements,
-            or a bug report with the failing step and a redacted log. Start with a small
-            reproducible case and keep the CLI/core/UI boundaries consistent.
-          </p>
-          <p>
-            Contributors with access can follow the
-            <a href="https://github.com/iazaran/orchevia/blob/main/CONTRIBUTING.md"
-              >contributor guide</a
-            >,
-            <a href="https://github.com/iazaran/orchevia/blob/main/docs/development.md"
-              >development guide</a
-            >
-            and
-            <a href="https://github.com/iazaran/orchevia/blob/main/ROADMAP.md">roadmap</a
-            >.
-          </p>
-          <div class="cta" style="justify-content: flex-start">
-            <a class="btn primary" href="https://github.com/iazaran/orchevia"
-              >Contribute on GitHub</a
-            >
+          <div class="star-cta">
+            <h2 id="contribute-h">Help shape Orchevia</h2>
+            <p>
+              Orchevia is a young, maintainer-run project. A star helps other developers
+              find it; a workflow recipe, a setup fix or a bug report with a redacted log
+              makes it better for everyone.
+            </p>
+            <div class="cta">
+              <a class="btn primary" href="https://github.com/iazaran/orchevia"
+                >★ Star on GitHub</a
+              >
+              <a
+                class="btn"
+                href="https://github.com/iazaran/orchevia/blob/main/CONTRIBUTING.md"
+                >Contributor guide</a
+              >
+              <a class="btn" href="https://github.com/iazaran/orchevia/issues/new/choose"
+                >Report an issue</a
+              >
+            </div>
           </div>
         </section>
       </main>
 
       <footer class="site">
-        <span>Orchevia — local-first orchestration for developer AI agents.</span>
+        <span
+          >Orchevia — local-first orchestration for developer AI agents · Apache-2.0</span
+        >
         <nav aria-label="Footer">
           <a href="https://github.com/iazaran/orchevia">GitHub</a>
+          <a href="https://github.com/iazaran/orchevia/releases">Releases</a>
+          <a href="https://github.com/iazaran/orchevia/blob/main/CHANGELOG.md"
+            >Changelog</a
+          >
           <a href="https://github.com/iazaran/orchevia/blob/main/ROADMAP.md">Roadmap</a>
           <a href="https://github.com/iazaran/orchevia/blob/main/SECURITY.md">Security</a>
         </nav>
       </footer>
     </div>
+    <script>
+      (() => {
+        // Recommend the installers for this visitor's OS; links work without script.
+        const platform = (
+          (navigator.userAgentData && navigator.userAgentData.platform) ||
+          navigator.platform ||
+          navigator.userAgent ||
+          ''
+        ).toLowerCase();
+        const os = /mac/.test(platform)
+          ? 'mac'
+          : /linux|x11/.test(platform) &&
+              !/android/.test(navigator.userAgent.toLowerCase())
+            ? 'linux'
+            : '';
+        const cta = document.querySelector('[data-download-cta]');
+        if (os && cta)
+          cta.textContent = os === 'mac' ? 'Download for macOS' : 'Download for Linux';
+        for (const card of document.querySelectorAll('.download[data-os]'))
+          if (card.getAttribute('data-os') === os) {
+            card.classList.add('recommended');
+            card.insertAdjacentHTML(
+              'beforeend',
+              '<span class="tag">Recommended for you</span>',
+            );
+          }
+      })();
+
+      (() => {
+        // Accessible tabs; without script every panel stays visible.
+        for (const root of document.querySelectorAll('[data-tabs]')) {
+          const tabs = Array.from(root.querySelectorAll('[role="tab"]'));
+          const select = (tab, focus) => {
+            for (const t of tabs) {
+              const selected = t === tab;
+              t.setAttribute('aria-selected', String(selected));
+              t.tabIndex = selected ? 0 : -1;
+              const panel = document.getElementById(
+                t.getAttribute('aria-controls') || '',
+              );
+              if (panel) panel.hidden = !selected;
+            }
+            if (focus) tab.focus();
+          };
+          tabs.forEach((tab, index) => {
+            tab.addEventListener('click', () => select(tab, false));
+            tab.addEventListener('keydown', (event) => {
+              const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+              if (step === undefined) return;
+              event.preventDefault();
+              select(tabs[(index + step + tabs.length) % tabs.length], true);
+            });
+          });
+          select(
+            tabs.find((t) => t.getAttribute('aria-selected') === 'true') || tabs[0],
+            false,
+          );
+        }
+      })();
+
+      (() => {
+        // Copy buttons.
+        for (const button of document.querySelectorAll('[data-copy]')) {
+          button.addEventListener('click', async () => {
+            const source = document.querySelector(button.getAttribute('data-copy') || '');
+            if (!source || !navigator.clipboard) return;
+            try {
+              await navigator.clipboard.writeText(source.textContent.trim());
+              button.textContent = 'Copied';
+            } catch {
+              button.textContent = 'Select & copy';
+            }
+            setTimeout(() => (button.textContent = 'Copy'), 1600);
+          });
+        }
+      })();
+
+      (() => {
+        // A replay of a real run: no network, no storage, nothing installed.
+        const root = document.querySelector('[data-demo]');
+        if (!root) return;
+        const runButton = root.querySelector('[data-demo-run]');
+        const approveButton = root.querySelector('[data-demo-approve]');
+        const resetButton = root.querySelector('[data-demo-reset]');
+        const logView = root.querySelector('[data-demo-log]');
+        const stats = root.querySelector('[data-demo-stats]');
+        const fast =
+          window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const nodes = new Map(
+          Array.from(root.querySelectorAll('[data-node]'), (el) => [el.dataset.node, el]),
+        );
+        let generation = 0;
+        let approve = null;
+        let attempts = 0;
+        let simulated = 0;
+        const visits = new Map();
+
+        const clock = () => {
+          const m = Math.floor(simulated / 60);
+          const s = Math.round(simulated % 60);
+          return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        };
+        const updateStats = (label) => {
+          stats.textContent = `${label} · ${clock()} · ${attempts} agent attempt${attempts === 1 ? '' : 's'}`;
+        };
+        const log = (text, tone = '') => {
+          if (logView.dataset.started !== 'true') {
+            logView.textContent = '';
+            logView.dataset.started = 'true';
+          }
+          const line = document.createElement('div');
+          const time = document.createElement('span');
+          time.className = 't';
+          time.textContent = `[${clock()}] `;
+          const body = document.createElement('span');
+          if (tone) body.className = tone;
+          body.textContent = text;
+          line.append(time, body);
+          logView.append(line);
+          logView.scrollTop = logView.scrollHeight;
+        };
+        const setState = (id, state) => {
+          const el = nodes.get(id);
+          if (!el) return;
+          el.dataset.state = state;
+          el.querySelector('.demo-status').textContent = state;
+          if (state === 'running') {
+            const count = (visits.get(id) || 0) + 1;
+            visits.set(id, count);
+            const badge = el.querySelector('.visits');
+            if (badge && count > 1) badge.textContent = `×${count}`;
+          }
+        };
+        const wait = (ms, token) =>
+          new Promise((resolve, reject) =>
+            setTimeout(
+              () => (token === generation ? resolve() : reject(new Error('reset'))),
+              fast ? Math.min(ms, 60) : ms,
+            ),
+          );
+        const advance = (seconds) => {
+          simulated += seconds;
+        };
+        const step = async (token, id, ms, seconds, start, done, agent = false) => {
+          const startedAt = simulated;
+          setState(id, 'running');
+          if (agent) attempts += 1;
+          if (start) log(start, agent ? 'ai' : '');
+          updateStats('Running');
+          await wait(ms, token);
+          simulated = Math.max(simulated, startedAt + seconds);
+          setState(id, 'succeeded');
+          if (done) log(done, 'ok');
+          updateStats('Running');
+        };
+        const parallel = (...tasks) => Promise.all(tasks);
+
+        const reset = () => {
+          generation += 1;
+          const pending = approve;
+          approve = null;
+          if (pending) pending();
+          attempts = 0;
+          simulated = 0;
+          visits.clear();
+          for (const [id, el] of nodes) {
+            setState(id, 'idle');
+            const badge = el.querySelector('.visits');
+            if (badge) badge.textContent = '';
+          }
+          visits.clear();
+          logView.dataset.started = 'false';
+          logView.textContent =
+            'Press ▶ Run demo to start. The run pauses at the approval gate until you approve.';
+          runButton.disabled = false;
+          approveButton.disabled = true;
+          stats.textContent = 'Ready';
+        };
+
+        const run = async () => {
+          reset();
+          const token = generation;
+          runButton.disabled = true;
+          try {
+            log('▶ Run started · ticket=SHOP-482 · branch=shop-482-rate-limit');
+            await step(token, 'start', 250, 0, '', '');
+            await step(
+              token,
+              'ticket',
+              700,
+              2,
+              'Ticket · jira_get_issue SHOP-482 via MCP',
+              'SHOP-482 “Rate-limit the checkout API” · High',
+            );
+            await step(
+              token,
+              'plan',
+              1500,
+              168,
+              'claude -p · Planning (fable) · reading 14 files…',
+              'Plan ready: 3 files, 9 tests, 2 risks · 61k tokens',
+              true,
+            );
+            setState('approve', 'paused');
+            log('⏸ Waiting for your approval — press “Approve plan”.', 'warn');
+            updateStats('Paused');
+            approveButton.disabled = false;
+            await new Promise((resolve) => (approve = resolve));
+            if (token !== generation) return;
+            approveButton.disabled = true;
+            advance(192);
+            setState('approve', 'succeeded');
+            log('✓ Approved by you', 'ok');
+            await step(
+              token,
+              'implement',
+              1900,
+              554,
+              'claude -p · Implementation (opus) · editing 4 files…',
+              '+212 −6 in 4 files · ran pnpm test 3×',
+              true,
+            );
+            await step(
+              token,
+              'tests',
+              700,
+              41,
+              'pnpm test',
+              '48 files · 321 tests passed',
+            );
+            await parallel(
+              step(
+                token,
+                'claude-review',
+                1100,
+                127,
+                'claude -p · Fast review (opus)',
+                'Claude: P2 · Retry-After rounded down',
+                true,
+              ),
+              step(
+                token,
+                'codex-review',
+                1700,
+                218,
+                'codex exec · Deep review (gpt-6.1-sol)',
+                'Codex: P1 · rejected requests still consume the window',
+                true,
+              ),
+            );
+            await step(token, 'gate', 300, 0, '', '');
+            log('P0/P1 found? → true (codex-review: P1) · loop 1 of 2', 'warn');
+            await step(
+              token,
+              'fix',
+              1200,
+              116,
+              'claude -p · resumed session, turn 2 · fixing P1…',
+              'Fixed: ZCARD before ZADD in one MULTI · +1 regression test',
+              true,
+            );
+            await step(
+              token,
+              'tests',
+              600,
+              39,
+              'pnpm test',
+              '48 files · 322 tests passed',
+            );
+            await parallel(
+              step(
+                token,
+                'claude-review',
+                900,
+                91,
+                'claude -p · Fast review (opus)',
+                'Claude: no P0/P1',
+                true,
+              ),
+              step(
+                token,
+                'codex-review',
+                1300,
+                146,
+                'codex exec · Deep review (gpt-6.1-sol)',
+                'Codex: no P0/P1 · previous P1 resolved',
+                true,
+              ),
+            );
+            await step(token, 'gate', 300, 0, '', '');
+            log('P0/P1 found? → false', 'ok');
+            await step(
+              token,
+              'pr',
+              700,
+              3,
+              'gh pr create --draft',
+              'Draft PR #214 opened',
+            );
+            await step(token, 'end', 200, 0, '', '');
+            log(
+              `✔ Run succeeded · ${clock()} simulated · ${attempts} agent attempts`,
+              'ok',
+            );
+            updateStats('Succeeded');
+            runButton.disabled = false;
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== 'reset') throw error;
+          }
+        };
+
+        runButton.addEventListener('click', () => void run());
+        approveButton.addEventListener('click', () => {
+          if (approve) {
+            const resolve = approve;
+            approve = null;
+            resolve();
+          }
+        });
+        resetButton.addEventListener('click', reset);
+        reset();
+      })();
+    </script>
   </body>
 </html>
