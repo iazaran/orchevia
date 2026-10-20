@@ -53,7 +53,10 @@ export function TemplatesView(): React.JSX.Element {
     setUseTarget({
       template,
       builtin,
-      repoDir: useAppStore.getState().knownFolders[0] ?? '',
+      repoDir:
+        template.workflow.defaults?.repoDir ??
+        useAppStore.getState().knownFolders[0] ??
+        '',
       mcpServerId: servers.length === 1 ? (servers[0]?.id ?? '') : '',
     });
     setUseRoleMap(undefined);
@@ -74,7 +77,11 @@ export function TemplatesView(): React.JSX.Element {
       .then((preview) => {
         // The template works in the chosen repository; ticket and MCP steps
         // use the chosen server unless the template already names one.
-        let workflow = setWorkflowDefaults(preview.workflow, repoDir, '');
+        let workflow = setWorkflowDefaults(
+          preview.workflow,
+          repoDir,
+          preview.workflow.defaults?.branch ?? '',
+        );
         if (mcpServerId !== '')
           workflow = {
             ...workflow,
