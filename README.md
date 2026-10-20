@@ -197,7 +197,8 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 - **Local automation.** Durable schedules, PR review and feedback watchers with bot-loop
   guards, a notification inbox, and an opt-in tray mode. Schedules that write need a
   per-schedule trust opt-in.
-- **Reuse and memory.** Nine built-in templates plus your own, versioned JSON
+- **Reuse and memory.** Nine ready-to-run built-in templates (pick a repository,
+  answer the run form) plus your own, versioned JSON
   import/export, and a project playbook of accepted commands and conventions.
 - **Run controls.** Dry runs with fixtures, agent-attempt budgets, an optional guard on
   CLI-reported spend, and recovery of failed runs from their original inputs.

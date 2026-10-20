@@ -48,6 +48,16 @@ Orchevia does not grade prose. If agents disagree on severity, both findings
 stand (different fingerprints) unless textually identical. Tune the review
 prompts, not the parser.
 
+For conditions, `node.<id>.severity` takes the highest severity among a step's
+finding blocks. Without blocks it falls back to `P0`–`P3` tags in the text,
+ignoring lists, ranges and negations such as "No P0/P1 issues found", so a clean
+review never routes as a blocking one. See
+[conditions](execution.md#conditions).
+
+The built-in **Review Pull Request** template fetches the PR's details and diff,
+runs Claude and Codex in parallel, and asks for your approval before posting one
+comment with both reviews. A clean review ends without posting.
+
 ## Formatted reports
 
 Runs renders Markdown tables (including alignment), headings, nested numbered

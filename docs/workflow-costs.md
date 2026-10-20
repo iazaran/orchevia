@@ -91,7 +91,7 @@ behavior changes for review. An explicit empty `contextRefs` list clears handoff
 
 New built-in templates pass relevant plans, implementation/test results, PR file
 lists and findings as bounded handoffs. Ticket to Draft PR shares implementation
-context with fixes; Watch Review Feedback retains fix context through bounded
+context with fixes; Address Review Feedback retains fix context through bounded
 cycles. Reviewers stay fresh. The Plan → Implement → Review, PR Review and Review
 Loop samples use the same controls. Existing saved copies are never rewritten.
 

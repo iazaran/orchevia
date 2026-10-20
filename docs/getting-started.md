@@ -79,8 +79,11 @@ Unsupported integration operations may need Command nodes or manual steps.
 
 ## Reuse the parts that work
 
-- Save a workflow as a **Template**. Built-in templates are language neutral;
-  supply the commands and profiles for your repository.
+- Start from a built-in **Template**: **Use template** asks for your repository
+  folder (and the Jira server for ticket templates), then each run asks for the
+  task, bug or PR number and your test command. Built-ins are language neutral and
+  leave changes uncommitted unless the template opens a PR.
+- Save a workflow as a **Template** to reuse it with new inputs.
 - Use **Simple JSON** for readable node keys and portable profile selections.
   **Advanced JSON** preserves the full runtime definition. Importing and editing
   do not execute a workflow. Use **Arrange** when the graph grows.

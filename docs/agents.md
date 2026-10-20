@@ -24,7 +24,7 @@ A profile is a persisted, inspectable recipe for invoking one CLI:
 | Executable             | Blank = auto-detect the adapter default on `PATH`; or pin an explicit path                                                                      |
 | Model                  | Free-form, adapter-specific (e.g. `opus`); validated lightly since names evolve                                                                 |
 | Additional arguments   | Passed verbatim as argv (no shell); credential-like flags are rejected                                                                          |
-| Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                                                                       |
+| Working directory mode | Per-node directory (blank uses the workflow's repository directory), fixed profile directory, or inherit (explicit opt-in)                      |
 | Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                                                 |
 | Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                                      |
 | Permissions            | Use the CLI's settings (default), Allowed tools (Claude Code), or Full access; see [Tool permissions](#tool-permissions)                        |
