@@ -27,6 +27,7 @@ A profile is a persisted, inspectable recipe for invoking one CLI:
 | Working directory mode | Per-node directory, fixed profile directory, or inherit (explicit opt-in)                                                                       |
 | Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                                                 |
 | Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                                      |
+| Permissions            | Use the CLI's settings (default), Allowed tools (Claude Code), or Full access; see [Tool permissions](#tool-permissions)                        |
 | Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator`, `workflowAssistance`, `generalPurpose` |
 
 Manage profiles in the **Agents** tab: create, rename, reconfigure, **Test** (probes the
@@ -49,8 +50,8 @@ until remapped).
 
 Command shapes (built by the adapter, never by the engine or UI):
 
-- Claude: `claude -p --output-format stream-json --verbose [--model <model>] [--effort <level>] [extra args…]`, prompt on stdin
-- Codex: `codex exec --json [--model <model>] [-c model_reasoning_effort="high"] [extra args…] -`, prompt on stdin
+- Claude: `claude -p --output-format stream-json --verbose [--model <model>] [--effort <level>] [permission flags] [extra args…]`, prompt on stdin
+- Codex: `codex exec --json [--model <model>] [-c model_reasoning_effort="high"] [permission flag] [extra args…] -`, prompt on stdin
 - Custom: `<executable> [--model <model>] [extra args…] <prompt>`
 
 Claude and Codex nodes decode the structured stream into the final response
@@ -76,6 +77,39 @@ Claude and Codex receive the prompt on **stdin**, so prompt text can never becom
 flags, is not limited by the operating system's argument size (128 KiB per argument
 on Linux), and does not appear in process listings. Previews show
 `<prompt via stdin, N chars>`. Custom CLIs receive it as the final argv element.
+
+## Tool permissions
+
+Each Claude Code or Codex profile has a permission setting. Orchevia passes it only
+as command-line flags for that run. It never writes `~/.claude/settings.json`, Codex
+config, or any project settings file, because those also govern your interactive
+sessions.
+
+| Level                                      | Claude Code                                     | Codex                                        |
+| ------------------------------------------ | ----------------------------------------------- | -------------------------------------------- |
+| Use Claude Code / Codex settings (default) | no flag                                         | no flag                                      |
+| Allowed tools                              | `--allowedTools <rules>` on top of the settings | not offered: Codex has no tool allow-list    |
+| Full access                                | `--permission-mode bypassPermissions`           | `--dangerously-bypass-approvals-and-sandbox` |
+
+- **Use the CLI's settings** is the default. Profiles saved before v0.1.16 keep it,
+  so upgrading widens nothing. Headless `claude -p` still refuses any tool the
+  settings do not allow; it does not apply `defaultMode: bypassPermissions` from a
+  project's `.claude/settings.local.json`.
+- **Allowed tools** lists Claude Code allow rules: a tool name (`Edit`, `Write`), an
+  MCP server (`mcp__<server>`) or one of its tools, or a tool with a specifier
+  (`Bash(git status *)`, `WebFetch(domain:example.com)`). What the Claude Code
+  settings already allow still applies. Rules are validated: at most 64, no
+  duplicates, no commas or nested parentheses, and nothing that looks like a
+  credential.
+- **Full access** skips every permission check. Never the default. A workflow
+  whose Agent nodes use such a profile (or whose extra arguments bypass checks,
+  such as `--dangerously-skip-permissions`) lists **Run AI CLI with full access**
+  among its automation risks, and its schedules need the per-schedule trusted
+  opt-in.
+
+While a profile uses a permission level other than the CLI settings, extra
+arguments that set permissions themselves (`--permission-mode`, `--allowedTools`,
+`--dangerously-skip-permissions`; Codex `--sandbox`, `--full-auto`) are rejected.
 
 ## Refused tool calls
 
@@ -119,7 +153,8 @@ There is no expression language, no conditionals, no script evaluation — by de
 
 Stored locally in SQLite (`agent_profiles`, `known_folders` tables):
 
-- profile configuration (adapter, model, args, directory mode, timeout, role)
+- profile configuration (adapter, model, args, directory mode, timeout, role,
+  permission level and allowed tools)
 - recently used project folders (paths only, local-only)
 
 Orchevia has no credential configuration fields and does not save environment

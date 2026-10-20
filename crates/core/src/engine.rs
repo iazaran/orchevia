@@ -5043,6 +5043,8 @@ mod tests {
             working_dir: None,
             default_timeout_secs: 60,
             role: None,
+            permission_level: Default::default(),
+            allowed_tools: vec![],
         }
     }
 

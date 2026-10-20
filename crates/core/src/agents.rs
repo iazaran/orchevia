@@ -273,6 +273,57 @@ impl AgentEffort {
     }
 }
 
+/// What an Agent Profile's CLI may do without asking. Applied only as CLI
+/// flags on each invocation: Orchevia never writes `~/.claude/settings.json`,
+/// Codex config, or any project settings file, since those also govern the
+/// user's interactive sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionLevel {
+    /// No permission flag: the CLI's own settings decide. The default, and
+    /// what every profile saved before this setting existed reads as, so an
+    /// upgrade widens nothing.
+    #[default]
+    CliSettings,
+    /// Claude Code only: `--allowedTools` with the profile's rules, on top of
+    /// whatever the Claude Code settings already allow. Codex has no tool
+    /// allow-list, so this level is not offered there.
+    AllowedTools,
+    /// Every permission check bypassed: Claude `--permission-mode
+    /// bypassPermissions`, Codex `--dangerously-bypass-approvals-and-sandbox`.
+    /// High risk for automation (see `trust.rs`); never a default.
+    FullAccess,
+}
+
+impl PermissionLevel {
+    fn is_cli_settings(&self) -> bool {
+        *self == PermissionLevel::CliSettings
+    }
+}
+
+/// Extra arguments that set permissions themselves and so conflict with a
+/// profile-level permission setting (or bypass checks on their own).
+fn permission_flags(adapter: AdapterKind) -> &'static [&'static str] {
+    match adapter {
+        AdapterKind::Claude => &[
+            "--permission-mode",
+            "--allowedTools",
+            "--allowed-tools",
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+        ],
+        AdapterKind::Codex => &[
+            "--sandbox",
+            "-s",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--yolo",
+            "--full-auto",
+            "--approve-for-me",
+        ],
+        AdapterKind::Custom => &[],
+    }
+}
+
 /// Persisted user configuration for invoking a local AI CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +355,15 @@ pub struct AgentProfile {
     pub default_timeout_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Missing in stored definitions (`agent_profiles.definition`) means
+    /// [`PermissionLevel::CliSettings`].
+    #[serde(default, skip_serializing_if = "PermissionLevel::is_cli_settings")]
+    pub permission_level: PermissionLevel,
+    /// Claude Code allow rules (`Edit`, `mcp__server`, `Bash(git *)`), passed
+    /// as `--allowedTools` at the [`PermissionLevel::AllowedTools`] level and
+    /// kept, unused, at the other levels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -366,6 +426,39 @@ impl AgentProfile {
                 errors.push("Model value is too long (max 120 chars).".to_string());
             }
         }
+        if self.adapter != AdapterKind::Claude && !self.allowed_tools.is_empty() {
+            errors.push("Allowed tools apply only to Claude Code profiles.".to_string());
+        }
+        errors.extend(crate::permissions::validate_tool_rules(
+            &self.allowed_tools,
+            "Allowed tools",
+        ));
+        match (self.adapter, self.permission_level) {
+            (_, PermissionLevel::CliSettings) => {}
+            (AdapterKind::Custom, _) => errors.push(
+                "Permission levels apply only to Claude Code and Codex profiles.".to_string(),
+            ),
+            (AdapterKind::Codex, PermissionLevel::AllowedTools) => errors.push(
+                "Codex has no tool allow-list. Use Codex settings or Full access.".to_string(),
+            ),
+            (AdapterKind::Claude, PermissionLevel::AllowedTools)
+                if self.allowed_tools.is_empty() =>
+            {
+                errors.push("Allowed tools needs at least one tool.".to_string())
+            }
+            _ => {}
+        }
+        if !self.permission_level.is_cli_settings() {
+            if let Some(arg) = self.extra_args.iter().find(|arg| {
+                permission_flags(self.adapter)
+                    .iter()
+                    .any(|flag| *arg == flag || arg.starts_with(&format!("{flag}=")))
+            }) {
+                errors.push(format!(
+                    "Extra argument '{arg}' conflicts with the profile's permission setting. Remove it or use the CLI settings level."
+                ));
+            }
+        }
         if let Some(e) = self.effort.as_deref() {
             let trimmed = e.trim();
             if trimmed.is_empty() {
@@ -380,6 +473,36 @@ impl AgentProfile {
             }
         }
         errors
+    }
+
+    /// Whether runs with this profile bypass every permission check, through
+    /// the Full access level or the profile's own extra arguments.
+    pub fn has_full_access(&self) -> bool {
+        if self.permission_level == PermissionLevel::FullAccess {
+            return true;
+        }
+        let args = &self.extra_args;
+        args.iter().enumerate().any(|(i, arg)| {
+            let next = args.get(i + 1).map(String::as_str);
+            match self.adapter {
+                AdapterKind::Claude => {
+                    arg == "--dangerously-skip-permissions"
+                        || arg == "--permission-mode=bypassPermissions"
+                        || (arg == "--permission-mode" && next == Some("bypassPermissions"))
+                }
+                AdapterKind::Codex => {
+                    matches!(
+                        arg.as_str(),
+                        "--dangerously-bypass-approvals-and-sandbox"
+                            | "--yolo"
+                            | "--sandbox=danger-full-access"
+                            | "-sdanger-full-access"
+                    ) || (matches!(arg.as_str(), "--sandbox" | "-s")
+                        && next == Some("danger-full-access"))
+                }
+                AdapterKind::Custom => false,
+            }
+        })
     }
 
     /// Effective executable: explicit override or adapter default.
@@ -562,6 +685,27 @@ fn push_model_and_effort(args: &mut Vec<String>, profile: &AgentProfile, effort:
     }
 }
 
+/// Permission flags for the profile's level; nothing at the CLI settings
+/// level. Flags only: no settings file is written.
+fn push_permissions(args: &mut Vec<String>, profile: &AgentProfile) {
+    match (profile.adapter, profile.permission_level) {
+        (AdapterKind::Claude, PermissionLevel::AllowedTools) => {
+            // One comma-joined value, as the Agent SDK passes it: the flag is
+            // variadic, so separate values could swallow a following argument.
+            args.push("--allowedTools".into());
+            args.push(profile.allowed_tools.join(","));
+        }
+        (AdapterKind::Claude, PermissionLevel::FullAccess) => {
+            args.push("--permission-mode".into());
+            args.push("bypassPermissions".into());
+        }
+        (AdapterKind::Codex, PermissionLevel::FullAccess) => {
+            args.push("--dangerously-bypass-approvals-and-sandbox".into());
+        }
+        _ => {}
+    }
+}
+
 /// Build the command an ordinary Agent node runs for a profile + rendered
 /// prompt: structured output when [`structured_output`] allows it, the text
 /// invocation otherwise.
@@ -604,6 +748,7 @@ pub fn build_text_agent_command(
             args.push("--output-format".to_string());
             args.push("text".to_string());
             push_model_and_effort(&mut args, profile, effort.as_deref());
+            push_permissions(&mut args, profile);
             args.extend(profile.extra_args.iter().cloned());
             None
         }
@@ -612,12 +757,14 @@ pub fn build_text_agent_command(
             args.push("--output-format".to_string());
             args.push("text".to_string());
             push_model_and_effort(&mut args, profile, effort.as_deref());
+            push_permissions(&mut args, profile);
             args.extend(profile.extra_args.iter().cloned());
             Some(prompt)
         }
         AdapterKind::Codex => {
             args.push("exec".to_string());
             push_model_and_effort(&mut args, profile, effort.as_deref());
+            push_permissions(&mut args, profile);
             args.push("-".to_string());
             args.extend(profile.extra_args.iter().cloned());
             Some(prompt)
@@ -664,6 +811,7 @@ fn build_structured_command(
         vec!["exec".into(), "--json".into()]
     };
     push_model_and_effort(&mut args, profile, effort.as_deref());
+    push_permissions(&mut args, profile);
     args.extend(profile.extra_args.iter().cloned());
     if let Some(id) = resume_id {
         args.extend([
@@ -779,6 +927,8 @@ mod tests {
             working_dir: None,
             default_timeout_secs: 3600,
             role: Some("implementation".to_string()),
+            permission_level: PermissionLevel::CliSettings,
+            allowed_tools: vec![],
         }
     }
 
@@ -801,6 +951,175 @@ mod tests {
         assert_eq!(spec.stdin.as_deref(), Some("hello"));
         assert!(!spec.args.iter().any(|a| a.contains("hello")));
         assert!(spec.preview().ends_with("<prompt via stdin, 5 chars>"));
+    }
+
+    #[test]
+    fn stored_profiles_without_a_permission_setting_keep_cli_settings() {
+        let stored = r#"{"id":"p","name":"Old","adapter":"claude","extraArgs":[],"workingDirMode":"node","defaultTimeoutSecs":3600}"#;
+        let profile: AgentProfile = serde_json::from_str(stored).expect("legacy definition");
+        assert_eq!(profile.permission_level, PermissionLevel::CliSettings);
+        assert!(profile.allowed_tools.is_empty());
+        assert!(!profile.has_full_access());
+        // The default is not written back, so stored definitions and session
+        // keys of existing profiles stay byte-identical.
+        let value = serde_json::to_value(&profile).unwrap();
+        assert!(value.get("permissionLevel").is_none());
+        assert!(value.get("allowedTools").is_none());
+        let spec = build_agent_command(&profile, "hi", None).unwrap();
+        assert_eq!(
+            spec.args,
+            ["-p", "--output-format", "stream-json", "--verbose"]
+        );
+    }
+
+    #[test]
+    fn permission_levels_map_to_cli_flags_only() {
+        let mut claude = claude_profile();
+        claude.permission_level = PermissionLevel::AllowedTools;
+        claude.allowed_tools = vec![
+            "mcp__claude_ai_Atlassian_Rovo_2".into(),
+            "Bash(git status *)".into(),
+            "Edit".into(),
+        ];
+        assert!(claude.validate().is_empty(), "{:?}", claude.validate());
+        let spec = build_agent_command(&claude, "hi", None).unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--model",
+                "opus",
+                "--allowedTools",
+                "mcp__claude_ai_Atlassian_Rovo_2,Bash(git status *),Edit"
+            ]
+        );
+        // Text and session invocations carry the same flags.
+        let text = build_text_agent_command(&claude, "hi", None).unwrap();
+        assert!(text.args.ends_with(&[
+            "--allowedTools".to_string(),
+            "mcp__claude_ai_Atlassian_Rovo_2,Bash(git status *),Edit".to_string()
+        ]));
+        let id = "00000000-0000-4000-8000-000000000001";
+        let session = build_session_command(&claude, "hi", None, Some(id)).unwrap();
+        assert!(session.args.windows(2).any(|w| w[0] == "--allowedTools"));
+        assert_eq!(session.args.last().unwrap(), id);
+
+        claude.permission_level = PermissionLevel::FullAccess;
+        assert!(claude.has_full_access());
+        let spec = build_agent_command(&claude, "hi", None).unwrap();
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "bypassPermissions"]));
+        assert!(!spec.args.iter().any(|a| a == "--allowedTools"));
+
+        let mut codex = claude_profile();
+        codex.adapter = AdapterKind::Codex;
+        codex.permission_level = PermissionLevel::FullAccess;
+        let spec = build_agent_command(&codex, "hi", None).unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "exec",
+                "--json",
+                "--model",
+                "opus",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-"
+            ]
+        );
+        let resumed = build_session_command(&codex, "hi", None, Some(id)).unwrap();
+        let bypass = resumed
+            .args
+            .iter()
+            .position(|a| a == "--dangerously-bypass-approvals-and-sandbox")
+            .unwrap();
+        let resume = resumed.args.iter().position(|a| a == "resume").unwrap();
+        assert!(
+            bypass < resume,
+            "exec options precede the resume subcommand"
+        );
+        codex.permission_level = PermissionLevel::CliSettings;
+        let spec = build_agent_command(&codex, "hi", None).unwrap();
+        assert_eq!(spec.args, ["exec", "--json", "--model", "opus", "-"]);
+    }
+
+    #[test]
+    fn permission_settings_are_validated_per_adapter() {
+        let mut p = claude_profile();
+        p.permission_level = PermissionLevel::AllowedTools;
+        assert!(p.validate().iter().any(|e| e.contains("at least one tool")));
+        p.allowed_tools = vec![
+            "Bash(git *)".into(),
+            "--dangerously-skip-permissions".into(),
+        ];
+        assert!(p
+            .validate()
+            .iter()
+            .any(|e| e.contains("Invalid allowed tool")));
+        p.allowed_tools = vec!["Edit".into()];
+        p.extra_args = vec!["--permission-mode".into(), "acceptEdits".into()];
+        assert!(p
+            .validate()
+            .iter()
+            .any(|e| e.contains("conflicts with the profile's permission setting")));
+        // Extra permission flags stay the user's own choice at the default level.
+        p.permission_level = PermissionLevel::CliSettings;
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+
+        let mut codex = claude_profile();
+        codex.adapter = AdapterKind::Codex;
+        codex.permission_level = PermissionLevel::AllowedTools;
+        codex.allowed_tools = vec!["Edit".into()];
+        let errors = codex.validate();
+        assert!(errors.iter().any(|e| e.contains("no tool allow-list")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("only to Claude Code profiles")));
+        codex.allowed_tools.clear();
+        codex.permission_level = PermissionLevel::FullAccess;
+        assert!(codex.validate().is_empty());
+        codex.extra_args = vec!["--sandbox".into(), "read-only".into()];
+        assert!(!codex.validate().is_empty());
+
+        let mut custom = claude_profile();
+        custom.adapter = AdapterKind::Custom;
+        custom.executable = Some("/usr/local/bin/aichat".into());
+        custom.permission_level = PermissionLevel::FullAccess;
+        assert!(custom
+            .validate()
+            .iter()
+            .any(|e| e.contains("only to Claude Code and Codex")));
+    }
+
+    #[test]
+    fn full_access_is_recognised_in_extra_arguments_too() {
+        let mut claude = claude_profile();
+        for args in [
+            vec!["--dangerously-skip-permissions"],
+            vec!["--permission-mode", "bypassPermissions"],
+            vec!["--permission-mode=bypassPermissions"],
+        ] {
+            claude.extra_args = args.iter().map(|a| a.to_string()).collect();
+            assert!(claude.has_full_access(), "{args:?}");
+        }
+        claude.extra_args = vec!["--permission-mode".into(), "acceptEdits".into()];
+        assert!(!claude.has_full_access());
+        let mut codex = claude_profile();
+        codex.adapter = AdapterKind::Codex;
+        for args in [
+            vec!["--sandbox", "danger-full-access"],
+            vec!["-s", "danger-full-access"],
+            vec!["--yolo"],
+        ] {
+            codex.extra_args = args.iter().map(|a| a.to_string()).collect();
+            assert!(codex.has_full_access(), "{args:?}");
+        }
+        codex.extra_args = vec!["--sandbox".into(), "workspace-write".into()];
+        assert!(!codex.has_full_access());
     }
 
     #[test]

@@ -54,6 +54,7 @@ import {
   effectiveExecutable,
   referencedVariables,
   validateProfile,
+  permissionArgs,
   type AdapterInfo,
   type AgentProfile,
   type AgentSkillInfo,
@@ -1965,6 +1966,7 @@ class MockBackend implements Backend {
     if (effort !== '' && profile.adapter === 'codex') {
       args.push('-c', `model_reasoning_effort="${effort}"`);
     }
+    args.push(...permissionArgs(profile));
     if (profile.adapter === 'codex' && !structured) args.push('-');
     args.push(...profile.extraArgs);
     if (profile.adapter === 'codex' && structured) args.push('-');

@@ -2408,6 +2408,8 @@ mod tests {
             working_dir: None,
             default_timeout_secs: 600,
             role: Some("implementation".to_string()),
+            permission_level: crate::agents::PermissionLevel::AllowedTools,
+            allowed_tools: vec!["mcp__jira".to_string(), "Bash(git status *)".to_string()],
         };
         db.upsert_agent_profile(&profile).expect("upsert");
         let fetched = db
@@ -2437,6 +2439,8 @@ mod tests {
             working_dir: None,
             default_timeout_secs: 0,
             role: None,
+            permission_level: Default::default(),
+            allowed_tools: vec![],
         };
         assert!(db.upsert_agent_profile(&profile).is_err());
     }

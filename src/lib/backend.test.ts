@@ -728,6 +728,38 @@ describe('mock backend (browser dev)', () => {
       'stream-json',
     ]);
     expect(legacy.preview).not.toContain('stdin');
+    // Permission flags follow model/effort, before extra arguments (agents.rs).
+    const allowed = {
+      ...claude,
+      id: 'prof-allowed',
+      permissionLevel: 'allowedTools' as const,
+      allowedTools: ['mcp__jira', 'Bash(git status *)'],
+    };
+    await backend.saveAgentProfile(allowed);
+    expect((await backend.previewAgentCommand(allowed.id, 'Review')).args).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--model',
+      'haiku',
+      '--allowedTools',
+      'mcp__jira,Bash(git status *)',
+    ]);
+    const full = {
+      ...createDefaultProfile('codex'),
+      permissionLevel: 'fullAccess' as const,
+    };
+    await backend.saveAgentProfile(full);
+    expect((await backend.previewAgentCommand(full.id, 'Review')).args).toEqual([
+      'exec',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '-',
+    ]);
+    await expect(
+      backend.saveAgentProfile({ ...full, extraArgs: ['--sandbox', 'read-only'] }),
+    ).rejects.toThrow('conflicts with the profile');
   });
   beforeEach(() => {
     localStorage.clear();
