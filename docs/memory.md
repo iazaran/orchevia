@@ -38,12 +38,17 @@ naming the role — never silently.
 
 ## Templates
 
-Nine built-ins: Implement Ticket, Review Pull Request, Investigate Bug,
-Refactor, Dependency Upgrade, Run Multi-Agent Review, Create Draft PR, Watch
-Review Feedback, and Ticket to PR. Versioned (`v1` schema) and cloneable:
+Nine built-ins: Implement a Task, Review Pull Request, Investigate Bug,
+Refactor, Dependency Upgrade, Run Multi-Agent Review, Create Draft PR, Address
+Review Feedback, and Ticket to Draft PR. Versioned (`v1` schema) and cloneable:
 
-- **Use** instantiates with your role map (fresh ids), reporting setup steps
-  (repo dirs, server picks) instead of failing.
+- **Use** asks for the repository folder (and the Jira/MCP server for ticket
+  steps), lists the inputs each run asks for and any tool permissions the mapped
+  profiles lack, then instantiates with your role map (fresh ids). Every step works
+  in that repository.
+- Each built-in asks for what it needs as run inputs (task, bug, PR number, test
+  command, branch, base branch), declares the tools its implementation steps need,
+  and is replayed end to end in the core tests with stub CLIs.
 - **Save as template** keeps exact choices locally. Portable export uses roles
   and exact unique profile names; configure the corresponding profiles on import.
 - **Import/export** accepts a supported plain Simple/Advanced workflow document

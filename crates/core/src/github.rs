@@ -354,19 +354,30 @@ pub fn pr_for_branch(runner: &GhRunner, cwd: &str) -> Result<Option<PullRequest>
 /// Changed files with add/del counts.
 pub fn pr_files(runner: &GhRunner, cwd: &str, number: u64) -> Result<Vec<ChangedFileMeta>, String> {
     let num = number.to_string();
-    let out = runner.run(cwd, &["pr", "diff", &num, "--numstat"])?;
-    let mut files = Vec::new();
-    for line in out.lines() {
-        let mut parts = line.split_whitespace();
-        if let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next()) {
-            files.push(ChangedFileMeta {
-                path: path.to_string(),
-                additions: add.parse().unwrap_or(0),
-                deletions: del.parse().unwrap_or(0),
-            });
-        }
-    }
-    Ok(files)
+    // `gh pr diff` has no per-file counts; `pr view --json files` does.
+    let out = runner.run(cwd, &["pr", "view", &num, "--json", "files"])?;
+    let value: serde_json::Value = serde_json::from_str(&out)
+        .map_err(|_| "Cannot parse `gh pr view --json files` output.".to_string())?;
+    let files = value
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("PR #{number} returned no file list."))?;
+    Ok(files
+        .iter()
+        .filter_map(|file| {
+            Some(ChangedFileMeta {
+                path: file.get("path")?.as_str()?.to_string(),
+                additions: file
+                    .get("additions")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                deletions: file
+                    .get("deletions")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            })
+        })
+        .collect())
 }
 
 /// CI/check conclusions for a PR.
@@ -609,12 +620,12 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
   echo '[{"number":7,"title":"Fix cart","state":"open","author":{"login":"bob"},"headRefName":"fix-cart","baseRefName":"main","headRefOid":"abc123","url":"https://github.com/acme/shop/pull/7","isDraft":true,"reviewRequests":[{"login":"alice"}],"labels":[{"name":"bug"}]}]'
   exit 0
 fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  echo '{"number":7,"title":"Fix cart","state":"open","author":{"login":"bob"},"headRefName":"fix-cart","baseRefName":"main","headRefOid":"abc123","url":"https://github.com/acme/shop/pull/7","isDraft":true,"reviewRequests":[{"login":"alice"}],"labels":[],"reviews":[{"author":{"login":"coderabbitai[bot]"},"body":"coderabbit: possible N+1","submittedAt":"2026-01-01T00:00:00Z"}],"comments":[{"author":{"login":"alice"},"body":"please rebase","path":"a.ts","line":12,"createdAt":"2026-01-02T00:00:00Z"}]}'
+if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$5" = "files" ]; then
+  echo '{"files":[{"path":"a.ts","additions":10,"deletions":2}]}'
   exit 0
 fi
-if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
-  printf '10\t2\ta.ts\n'
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  echo '{"number":7,"title":"Fix cart","state":"open","author":{"login":"bob"},"headRefName":"fix-cart","baseRefName":"main","headRefOid":"abc123","url":"https://github.com/acme/shop/pull/7","isDraft":true,"reviewRequests":[{"login":"alice"}],"labels":[],"reviews":[{"author":{"login":"coderabbitai[bot]"},"body":"coderabbit: possible N+1","submittedAt":"2026-01-01T00:00:00Z"}],"comments":[{"author":{"login":"alice"},"body":"please rebase","path":"a.ts","line":12,"createdAt":"2026-01-02T00:00:00Z"}]}'
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then

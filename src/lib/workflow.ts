@@ -1199,10 +1199,21 @@ export function createAgentDemoWorkflow(profileIds: {
   };
 }
 
+/** True when any reviewer reported a P0 or P1 finding (`node.<id>.severity`). */
+function blockingFindings(reviewers: string[]): ConditionClause[] {
+  return reviewers.flatMap((id) =>
+    (['P0', 'P1'] as const).map((level) => ({
+      left: `node.${id}.severity`,
+      op: 'contains' as const,
+      right: level,
+    })),
+  );
+}
+
 /**
  * PR review template (Milestone 5):
  * Start → PR details + files → Parallel(Claude Review, Codex Review) →
- * Condition(actionable P0/P1?) → true: post draft comment / false: mark checked.
+ * Condition(actionable P0/P1?) → true: approve, then post a note / false: mark checked.
  * PR numbers resolve from `{{input.prNumber}}` at runtime (watchers inject it);
  * number 0 means "from inputs".
  */
@@ -1217,6 +1228,7 @@ export function createReviewWorkflow(profileIds: {
     revA: newId('node'),
     revB: newId('node'),
     cond: newId('node'),
+    approve: newId('node'),
     comment: newId('node'),
     checked: newId('node'),
     end: newId('node'),
@@ -1271,18 +1283,25 @@ export function createReviewWorkflow(profileIds: {
       config: {
         condition: {
           logic: 'or',
-          clauses: [
-            { left: `node.${ids.revA}.severity`, op: 'contains', right: 'P0' },
-            { left: `node.${ids.revB}.severity`, op: 'contains', right: 'P1' },
-          ],
+          clauses: blockingFindings([ids.revA, ids.revB]),
         },
       },
       label: 'Actionable?',
     },
     {
+      id: ids.approve,
+      type: 'approval',
+      position: { x: 40, y: 660 },
+      config: {
+        message:
+          'The reviews found P0/P1 problems. Approve to post a note on the PR; reject to stop without posting.',
+      },
+      label: 'Post findings?',
+    },
+    {
       id: ids.comment,
       type: 'github',
-      position: { x: 40, y: 660 },
+      position: { x: 40, y: 780 },
       config: {
         githubOp: {
           op: 'postComment',
@@ -1300,7 +1319,7 @@ export function createReviewWorkflow(profileIds: {
       config: { executable: 'echo', args: ['no actionable findings'] },
       label: 'Mark checked',
     },
-    { id: ids.end, type: 'end', position: at(780), config: {}, label: 'End' },
+    { id: ids.end, type: 'end', position: at(900), config: {}, label: 'End' },
   ];
   const link = (source: string, target: string, label?: string): WorkflowEdge => ({
     id: newId('edge'),
@@ -1315,7 +1334,8 @@ export function createReviewWorkflow(profileIds: {
     link(ids.files, ids.revB),
     link(ids.revA, ids.cond),
     link(ids.revB, ids.cond),
-    link(ids.cond, ids.comment, 'true'),
+    link(ids.cond, ids.approve, 'true'),
+    link(ids.approve, ids.comment),
     link(ids.cond, ids.checked, 'false'),
     link(ids.comment, ids.end),
     link(ids.checked, ids.end),
@@ -1408,10 +1428,7 @@ export function createReviewLoopDemoWorkflow(profileIds: {
       config: {
         condition: {
           logic: 'or',
-          clauses: [
-            { left: `node.${ids.revA}.severity`, op: 'contains', right: 'P0' },
-            { left: `node.${ids.revB}.severity`, op: 'contains', right: 'P1' },
-          ],
+          clauses: blockingFindings([ids.revA, ids.revB]),
         },
         maxVisits: 2,
       },
@@ -1451,6 +1468,7 @@ export function createReviewLoopDemoWorkflow(profileIds: {
     link(ids.cond, ids.fix, 'true'),
     link(ids.cond, ids.end, 'false'),
     link(ids.fix, ids.revA),
+    link(ids.fix, ids.revB),
   ];
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,

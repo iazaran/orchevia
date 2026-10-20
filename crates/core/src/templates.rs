@@ -260,12 +260,36 @@ pub fn import_developer_template(
 }
 
 // -- Built-ins ---------------------------------------------------------------
+//
+// Every built-in works in the repository chosen when the template is used
+// (the workflow's `defaults.repoDir`), asks for what it needs as run inputs,
+// and is replayed end to end in tests (`builtins_run_end_to_end`).
 
-fn node(id: &str, kind: NodeKind, y: f64, label: &str, config: NodeConfig) -> Node {
+/// How reviewers report findings; `review::reported_severity` reads them.
+const FINDINGS: &str = "Report each problem as a ```finding block with the lines `severity:` (P0 for data loss, security holes or crashes; P1 for wrong behavior or missing tests for changed logic; P2 or P3 for minor issues), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.";
+
+/// Implementation steps leave tests and commits to the workflow, so they need
+/// only file-edit permissions.
+const NO_RUN: &str =
+    "Do not run tests, builds or package managers, and do not commit; the workflow does that.";
+
+/// Claude Code allow rules every implementation step declares.
+const EDIT_TOOLS: [&str; 2] = ["Edit", "Write"];
+
+/// Main column and side columns for parallel or loop steps.
+const MAIN: f64 = 80.0;
+const LEFT: f64 = -200.0;
+const RIGHT: f64 = 360.0;
+
+fn row(index: u32) -> f64 {
+    f64::from(index) * 120.0
+}
+
+fn node(id: &str, kind: NodeKind, x: f64, y: f64, label: &str, config: NodeConfig) -> Node {
     Node {
         id: id.to_string(),
         kind,
-        position: Position { x: 80.0, y },
+        position: Position { x, y },
         config,
         label: Some(label.to_string()),
     }
@@ -280,35 +304,122 @@ fn edge(id: &str, source: &str, target: &str, label: Option<&str>) -> Edge {
     }
 }
 
-fn agent_role(
+/// Edges for a list of `(source, target)` pairs, labelled `true`/`false` when given.
+fn edges(pairs: &[(&str, &str, Option<&str>)]) -> Vec<Edge> {
+    pairs
+        .iter()
+        .enumerate()
+        .map(|(i, (source, target, label))| edge(&format!("e{i}"), source, target, *label))
+        .collect()
+}
+
+fn start() -> Node {
+    node(
+        "start",
+        NodeKind::Start,
+        MAIN,
+        0.0,
+        "Start",
+        NodeConfig::default(),
+    )
+}
+
+fn end(y: f64) -> Node {
+    node("end", NodeKind::End, MAIN, y, "End", NodeConfig::default())
+}
+
+fn input(name: &str, label: &str, default: Option<&str>) -> crate::workflow::WorkflowInput {
+    crate::workflow::WorkflowInput {
+        name: name.into(),
+        label: Some(label.into()),
+        default: default.map(str::to_string),
+        required: default.is_none(),
+    }
+}
+
+fn test_input() -> crate::workflow::WorkflowInput {
+    input(
+        "testCommand",
+        "Test command (e.g. npm test, cargo test, make test)",
+        None,
+    )
+}
+
+fn base_input() -> crate::workflow::WorkflowInput {
+    input("base", "Base branch for the pull request", Some("main"))
+}
+
+fn pr_input() -> crate::workflow::WorkflowInput {
+    input("prNumber", "Pull request number (e.g. 128)", None)
+}
+
+fn agent(
     id: &str,
-    y: f64,
+    (x, y): (f64, f64),
     label: &str,
     role: &str,
     prompt: &str,
     context_refs: &[&str],
+    context_chars: u32,
 ) -> Node {
     node(
         id,
         NodeKind::Agent,
+        x,
         y,
         label,
         NodeConfig {
             agent_role: Some(role.to_string()),
             prompt: Some(format!("Read the repository instructions first. {prompt}")),
             context_refs: context_refs.iter().map(|id| (*id).to_string()).collect(),
-            context_max_chars: (!context_refs.is_empty()).then_some(12000),
+            context_max_chars: (!context_refs.is_empty()).then_some(context_chars),
             ..NodeConfig::default()
         },
     )
 }
 
-fn test_command(id: &str, y: f64) -> Node {
+/// An implementation step: edits files, leaves tests and commits to the workflow.
+fn implementer(id: &str, x: f64, y: f64, label: &str, prompt: &str, context_refs: &[&str]) -> Node {
+    let mut step = agent(
+        id,
+        (x, y),
+        label,
+        "implementation",
+        &format!("{prompt} {NO_RUN}"),
+        context_refs,
+        12000,
+    );
+    step.config.required_tools = EDIT_TOOLS.iter().map(|rule| (*rule).to_string()).collect();
+    step
+}
+
+fn reviewer(
+    id: &str,
+    at: (f64, f64),
+    label: &str,
+    role: &str,
+    prompt: &str,
+    context_refs: &[&str],
+    context_chars: u32,
+) -> Node {
+    agent(
+        id,
+        at,
+        label,
+        role,
+        &format!("{prompt} {FINDINGS}"),
+        context_refs,
+        context_chars,
+    )
+}
+
+fn run_tests(id: &str, y: f64, label: &str) -> Node {
     node(
         id,
         NodeKind::Command,
+        MAIN,
         y,
-        "Project tests",
+        label,
         NodeConfig {
             executable: Some("sh".into()),
             args: vec!["-c".into(), "{{input.testCommand}}".into()],
@@ -317,27 +428,131 @@ fn test_command(id: &str, y: f64) -> Node {
     )
 }
 
+fn command(id: &str, x: f64, y: f64, label: &str, executable: &str, args: &[&str]) -> Node {
+    node(
+        id,
+        NodeKind::Command,
+        x,
+        y,
+        label,
+        NodeConfig {
+            executable: Some(executable.into()),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            ..NodeConfig::default()
+        },
+    )
+}
+
+fn approval(id: &str, x: f64, y: f64, label: &str, message: &str) -> Node {
+    node(
+        id,
+        NodeKind::Approval,
+        x,
+        y,
+        label,
+        NodeConfig {
+            message: Some(message.into()),
+            ..NodeConfig::default()
+        },
+    )
+}
+
+fn github(id: &str, y: f64, label: &str, op: crate::workflow::GitHubOp) -> Node {
+    node(
+        id,
+        NodeKind::GitHub,
+        MAIN,
+        y,
+        label,
+        NodeConfig {
+            github_op: Some(op),
+            ..NodeConfig::default()
+        },
+    )
+}
+
+fn git(id: &str, y: f64, label: &str, op: crate::workflow::GitOp) -> Node {
+    node(
+        id,
+        NodeKind::Git,
+        MAIN,
+        y,
+        label,
+        NodeConfig {
+            git_op: Some(op),
+            ..NodeConfig::default()
+        },
+    )
+}
+
+/// True when any reviewer reported a P0 or P1 finding.
+fn severity_gate(id: &str, y: f64, reviewers: &[&str]) -> Node {
+    use crate::workflow::{ConditionClause, ConditionLogic, ConditionOp};
+    node(
+        id,
+        NodeKind::Condition,
+        MAIN,
+        y,
+        "P0/P1 found?",
+        NodeConfig {
+            condition: Some(ConditionConfig {
+                logic: ConditionLogic::Or,
+                clauses: reviewers
+                    .iter()
+                    .flat_map(|reviewer| {
+                        ["P0", "P1"].map(|level| ConditionClause {
+                            left: format!("node.{reviewer}.severity"),
+                            op: ConditionOp::Contains,
+                            right: level.into(),
+                        })
+                    })
+                    .collect(),
+            }),
+            ..NodeConfig::default()
+        },
+    )
+}
+
+/// Fails fast instead of waiting for a credential prompt no one can answer.
+fn push_branch(y: f64) -> Node {
+    command(
+        "push",
+        MAIN,
+        y,
+        "Push branch",
+        "env",
+        &[
+            "GIT_TERMINAL_PROMPT=0",
+            "git",
+            "push",
+            "-u",
+            "origin",
+            "{{input.branch}}",
+        ],
+    )
+}
+
+/// Bound the review/fix cycle: up to two fix rounds, then the run stops with
+/// the findings visible.
+fn bound_loop(nodes: &mut [Node], cycle: &[&str], fix: &str) {
+    for node in nodes {
+        if node.id == fix {
+            node.config.max_visits = Some(2);
+        } else if cycle.contains(&node.id.as_str()) {
+            node.config.max_visits = Some(3);
+        }
+    }
+}
+
 fn template(
     id: &str,
     name: &str,
     category: &str,
     description: &str,
+    inputs: Vec<crate::workflow::WorkflowInput>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
 ) -> Template {
-    let inputs = if nodes
-        .iter()
-        .any(|n| n.config.args.iter().any(|a| a == "{{input.testCommand}}"))
-    {
-        vec![crate::workflow::WorkflowInput {
-            name: "testCommand".into(),
-            label: Some("Project test command (required)".into()),
-            default: None,
-            required: true,
-        }]
-    } else {
-        Vec::new()
-    };
     Template {
         id: id.to_string(),
         version: TEMPLATE_SCHEMA_VERSION,
@@ -360,183 +575,163 @@ fn template(
 /// The nine built-in templates.
 pub fn builtin_templates() -> Vec<Template> {
     vec![
-        implement_ticket(),
+        implement_task(),
         review_pull_request(),
         investigate_bug(),
         refactor(),
         dependency_upgrade(),
         multi_agent_review(),
         create_draft_pr(),
-        watch_feedback(),
+        address_feedback(),
         ticket_to_pr(),
     ]
 }
 
-fn implement_ticket() -> Template {
+fn implement_task() -> Template {
     template(
         "implement-ticket",
-        "Implement Ticket",
+        "Implement a Task",
         "feature",
-        "Plan → approve → implement → test → review → draft PR.",
+        "Plan → you approve → implement → test → review. Works from a description or pasted ticket text; no Jira setup needed. Leaves the change uncommitted for you.",
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            input(
+                "task",
+                "Task: describe it, or paste the ticket's title and text",
+                None,
             ),
-            agent_role(
+            test_input(),
+        ],
+        vec![
+            start(),
+            agent(
                 "plan",
-                120.0,
+                (MAIN, row(1)),
                 "Plan",
                 "planning",
-                "Plan {{workflow.name}}: {{ticket.key}} {{ticket.title}}. List files and risks.",
+                "Plan this task: {{input.task}}. Work from that text and this repository; do not open links or fetch tickets. List the files to change, the tests to add and the risks. Do not edit any files.",
                 &[],
+                12000,
             ),
-            node(
+            approval(
                 "gate",
-                NodeKind::Approval,
-                240.0,
+                MAIN,
+                row(2),
                 "Approve plan",
-                NodeConfig {
-                    message: Some("Review the plan.".into()),
-                    ..NodeConfig::default()
-                },
+                "Check the plan before any file changes.",
             ),
-            agent_role(
+            implementer(
                 "impl",
-                360.0,
+                MAIN,
+                row(3),
                 "Implement",
-                "implementation",
-                "Implement the approved plan with tests.",
+                "Implement the approved plan for: {{input.task}}. Keep the change focused and add or update tests.",
                 &["plan"],
             ),
-            test_command("tests", 480.0),
-            agent_role(
+            run_tests("tests", row(4), "Run tests"),
+            reviewer(
                 "review",
-                600.0,
+                (MAIN, row(5)),
                 "Review",
                 "deepReview",
-                "Review for P0/P1; tag severities.",
+                "Review the uncommitted changes in this repository (run `git diff`) for this task: {{input.task}}.",
                 &["impl", "tests"],
+                12000,
             ),
-            node("end", NodeKind::End, 720.0, "End", NodeConfig::default()),
+            end(row(6)),
         ],
-        vec![
-            edge("e0", "start", "plan", None),
-            edge("e1", "plan", "gate", None),
-            edge("e2", "gate", "impl", None),
-            edge("e3", "impl", "tests", None),
-            edge("e4", "tests", "review", None),
-            edge("e5", "review", "end", None),
-        ],
+        edges(&[
+            ("start", "plan", None),
+            ("plan", "gate", None),
+            ("gate", "impl", None),
+            ("impl", "tests", None),
+            ("tests", "review", None),
+            ("review", "end", None),
+        ]),
     )
 }
 
 fn review_pull_request() -> Template {
+    use crate::workflow::GitHubOp;
     template(
         "review-pr",
         "Review Pull Request",
         "review",
-        "Load PR → parallel Claude/Codex reviews → actionable? → note or checked.",
+        "Load a PR and its diff → Claude and Codex review in parallel → if they find P0/P1 problems, you approve posting one comment; otherwise it is marked clean.",
+        vec![pr_input()],
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            start(),
+            github("details", row(1), "Load PR", GitHubOp::PrDetails { number: 0 }),
+            command(
+                "diff",
+                MAIN,
+                row(2),
+                "Fetch diff",
+                "gh",
+                &["pr", "diff", "{{input.prNumber}}"],
             ),
-            node(
-                "files",
-                NodeKind::GitHub,
-                120.0,
-                "Changed files",
-                NodeConfig {
-                    github_op: Some(crate::workflow::GitHubOp::PrFiles { number: 0 }),
-                    ..NodeConfig::default()
-                },
-            ),
-            agent_role(
+            reviewer(
                 "revA",
-                240.0,
-                "Claude Review",
+                (LEFT, row(3)),
+                "Claude review",
                 "fastReview",
-                "Fast review with ```finding blocks.",
-                &["files"],
+                "Review pull request #{{input.prNumber}} using its details and diff above. Open files in this repository for context when the diff is not enough.",
+                &["details", "diff"],
+                48000,
             ),
-            agent_role(
+            reviewer(
                 "revB",
-                240.0,
-                "Codex Review",
+                (RIGHT, row(3)),
+                "Codex review",
                 "deepReview",
-                "Deep review with ```finding blocks.",
-                &["files"],
+                "Deep review of pull request #{{input.prNumber}} (details and diff above): correctness, security and missing tests.",
+                &["details", "diff"],
+                48000,
             ),
-            node(
-                "cond",
-                NodeKind::Condition,
-                360.0,
-                "Actionable?",
-                NodeConfig {
-                    condition: Some(ConditionConfig {
-                        logic: crate::workflow::ConditionLogic::Or,
-                        clauses: vec![
-                            crate::workflow::ConditionClause {
-                                left: "node.revA.severity".into(),
-                                op: crate::workflow::ConditionOp::Contains,
-                                right: "P0".into(),
-                            },
-                            crate::workflow::ConditionClause {
-                                left: "node.revB.severity".into(),
-                                op: crate::workflow::ConditionOp::Contains,
-                                right: "P1".into(),
-                            },
-                        ],
-                    }),
-                    ..NodeConfig::default()
-                },
+            severity_gate("gate", row(4), &["revA", "revB"]),
+            approval(
+                "approve",
+                LEFT,
+                row(5),
+                "Post findings?",
+                "The reviews found P0/P1 problems. Approve to post them as one comment on the PR; reject to stop without posting.",
             ),
             node(
                 "note",
                 NodeKind::GitHub,
-                480.0,
-                "Post note",
+                LEFT,
+                row(6),
+                "Post comment",
                 NodeConfig {
-                    github_op: Some(crate::workflow::GitHubOp::PostComment {
+                    github_op: Some(GitHubOp::PostComment {
                         number: 0,
-                        body:
-                            "Automated review found P0/P1 items.\n\n<sub>posted by Orchevia</sub>"
-                                .into(),
+                        body: "Review findings from Orchevia (Claude and Codex)\n\n### Claude\n\n{{node.revA.output}}\n\n### Codex\n\n{{node.revB.output}}".into(),
                     }),
                     ..NodeConfig::default()
                 },
             ),
-            node(
-                "checked",
-                NodeKind::Command,
-                480.0,
-                "Mark checked",
-                NodeConfig {
-                    executable: Some("echo".into()),
-                    args: vec!["no actionable findings".into()],
-                    ..NodeConfig::default()
-                },
+            command(
+                "clean",
+                RIGHT,
+                row(5),
+                "No blocking findings",
+                "echo",
+                &["No P0/P1 findings in pull request {{input.prNumber}}."],
             ),
-            node("end", NodeKind::End, 600.0, "End", NodeConfig::default()),
+            end(row(7)),
         ],
-        vec![
-            edge("e0", "start", "files", None),
-            edge("e1", "files", "revA", None),
-            edge("e2", "files", "revB", None),
-            edge("e3", "revA", "cond", None),
-            edge("e4", "revB", "cond", None),
-            edge("e5", "cond", "note", Some("true")),
-            edge("e6", "cond", "checked", Some("false")),
-            edge("e7", "note", "end", None),
-            edge("e8", "checked", "end", None),
-        ],
+        edges(&[
+            ("start", "details", None),
+            ("details", "diff", None),
+            ("diff", "revA", None),
+            ("diff", "revB", None),
+            ("revA", "gate", None),
+            ("revB", "gate", None),
+            ("gate", "approve", Some("true")),
+            ("gate", "clean", Some("false")),
+            ("approve", "note", None),
+            ("note", "end", None),
+            ("clean", "end", None),
+        ]),
     )
 }
 
@@ -545,46 +740,50 @@ fn investigate_bug() -> Template {
         "investigate-bug",
         "Investigate Bug",
         "bugfix",
-        "Reproduce → hypothesize → verify with tests.",
+        "Find the root cause and add a failing regression test → you confirm → fix → test. Leaves the change uncommitted for you.",
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            input(
+                "bug",
+                "Bug: describe it, or paste the issue's title and text",
+                None,
             ),
-            agent_role(
+            test_input(),
+        ],
+        vec![
+            start(),
+            implementer(
                 "repro",
-                120.0,
-                "Reproduce",
-                "implementation",
-                "Reproduce the bug with a failing test first.",
+                MAIN,
+                row(1),
+                "Find the cause",
+                "Investigate this bug: {{input.bug}}. Work from that text and this repository; do not open links or fetch issues. Find the root cause and add a regression test that should fail because of it, without running it, and do not fix the bug yet. Explain the cause and name the new test.",
                 &[],
             ),
-            node(
+            approval(
                 "gate",
-                NodeKind::Approval,
-                240.0,
-                "Confirm repro",
-                NodeConfig::default(),
+                MAIN,
+                row(2),
+                "Confirm the cause",
+                "Check the explanation and the new regression test before the fix.",
             ),
-            agent_role(
+            implementer(
                 "fix",
-                360.0,
-                "Fix + verify",
-                "implementation",
-                "Fix the root cause; keep the regression test green.",
+                MAIN,
+                row(3),
+                "Fix",
+                "Fix the root cause described above. Keep the new regression test and do not weaken existing tests.",
                 &["repro"],
             ),
-            node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
+            run_tests("tests", row(4), "Run tests"),
+            end(row(5)),
         ],
-        vec![
-            edge("e0", "start", "repro", None),
-            edge("e1", "repro", "gate", None),
-            edge("e2", "gate", "fix", None),
-            edge("e3", "fix", "end", None),
-        ],
+        edges(&[
+            ("start", "repro", None),
+            ("repro", "gate", None),
+            ("gate", "fix", None),
+            ("fix", "tests", None),
+            ("tests", "end", None),
+        ]),
     )
 }
 
@@ -593,86 +792,109 @@ fn refactor() -> Template {
         "refactor",
         "Refactor",
         "refactor",
-        "Scoped refactor with test gates before and after.",
+        "Run the tests → refactor without changing behavior → run the tests again → review. Leaves the change uncommitted for you.",
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            input(
+                "target",
+                "What to refactor and the goal (e.g. split src/cart.ts into smaller modules)",
+                None,
             ),
-            test_command("base", 120.0),
-            agent_role(
+            test_input(),
+        ],
+        vec![
+            start(),
+            run_tests("before", row(1), "Run tests (before)"),
+            implementer(
                 "ref",
-                240.0,
+                MAIN,
+                row(2),
                 "Refactor",
-                "implementation",
-                "Refactor {{workflow.name}} without behavior change.",
-                &["base"],
+                "Refactor without changing behavior: {{input.target}}. Keep public interfaces and existing tests unchanged.",
+                &["before"],
             ),
-            test_command("verify", 360.0),
-            node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
+            run_tests("after", row(3), "Run tests (after)"),
+            reviewer(
+                "review",
+                (MAIN, row(4)),
+                "Review",
+                "fastReview",
+                "Review the uncommitted refactor (run `git diff`) for any change in behavior. The goal was: {{input.target}}.",
+                &["ref", "after"],
+                12000,
+            ),
+            end(row(5)),
         ],
-        vec![
-            edge("e0", "start", "base", None),
-            edge("e1", "base", "ref", None),
-            edge("e2", "ref", "verify", None),
-            edge("e3", "verify", "end", None),
-        ],
+        edges(&[
+            ("start", "before", None),
+            ("before", "ref", None),
+            ("ref", "after", None),
+            ("after", "review", None),
+            ("review", "end", None),
+        ]),
     )
 }
 
 fn dependency_upgrade() -> Template {
-    let mut template = template(
+    template(
         "dependency-upgrade",
         "Dependency Upgrade",
         "maintenance",
-        "Upgrade one dependency, run tests, review the diff.",
+        "Update the manifest and adapt the code → install → test → review the upgrade. Leaves the change uncommitted for you.",
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            input(
+                "dependency",
+                "Dependency and target version (e.g. react to 19.3)",
+                None,
             ),
-            agent_role(
+            input(
+                "installCommand",
+                "Install command that updates the lockfile (e.g. pnpm install, npm install, cargo update)",
+                None,
+            ),
+            test_input(),
+        ],
+        vec![
+            start(),
+            implementer(
                 "up",
-                120.0,
+                MAIN,
+                row(1),
                 "Upgrade",
-                "implementation",
-                "Upgrade {{input.dependency}}; keep the lockfile consistent.",
+                "Upgrade {{input.dependency}}: change the version in the dependency manifest and adapt the code to its breaking changes. Do not run the package manager; the workflow installs next.",
                 &[],
             ),
-            test_command("tests", 240.0),
-            agent_role(
-                "rev",
-                360.0,
-                "Review diff",
-                "fastReview",
-                "Review the upgrade diff for breaking changes.",
-                &["up", "tests"],
+            node(
+                "install",
+                NodeKind::Command,
+                MAIN,
+                row(2),
+                "Install dependencies",
+                NodeConfig {
+                    executable: Some("sh".into()),
+                    args: vec!["-c".into(), "{{input.installCommand}}".into()],
+                    ..NodeConfig::default()
+                },
             ),
-            node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
+            run_tests("tests", row(3), "Run tests"),
+            reviewer(
+                "review",
+                (MAIN, row(4)),
+                "Review upgrade",
+                "fastReview",
+                "Review the upgrade of {{input.dependency}} (run `git diff`) for breaking changes and risky API use.",
+                &["up", "tests"],
+                12000,
+            ),
+            end(row(5)),
         ],
-        vec![
-            edge("e0", "start", "up", None),
-            edge("e1", "up", "tests", None),
-            edge("e2", "tests", "rev", None),
-            edge("e3", "rev", "end", None),
-        ],
-    );
-    template
-        .workflow
-        .inputs
-        .push(crate::workflow::WorkflowInput {
-            name: "dependency".into(),
-            label: Some("Dependency".into()),
-            default: None,
-            required: true,
-        });
-    template
+        edges(&[
+            ("start", "up", None),
+            ("up", "install", None),
+            ("install", "tests", None),
+            ("tests", "review", None),
+            ("review", "end", None),
+        ]),
+    )
 }
 
 fn multi_agent_review() -> Template {
@@ -680,391 +902,350 @@ fn multi_agent_review() -> Template {
         "multi-agent-review",
         "Run Multi-Agent Review",
         "review",
-        "Parallel Claude + Codex reviews joined, then a severity gate.",
+        "Diff this branch and your uncommitted work against a base branch → Claude and Codex review in parallel → triage P0/P1 findings or mark it clean.",
+        vec![input("base", "Compare against branch", Some("main"))],
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            start(),
+            command(
+                "diff",
+                MAIN,
+                row(1),
+                "Collect diff",
+                "git",
+                &["diff", "{{input.base}}"],
             ),
-            agent_role(
+            reviewer(
                 "revA",
-                120.0,
-                "Claude Review",
+                (LEFT, row(2)),
+                "Claude review",
                 "fastReview",
-                "Fast review with ```finding blocks.",
-                &[],
+                "Review the changes in the diff above (this branch and uncommitted work compared with {{input.base}}). Open files in this repository for context when the diff is not enough.",
+                &["diff"],
+                48000,
             ),
-            agent_role(
+            reviewer(
                 "revB",
-                120.0,
-                "Codex Review",
+                (RIGHT, row(2)),
+                "Codex review",
                 "deepReview",
-                "Deep review with ```finding blocks.",
-                &[],
+                "Deep review of the diff above (compared with {{input.base}}): correctness, security and missing tests.",
+                &["diff"],
+                48000,
             ),
-            node(
-                "join",
-                NodeKind::Command,
-                240.0,
-                "Combine",
-                NodeConfig {
-                    executable: Some("echo".into()),
-                    args: vec!["reviews complete".into()],
-                    ..NodeConfig::default()
-                },
-            ),
-            node(
-                "cond",
-                NodeKind::Condition,
-                360.0,
-                "Actionable?",
-                NodeConfig {
-                    condition: Some(ConditionConfig {
-                        logic: crate::workflow::ConditionLogic::Or,
-                        clauses: vec![
-                            crate::workflow::ConditionClause {
-                                left: "node.revA.severity".into(),
-                                op: crate::workflow::ConditionOp::Contains,
-                                right: "P0".into(),
-                            },
-                            crate::workflow::ConditionClause {
-                                left: "node.revB.severity".into(),
-                                op: crate::workflow::ConditionOp::Contains,
-                                right: "P1".into(),
-                            },
-                        ],
-                    }),
-                    ..NodeConfig::default()
-                },
-            ),
-            node(
-                "yes",
-                NodeKind::Approval,
-                480.0,
+            severity_gate("gate", row(3), &["revA", "revB"]),
+            approval(
+                "triage",
+                LEFT,
+                row(4),
                 "Triage P0/P1",
-                NodeConfig::default(),
+                "The reviews found P0/P1 problems. Read them in Runs, then approve to finish.",
             ),
-            node(
-                "no",
-                NodeKind::Command,
-                480.0,
-                "Done",
-                NodeConfig {
-                    executable: Some("echo".into()),
-                    args: vec!["clean".into()],
-                    ..NodeConfig::default()
-                },
+            command(
+                "clean",
+                RIGHT,
+                row(4),
+                "No blocking findings",
+                "echo",
+                &["No P0/P1 findings."],
             ),
-            node("end", NodeKind::End, 600.0, "End", NodeConfig::default()),
+            end(row(5)),
         ],
-        vec![
-            edge("e0", "start", "revA", None),
-            edge("e1", "start", "revB", None),
-            edge("e2", "revA", "join", None),
-            edge("e3", "revB", "join", None),
-            edge("e4", "join", "cond", None),
-            edge("e5", "cond", "yes", Some("true")),
-            edge("e6", "cond", "no", Some("false")),
-            edge("e7", "yes", "end", None),
-            edge("e8", "no", "end", None),
-        ],
+        edges(&[
+            ("start", "diff", None),
+            ("diff", "revA", None),
+            ("diff", "revB", None),
+            ("revA", "gate", None),
+            ("revB", "gate", None),
+            ("gate", "triage", Some("true")),
+            ("gate", "clean", Some("false")),
+            ("triage", "end", None),
+            ("clean", "end", None),
+        ]),
     )
 }
 
 fn create_draft_pr() -> Template {
-    let mut template = template(
+    use crate::workflow::{GitHubOp, GitOp};
+    template(
         "create-draft-pr",
         "Create Draft PR",
         "feature",
-        "Final test + review, then an explicit draft PR.",
+        "Check out your branch → test → review → you approve → push and open a draft PR.",
         vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
+            input("branch", "Branch with your committed work", None),
+            input("title", "Pull request title", None),
+            test_input(),
+            base_input(),
+        ],
+        vec![
+            start(),
+            git(
+                "checkout",
+                row(1),
+                "Check out branch",
+                // Untracked files must not block this; git itself still
+                // refuses a checkout that would overwrite local changes.
+                GitOp::Checkout {
+                    name: "{{input.branch}}".into(),
+                    allow_dirty: true,
+                },
             ),
-            test_command("tests", 120.0),
-            agent_role(
-                "rev",
-                240.0,
-                "Final review",
+            run_tests("tests", row(2), "Run tests"),
+            reviewer(
+                "review",
+                (MAIN, row(3)),
+                "Review",
                 "fastReview",
-                "Final pass with ```finding blocks.",
+                "Review the commits on this branch compared with {{input.base}} (run `git diff {{input.base}}...HEAD`).",
                 &["tests"],
+                12000,
             ),
-            node(
+            approval(
+                "approve",
+                MAIN,
+                row(4),
+                "Open the PR?",
+                "Check the review. Approving pushes the branch and opens a draft pull request.",
+            ),
+            push_branch(row(5)),
+            github(
                 "pr",
-                NodeKind::GitHub,
-                360.0,
-                "Draft PR",
-                NodeConfig {
-                    github_op: Some(crate::workflow::GitHubOp::CreatePr {
-                        title: "{{workflow.name}}".into(),
-                        body: "Automated draft.".into(),
-                        base: "main".into(),
-                        head: "{{input.branch}}".into(),
-                        draft: true,
-                    }),
-                    ..NodeConfig::default()
+                row(6),
+                "Open draft PR",
+                GitHubOp::CreatePr {
+                    title: "{{input.title}}".into(),
+                    body: "Tested with `{{input.testCommand}}` and reviewed in Orchevia.".into(),
+                    base: "{{input.base}}".into(),
+                    head: "{{input.branch}}".into(),
+                    draft: true,
                 },
             ),
-            node("end", NodeKind::End, 480.0, "End", NodeConfig::default()),
+            end(row(7)),
         ],
-        vec![
-            edge("e0", "start", "tests", None),
-            edge("e1", "tests", "rev", None),
-            edge("e2", "rev", "pr", None),
-            edge("e3", "pr", "end", None),
-        ],
-    );
-    template
-        .workflow
-        .inputs
-        .push(crate::workflow::WorkflowInput {
-            name: "branch".into(),
-            label: Some("Head branch".into()),
-            default: None,
-            required: true,
-        });
-    template
-}
-
-fn watch_feedback() -> Template {
-    let visits = |config: NodeConfig| NodeConfig {
-        max_visits: Some(3),
-        ..config
-    };
-    template(
-        "watch-feedback",
-        "Watch Review Feedback",
-        "review",
-        "Poll PR feedback; fix + re-test while actionable (bounded).",
-        vec![
-            node(
-                "start",
-                NodeKind::Start,
-                0.0,
-                "Start",
-                NodeConfig::default(),
-            ),
-            Node {
-                id: "fix".into(),
-                kind: NodeKind::Agent,
-                position: Position { x: 80.0, y: 120.0 },
-                config: visits(NodeConfig {
-                    agent_role: Some("implementation".into()),
-                    prompt: Some("Address the latest review feedback with tests. Inspect current PR feedback each turn; do not assume the previous findings are still current.".into()),
-                    session_group: Some("feedback-fixes".into()),
-                    session_max_turns: Some(4),
-                    ..NodeConfig::default()
-                }),
-                label: Some("Address feedback".into()),
-            },
-            Node {
-                config: visits(test_command("tests", 240.0).config),
-                ..test_command("tests", 240.0)
-            },
-            Node {
-                id: "rev".into(),
-                kind: NodeKind::Agent,
-                position: Position { x: 80.0, y: 360.0 },
-                config: visits(NodeConfig {
-                    agent_role: Some("fastReview".into()),
-                    prompt: Some("Re-review the current diff with ```finding blocks.".into()),
-                    context_refs: vec!["fix".into(), "tests".into()],
-                    context_max_chars: Some(12000),
-                    ..NodeConfig::default()
-                }),
-                label: Some("Re-review".into()),
-            },
-            node(
-                "cond",
-                NodeKind::Condition,
-                480.0,
-                "Still actionable?",
-                NodeConfig {
-                    condition: Some(ConditionConfig {
-                        logic: crate::workflow::ConditionLogic::And,
-                        clauses: vec![crate::workflow::ConditionClause {
-                            left: "node.rev.severity".into(),
-                            op: crate::workflow::ConditionOp::Contains,
-                            right: "P1".into(),
-                        }],
-                    }),
-                    max_visits: Some(3),
-                    ..NodeConfig::default()
-                },
-            ),
-            node("end", NodeKind::End, 600.0, "End", NodeConfig::default()),
-        ],
-        vec![
-            edge("e0", "start", "fix", None),
-            edge("e1", "fix", "tests", None),
-            edge("e2", "tests", "rev", None),
-            edge("e3", "rev", "cond", None),
-            edge("e4", "cond", "fix", Some("true")),
-            edge("e5", "cond", "end", Some("false")),
-        ],
+        edges(&[
+            ("start", "checkout", None),
+            ("checkout", "tests", None),
+            ("tests", "review", None),
+            ("review", "approve", None),
+            ("approve", "push", None),
+            ("push", "pr", None),
+            ("pr", "end", None),
+        ]),
     )
 }
 
-/// Ticket → branch → implement → two reviews → fix loop → human review →
-/// draft PR. Mirrors a real team flow: ticket context comes from a Jira MCP
-/// server picked after preview, branch names come from run inputs, and a
-/// human approves before anything is published.
+fn address_feedback() -> Template {
+    let mut template = template(
+        "watch-feedback",
+        "Address Review Feedback",
+        "review",
+        "Check out a PR → address its review feedback → test → re-review, with up to two fix rounds. A feedback watcher can run it with the PR number. Leaves the change uncommitted for you.",
+        vec![pr_input(), test_input()],
+        vec![
+            start(),
+            command(
+                "checkout",
+                MAIN,
+                row(1),
+                "Check out PR branch",
+                "gh",
+                &["pr", "checkout", "{{input.prNumber}}"],
+            ),
+            command(
+                "feedback",
+                MAIN,
+                row(2),
+                "Load feedback",
+                "gh",
+                &[
+                    "pr",
+                    "view",
+                    "{{input.prNumber}}",
+                    "--json",
+                    "title,body,reviews,comments",
+                ],
+            ),
+            implementer(
+                "address",
+                MAIN,
+                row(3),
+                "Address feedback",
+                "Address the review feedback on pull request #{{input.prNumber}} shown above. Change only what the feedback asks for and add tests where needed.",
+                &["feedback"],
+            ),
+            run_tests("tests", row(4), "Run tests"),
+            reviewer(
+                "review",
+                (MAIN, row(5)),
+                "Re-review",
+                "fastReview",
+                "Review the uncommitted changes (run `git diff`) against the PR feedback above.",
+                &["feedback", "tests"],
+                12000,
+            ),
+            severity_gate("gate", row(6), &["review"]),
+            implementer(
+                "fix",
+                LEFT,
+                row(6),
+                "Fix findings",
+                "Fix the P0/P1 findings from the review above.",
+                &["review"],
+            ),
+            end(row(7)),
+        ],
+        edges(&[
+            ("start", "checkout", None),
+            ("checkout", "feedback", None),
+            ("feedback", "address", None),
+            ("address", "tests", None),
+            ("tests", "review", None),
+            ("review", "gate", None),
+            ("gate", "fix", Some("true")),
+            ("gate", "end", Some("false")),
+            ("fix", "tests", None),
+        ]),
+    );
+    for node in &mut template.workflow.nodes {
+        if node.id == "address" || node.id == "fix" {
+            node.config.session_group = Some("feedback-{{input.prNumber}}".into());
+            node.config.session_max_turns = Some(4);
+        }
+    }
+    bound_loop(
+        &mut template.workflow.nodes,
+        &["tests", "review", "gate"],
+        "fix",
+    );
+    template
+}
+
 fn ticket_to_pr() -> Template {
-    let loop_bound = |config: NodeConfig| NodeConfig {
-        max_visits: Some(2),
-        ..config
-    };
+    use crate::workflow::{GitHubOp, GitOp};
     let mut template = template(
         "ticket-to-pr",
         "Ticket to Draft PR",
         "feature",
-        "Ticket → branch → implement → Claude/Codex reviews → fix loop → human review → draft PR.",
+        "Jira ticket → branch → implement → test → Claude and Codex review → fix loop → you review → commit, push and open a draft PR. Needs a Jira MCP server.",
         vec![
-            node("start", NodeKind::Start, 0.0, "Start", NodeConfig::default()),
+            input("ticket", "Jira ticket key or URL (e.g. DEV-1234)", None),
+            input("branch", "New branch name (e.g. dev-1234-short-title)", None),
+            test_input(),
+            base_input(),
+        ],
+        vec![
+            start(),
             node(
                 "ticket",
                 NodeKind::Ticket,
-                120.0,
-                "Load ticket",
+                MAIN,
+                row(1),
+                "Load Jira ticket",
                 NodeConfig {
                     ticket_key: Some("{{input.ticket}}".into()),
                     ..NodeConfig::default()
                 },
             ),
-            node(
+            git(
                 "branch",
-                NodeKind::Git,
-                240.0,
+                row(2),
                 "Create branch",
-                NodeConfig {
-                    git_op: Some(crate::workflow::GitOp::BranchCreate {
-                        name: "{{input.branch}}".into(),
-                    }),
-                    ..NodeConfig::default()
+                GitOp::BranchCreate {
+                    name: "{{input.branch}}".into(),
                 },
             ),
-            agent_role(
+            implementer(
                 "impl",
-                360.0,
+                MAIN,
+                row(3),
                 "Implement",
-                "implementation",
-                "Implement {{ticket.key}}: {{ticket.title}}. Keep commits small with short messages; run the project's tests before finishing.",
+                "Implement {{ticket.key}}: {{ticket.title}} using the ticket details above. Keep the change focused and add or update tests.",
                 &["ticket"],
             ),
-            Node {
-                id: "rev_fast".into(),
-                kind: NodeKind::Agent,
-                position: Position { x: 80.0, y: 480.0 },
-                config: loop_bound(NodeConfig {
-                    agent_role: Some("fastReview".into()),
-                    context_refs: vec!["impl".into()],
-                    context_max_chars: Some(12000),
-                    prompt: Some(
-                        "Fast review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1.".into(),
-                    ),
-                    ..NodeConfig::default()
-                }),
-                label: Some("Claude Review".into()),
-            },
-            Node {
-                id: "rev_deep".into(),
-                kind: NodeKind::Agent,
-                position: Position { x: 80.0, y: 600.0 },
-                config: loop_bound(NodeConfig {
-                    agent_role: Some("deepReview".into()),
-                    context_refs: vec!["impl".into()],
-                    context_max_chars: Some(12000),
-                    prompt: Some(
-                        "Deep review: report findings as finding blocks with severity/file/line/title/explanation/fix. Tag severe issues P0/P1. Do not re-run tests that already passed.".into(),
-                    ),
-                    ..NodeConfig::default()
-                }),
-                label: Some("Codex Review".into()),
-            },
-            node(
-                "cond",
-                NodeKind::Condition,
-                720.0,
-                "P0/P1 found?",
-                loop_bound(NodeConfig {
-                    condition: Some(ConditionConfig {
-                        logic: crate::workflow::ConditionLogic::Or,
-                        clauses: vec![
-                            crate::workflow::ConditionClause {
-                                left: "node.rev_fast.severity".into(),
-                                op: crate::workflow::ConditionOp::Contains,
-                                right: "P0".into(),
-                            },
-                            crate::workflow::ConditionClause {
-                                left: "node.rev_deep.severity".into(),
-                                op: crate::workflow::ConditionOp::Contains,
-                                right: "P1".into(),
-                            },
-                        ],
-                    }),
-                    ..NodeConfig::default()
-                }),
+            run_tests("tests", row(4), "Run tests"),
+            reviewer(
+                "rev_fast",
+                (LEFT, row(5)),
+                "Claude review",
+                "fastReview",
+                "Review the uncommitted changes for {{ticket.key}} (run `git diff`) against the ticket above.",
+                &["ticket", "tests"],
+                12000,
             ),
-            agent_role(
+            reviewer(
+                "rev_deep",
+                (RIGHT, row(5)),
+                "Codex review",
+                "deepReview",
+                "Deep review of the uncommitted changes for {{ticket.key}} (run `git diff`): correctness, security and missing tests.",
+                &["ticket", "tests"],
+                12000,
+            ),
+            severity_gate("gate", row(6), &["rev_fast", "rev_deep"]),
+            implementer(
                 "fix",
-                840.0,
+                LEFT - 260.0,
+                row(6),
                 "Fix findings",
-                "implementation",
-                "Address the P0/P1 findings above with tests; keep commits small.",
+                "Fix the P0/P1 findings from both reviews above.",
                 &["rev_fast", "rev_deep"],
             ),
-            node(
+            approval(
                 "approve",
-                NodeKind::Approval,
-                960.0,
+                MAIN,
+                row(7),
                 "Human review",
-                NodeConfig {
-                    message: Some(
-                        "A human reviews the implementation and findings before the draft PR is opened.".into(),
-                    ),
-                    ..NodeConfig::default()
+                "Check the change and the review findings. Approving commits the change, pushes the branch and opens a draft pull request.",
+            ),
+            git(
+                "stage",
+                row(8),
+                "Stage changes",
+                GitOp::Stage {
+                    paths: vec![".".into()],
                 },
             ),
-            node(
+            git(
+                "commit",
+                row(9),
+                "Commit",
+                GitOp::Commit {
+                    message: "{{ticket.key}}: {{ticket.title}}".into(),
+                },
+            ),
+            push_branch(row(10)),
+            github(
                 "pr",
-                NodeKind::GitHub,
-                1080.0,
-                "Draft PR",
-                NodeConfig {
-                    github_op: Some(crate::workflow::GitHubOp::CreatePr {
-                        title: "{{input.branch}}".into(),
-                        body: "Draft for {{ticket.key}}: {{ticket.title}}.".into(),
-                        base: "main".into(),
-                        head: "{{input.branch}}".into(),
-                        draft: true,
-                    }),
-                    ..NodeConfig::default()
+                row(11),
+                "Open draft PR",
+                GitHubOp::CreatePr {
+                    title: "{{ticket.key}}: {{ticket.title}}".into(),
+                    body: "Implements {{ticket.key}}. Tested with `{{input.testCommand}}` and reviewed by Claude and Codex in Orchevia.".into(),
+                    base: "{{input.base}}".into(),
+                    head: "{{input.branch}}".into(),
+                    draft: true,
                 },
             ),
-            node("end", NodeKind::End, 1200.0, "End", NodeConfig::default()),
+            end(row(12)),
         ],
-        vec![
-            edge("e0", "start", "ticket", None),
-            edge("e1", "ticket", "branch", None),
-            edge("e2", "branch", "impl", None),
-            edge("e3", "impl", "rev_fast", None),
-            edge("e4", "impl", "rev_deep", None),
-            edge("e5", "rev_fast", "cond", None),
-            edge("e6", "rev_deep", "cond", None),
-            edge("e7", "cond", "fix", Some("true")),
-            edge("e8", "cond", "approve", Some("false")),
-            edge("e9", "fix", "rev_fast", None),
-            edge("e10", "approve", "pr", None),
-            edge("e11", "pr", "end", None),
-        ],
+        edges(&[
+            ("start", "ticket", None),
+            ("ticket", "branch", None),
+            ("branch", "impl", None),
+            ("impl", "tests", None),
+            ("tests", "rev_fast", None),
+            ("tests", "rev_deep", None),
+            ("rev_fast", "gate", None),
+            ("rev_deep", "gate", None),
+            ("gate", "fix", Some("true")),
+            ("gate", "approve", Some("false")),
+            ("fix", "tests", None),
+            ("approve", "stage", None),
+            ("stage", "commit", None),
+            ("commit", "push", None),
+            ("push", "pr", None),
+            ("pr", "end", None),
+        ]),
     );
     for node in &mut template.workflow.nodes {
         if node.id == "impl" || node.id == "fix" {
@@ -1072,28 +1253,11 @@ fn ticket_to_pr() -> Template {
             node.config.session_max_turns = Some(4);
         }
     }
-    // fix loops back into the reviews: it needs the same visit bound.
-    if let Some(fix) = template.workflow.nodes.iter_mut().find(|n| n.id == "fix") {
-        fix.config.max_visits = Some(2);
-    }
-    template
-        .workflow
-        .inputs
-        .push(crate::workflow::WorkflowInput {
-            name: "ticket".into(),
-            label: Some("Ticket key (e.g. DEV-1234)".into()),
-            default: None,
-            required: true,
-        });
-    template
-        .workflow
-        .inputs
-        .push(crate::workflow::WorkflowInput {
-            name: "branch".into(),
-            label: Some("Branch name".into()),
-            default: None,
-            required: true,
-        });
+    bound_loop(
+        &mut template.workflow.nodes,
+        &["tests", "rev_fast", "rev_deep", "gate"],
+        "fix",
+    );
     template
 }
 
@@ -1231,7 +1395,11 @@ mod tests {
             );
         }
         // Files exported before the field existed still import unchanged.
-        let legacy = export_developer_template(&builtin_templates().remove(0), &[]).unwrap();
+        let mut before = builtin_templates().remove(0);
+        for node in &mut before.workflow.nodes {
+            node.config.required_tools.clear();
+        }
+        let legacy = export_developer_template(&before, &[]).unwrap();
         assert!(!legacy.contains("requiredTools"));
         assert!(import_developer_template(&legacy, &[]).is_ok());
         // A declared tool can never smuggle a credential past the scan.
@@ -1264,6 +1432,328 @@ mod tests {
         let codes: Vec<String> = validate_workflow(&wf).into_iter().map(|i| i.code).collect();
         assert!(!codes.contains(&"agent-required-tools-invalid".to_string()));
         assert!(codes.contains(&"agent-required-tools-misplaced".to_string()));
+    }
+
+    /// Replays every built-in template in the real engine: stub Claude/Codex,
+    /// a fake Jira MCP server, a fake `gh`, and a temp repository with a local
+    /// `origin`. Each must finish as a new user would run it after "Use
+    /// template": the repository chosen, the run form filled in.
+    #[cfg(unix)]
+    #[tokio::test]
+    // Test-only serialization of the process-global `ORCHEVIA_GH_BIN`, as in
+    // the engine's fake-gh tests: a single blocking holder, never contended.
+    #[allow(clippy::await_holding_lock)]
+    async fn builtins_run_end_to_end() {
+        use crate::db::{RunStatus, SqliteDb};
+        use crate::engine::{CancellationRegistry, Engine};
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+        use std::sync::Arc;
+
+        let _gh_guard = crate::github::GH_BIN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let script = |name: &str, body: String| {
+            let path = root.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let state_dir = state.to_string_lossy();
+        // Headless Claude stand-in: the first deep review reports a P1 finding,
+        // later reviews say "No P0/P1 issues found.", other steps edit a file.
+        let claude = script(
+            "claude",
+            format!(
+                r#"#!/bin/sh
+prompt=$(cat)
+printf '%s\n' "$prompt" >> {state_dir}/prompts
+sid=
+next=0
+for arg in "$@"; do
+  if [ "$next" = 1 ]; then sid=$arg; next=0; fi
+  case "$arg" in --resume) next=1;; esac
+done
+if [ -z "$sid" ]; then
+  n=$(cat {state_dir}/sessions 2>/dev/null || echo 0); n=$((n+1)); echo $n > {state_dir}/sessions
+  sid=$(printf '00000000-0000-4000-8000-%012d' "$n")
+fi
+case "$prompt" in
+  *"Deep review"*)
+    n=$(cat {state_dir}/deep 2>/dev/null || echo 0); n=$((n+1)); echo $n > {state_dir}/deep
+    if [ "$n" = 1 ]; then
+      text='```finding\nseverity: P1\nfile: src/cart.ts\nline: 2\ntitle: Missing empty-cart check\nexplanation: An empty cart crashes the total.\nfix: Return 0 early.\n```'
+    else
+      text='No P0/P1 issues found.'
+    fi ;;
+  *"finding block"*) text='No P0/P1 issues found.' ;;
+  *) echo change >> stub-change.txt; text='Done.' ;;
+esac
+printf '{{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"cwd=%s\\n%s"}}\n' "$sid" "$(pwd)" "$text"
+"#
+            ),
+        );
+        let gh = script(
+            "gh",
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "pr view")
+    if [ "$5" = files ]; then echo '{{"files":[{{"path":"src/cart.ts","additions":3,"deletions":1}}]}}'; exit 0; fi
+    echo '{{"number":7,"title":"Fix cart","state":"open","author":{{"login":"bob"}},"headRefName":"fix-cart","baseRefName":"main","headRefOid":"abc","url":"https://github.com/acme/shop/pull/7","isDraft":false,"reviewRequests":[],"labels":[],"reviews":[{{"author":{{"login":"alice"}},"body":"Please handle an empty cart.","submittedAt":"2026-10-01T00:00:00Z"}}],"comments":[]}}' ;;
+  "pr diff") printf 'diff --git a/src/cart.ts b/src/cart.ts\n+export const total = 0;\n' ;;
+  "pr checkout") echo "Switched to fix-cart" ;;
+  "pr create") printf '%s\n' "$@" > {state_dir}/created; echo https://github.com/acme/shop/pull/8 ;;
+  "pr list")
+    echo '[{{"number":8,"title":"T","state":"open","author":{{"login":"a"}},"headRefName":"dev-1234-cart","baseRefName":"main","headRefOid":"x","url":"u","isDraft":true,"reviewRequests":[],"labels":[]}},{{"number":9,"title":"T","state":"open","author":{{"login":"a"}},"headRefName":"feature/cart","baseRefName":"main","headRefOid":"y","url":"u","isDraft":true,"reviewRequests":[],"labels":[]}}]' ;;
+  "pr comment") printf '%s\n' "$@" > {state_dir}/comment; echo commented ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#
+            ),
+        );
+        let jira = script(
+            "jira-mcp",
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$n" ;;
+    *'"method":"tools/call"'*'"DEV-1234"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"{\\"key\\":\\"DEV-1234\\",\\"summary\\":\\"Cart bug\\"}"}],"isError":false}}\n' "$n" ;;
+    *'"method":"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"not found"}],"isError":true}}\n' "$n" ;;
+  esac
+done
+"#
+            .to_string(),
+        );
+        std::env::set_var("ORCHEVIA_GH_BIN", &gh);
+        // Restore the process-global override even when an assertion fails.
+        struct ResetGhBin;
+        impl Drop for ResetGhBin {
+            fn drop(&mut self) {
+                std::env::remove_var("ORCHEVIA_GH_BIN");
+            }
+        }
+        let _reset_gh_bin = ResetGhBin;
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        let db = Arc::new(SqliteDb::open_in_memory().unwrap());
+        let engine = Engine::new(Arc::clone(&db), CancellationRegistry::default());
+        let profile: crate::agents::AgentProfile = serde_json::from_value(serde_json::json!({
+            "id": "stub", "name": "Stub Claude", "adapter": "claude", "executable": claude,
+            "extraArgs": [], "workingDirMode": "node", "defaultTimeoutSecs": 60
+        }))
+        .unwrap();
+        db.upsert_agent_profile(&profile).unwrap();
+        db.upsert_mcp_server(&crate::mcp::McpServerConfig {
+            id: "jira".into(),
+            name: "Jira".into(),
+            command: jira,
+            args: vec![],
+            enabled: true,
+        })
+        .unwrap();
+        let roles: HashMap<String, String> =
+            ["planning", "implementation", "fastReview", "deepReview"]
+                .iter()
+                .map(|r| ((*r).to_string(), "stub".to_string()))
+                .collect();
+
+        for template in builtin_templates() {
+            for entry in std::fs::read_dir(&state).unwrap() {
+                std::fs::remove_file(entry.unwrap().path()).unwrap();
+            }
+            let case = root.join(&template.id);
+            let remote = case.join("remote.git");
+            let repo = case.join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            git(&case, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+            git(&repo, &["init", "-q", "-b", "main"]);
+            git(&repo, &["config", "user.email", "test@example.com"]);
+            git(&repo, &["config", "user.name", "Test"]);
+            std::fs::create_dir_all(repo.join("src")).unwrap();
+            std::fs::write(repo.join("src/cart.ts"), "export const total = 1;\n").unwrap();
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "-qm", "init"]);
+            git(
+                &repo,
+                &["remote", "add", "origin", &remote.to_string_lossy()],
+            );
+            git(&repo, &["push", "-q", "origin", "main"]);
+            git(&repo, &["checkout", "-qb", "feature/cart"]);
+            std::fs::write(repo.join("src/cart.ts"), "export const total = 2;\n").unwrap();
+            git(&repo, &["commit", "-qam", "Cart total"]);
+            git(&repo, &["checkout", "-q", "main"]);
+
+            // What "Use template" does: repository default, MCP server pick.
+            let mut workflow = instantiate(&template, &roles, false).unwrap().workflow;
+            workflow.defaults = Some(crate::workflow::WorkflowDefaults {
+                repo_dir: Some(repo.to_string_lossy().into_owned()),
+                branch: None,
+            });
+            for node in &mut workflow.nodes {
+                if node.kind == NodeKind::Ticket {
+                    node.config.mcp_server_id = Some("jira".into());
+                }
+                // Command steps call `gh` from PATH; point them at the fake.
+                if node.config.executable.as_deref() == Some("gh") {
+                    node.config.executable = Some(gh.clone());
+                }
+            }
+            assert!(
+                validate_workflow(&workflow)
+                    .iter()
+                    .all(|i| i.severity != crate::workflow::ValidationSeverity::Error),
+                "{}: {:?}",
+                template.id,
+                validate_workflow(&workflow)
+            );
+            let inputs: HashMap<String, String> = [
+                ("task", "Add a cart total"),
+                ("testCommand", "true"),
+                ("installCommand", "true"),
+                ("prNumber", "7"),
+                ("bug", "The cart total is negative"),
+                ("target", "Split src/cart.ts"),
+                ("dependency", "lodash to 4.17.21"),
+                (
+                    "branch",
+                    if template.id == "create-draft-pr" {
+                        "feature/cart"
+                    } else {
+                        "dev-1234-cart"
+                    },
+                ),
+                ("title", "Cart total"),
+                ("ticket", "https://acme.atlassian.net/browse/DEV-1234"),
+            ]
+            .into_iter()
+            .filter(|(name, _)| workflow.inputs.iter().any(|i| i.name == *name))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+            let run_id = format!("run-{}", template.id);
+            db.upsert_workflow(&workflow).unwrap();
+            engine.start_run(&workflow, &run_id, &inputs).unwrap();
+            engine.execute(workflow.clone(), run_id.clone()).await;
+            for _ in 0..4 {
+                if db.get_run(&run_id).unwrap().unwrap().status != RunStatus::Paused {
+                    break;
+                }
+                engine
+                    .approve_run(&run_id, true, None, workflow.clone())
+                    .await
+                    .unwrap();
+            }
+            let rows = db.list_node_results(&run_id).unwrap();
+            let summary: Vec<String> = rows
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{} {} {}",
+                        r.node_id,
+                        r.status,
+                        r.error.clone().unwrap_or_default()
+                    )
+                })
+                .collect();
+            assert_eq!(
+                db.get_run(&run_id).unwrap().unwrap().status,
+                RunStatus::Succeeded,
+                "{}: {summary:#?}",
+                template.id
+            );
+            let agents: Vec<&str> = workflow
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Agent)
+                .map(|n| n.id.as_str())
+                .collect();
+            for row in rows
+                .iter()
+                .filter(|r| r.status == "succeeded" && agents.contains(&r.node_id.as_str()))
+            {
+                assert!(
+                    row.stdout
+                        .starts_with(&format!("cwd={}", repo.to_string_lossy())),
+                    "{} {} ran outside the repository: {}",
+                    template.id,
+                    row.node_id,
+                    row.stdout
+                );
+            }
+            let visits = |id: &str| {
+                rows.iter()
+                    .filter(|r| r.node_id == id && r.status == "succeeded")
+                    .count()
+            };
+            match template.id.as_str() {
+                "ticket-to-pr" => {
+                    let prompts = std::fs::read_to_string(state.join("prompts")).unwrap();
+                    assert!(
+                        prompts.contains("Implement DEV-1234: Cart bug"),
+                        "{prompts}"
+                    );
+                    // One fix round: Codex's P1 is fixed, both reviewers re-review.
+                    assert_eq!(
+                        (visits("fix"), visits("rev_deep"), visits("rev_fast")),
+                        (1, 2, 2)
+                    );
+                    assert_eq!(
+                        git(&remote, &["log", "-1", "--format=%s", "dev-1234-cart"]),
+                        "DEV-1234: Cart bug"
+                    );
+                    let created = std::fs::read_to_string(state.join("created")).unwrap();
+                    for arg in [
+                        "DEV-1234: Cart bug",
+                        "--base\nmain",
+                        "--head\ndev-1234-cart",
+                        "--draft",
+                    ] {
+                        assert!(created.contains(arg), "{arg}: {created}");
+                    }
+                }
+                "create-draft-pr" => {
+                    assert_eq!(
+                        git(&remote, &["log", "-1", "--format=%s", "feature/cart"]),
+                        "Cart total"
+                    );
+                    let created = std::fs::read_to_string(state.join("created")).unwrap();
+                    assert!(created.contains("--title\nCart total"), "{created}");
+                }
+                "review-pr" => {
+                    let comment = std::fs::read_to_string(state.join("comment")).unwrap();
+                    assert!(comment.starts_with("pr\ncomment\n7\n"), "{comment}");
+                    assert!(comment.contains("Missing empty-cart check"), "{comment}");
+                }
+                "multi-agent-review" => assert_eq!(visits("triage"), 0),
+                "watch-feedback" => {
+                    assert_eq!(visits("fix"), 0);
+                    // The PR's review feedback reaches the agent that addresses it.
+                    let prompts = std::fs::read_to_string(state.join("prompts")).unwrap();
+                    assert!(
+                        prompts.contains("Please handle an empty cart."),
+                        "{prompts}"
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     #[test]

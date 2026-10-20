@@ -6,6 +6,63 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-10-21
+
+### Fixed
+
+- The built-in templates now run as shipped for a new user:
+  - **Implement a Task** (was Implement Ticket) asks for the task as a
+    description or pasted ticket text and never fetches links, which default
+    Claude Code permissions refuse. Before, its first step always failed with
+    missing `ticket.key` and `ticket.title`.
+  - **Ticket to Draft PR** sends fix rounds back to both reviewers, runs the
+    tests, commits, pushes the branch and then opens the draft PR. Before, a
+    Codex finding looped until "Loop limit exceeded", and nothing pushed the
+    branch.
+  - **Review Pull Request** asks for the PR number, reviews the PR's diff, and
+    asks for approval before posting one comment with both reviews.
+  - **Address Review Feedback** (was Watch Review Feedback) checks out the PR,
+    loads its feedback and routes on P0 as well as P1 findings.
+  - **Investigate Bug**, **Refactor**, **Dependency Upgrade**, **Run Multi-Agent
+    Review** and **Create Draft PR** ask for what they work on (the bug, the
+    refactor goal, the install command, the base branch, the PR title) and push
+    before opening a PR. Pushes fail fast instead of waiting for a credential
+    prompt, and Create Draft PR's checkout is not blocked by untracked files.
+  - Every implementation step declares the tools it needs (`Edit`, `Write`) and
+    is told not to run tests, builds or package managers (the workflow does), so
+    a missing Claude Code permission shows up when the template is used, not as
+    a refused step mid-run.
+- A clean review no longer reads as a blocking one. `node.<id>.severity` now
+  comes from finding blocks first; a plain-text `P0`–`P3` tag no longer counts
+  when it names the scale (`P0–P3`) or is negated right before it ("No P0/P1
+  issues found"), while "Found P0/P1 issues" still reports P0. A review without
+  findings reads as an empty severity instead of failing the condition with an
+  unknown variable, and a later clean visit replaces an earlier finding.
+- A loop whose fix step returns to the reviews through another step
+  (`gate -true-> fix -> tests -> … -> gate`) no longer skips the exit path on the
+  first round. Before, such a run could end as succeeded without ever running the
+  steps after the loop. If the loop ends another way (a failure route), the
+  waiting exit is skipped instead of stalling the run, and a fix branch that has
+  used its visits ends the run with "Loop limit exceeded" instead of a scheduler
+  deadlock. The browser demo follows the same rules.
+- AI steps without their own working directory run in the workflow's repository
+  directory, like Command, Git and GitHub steps. Before, they ran in Orchevia's
+  own folder.
+- The GitHub "Changed files" step uses `gh pr view --json files`; it called a
+  `gh pr diff --numstat` option that does not exist.
+- Ticket steps accept a Jira URL as well as an issue key.
+- The "Review loop" sample re-runs both reviewers after a fix, and the "Review
+  pull request" sample asks for approval before posting.
+
+### Added
+
+- **Use template** opens a short setup: the repository folder (required), the
+  Jira/MCP server for ticket steps, the inputs each run asks for, and any tool
+  permissions the mapped profiles lack.
+- The core tests replay all nine built-in templates end to end in the real engine
+  with stub Claude/Codex CLIs, a fake Jira server, a fake `gh` and a local Git
+  remote.
+
 ### Changed
 
 - Dependencies are refreshed in each release PR with the new `pnpm deps:update`
@@ -585,7 +642,8 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/iazaran/orchevia/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/iazaran/orchevia/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/iazaran/orchevia/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/iazaran/orchevia/compare/v0.1.14...v0.1.15

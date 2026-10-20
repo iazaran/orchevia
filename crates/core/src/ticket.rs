@@ -88,7 +88,8 @@ impl TicketSource for JiraMcpSource {
     }
 
     fn load_ticket(&self, key: &str) -> Result<NormalizedTicket, String> {
-        let trimmed = key.trim();
+        let key = ticket_key(key);
+        let trimmed = key.as_str();
         if trimmed.is_empty() {
             return Err("Ticket key must not be empty.".to_string());
         }
@@ -107,6 +108,31 @@ impl TicketSource for JiraMcpSource {
         }
         normalize_jira_payload(trimmed, &result.text)
     }
+}
+
+/// The issue key in a ticket input: a key as typed, or the key inside a Jira
+/// URL such as `https://acme.atlassian.net/browse/DEV-1234?focusedId=1`.
+pub fn ticket_key(input: &str) -> String {
+    let trimmed = input.trim();
+    if !trimmed.contains("://") {
+        return trimmed.to_string();
+    }
+    let is_key = |token: &&str| {
+        let Some((project, number)) = token.split_once('-') else {
+            return false;
+        };
+        project.starts_with(|c: char| c.is_ascii_uppercase())
+            && project
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            && !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+    };
+    trimmed
+        .split(['/', '?', '&', '=', '#'])
+        .rfind(is_key)
+        .unwrap_or(trimmed)
+        .to_string()
 }
 
 /// Best-effort normalization of a Jira MCP payload: accept either a JSON
@@ -215,6 +241,23 @@ fn snippet(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ticket_key_accepts_keys_and_jira_urls() {
+        for (input, key) in [
+            ("DEV-1234", "DEV-1234"),
+            ("  DEV-1234 ", "DEV-1234"),
+            ("https://acme.atlassian.net/browse/DEV-1234", "DEV-1234"),
+            ("https://acme.atlassian.net/browse/OPS_2-77?focusedCommentId=9", "OPS_2-77"),
+            (
+                "https://acme.atlassian.net/jira/software/projects/DEV/boards/1?selectedIssue=DEV-42",
+                "DEV-42",
+            ),
+            ("https://example.com/no-key-here", "https://example.com/no-key-here"),
+        ] {
+            assert_eq!(ticket_key(input), key, "{input}");
+        }
+    }
 
     #[test]
     fn normalizes_json_payload() {

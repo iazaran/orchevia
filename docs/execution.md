@@ -66,6 +66,14 @@ inputs), `node.<id>`, `node.<id>.output`, `node.<id>.status`,
 fail validation (`condition-unknown-ref` / `prompt-unknown-variable`) and, if
 somehow reached at runtime, fail the node instead of guessing a branch.
 
+`node.<id>.severity` is the highest severity an Agent step reported. ```finding
+blocks win when present; otherwise a `P0`–`P3` tag in the prose counts unless it
+names the scale (`P0–P3`) or is negated right before it (`no P1`, `zero P0 or
+P1`, `no blocking (P0/P1)`), so "No P0/P1 issues found" reports nothing while
+"Found P0/P1 issues" reports P0. When in doubt it reports the tag rather than
+hiding it. A review with no findings reads as an empty string, so `severity
+contains P1` is simply false, and a later visit replaces an earlier one.
+
 ## Retries
 
 `retry: { maxAttempts: 1–10, delayMs: 0–60000, backoff: bool }`. Every attempt
@@ -83,7 +91,11 @@ Review/fix pattern: `… → review → condition(true → fix → review, false
 Each loop-back needs `maxVisits >= 2` on the cycle nodes; exceeding it fails the
 run with `Loop limit exceeded`. While a loop continues, sibling (exit-path)
 edges stay pending — they resolve on the exit visit, so exits are never skipped
-prematurely. Side nodes off the cycle path run once (documented limitation: put
+prematurely. This also holds when the condition's taken branch loops back through
+another step (`condition -true-> fix -> tests -> … -> condition`): only branches
+that cannot lead back to the condition wait; branches inside the loop resolve as
+usual. When several reviewers feed the condition, loop the fix back to all of them
+so none keeps a stale finding. Side nodes off the cycle path run once (documented limitation: put
 per-iteration work on the cycle with its own bound).
 
 `node.<id>.visits` exposes completed visit counts for loop-exit conditions.

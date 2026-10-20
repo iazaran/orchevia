@@ -172,6 +172,123 @@ fn parse_block(block: &str, source: &str) -> Option<ReviewFinding> {
     })
 }
 
+const LEVELS: [&str; 4] = ["P0", "P1", "P2", "P3"];
+
+/// The highest severity a step's output reports, for `node.<id>.severity`.
+///
+/// Structured ```finding blocks win when present. Otherwise a `P0`–`P3` tag in
+/// prose counts unless it names the scale (`P0–P3`) or is negated right before
+/// it (`no P1`, `zero P0 or P1`, `no blocking (P0/P1)`): a clean review that says
+/// "No P0/P1 issues found" reports no severity, while "Found P0/P1 issues" does.
+pub fn reported_severity(text: &str) -> Option<&'static str> {
+    let findings = extract_findings(text, "");
+    if !findings.is_empty() {
+        return LEVELS
+            .into_iter()
+            .find(|level| findings.iter().any(|f| f.severity == *level));
+    }
+    LEVELS
+        .into_iter()
+        .find(|level| text.lines().any(|line| tagged(line, level)))
+}
+
+/// Whether `line` carries `level` as a reported tag (not a range or negated).
+fn tagged(line: &str, level: &str) -> bool {
+    line.match_indices(level).any(|(start, _)| {
+        let before_text = &line[..start];
+        let after_text = &line[start + level.len()..];
+        let before = before_text.chars().next_back();
+        let after = after_text.chars().next();
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if word(before) || word(after) {
+            return false;
+        }
+        // "P0–P3" names the scale, not a finding.
+        let dash = |c: Option<char>| matches!(c, Some('-' | '–' | '—'));
+        let range = (dash(before) && ends_with_level(trim_last(before_text)))
+            || (dash(after) && starts_with_level(&after_text[after.map_or(0, char::len_utf8)..]));
+        !range && !negated(clause(before_text))
+    })
+}
+
+fn trim_last(text: &str) -> &str {
+    let mut chars = text.chars();
+    chars.next_back();
+    chars.as_str()
+}
+
+fn starts_with_level(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next() == Some('P') && chars.next().is_some_and(|c| ('0'..='3').contains(&c))
+}
+
+fn ends_with_level(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next_back().is_some_and(|c| ('0'..='3').contains(&c))
+        && chars.next_back() == Some('P')
+        && !chars
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The clause a tag sits in: the text after the last sentence or clause
+/// break (`.` `;` `:` `!` `?`, or a dash with spaces around it).
+fn clause(before: &str) -> &str {
+    let mut start = 0;
+    for (i, c) in before.char_indices() {
+        let end = i + c.len_utf8();
+        let spaced_dash = matches!(c, '-' | '–' | '—')
+            && before[..i].ends_with(' ')
+            && before[end..].starts_with(' ');
+        if matches!(c, '.' | ';' | ':' | '!' | '?') || spaced_dash {
+            start = end;
+        }
+    }
+    &before[start..]
+}
+
+/// A negation right before the tag group: "no P1", "zero P0, P1 or P2",
+/// "without **P1**", "no blocking (P0/P1)". At most one other word may sit in
+/// between, and a contrast ("but", "except") ends the search, so "No P0
+/// issues, one P1 race" still reports P1.
+fn negated(clause: &str) -> bool {
+    let mut rest = clause;
+    let mut words = 0;
+    loop {
+        rest = rest.trim_end_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(c, '*' | '_' | '`' | '(' | '[' | ')' | ']' | ',' | '/' | '&')
+        });
+        if ends_with_level(rest) {
+            if words > 0 {
+                return false;
+            }
+            rest = &rest[..rest.len() - 2];
+            continue;
+        }
+        let word_start = rest
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '-' | '\''))
+            .last()
+            .map_or(rest.len(), |(i, _)| i);
+        let word = rest[word_start..].to_lowercase();
+        rest = &rest[..word_start];
+        match word.as_str() {
+            "" => return false,
+            "no" | "none" | "zero" | "without" | "not" | "nothing" => return true,
+            "or" | "and" | "nor" if words == 0 => {}
+            "but" | "except" | "however" | "although" | "though" | "yet" => return false,
+            _ => {
+                words += 1;
+                if words > 1 {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
 fn normalize_severity(raw: &str) -> String {
     let upper = raw.trim().to_ascii_uppercase();
     for level in ["P0", "P1", "P2", "P3"] {
@@ -254,6 +371,50 @@ pub fn grouped_findings(outputs: &[(String, String, String)]) -> Vec<GroupedFind
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared with `src/lib/severity.test.ts`; keep both tables identical.
+    const SEVERITY_CASES: &[(&str, Option<&str>)] = &[
+        ("No P0/P1 issues found.", None),
+        ("There are no P0 or P1 findings.", None),
+        ("Found zero P0, P1 or P2 problems.", None),
+        ("Without **P1** findings, this is ready.", None),
+        ("No blocking (P0/P1) issues.", None),
+        ("Severities run P0–P3.", None),
+        ("Nothing blocking.", None),
+        ("SP1 sprint notes", None),
+        (
+            "- **P1** src/a.ts:3 — the lock is never released",
+            Some("P1"),
+        ),
+        ("P0: crash on an empty cart", Some("P0")),
+        ("Severity: P1", Some("P1")),
+        ("No P0 issues; one P2 naming nit.", Some("P2")),
+        ("No P0 issues, one P1 race.", Some("P1")),
+        ("Two findings: P2 naming and P1 race.", Some("P1")),
+        ("P1-level risk in auth", Some("P1")),
+        (
+            "Found P0/P1 issues: authentication can be bypassed.",
+            Some("P0"),
+        ),
+        ("No P0 — P1: authentication is bypassed.", Some("P1")),
+        ("Not blocking, but P1: a race on retry.", Some("P1")),
+        ("There is no auth check on this route (P0).", Some("P0")),
+        (
+            "No P0/P1 issues.\n```finding\nseverity: P2\ntitle: Naming\n```",
+            Some("P2"),
+        ),
+        (
+            "P0 crash mentioned in prose\n```finding\nseverity: info\ntitle: Note\n```",
+            None,
+        ),
+    ];
+
+    #[test]
+    fn reported_severity_ignores_lists_and_negations_and_prefers_findings() {
+        for (text, expected) in SEVERITY_CASES {
+            assert_eq!(reported_severity(text), *expected, "{text}");
+        }
+    }
 
     const SAMPLE: &str = r#"Review done.
 ```finding

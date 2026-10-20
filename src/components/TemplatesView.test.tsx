@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
-import { createDefaultProfile } from '../lib/agents';
+import { createDefaultProfile, recommendedProfiles } from '../lib/agents';
 import { TemplatesView } from './TemplatesView';
 
 afterEach(() => vi.restoreAllMocks());
@@ -114,4 +114,108 @@ it('lists declared tools the mapped profile lacks right after import', async () 
   expect(
     screen.getByRole('button', { name: 'Add to allowed tools' }),
   ).toBeInTheDocument();
+});
+
+it('asks for the repository before creating a workflow from a template', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  for (const profile of recommendedProfiles([])) await backend.saveAgentProfile(profile);
+  const jira = { id: 'jira', name: 'Jira', command: 'uvx', args: [], enabled: true };
+  await backend.saveMcpServer(jira);
+  const { builtin } = await backend.listTemplates();
+  useAppStore.setState({
+    builtinTemplates: builtin,
+    userTemplates: [],
+    activeWorkflowId: null,
+    profiles: await backend.listAgentProfiles(),
+    mcpServers: [jira],
+    knownFolders: [],
+    view: 'templates',
+  });
+  render(<TemplatesView />);
+  const user = userEvent.setup();
+  const card = screen.getByRole('heading', { name: 'Ticket to Draft PR' }).parentElement;
+  if (!card) throw new Error('template card');
+  await user.click(within(card).getByRole('button', { name: 'Use template' }));
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Use template Ticket to Draft PR',
+  });
+  const create = within(dialog).getByRole('button', { name: 'Create workflow' });
+  expect(create).toBeDisabled();
+  expect(within(dialog).getByRole('combobox', { name: 'Jira / MCP server' })).toHaveValue(
+    'jira',
+  );
+  expect(dialog).toHaveTextContent('Jira ticket key or URL');
+  await user.type(
+    within(dialog).getByRole('textbox', { name: 'Repository folder (required)' }),
+    '/work/shop',
+  );
+  await user.click(create);
+  await waitFor(() => expect(useAppStore.getState().view).toBe('workflows'));
+  const created = (await backend.listWorkflows()).find(
+    (w) => w.name === 'Ticket to Draft PR',
+  );
+  expect(created?.definition.defaults?.repoDir).toBe('/work/shop');
+  for (const node of created?.definition.nodes.filter((n) => n.type === 'ticket') ?? [])
+    expect(node.config.mcpServerId).toBe('jira');
+  expect(useAppStore.getState().activeWorkflowId).toBe(created?.id);
+});
+
+it('keeps a saved template’s repository and default branch when it is used', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const saved = await backend.saveUserTemplate({
+    id: 'user-defaults',
+    version: 1,
+    name: 'Saved defaults',
+    description: 'Runs one command.',
+    category: 'general',
+    workflow: {
+      schemaVersion: 6,
+      id: 'tpl-saved',
+      name: 'Saved defaults',
+      defaults: { repoDir: '/saved/repo', branch: 'develop' },
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'say',
+          type: 'command',
+          position: { x: 0, y: 100 },
+          config: { executable: 'echo', args: ['hi'] },
+        },
+        { id: 'end', type: 'end', position: { x: 0, y: 200 }, config: {} },
+      ],
+      edges: [
+        { id: 'a', source: 'start', target: 'say' },
+        { id: 'b', source: 'say', target: 'end' },
+      ],
+    },
+  });
+  useAppStore.setState({
+    builtinTemplates: [],
+    userTemplates: [saved],
+    activeWorkflowId: null,
+    profiles: [],
+    mcpServers: [],
+    knownFolders: ['/elsewhere'],
+    view: 'templates',
+  });
+  render(<TemplatesView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Use template' }));
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Use template Saved defaults',
+  });
+  expect(
+    within(dialog).getByRole('textbox', { name: 'Repository folder (required)' }),
+  ).toHaveValue('/saved/repo');
+  await user.click(within(dialog).getByRole('button', { name: 'Create workflow' }));
+  await waitFor(() => expect(useAppStore.getState().view).toBe('workflows'));
+  const created = (await backend.listWorkflows()).find(
+    (w) => w.name === 'Saved defaults',
+  );
+  expect(created?.definition.defaults).toEqual({
+    repoDir: '/saved/repo',
+    branch: 'develop',
+  });
 });
