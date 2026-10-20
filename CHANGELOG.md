@@ -6,14 +6,15 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
-## [0.1.18] - 2026-10-20
+## [0.1.18] - 2026-10-21
 
 ### Fixed
 
 - The built-in templates now run as shipped for a new user:
-  - **Implement a Task** (was Implement Ticket) asks for the task as a ticket key,
-    link or plain description. Before, its first step always failed with missing
-    `ticket.key` and `ticket.title`.
+  - **Implement a Task** (was Implement Ticket) asks for the task as a
+    description or pasted ticket text and never fetches links, which default
+    Claude Code permissions refuse. Before, its first step always failed with
+    missing `ticket.key` and `ticket.title`.
   - **Ticket to Draft PR** sends fix rounds back to both reviewers, runs the
     tests, commits, pushes the branch and then opens the draft PR. Before, a
     Codex finding looped until "Loop limit exceeded", and nothing pushed the
@@ -25,10 +26,12 @@ All notable changes are recorded here, following
   - **Investigate Bug**, **Refactor**, **Dependency Upgrade**, **Run Multi-Agent
     Review** and **Create Draft PR** ask for what they work on (the bug, the
     refactor goal, the install command, the base branch, the PR title) and push
-    before opening a PR.
-  - Every implementation step declares the tools it needs (`Edit`, `Write`), so a
-    missing Claude Code permission shows up when the template is used, not as a
-    refused step mid-run.
+    before opening a PR. Pushes fail fast instead of waiting for a credential
+    prompt, and Create Draft PR's checkout is not blocked by untracked files.
+  - Every implementation step declares the tools it needs (`Edit`, `Write`) and
+    is told not to run tests, builds or package managers (the workflow does), so
+    a missing Claude Code permission shows up when the template is used, not as
+    a refused step mid-run.
 - A clean review no longer reads as a blocking one. `node.<id>.severity` now
   comes from finding blocks first; a plain-text `P0`–`P3` tag no longer counts
   when it names the scale (`P0–P3`) or is negated right before it ("No P0/P1
@@ -39,8 +42,9 @@ All notable changes are recorded here, following
   (`gate -true-> fix -> tests -> … -> gate`) no longer skips the exit path on the
   first round. Before, such a run could end as succeeded without ever running the
   steps after the loop. If the loop ends another way (a failure route), the
-  waiting exit is skipped instead of stalling the run. The browser demo follows
-  the same rules.
+  waiting exit is skipped instead of stalling the run, and a fix branch that has
+  used its visits ends the run with "Loop limit exceeded" instead of a scheduler
+  deadlock. The browser demo follows the same rules.
 - AI steps without their own working directory run in the workflow's repository
   directory, like Command, Git and GitHub steps. Before, they ran in Orchevia's
   own folder.

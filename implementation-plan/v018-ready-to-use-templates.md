@@ -88,6 +88,23 @@ partly in the engine.
 - **Replay test.** It logs prompts (ticket title and PR feedback must reach the
   agents) and resets `ORCHEVIA_GH_BIN` with a drop guard.
 
+## Second review round
+
+- A branch back into a loop step that has used its visits fails with "Loop
+  limit exceeded" (engine and browser replay); before, it stalled into a
+  scheduler deadlock.
+- Implement a Task and Investigate Bug work from the pasted text and never fetch
+  links, because default Claude Code permissions refuse fetches and a refusal
+  fails the step.
+- Implementation steps are told not to run tests, builds or package managers.
+- Pushes run as `env GIT_TERMINAL_PROMPT=0 git push …`. Create Draft PR's
+  checkout allows untracked files.
+- **Known limits:**
+  - The base branch defaults to `main` (editable per run).
+  - Pushes go to `origin`.
+  - In nested loops, an exit that leads back through an outer loop is still
+    treated as in-loop.
+
 ## Tests
 
 - `templates::tests::builtins_run_end_to_end` replays all nine templates in the
