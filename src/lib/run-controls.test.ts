@@ -5,7 +5,7 @@ import {
   validateRunOptions,
   replayGraph,
 } from './run-controls';
-import type { StoredNodeResult, StoredRun, Workflow } from './workflow';
+import type { StoredNodeResult, StoredRun, Workflow, WorkflowNode } from './workflow';
 
 const workflow: Workflow = {
   schemaVersion: 6,
@@ -125,5 +125,82 @@ describe('run controls', () => {
     expect(replayGraph(workflow, [row(1, 's'), row(2, 'a'), row(3, 'b')]).ready).toEqual([
       'e',
     ]);
+  });
+});
+
+describe('loop exits in the browser replay (parity with the engine)', () => {
+  const node = (
+    id: string,
+    type: WorkflowNode['type'],
+    maxVisits?: number,
+  ): WorkflowNode => ({
+    id,
+    type,
+    position: { x: 0, y: 0 },
+    config: {
+      ...(type === 'command' ? { executable: 'echo' } : {}),
+      ...(maxVisits === undefined ? {} : { maxVisits }),
+    },
+  });
+  const loop: Workflow = {
+    schemaVersion: 6,
+    id: 'loop',
+    name: 'Loop back',
+    nodes: [
+      node('s', 'start'),
+      node('work', 'command', 3),
+      node('gate', 'condition', 3),
+      node('fix', 'command', 2),
+      node('after', 'command'),
+      node('rescue', 'command'),
+      node('e', 'end'),
+    ],
+    edges: [
+      { id: 'e0', source: 's', target: 'work' },
+      { id: 'e1', source: 'work', target: 'gate' },
+      { id: 'e2', source: 'gate', target: 'fix', label: 'true' },
+      { id: 'e3', source: 'gate', target: 'after', label: 'false' },
+      { id: 'e4', source: 'fix', target: 'work' },
+      { id: 'e5', source: 'fix', target: 'rescue', label: 'failure' },
+      { id: 'e6', source: 'after', target: 'e' },
+      { id: 'e7', source: 'rescue', target: 'e' },
+    ],
+  };
+  const step = (
+    id: number,
+    nodeId: string,
+    status = 'succeeded',
+    stdout = '',
+  ): StoredNodeResult => ({
+    ...row(id, nodeId, status),
+    stdout,
+  });
+
+  it('keeps the exit waiting while the fix loops back, then runs it', () => {
+    const first = [step(1, 's'), step(2, 'work'), step(3, 'gate', 'succeeded', 'true')];
+    expect(replayGraph(loop, first).ready).toEqual(['fix']);
+    expect(replayGraph(loop, first).skipped).not.toContain('after');
+    const exit = [
+      ...first,
+      step(4, 'fix'),
+      step(5, 'work'),
+      step(6, 'gate', 'succeeded', 'false'),
+    ];
+    expect(replayGraph(loop, exit).ready).toEqual(['after']);
+    expect(replayGraph(loop, exit).skipped).toEqual(['fix', 'rescue']);
+  });
+
+  it('releases the waiting exit when the loop ends by a failure route', () => {
+    const rows = [
+      step(1, 's'),
+      step(2, 'work'),
+      step(3, 'gate', 'succeeded', 'true'),
+      step(4, 'fix', 'failed'),
+      step(5, 'rescue'),
+    ];
+    const graph = replayGraph(loop, rows);
+    expect(graph.error).toBeNull();
+    expect(graph.ready).toEqual(['e']);
+    expect(graph.skipped).toContain('after');
   });
 });

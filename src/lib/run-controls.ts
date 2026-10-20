@@ -605,11 +605,22 @@ export function replayGraph(
       .forEach((e) => {
         if (!terminal.has(e.target)) resolve(e.target, true);
       });
+    // Mirrors the engine: a condition whose taken branch leads back to it keeps
+    // its exits (branches that cannot lead back) waiting for the exit visit.
+    const loopsBack =
+      nodes.get(row.nodeId)?.type === 'condition' &&
+      !loops.length &&
+      edges.some(
+        (e) =>
+          !loopEdges.has(e.id) && isTaken(e.label) && reach(e.target).has(row.nodeId),
+      );
     if (!loops.length)
       edges
         .filter((e) => !loopEdges.has(e.id) && !isTaken(e.label))
         .forEach((e) => {
-          if (!terminal.has(e.target)) resolve(e.target, false);
+          if (terminal.has(e.target)) return;
+          if (loopsBack && !reach(e.target).has(row.nodeId)) return;
+          resolve(e.target, false);
         });
     if (failed && !edges.some((e) => isTaken(e.label)))
       error = `Node '${row.nodeId}' failed with no failure route.`;
@@ -619,8 +630,8 @@ export function replayGraph(
     const reachable = reach(start.id);
     workflow.nodes.filter((n) => !reachable.has(n.id)).forEach((n) => skip(n.id));
   }
-  return {
-    ready: workflow.nodes
+  const readyNodes = (): string[] =>
+    workflow.nodes
       .filter(
         (n) =>
           !terminal.has(n.id) &&
@@ -628,7 +639,28 @@ export function replayGraph(
           taken.has(n.id) &&
           (visits.get(n.id) ?? 0) < (n.config.maxVisits ?? 1),
       )
-      .map((n) => n.id),
+      .map((n) => n.id);
+  // Mirrors the engine's release: when nothing can run, exits a loop left
+  // waiting (it ended another way) resolve as untaken.
+  let ready = readyNodes();
+  while (ready.length === 0) {
+    const waiting = workflow.nodes.filter((n) => {
+      const incoming = workflow.edges.filter((e) => e.target === n.id);
+      return (
+        !terminal.has(n.id) &&
+        (pending.get(n.id) ?? 0) > 0 &&
+        incoming.length > 0 &&
+        incoming.every((e) => loopEdges.has(e.id) || terminal.has(e.source))
+      );
+    });
+    if (waiting.length === 0) break;
+    for (const n of waiting) {
+      for (let left = pending.get(n.id) ?? 0; left > 0; left -= 1) resolve(n.id, false);
+    }
+    ready = readyNodes();
+  }
+  return {
+    ready,
     skipped: [...skipped].filter(
       (id) => !rows.some((r) => r.nodeId === id && r.status === 'skipped'),
     ),
