@@ -23,11 +23,14 @@ for 14 days.
    - Both DMGs build on `macos-15` (Apple Silicon): `aarch64-apple-darwin`
      natively and `x86_64-apple-darwin` cross-compiled. Staging checks every
      executable in the `.app` with `lipo -archs` against the matrix architecture.
+     Both jobs request `app,dmg`, because Tauri deletes the `.app` when only `dmg`
+     is requested (found in review).
    - Build jobs no longer use Rust or pnpm caches; validation restores main's core
      cache with `save-if: false`.
    - Installer artifacts are kept for one day.
    - `scripts/workflows.test.mjs` runs the real staging block: an arm64 or
      universal binary can't ship as the Intel DMG, and Linux needs both packages.
+     It also pins the macOS matrix (targets and `app,dmg`).
 3. **Other workflows.**
    - Pages starts only for `docs/**`, its own workflow or `scripts/ci-changes.mjs`.
      Its validation requires latest-release links and existing images.
@@ -62,6 +65,15 @@ for 14 days.
      "Keeping Actions usage low".
    - Getting started, ROADMAP and CONTRIBUTING (Node 24+) were updated.
    - Employer-like ticket keys in tests and a placeholder became `DEV-1234`.
+
+## Review follow-ups
+
+- Generation runs with the selected profile's permissions, so the docs and the
+  Generate dialog hint now say the AI is asked not to change the repository rather
+  than that it never writes.
+- Refusal detection is described as Claude Code structured output only; Codex and
+  text-output Claude profiles are listed as undetected.
+- Tour panels are focusable (`tabindex="0"`), as the tabs pattern expects.
 
 ## Not changed
 

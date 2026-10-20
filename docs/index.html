@@ -290,6 +290,9 @@
         font-size: 13px;
         margin-top: 14px;
       }
+      figure.shot-hero {
+        margin: 0;
+      }
       .window {
         margin: 40px auto 8px;
         border: 1px solid var(--border-strong);
@@ -1149,8 +1152,9 @@ Press ▶ Run demo to start. The run pauses at the approval gate until you appro
               <ol class="numbered">
                 <li>
                   <strong>Open Workflows → ✦ Generate.</strong> Pick Claude Code or Codex
-                  and, optionally, a repository: the AI reads it (never writes) so the
-                  draft uses your real paths and conventions.
+                  and, optionally, a repository: the AI is asked to inspect it without
+                  changing anything, so the draft uses your real paths and conventions. It
+                  runs with that profile's permissions.
                 </li>
                 <li>
                   <strong>Write the goal like a short spec.</strong> Name the agents, the
@@ -1247,6 +1251,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             <div
               class="tour-panel"
               role="tabpanel"
+              tabindex="0"
               id="panel-editor"
               aria-labelledby="tab-editor"
             >
@@ -1279,6 +1284,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             <div
               class="tour-panel"
               role="tabpanel"
+              tabindex="0"
               id="panel-runs"
               aria-labelledby="tab-runs"
             >
@@ -1310,6 +1316,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             <div
               class="tour-panel"
               role="tabpanel"
+              tabindex="0"
               id="panel-usage"
               aria-labelledby="tab-usage"
             >
@@ -1341,6 +1348,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             <div
               class="tour-panel"
               role="tabpanel"
+              tabindex="0"
               id="panel-agents"
               aria-labelledby="tab-agents"
             >
@@ -1555,7 +1563,8 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
               <h3>Refusals fail the step</h3>
               <p>
                 When headless Claude Code refuses a tool, the step fails with the exact
-                allow rules that would admit it — never a silent “success”.
+                allow rules that would admit it instead of a silent “success”. Codex and
+                Claude text-output profiles report no refusals, so these can't be caught.
               </p>
             </div>
             <div class="card">

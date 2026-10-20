@@ -50,6 +50,9 @@ All notable changes are recorded here, following
   - Rust: tauri-build 2.7.2, tauri-plugin-dialog 2.8.3, tokio 1.53.3,
     serde_json 1.0.154 and uuid 1.28.0.
 - Examples, placeholders and tests use generic ticket keys.
+- The Generate dialog's repository hint no longer claims the AI never writes. It is
+  asked to read the repository without changing it, but it runs with the chosen
+  profile's permissions.
 
 ## [0.1.16] - 2026-10-20
 

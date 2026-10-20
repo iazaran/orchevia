@@ -145,6 +145,9 @@ describe('public page scripts', () => {
     el('#tab-runs').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
     expect(el('#tab-usage').getAttribute('aria-selected')).toBe('true');
     expect(el('#panel-usage').hidden).toBe(false);
+    // Tab moves from the tab list into the visible panel.
+    for (const panel of document.querySelectorAll<HTMLElement>('[role="tabpanel"]'))
+      expect(panel.tabIndex, panel.id).toBe(0);
   });
 
   it('replays the run, waits for approval, loops once and opens the draft PR', async () => {

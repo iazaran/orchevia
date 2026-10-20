@@ -158,7 +158,8 @@ CLI, model, effort and permission level. CLIs are found on your login shell's `P
 <img align="right" width="380" src="./docs/images/generate-dialog.webp" alt="The Generate workflow dialog: a goal describing a ticket-to-PR flow, a repository directory, and a preview listing 12 steps, 4 risk categories, one setup item, the compiler notes and the proposed steps." />
 
 1. Open **Workflows → ✦ Generate**, pick Claude Code or Codex, and optionally point it at
-   a repository so the draft uses your real paths and conventions.
+   a repository so the draft uses your real paths and conventions. The AI is asked to
+   inspect it without changing anything, but it runs with that profile's permissions.
 2. Write the goal like a short spec. Name the agents, the commands that prove the change
    works, where you want to approve, and which writes are allowed:
 
@@ -235,8 +236,8 @@ More: [execution semantics](docs/execution.md), [agent profiles and permissions]
   Executables and arguments are passed separately; a shell runs only when a Command node
   asks for one.
 - **Permissions you can read.** Profiles pass permission flags only on the command line;
-  Orchevia never edits your Claude Code or Codex settings. Refused tool calls fail the
-  step instead of passing silently.
+  Orchevia never edits your Claude Code or Codex settings. Tools that Claude Code refuses
+  fail the step instead of passing silently.
 - **Untrusted input stays data.** Ticket text, PR content, imported workflows and AI
   output are treated as untrusted. Imports refuse files that contain credential-like
   fields.
@@ -254,8 +255,9 @@ Details: [security model](./docs/security.md) and [SECURITY.md](./SECURITY.md).
   environment the app was started from.
 - **Local scheduling:** the app must be running. Background mode keeps it in the tray
   when the window closes; there is no cloud worker.
-- **Codex refusals:** Codex reports no refusal events, so a blocked Codex command is not
-  detected the way Claude Code refusals are.
+- **Refusal detection:** Codex reports no refusal events, and neither do Claude profiles
+  whose extra arguments force text output (`--output-format`), so refused tools in
+  those steps are not detected.
 
 ## Build from source
 

@@ -1142,7 +1142,8 @@ export function WorkflowsView(): React.JSX.Element {
                     />
                   </fieldset>
                   <span className="field-hint">
-                    Grounded drafts: the AI reads this repo (never writes), wires node
+                    Grounded drafts: the AI is asked to read this repo without changing it
+                    (it runs with the chosen profile&apos;s permissions), wires node
                     working directories, and the accepted workflow keeps these as its
                     defaults.
                   </span>
