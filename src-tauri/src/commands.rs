@@ -547,7 +547,10 @@ fn check_schedule_trust(
         .get_workflow(workflow_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown workflow '{workflow_id}'."))?;
-    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+    let profiles = state
+        .db
+        .list_effective_agent_profiles()
+        .map_err(|e| e.to_string())?;
     orchevia_core::trust::may_enable_schedule(&stored.definition, &profiles, trusted)
 }
 
@@ -715,7 +718,10 @@ pub fn workflow_risks(
     state: State<AppState>,
     workflow: Workflow,
 ) -> Result<Vec<orchevia_core::trust::RiskCategory>, String> {
-    let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+    let profiles = state
+        .db
+        .list_effective_agent_profiles()
+        .map_err(|e| e.to_string())?;
     Ok(
         orchevia_core::trust::workflow_risks_with_profiles(&workflow, &profiles)
             .into_iter()
@@ -824,6 +830,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "ui.theme",
     "onboarding.completed",
     "workflow.assistanceProfileId",
+    orchevia_core::agents::PERMISSION_DEFAULT_SETTING,
     "usage.subscriptionFees",
     "usage.extraCharges",
     "usage.allocationShare",
@@ -927,6 +934,9 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     let max_len = if key.starts_with("usage.") { 8000 } else { 200 };
     if value.len() > max_len {
         return Err("Setting value too long.".to_string());
+    }
+    if key == orchevia_core::agents::PERMISSION_DEFAULT_SETTING {
+        orchevia_core::agents::parse_permission_default(value)?;
     }
     orchevia_core::usage::validate_usage_setting(key, value)?;
     db.set_setting(key, value).map_err(|e| e.to_string())
@@ -1064,7 +1074,7 @@ pub fn preview_agent_command(
 ) -> Result<AgentPreview, String> {
     let profile = state
         .db
-        .get_agent_profile(&profile_id)
+        .get_effective_agent_profile(&profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown Agent Profile '{profile_id}'."))?;
     // Render a note, not secrets: placeholders stay unresolved in preview.
@@ -1375,7 +1385,7 @@ pub async fn generate_workflow(
     };
     let profile = state
         .db
-        .get_agent_profile(&profile_id)
+        .get_effective_agent_profile(&profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown Agent Profile '{profile_id}'."))?;
     if !cli_available(&profile.effective_executable()) {
@@ -1920,6 +1930,30 @@ mod tests {
         assert!(super::get_setting_for_db(&db, "private.setting").is_err());
         assert!(super::set_setting_for_db(&db, "private.setting", "value").is_err());
         assert_eq!(db.get_setting("private.setting").unwrap(), None);
+    }
+
+    #[test]
+    fn agent_permission_default_accepts_only_app_wide_levels() {
+        let db = orchevia_core::db::SqliteDb::open_in_memory().expect("db");
+        let key = orchevia_core::agents::PERMISSION_DEFAULT_SETTING;
+        assert_eq!(super::get_setting_for_db(&db, key).unwrap(), None);
+        for value in ["allowedTools", "appDefault", "bypass", ""] {
+            assert!(
+                super::set_setting_for_db(&db, key, value).is_err(),
+                "{value}"
+            );
+        }
+        assert_eq!(db.get_setting(key).unwrap(), None);
+        super::set_setting_for_db(&db, key, "fullAccess").unwrap();
+        assert_eq!(
+            super::get_setting_for_db(&db, key).unwrap().as_deref(),
+            Some("fullAccess")
+        );
+        super::set_setting_for_db(&db, key, "cliSettings").unwrap();
+        assert_eq!(
+            db.agent_permission_default().unwrap(),
+            orchevia_core::agents::PermissionLevel::CliSettings
+        );
     }
 
     use super::{custom_models_key, parse_custom_models, role_map_for_db, AppState};

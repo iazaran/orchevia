@@ -564,7 +564,7 @@ impl Engine {
                     continue;
                 }
                 let profile_id = node.config.agent_profile_id.as_deref().unwrap_or("");
-                match self.db.get_agent_profile(profile_id) {
+                match self.db.get_effective_agent_profile(profile_id) {
                     Ok(Some(profile)) => {
                         if node.config.session_group.is_some() {
                             if let Err(message) = validate_session_profile(&profile) {
@@ -1993,7 +1993,7 @@ async fn execute_agent_task(
         .agent_profile_id
         .clone()
         .unwrap_or_default();
-    let profile: AgentProfile = match db.get_agent_profile(&profile_id) {
+    let profile: AgentProfile = match db.get_effective_agent_profile(&profile_id) {
         Ok(Some(profile)) => profile,
         _ => {
             return agent_failure(
@@ -5919,6 +5919,37 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             std::fs::read_to_string(dir.path().join("stdin")).unwrap(),
             "Say hello for Agent slice"
         );
+    }
+
+    #[tokio::test]
+    async fn profiles_following_the_app_default_run_with_full_access_once_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let profile = structured_profile(dir.path(), crate::agents::AdapterKind::Claude, None);
+        assert_eq!(
+            profile.permission_level,
+            crate::agents::PermissionLevel::AppDefault
+        );
+        db.upsert_agent_profile(&profile).unwrap();
+        let argv = || std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        // Not chosen yet: the CLI's own settings, no permission flag.
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "access-unset").await;
+        assert!(!argv().contains("--permission-mode"), "{}", argv());
+        db.set_setting(crate::agents::PERMISSION_DEFAULT_SETTING, "fullAccess")
+            .unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "access-full").await;
+        assert!(
+            argv().contains("--permission-mode\nbypassPermissions\n"),
+            "{}",
+            argv()
+        );
+        let row = db
+            .list_node_results("access-full")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "agent1")
+            .unwrap();
+        assert_eq!(row.status, "succeeded");
     }
 
     #[test]
