@@ -189,13 +189,15 @@ fn safe_word(word: &str, program: bool) -> bool {
 }
 
 /// Split a shell line on `&&`, `||`, `;`, `|`, `&` and newlines outside
-/// quotes. Redirections (`2>&1`, `&> log`) are not separators, and heredoc
-/// bodies (`cat <<'EOF'` … `EOF`) are data, so they are skipped.
+/// quotes and arithmetic (`$(( … ))`). Redirections (`2>&1`, `&> log`) are not
+/// separators, and heredoc bodies (`cat <<'EOF'` … `EOF`) are data, so they
+/// are skipped.
 fn split_commands(command: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
-    let mut heredocs: Vec<String> = Vec::new();
+    let mut arithmetic = 0usize;
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         match quote {
@@ -222,6 +224,19 @@ fn split_commands(command: &str) -> Vec<String> {
                         current.push(next);
                     }
                 }
+                // `$((1 << 2))`, `(( i & 1 ))`: shifts and bit operators, not
+                // heredocs or separators.
+                '(' if chars.peek() == Some(&'(') => {
+                    chars.next();
+                    current.push_str("((");
+                    arithmetic += 1;
+                }
+                ')' if arithmetic > 0 && chars.peek() == Some(&')') => {
+                    chars.next();
+                    current.push_str("))");
+                    arithmetic -= 1;
+                }
+                _ if arithmetic > 0 => current.push(c),
                 // `2>&1`, `>&2`, `<&3`, `&>file`: a redirection.
                 '&' if current.ends_with(['>', '<']) || chars.peek() == Some(&'>') => {
                     current.push(c);
@@ -243,8 +258,8 @@ fn split_commands(command: &str) -> Vec<String> {
                     }
                     segments.push(std::mem::take(&mut current));
                     if c == '\n' {
-                        for delimiter in std::mem::take(&mut heredocs) {
-                            skip_heredoc_body(&mut chars, &delimiter);
+                        for (delimiter, strip_tabs) in std::mem::take(&mut heredocs) {
+                            skip_heredoc_body(&mut chars, &delimiter, strip_tabs);
                         }
                     }
                 }
@@ -261,12 +276,14 @@ fn split_commands(command: &str) -> Vec<String> {
 }
 
 /// Read a heredoc operator's delimiter word (after `<<`), copying it into the
-/// current segment: `EOF`, `'EOF'`, `"EOF"`, `\\EOF` or `-EOF` (tab-stripped).
+/// current segment: `EOF`, `'EOF'`, `"EOF"`, `\\EOF`, or `-EOF`, whose body
+/// lines may be indented with tabs (the flag returned with the word).
 fn heredoc_delimiter(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     current: &mut String,
-) -> Option<String> {
-    if chars.peek() == Some(&'-') {
+) -> Option<(String, bool)> {
+    let strip_tabs = chars.peek() == Some(&'-');
+    if strip_tabs {
         chars.next();
         current.push('-');
     }
@@ -287,15 +304,25 @@ fn heredoc_delimiter(
         current.push(c);
         chars.next();
     }
-    (!delimiter.is_empty()).then_some(delimiter)
+    (!delimiter.is_empty()).then_some((delimiter, strip_tabs))
 }
 
-/// Skip a heredoc body: every line up to and including the one that is the
-/// delimiter (leading tabs and trailing blanks ignored).
-fn skip_heredoc_body(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, delimiter: &str) {
+/// Skip a heredoc body: every line up to and including the one that is
+/// exactly the delimiter, as the shell matches it (leading tabs ignored only
+/// for `<<-`).
+fn skip_heredoc_body(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    delimiter: &str,
+    strip_tabs: bool,
+) {
     while chars.peek().is_some() {
         let line: String = chars.by_ref().take_while(|c| *c != '\n').collect();
-        if line.trim_start_matches('\t').trim_end() == delimiter {
+        let line = if strip_tabs {
+            line.trim_start_matches('\t')
+        } else {
+            &line
+        };
+        if line == delimiter {
             return;
         }
     }
@@ -524,6 +551,26 @@ mod tests {
         // A here-string is not a heredoc; an unterminated heredoc ends the line.
         assert_eq!(bash_prefixes("grep x <<< \"$v\"\nls"), ["grep", "ls"]);
         assert_eq!(bash_prefixes("cat <<EOF\nrm -rf /\n"), ["cat"]);
+        // The delimiter line matches exactly, as in the shell: a quoted
+        // trailing space counts, and only `<<-` ignores leading tabs.
+        assert_eq!(
+            bash_prefixes("cat <<'END '\nbody\nEND \ngit status"),
+            ["cat", "git status"]
+        );
+        assert_eq!(
+            bash_prefixes("cat <<END\n\tEND\nEND \nEND\nwc -l"),
+            ["cat", "wc"]
+        );
+        // Arithmetic shifts and bit operators are neither heredocs nor
+        // separators.
+        assert_eq!(
+            bash_prefixes("echo $((1 << 2))\ngit status; (( n = 3 & 1 | 4 )) && ls"),
+            ["echo", "git status", "ls"]
+        );
+        assert_eq!(
+            bash_prefixes("echo $(( (1 + 2) << 3 )) | tee x"),
+            ["echo", "tee"]
+        );
     }
 
     #[test]
