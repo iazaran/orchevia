@@ -73,6 +73,20 @@ several per line, unterminated bodies end the command) and treats `2>&1`,
 The refused command from the failed run is a test case. The refusal message
 now names Environment → Agent permissions as the one-step fix.
 
+## Review follow-ups
+
+- **Arithmetic.** `$((1 << 2))` read as a heredoc with delimiter `2` and
+  swallowed the following commands. `((` … `))` is now arithmetic: no heredocs
+  or separators inside it.
+- **Exact delimiters.** The delimiter line is matched exactly, as the shell
+  does; leading tabs are ignored only for `<<-`. A quoted delimiter with a
+  trailing space (`<<'END '`) used to swallow the rest of the line.
+- **Save order.** `setAgentPermissionDefault` saved the setting before the
+  profiles. A failed profile save then hid the question (the setting was
+  already chosen) and its error, with full access on and the profile still
+  restricted. Profiles are now saved first and the setting last, so a failure
+  leaves the choice unmade and visible, and never grants more than chosen.
+
 ## Not changed
 
 - A refusal still fails the step under the CLI settings or an allow-list; full
