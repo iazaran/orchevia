@@ -58,8 +58,12 @@ describe('agent profile permissions', () => {
 
     await user.click(screen.getByRole('button', { name: '+ New profile' }));
     const level = screen.getByLabelText('Permissions');
-    // New profiles keep the Claude Code settings: no flag, nothing widened.
-    expect(level).toHaveValue('cliSettings');
+    // New profiles follow the app default, which is the Claude Code settings
+    // until the user chooses: no flag, nothing widened.
+    expect(level).toHaveValue('appDefault');
+    expect(screen.getByText(/Follows Environment → Agent permissions/)).toHaveTextContent(
+      'now CLI settings, not chosen yet',
+    );
     await user.selectOptions(level, 'allowedTools');
     expect(screen.getByRole('button', { name: 'Save profile' })).toBeDisabled();
     await user.type(
@@ -100,6 +104,33 @@ describe('agent profile permissions', () => {
     const options = Array.from(
       screen.getByLabelText<HTMLSelectElement>('Permissions').options,
     ).map((option) => option.textContent);
-    expect(options).toEqual(['Use Codex settings', 'Full access']);
+    expect(options).toEqual([
+      'App default (CLI settings, not chosen yet)',
+      'Use Codex settings',
+      'Full access',
+    ]);
+  });
+
+  it('shows what a profile at the app default runs with', async () => {
+    __setMockBackendForTests();
+    const profile = { ...createDefaultProfile('claude'), name: 'Follows default' };
+    useAppStore.setState({
+      profiles: [profile],
+      agentPermissionDefault: 'fullAccess',
+      adapters: [],
+      tools: [],
+      knownFolders: [],
+    });
+    const user = userEvent.setup();
+    render(<AgentsView />);
+    const fact = screen.getByText('App default · Full access');
+    expect(fact).toHaveClass('profile-fact-risk');
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(
+      within(screen.getByLabelText('Permissions')).getByRole('option', {
+        name: 'App default (Full access)',
+      }),
+    ).toBeInTheDocument();
+    useAppStore.setState({ agentPermissionDefault: null });
   });
 });

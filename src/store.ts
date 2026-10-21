@@ -3,7 +3,13 @@ import { newId } from './lib/workflow';
 import { commandEdits } from './lib/memory';
 import { create } from 'zustand';
 import { getBackend } from './lib/backend';
-import type { AdapterInfo, AgentProfile } from './lib/agents';
+import {
+  PERMISSION_DEFAULT_SETTING,
+  readPermissionDefault,
+  type AdapterInfo,
+  type AgentProfile,
+  type AppPermissionDefault,
+} from './lib/agents';
 import type { GitHubState, McpServerConfig } from './lib/integrations';
 import type { Preference, StoredGeneration, WorkflowTemplate } from './lib/generation';
 import type { Notification, NotificationPrefs, Schedule, Watcher } from './lib/scheduler';
@@ -60,6 +66,8 @@ interface AppState {
   tools: ToolStatus[];
   adapters: AdapterInfo[];
   profiles: AgentProfile[];
+  /** App-wide agent permission level; `null` until the user chooses. */
+  agentPermissionDefault: AppPermissionDefault | null;
   knownFolders: string[];
   mcpServers: McpServerConfig[];
   githubState: GitHubState | null;
@@ -90,6 +98,14 @@ interface AppState {
   refreshRuns: () => Promise<void>;
   refreshTools: () => Promise<void>;
   refreshProfiles: () => Promise<void>;
+  /**
+   * Save the app-wide agent permission level, and switch `profiles` (their
+   * own level) back to following it. Rejects with the backend error.
+   */
+  setAgentPermissionDefault: (
+    level: AppPermissionDefault,
+    profiles?: AgentProfile[],
+  ) => Promise<void>;
   refreshIntegrations: () => Promise<void>;
   refreshAutomations: () => Promise<void>;
   refreshNotifications: () => Promise<void>;
@@ -135,6 +151,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   tools: [],
   adapters: [],
   profiles: [],
+  agentPermissionDefault: null,
   knownFolders: [],
   mcpServers: [],
   githubState: null,
@@ -265,15 +282,33 @@ export const useAppStore = create<AppState>()((set, get) => ({
   refreshProfiles: async () => {
     const backend = getBackend();
     try {
-      const [profiles, adapters, knownFolders] = await Promise.all([
+      const [profiles, adapters, knownFolders, permissionDefault] = await Promise.all([
         backend.listAgentProfiles(),
         backend.listAdapters(),
         backend.listKnownFolders(20).catch(() => [] as string[]),
+        backend.getSetting(PERMISSION_DEFAULT_SETTING).catch(() => null),
       ]);
-      set({ profiles, adapters, knownFolders });
+      set({
+        profiles,
+        adapters,
+        knownFolders,
+        agentPermissionDefault: readPermissionDefault(permissionDefault),
+      });
     } catch {
       // Browser mock before profiles exist, or Tauri command missing in
       // older builds: profiles simply stay empty.
+    }
+  },
+
+  setAgentPermissionDefault: async (level, profiles = []) => {
+    const backend = getBackend();
+    await backend.setSetting(PERMISSION_DEFAULT_SETTING, level);
+    set({ agentPermissionDefault: level });
+    try {
+      for (const profile of profiles)
+        await backend.saveAgentProfile({ ...profile, permissionLevel: 'appDefault' });
+    } finally {
+      await get().refreshProfiles();
     }
   },
 

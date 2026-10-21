@@ -14,8 +14,12 @@ import {
   composeAgentContext,
   structuredOutputConflict,
   hasFullAccess,
+  parsePermissionDefault,
   permissionArgs,
+  permissionLevelLabel,
   permissionLevels,
+  readPermissionDefault,
+  withAppDefault,
   type AdapterKind,
 } from './agents';
 
@@ -255,12 +259,56 @@ it('mirrors native structured-output conflicts for ordinary Agent nodes', () => 
 });
 
 describe('profile permissions', () => {
-  it('reads a missing setting as the CLI settings level with no flag', () => {
+  it('reads a missing setting as the app default, the CLI settings until chosen', () => {
     const legacy = createDefaultProfile('claude');
     expect(legacy.permissionLevel).toBeUndefined();
     expect(permissionArgs(legacy)).toEqual([]);
     expect(validateProfile(legacy)).toEqual([]);
     expect(hasFullAccess(legacy)).toBe(false);
+    for (const appDefault of [null, 'cliSettings'] as const) {
+      const resolved = withAppDefault(legacy, appDefault);
+      expect(resolved.permissionLevel).toBe('cliSettings');
+      expect(permissionArgs(resolved)).toEqual([]);
+    }
+    expect(permissionLevelLabel('claude', undefined)).toBe(
+      'App default (CLI settings, not chosen yet)',
+    );
+    expect(permissionLevelLabel('codex', 'appDefault', 'fullAccess')).toBe(
+      'App default (Full access)',
+    );
+  });
+
+  it('resolves the app default like the core (with_app_default)', () => {
+    const full = (p: AgentProfile): AgentProfile => withAppDefault(p, 'fullAccess');
+    const claude = createDefaultProfile('claude');
+    expect(permissionArgs(full(claude))).toEqual([
+      '--permission-mode',
+      'bypassPermissions',
+    ]);
+    expect(hasFullAccess(full(claude))).toBe(true);
+    expect(permissionArgs(full(createDefaultProfile('codex')))).toEqual([
+      '--dangerously-bypass-approvals-and-sandbox',
+    ]);
+    // Explicit levels are the profile's own choice.
+    for (const level of ['cliSettings', 'allowedTools', 'fullAccess'] as const)
+      expect(full({ ...claude, permissionLevel: level }).permissionLevel).toBe(level);
+    // Own permission arguments and Custom CLIs keep their own behaviour.
+    const ownFlags = { ...claude, extraArgs: ['--permission-mode', 'acceptEdits'] };
+    expect(validateProfile(ownFlags)).toEqual([]);
+    expect(full(ownFlags).permissionLevel).toBe('cliSettings');
+    const custom = { ...createDefaultProfile('custom'), executable: '/usr/bin/aichat' };
+    expect(validateProfile(custom)).toEqual([]);
+    expect(full(custom).permissionLevel).toBe('cliSettings');
+    // Only the two app-wide levels parse (Rust parse_permission_default).
+    expect(parsePermissionDefault('fullAccess')).toBe('fullAccess');
+    expect(parsePermissionDefault('cliSettings')).toBe('cliSettings');
+    for (const value of ['allowedTools', 'appDefault', '', 'FullAccess']) {
+      expect(() => parsePermissionDefault(value)).toThrow(
+        'Agent permissions must be cliSettings or fullAccess.',
+      );
+      expect(readPermissionDefault(value)).toBeNull();
+    }
+    expect(readPermissionDefault(null)).toBeNull();
   });
 
   it('maps each level to the same flags as the core adapter', () => {
@@ -282,8 +330,12 @@ describe('profile permissions', () => {
       permissionLevel: 'fullAccess' as const,
     };
     expect(permissionArgs(codex)).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
-    expect(permissionLevels('codex')).toEqual(['cliSettings', 'fullAccess']);
-    expect(permissionLevels('custom')).toEqual(['cliSettings']);
+    expect(permissionLevels('codex')).toEqual([
+      'appDefault',
+      'cliSettings',
+      'fullAccess',
+    ]);
+    expect(permissionLevels('custom')).toEqual(['appDefault']);
   });
 
   it('mirrors the core permission validation messages', () => {

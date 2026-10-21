@@ -78,6 +78,7 @@ it('lists declared tools the mapped profile lacks right after import', async () 
     userTemplates: [],
     activeWorkflowId: null,
     profiles: [reviewer],
+    agentPermissionDefault: 'cliSettings',
   });
   render(<TemplatesView />);
   const user = userEvent.setup();
@@ -114,6 +115,7 @@ it('lists declared tools the mapped profile lacks right after import', async () 
   expect(
     screen.getByRole('button', { name: 'Add to allowed tools' }),
   ).toBeInTheDocument();
+  useAppStore.setState({ agentPermissionDefault: null });
 });
 
 it('asks for the repository before creating a workflow from a template', async () => {
@@ -128,6 +130,7 @@ it('asks for the repository before creating a workflow from a template', async (
     userTemplates: [],
     activeWorkflowId: null,
     profiles: await backend.listAgentProfiles(),
+    agentPermissionDefault: null,
     mcpServers: [jira],
     knownFolders: [],
     view: 'templates',
@@ -146,6 +149,17 @@ it('asks for the repository before creating a workflow from a template', async (
     'jira',
   );
   expect(dialog).toHaveTextContent('Jira ticket key or URL');
+  // The one-time agent permissions question comes with the first template.
+  expect(dialog).toHaveTextContent('Let AI agents work without asking?');
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Let agents work without asking' }),
+  );
+  await waitFor(() =>
+    expect(dialog).not.toHaveTextContent('Let AI agents work without asking?'),
+  );
+  expect(await backend.getSetting('agents.permissionDefault')).toBe('fullAccess');
+  // Full access covers the template's declared tools: nothing left to grant.
+  expect(dialog).not.toHaveTextContent('declares tools');
   await user.type(
     within(dialog).getByRole('textbox', { name: 'Repository folder (required)' }),
     '/work/shop',
@@ -159,6 +173,7 @@ it('asks for the repository before creating a workflow from a template', async (
   for (const node of created?.definition.nodes.filter((n) => n.type === 'ticket') ?? [])
     expect(node.config.mcpServerId).toBe('jira');
   expect(useAppStore.getState().activeWorkflowId).toBe(created?.id);
+  useAppStore.setState({ agentPermissionDefault: null });
 });
 
 it('keeps a saved template’s repository and default branch when it is used', async () => {

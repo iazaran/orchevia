@@ -823,6 +823,7 @@ export function NodeInspector(): React.JSX.Element | null {
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const updateActiveWorkflow = useAppStore((s) => s.updateActiveWorkflow);
   const profiles = useAppStore((s) => s.profiles);
+  const appDefault = useAppStore((s) => s.agentPermissionDefault);
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
   const [detectingBranch, setDetectingBranch] = useState(false);
@@ -1364,7 +1365,7 @@ export function NodeInspector(): React.JSX.Element | null {
               const missing =
                 profile?.adapter === 'claude'
                   ? (node.config.requiredTools ?? []).filter(
-                      (rule) => !profileGrants(profile, rule),
+                      (rule) => !profileGrants(profile, rule, appDefault),
                     )
                   : [];
               return `Claude Code allow rules this step needs, one per line. Exports and templates carry them; import and run start offer to add missing ones to the chosen profile.${missing.length > 0 && profile !== undefined ? ` ${profile.name} does not grant: ${missing.join(', ')}.` : ''}`;

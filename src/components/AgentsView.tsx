@@ -9,12 +9,16 @@ import {
   createDefaultProfile,
   effectiveExecutable,
   effortLabel,
+  hasFullAccess,
+  permissionDefaultLabel,
   permissionLevelLabel,
   permissionLevels,
   validateProfile,
+  withAppDefault,
   type AdapterKind,
   type AgentProfile,
   type AgentSkillInfo,
+  type AppPermissionDefault,
   type PermissionLevel,
   type WorkingDirMode,
 } from '../lib/agents';
@@ -33,6 +37,7 @@ function emptyForm(adapter: AdapterKind): AgentProfile {
 
 export function AgentsView(): React.JSX.Element {
   const profiles = useAppStore((s) => s.profiles);
+  const appDefault = useAppStore((s) => s.agentPermissionDefault);
   const adapters = useAppStore((s) => s.adapters);
   const tools = useAppStore((s) => s.tools);
   const knownFolders = useAppStore((s) => s.knownFolders);
@@ -396,21 +401,27 @@ export function AgentsView(): React.JSX.Element {
                       <dt>Permissions</dt>
                       <dd
                         className={
-                          p.permissionLevel === 'fullAccess'
+                          hasFullAccess(withAppDefault(p, appDefault))
                             ? 'profile-fact-risk'
                             : undefined
                         }
                         title={
                           p.permissionLevel === 'allowedTools'
                             ? (p.allowedTools ?? []).join('\n')
-                            : permissionLevelLabel(p.adapter, p.permissionLevel)
+                            : permissionLevelLabel(
+                                p.adapter,
+                                p.permissionLevel,
+                                appDefault,
+                              )
                         }
                       >
                         {p.permissionLevel === 'allowedTools'
                           ? `Allowed tools (${String((p.allowedTools ?? []).length)})`
                           : p.permissionLevel === 'fullAccess'
                             ? 'Full access'
-                            : 'CLI settings'}
+                            : p.permissionLevel === 'cliSettings'
+                              ? 'CLI settings'
+                              : `App default · ${withAppDefault(p, appDefault).permissionLevel === 'fullAccess' ? 'Full access' : 'CLI settings'}`}
                       </dd>
                     </div>
                   )}
@@ -599,6 +610,7 @@ function ProfileEditor({
   onCancel: () => void;
   onSave: (p: AgentProfile) => void;
 }): React.JSX.Element {
+  const appDefault = useAppStore((s) => s.agentPermissionDefault);
   const [form, setForm] = useState<AgentProfile>(initial);
   const [skillsResult, setSkillsResult] = useState<{
     adapter: AdapterKind;
@@ -693,14 +705,14 @@ function ProfileEditor({
             value={form.adapter}
             onChange={(e) => {
               const adapter = e.target.value as AdapterKind;
-              const level = form.permissionLevel ?? 'cliSettings';
+              const level = form.permissionLevel ?? 'appDefault';
               set({
                 adapter,
                 skills: [],
                 // Keep only what the new CLI can express (agents.rs validation).
                 permissionLevel: permissionLevels(adapter).includes(level)
                   ? level
-                  : 'cliSettings',
+                  : 'appDefault',
                 allowedTools: adapter === 'claude' ? form.allowedTools : undefined,
               });
             }}
@@ -925,7 +937,8 @@ function ProfileEditor({
       {form.adapter !== 'custom' && (
         <PermissionsEditor
           adapter={form.adapter}
-          level={form.permissionLevel ?? 'cliSettings'}
+          level={form.permissionLevel ?? 'appDefault'}
+          appDefault={appDefault}
           allowedTools={form.allowedTools ?? []}
           onLevel={(permissionLevel) => {
             set({ permissionLevel });
@@ -1030,7 +1043,13 @@ function ProfileEditor({
   );
 }
 
-function permissionHint(level: PermissionLevel, cli: string): React.ReactNode {
+function permissionHint(
+  level: PermissionLevel,
+  cli: string,
+  appDefault: AppPermissionDefault | null,
+): React.ReactNode {
+  if (level === 'appDefault')
+    return `Follows Environment → Agent permissions, now ${permissionDefaultLabel(appDefault)}. Choose another level to give this profile its own.`;
   if (level === 'allowedTools')
     return (
       <>
@@ -1044,12 +1063,14 @@ function permissionHint(level: PermissionLevel, cli: string): React.ReactNode {
 function PermissionsEditor({
   adapter,
   level,
+  appDefault,
   allowedTools,
   onLevel,
   onTools,
 }: {
   adapter: AdapterKind;
   level: PermissionLevel;
+  appDefault: AppPermissionDefault | null;
   allowedTools: string[];
   onLevel: (level: PermissionLevel) => void;
   onTools: (tools: string[]) => void;
@@ -1070,7 +1091,7 @@ function PermissionsEditor({
       >
         {permissionLevels(adapter).map((option) => (
           <option key={option} value={option}>
-            {permissionLevelLabel(adapter, option)}
+            {permissionLevelLabel(adapter, option, appDefault)}
           </option>
         ))}
       </select>
@@ -1088,7 +1109,7 @@ function PermissionsEditor({
         </Notice>
       ) : (
         <span className="field-hint">
-          {permissionHint(level, cli)}
+          {permissionHint(level, cli, appDefault)}
           {adapter === 'codex' &&
             ' Codex has no tool allow-list, so only its settings or full access apply.'}
         </span>

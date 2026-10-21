@@ -760,6 +760,44 @@ describe('mock backend (browser dev)', () => {
     await expect(
       backend.saveAgentProfile({ ...full, extraArgs: ['--sandbox', 'read-only'] }),
     ).rejects.toThrow('conflicts with the profile');
+    // A profile at the app default previews what a run would use.
+    const follows = { ...createDefaultProfile('codex'), id: 'prof-follows' };
+    await backend.saveAgentProfile(follows);
+    expect((await backend.previewAgentCommand(follows.id, 'Review')).args).toEqual([
+      'exec',
+      '--json',
+      '-',
+    ]);
+    await backend.setSetting('agents.permissionDefault', 'fullAccess');
+    expect((await backend.previewAgentCommand(follows.id, 'Review')).args).toEqual([
+      'exec',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '-',
+    ]);
+  });
+
+  it('mirrors the app-wide agent permission setting and its trust risk', async () => {
+    const backend = __setMockBackendForTests();
+    expect(await backend.getSetting('agents.permissionDefault')).toBeNull();
+    for (const value of ['allowedTools', 'appDefault', ''])
+      await expect(backend.setSetting('agents.permissionDefault', value)).rejects.toThrow(
+        'Agent permissions must be cliSettings or fullAccess.',
+      );
+    const profile = { ...createDefaultProfile('claude'), id: 'prof-risk' };
+    await backend.saveAgentProfile(profile);
+    const workflow = createEmptyWorkflow('Agent');
+    workflow.nodes.splice(1, 0, {
+      id: 'agent',
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { agentProfileId: profile.id, prompt: 'Work' },
+    });
+    expect(await backend.workflowRisks(workflow)).not.toContain('fullAccessAgent');
+    await backend.setSetting('agents.permissionDefault', 'fullAccess');
+    expect(await backend.workflowRisks(workflow)).toContain('fullAccessAgent');
+    await backend.setSetting('agents.permissionDefault', 'cliSettings');
+    expect(await backend.workflowRisks(workflow)).not.toContain('fullAccessAgent');
   });
   beforeEach(() => {
     localStorage.clear();

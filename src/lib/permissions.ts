@@ -3,8 +3,14 @@
  * `permissions.rs`): allow-rule validation, refused tool calls recorded on a
  * node result, and helpers that add rules to a Claude Code profile.
  */
-import { hasFullAccess, permissionArgument, type AgentProfile } from './agents';
-import type { Workflow } from './workflow';
+import {
+  hasFullAccess,
+  permissionArgument,
+  withAppDefault,
+  type AgentProfile,
+  type AppPermissionDefault,
+} from './agents';
+import type { Workflow, WorkflowNode } from './workflow';
 
 /** At most this many allow rules per profile or node declaration. */
 export const MAX_TOOL_RULES = 64;
@@ -148,13 +154,80 @@ export function ruleCovers(granted: string, required: string): boolean {
 }
 
 /**
- * Whether a profile already admits a rule through its own permission setting,
- * including extra arguments that bypass every check.
+ * Whether a profile already admits a rule through its permission setting
+ * (resolved against the app-wide level), including extra arguments that
+ * bypass every check.
  */
-export function profileGrants(profile: AgentProfile, rule: string): boolean {
-  if (hasFullAccess(profile)) return true;
-  if ((profile.permissionLevel ?? 'cliSettings') !== 'allowedTools') return false;
-  return (profile.allowedTools ?? []).some((granted) => ruleCovers(granted, rule));
+export function profileGrants(
+  profile: AgentProfile,
+  rule: string,
+  appDefault: AppPermissionDefault | null = null,
+): boolean {
+  const resolved = withAppDefault(profile, appDefault);
+  if (hasFullAccess(resolved)) return true;
+  if (resolved.permissionLevel !== 'allowedTools') return false;
+  return (resolved.allowedTools ?? []).some((granted) => ruleCovers(granted, rule));
+}
+
+/** Claude Code and Codex profiles: the ones with permission levels. */
+function hasPermissionLevels(profile: AgentProfile): boolean {
+  return profile.adapter === 'claude' || profile.adapter === 'codex';
+}
+
+/**
+ * Claude Code and Codex profiles that set their own permission level instead
+ * of following the app-wide one.
+ */
+export function profilesWithOwnLevel(profiles: AgentProfile[]): AgentProfile[] {
+  return profiles.filter(
+    (profile) =>
+      hasPermissionLevels(profile) &&
+      (profile.permissionLevel ?? 'appDefault') !== 'appDefault',
+  );
+}
+
+/**
+ * Profiles that would still ask (CLI settings or an allow-list of their own)
+ * when agents get full access app-wide: the ones "Let agents work without
+ * asking" switches back to the app default.
+ */
+export function profilesLimitingFullAccess(profiles: AgentProfile[]): AgentProfile[] {
+  return profilesWithOwnLevel(profiles).filter(
+    (profile) => !hasFullAccess(withAppDefault(profile, 'fullAccess')),
+  );
+}
+
+/** The profile an Agent node runs with: its own id, else its role's profile. */
+export function nodeAgentProfile(
+  node: WorkflowNode,
+  profiles: AgentProfile[],
+  roleMap: Record<string, string> = {},
+): AgentProfile | undefined {
+  const explicit = (node.config.agentProfileId ?? '').trim();
+  const role = node.config.agentRole;
+  const id =
+    explicit !== ''
+      ? explicit
+      : role !== undefined && Object.hasOwn(roleMap, role)
+        ? roleMap[role]
+        : undefined;
+  return profiles.find((p) => p.id === id);
+}
+
+/** The Claude Code and Codex profiles a workflow's Agent nodes run with. */
+export function workflowAgentProfiles(
+  workflow: Workflow,
+  profiles: AgentProfile[],
+  roleMap: Record<string, string> = {},
+): AgentProfile[] {
+  const used: AgentProfile[] = [];
+  for (const node of workflow.nodes) {
+    if (node.type !== 'agent') continue;
+    const profile = nodeAgentProfile(node, profiles, roleMap);
+    if (profile !== undefined && hasPermissionLevels(profile) && !used.includes(profile))
+      used.push(profile);
+  }
+  return used;
 }
 
 /**
@@ -176,7 +249,8 @@ export function allowedToolsBlocker(profile: AgentProfile): string | null {
  * profile at the CLI settings level keeps its list unused until then.
  */
 export function dormantAllowedTools(profile: AgentProfile): string[] {
-  return (profile.permissionLevel ?? 'cliSettings') === 'cliSettings'
+  const level = profile.permissionLevel ?? 'appDefault';
+  return level === 'cliSettings' || level === 'appDefault'
     ? (profile.allowedTools ?? [])
     : [];
 }
@@ -191,9 +265,12 @@ export function dormantAllowedTools(profile: AgentProfile): string[] {
 export function withAllowedTools(
   profile: AgentProfile,
   rules: string[],
+  appDefault: AppPermissionDefault | null = null,
 ): AgentProfile | null {
   if (allowedToolsBlocker(profile) !== null) return null;
-  const missing = [...new Set(rules)].filter((rule) => !profileGrants(profile, rule));
+  const missing = [...new Set(rules)].filter(
+    (rule) => !profileGrants(profile, rule, appDefault),
+  );
   if (missing.length === 0) return null;
   const existing = profile.allowedTools ?? [];
   return {
@@ -212,7 +289,8 @@ export interface MissingToolGrant {
 
 /**
  * The tools a workflow's Agent nodes declare (`requiredTools`) that their
- * chosen Claude Code profile does not grant itself. A node naming only a role
+ * chosen Claude Code profile does not grant itself (resolved against the
+ * app-wide level). A node naming only a role
  * uses `roleMap` (role → profile id), as template instantiation does. Codex
  * and custom profiles have no allow list and are not checked. A profile at
  * the Claude Code settings level may still allow a listed tool through those
@@ -222,22 +300,15 @@ export function missingToolGrants(
   workflow: Workflow,
   profiles: AgentProfile[],
   roleMap: Record<string, string> = {},
+  appDefault: AppPermissionDefault | null = null,
 ): MissingToolGrant[] {
   const grants = new Map<string, MissingToolGrant>();
   for (const node of workflow.nodes) {
     const required = node.config.requiredTools ?? [];
     if (node.type !== 'agent' || required.length === 0) continue;
-    const explicit = (node.config.agentProfileId ?? '').trim();
-    const role = node.config.agentRole;
-    const id =
-      explicit !== ''
-        ? explicit
-        : role !== undefined && Object.hasOwn(roleMap, role)
-          ? roleMap[role]
-          : undefined;
-    const profile = profiles.find((p) => p.id === id);
+    const profile = nodeAgentProfile(node, profiles, roleMap);
     if (profile?.adapter !== 'claude') continue;
-    const missing = required.filter((rule) => !profileGrants(profile, rule));
+    const missing = required.filter((rule) => !profileGrants(profile, rule, appDefault));
     if (missing.length === 0) continue;
     const grant = grants.get(profile.id) ?? { profile, rules: [], nodes: [] };
     for (const rule of missing) if (!grant.rules.includes(rule)) grant.rules.push(rule);

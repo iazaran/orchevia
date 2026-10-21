@@ -302,7 +302,8 @@ it('shows declared tools the profile lacks before a live run and adds them', asy
     name: 'Implementer',
   };
   await backend.saveAgentProfile(profile);
-  useAppStore.setState({ profiles: [profile] });
+  await backend.setSetting('agents.permissionDefault', 'cliSettings');
+  useAppStore.setState({ profiles: [profile], agentPermissionDefault: 'cliSettings' });
   const workflow = createEmptyWorkflow('Declared tools');
   workflow.nodes.splice(1, 0, {
     id: 'impl',
@@ -343,4 +344,98 @@ it('shows declared tools the profile lacks before a live run and adds them', asy
   // Dry runs never call the CLI, so they show no permission notice.
   fireEvent.click(screen.getByLabelText(/Dry run/));
   expect(screen.queryByText(/declares tools/)).not.toBeInTheDocument();
+  useAppStore.setState({ agentPermissionDefault: null });
+});
+
+it('asks once whether agents work without asking, then never again', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const follows = { ...createDefaultProfile('claude'), id: 'prof-a', name: 'Reviewer' };
+  const own = {
+    ...createDefaultProfile('claude'),
+    id: 'prof-b',
+    name: 'Implementer',
+    permissionLevel: 'allowedTools' as const,
+    allowedTools: ['Edit'],
+  };
+  await backend.saveAgentProfile(follows);
+  await backend.saveAgentProfile(own);
+  useAppStore.setState({ profiles: [follows, own], agentPermissionDefault: null });
+  const workflow = createEmptyWorkflow('Agents');
+  workflow.nodes.splice(1, 0, {
+    id: 'impl',
+    type: 'agent',
+    label: 'Implement',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: 'prof-b', prompt: 'Work', requiredTools: ['Write'] },
+  });
+  const dialog = (): React.JSX.Element => (
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={vi.fn()}
+      onClose={() => undefined}
+    />
+  );
+  const { unmount } = render(dialog());
+  expect(screen.getByText('Let AI agents work without asking?')).toBeInTheDocument();
+  // One question covers every declared tool: no separate grant list yet.
+  expect(screen.queryByText(/declares tools/)).not.toBeInTheDocument();
+  expect(
+    screen.getByLabelText(/also switch Implementer \(Allowed tools\) to the app default/),
+  ).toBeChecked();
+  fireEvent.click(screen.getByRole('button', { name: 'Let agents work without asking' }));
+  await waitFor(() =>
+    expect(
+      screen.queryByText('Let AI agents work without asking?'),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await backend.getSetting('agents.permissionDefault')).toBe('fullAccess');
+  const saved = await backend.listAgentProfiles();
+  expect(saved.find((p) => p.id === 'prof-b')?.permissionLevel).toBe('appDefault');
+  // The saved list stays, unused, if the profile gets its own level again.
+  expect(saved.find((p) => p.id === 'prof-b')?.allowedTools).toEqual(['Edit']);
+  expect(useAppStore.getState().agentPermissionDefault).toBe('fullAccess');
+  // Full access grants every declared tool, so nothing is shown next time.
+  unmount();
+  render(dialog());
+  expect(screen.queryByText(/without asking/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/declares tools/)).not.toBeInTheDocument();
+  useAppStore.setState({ agentPermissionDefault: null });
+});
+
+it('keeps the CLI settings when chosen and then lists the missing tools', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = { ...createDefaultProfile('claude'), id: 'prof-a', name: 'Reviewer' };
+  await backend.saveAgentProfile(profile);
+  useAppStore.setState({ profiles: [profile], agentPermissionDefault: null });
+  const workflow = createEmptyWorkflow('Agents');
+  workflow.nodes.splice(1, 0, {
+    id: 'review',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: 'prof-a', prompt: 'Review', requiredTools: ['mcp__jira'] },
+  });
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={vi.fn()}
+      onClose={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Keep each CLI’s settings' }));
+  expect(
+    await screen.findByText(
+      'This workflow declares tools its Agent Profiles do not grant.',
+    ),
+  ).toBeInTheDocument();
+  expect(await backend.getSetting('agents.permissionDefault')).toBe('cliSettings');
+  expect((await backend.listAgentProfiles())[0]?.permissionLevel).toBeUndefined();
+  // The grant list still offers the one-step alternative.
+  expect(
+    screen.getByRole('button', { name: 'Let agents work without asking' }),
+  ).toBeInTheDocument();
+  useAppStore.setState({ agentPermissionDefault: null });
 });
