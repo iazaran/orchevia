@@ -1,6 +1,6 @@
 {
   "name": "orchevia",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "private": true,
   "description": "Orchevia — fast, local-first visual workflow orchestrator for developer AI agents and local CLI tools.",
   "type": "module",
