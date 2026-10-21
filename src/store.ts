@@ -99,8 +99,9 @@ interface AppState {
   refreshTools: () => Promise<void>;
   refreshProfiles: () => Promise<void>;
   /**
-   * Save the app-wide agent permission level, and switch `profiles` (their
-   * own level) back to following it. Rejects with the backend error.
+   * Switch `profiles` (their own level) back to following the app-wide agent
+   * permission level, then save that level. Rejects with the backend error,
+   * leaving the level unsaved if any profile could not be switched.
    */
   setAgentPermissionDefault: (
     level: AppPermissionDefault,
@@ -302,11 +303,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   setAgentPermissionDefault: async (level, profiles = []) => {
     const backend = getBackend();
-    await backend.setSetting(PERMISSION_DEFAULT_SETTING, level);
-    set({ agentPermissionDefault: level });
     try {
+      // Profiles first, the setting last: a failed save leaves the choice
+      // unmade (so the question and its error stay on screen), and never
+      // grants more than what was chosen.
       for (const profile of profiles)
         await backend.saveAgentProfile({ ...profile, permissionLevel: 'appDefault' });
+      await backend.setSetting(PERMISSION_DEFAULT_SETTING, level);
+      set({ agentPermissionDefault: level });
     } finally {
       await get().refreshProfiles();
     }

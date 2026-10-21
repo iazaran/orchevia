@@ -439,3 +439,41 @@ it('keeps the CLI settings when chosen and then lists the missing tools', async 
   ).toBeInTheDocument();
   useAppStore.setState({ agentPermissionDefault: null });
 });
+
+it('keeps the question and its error when a profile cannot be switched', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const own = {
+    ...createDefaultProfile('claude'),
+    id: 'prof-b',
+    name: 'Implementer',
+    permissionLevel: 'allowedTools' as const,
+    allowedTools: ['Edit'],
+  };
+  await backend.saveAgentProfile(own);
+  useAppStore.setState({ profiles: [own], agentPermissionDefault: null });
+  vi.spyOn(backend, 'saveAgentProfile').mockRejectedValueOnce(new Error('Disk is full.'));
+  const workflow = createEmptyWorkflow('Agents');
+  workflow.nodes.splice(1, 0, {
+    id: 'impl',
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config: { agentProfileId: 'prof-b', prompt: 'Work' },
+  });
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={vi.fn()}
+      onClose={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Let agents work without asking' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Disk is full.');
+  // Nothing was granted: the choice stays unmade and on screen.
+  expect(screen.getByText('Let AI agents work without asking?')).toBeInTheDocument();
+  expect(await backend.getSetting('agents.permissionDefault')).toBeNull();
+  expect(useAppStore.getState().agentPermissionDefault).toBeNull();
+  expect((await backend.listAgentProfiles())[0]?.permissionLevel).toBe('allowedTools');
+  vi.restoreAllMocks();
+});
