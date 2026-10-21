@@ -34,6 +34,14 @@ hold reusable model, effort, working-directory, and optional skill settings.
 A profile test checks CLI availability; test a small agent step before relying
 on models or skills in a larger automation.
 
+Headless agents cannot ask for permission while a step runs, so decide once what
+they may do: the wizard's **Permissions** step or **Environment → Agent
+permissions**. **Let agents work without asking** gives Claude Code and Codex full
+access, so steps are never refused a tool; **Follow each CLI's own settings**
+keeps your Claude Code and Codex configuration in charge, and a refused tool then
+fails the step. If you skip it, the first run or template asks once. See
+[tool permissions](./agents.md#tool-permissions).
+
 Jira needs an enabled local MCP server. Configure it in **Environment → MCP
 servers** and discover its tools. Follow [integrations](./integrations.md) for
 GitHub authentication and MCP setup.

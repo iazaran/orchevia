@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use thiserror::Error;
 
-use crate::agents::AgentProfile;
+use crate::agents::{AgentProfile, PermissionLevel};
 use crate::mcp::McpServerConfig;
 use crate::notify::{Notification, NotificationPrefs};
 use crate::run_controls::{RunExecution, SpendPause};
@@ -1349,6 +1349,36 @@ impl SqliteDb {
         Ok(out)
     }
 
+    /// The app-wide permission level that profiles at
+    /// [`PermissionLevel::AppDefault`] follow. Unset (not chosen yet) and
+    /// unreadable values mean the CLI's own settings.
+    pub fn agent_permission_default(&self) -> DbResult<PermissionLevel> {
+        Ok(self
+            .get_setting(crate::agents::PERMISSION_DEFAULT_SETTING)?
+            .and_then(|value| crate::agents::parse_permission_default(&value).ok())
+            .unwrap_or(PermissionLevel::CliSettings))
+    }
+
+    /// A profile as runs use it, with the app-wide permission level applied
+    /// ([`AgentProfile::with_app_default`]). Use this wherever the profile
+    /// decides what a CLI may do: building commands and judging trust.
+    pub fn get_effective_agent_profile(&self, id: &str) -> DbResult<Option<AgentProfile>> {
+        let default = self.agent_permission_default()?;
+        Ok(self
+            .get_agent_profile(id)?
+            .map(|profile| profile.with_app_default(default)))
+    }
+
+    /// Every profile as runs use it; see [`Self::get_effective_agent_profile`].
+    pub fn list_effective_agent_profiles(&self) -> DbResult<Vec<AgentProfile>> {
+        let default = self.agent_permission_default()?;
+        Ok(self
+            .list_agent_profiles()?
+            .into_iter()
+            .map(|profile| profile.with_app_default(default))
+            .collect())
+    }
+
     pub fn delete_agent_profile(&self, id: &str) -> DbResult<bool> {
         let conn = self
             .conn
@@ -2420,6 +2450,71 @@ mod tests {
         assert_eq!(db.list_agent_profiles().expect("list").len(), 1);
         assert!(db.delete_agent_profile("prof-1").expect("delete"));
         assert!(db.get_agent_profile("prof-1").expect("get").is_none());
+    }
+
+    #[test]
+    fn effective_profiles_follow_the_app_permission_default() {
+        use crate::agents::{
+            AdapterKind, AgentProfile, WorkingDirMode, PERMISSION_DEFAULT_SETTING,
+        };
+        let db = SqliteDb::open_in_memory().expect("open");
+        let profile = |id: &str, permission_level| AgentProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            adapter: AdapterKind::Claude,
+            executable: None,
+            model: None,
+            effort: None,
+            extra_args: vec![],
+            skills: vec![],
+            working_dir_mode: WorkingDirMode::Inherit,
+            working_dir: None,
+            default_timeout_secs: 600,
+            role: None,
+            permission_level,
+            allowed_tools: vec!["Edit".to_string()],
+        };
+        db.upsert_agent_profile(&profile("follows", PermissionLevel::AppDefault))
+            .expect("upsert");
+        db.upsert_agent_profile(&profile("own", PermissionLevel::AllowedTools))
+            .expect("upsert");
+        let level = |id: &str| {
+            db.get_effective_agent_profile(id)
+                .expect("get")
+                .expect("exists")
+                .permission_level
+        };
+        // Not chosen yet, or an unreadable value: the CLI's own settings.
+        assert_eq!(
+            db.agent_permission_default().expect("default"),
+            PermissionLevel::CliSettings
+        );
+        assert_eq!(level("follows"), PermissionLevel::CliSettings);
+        db.set_setting(PERMISSION_DEFAULT_SETTING, "allowedTools")
+            .expect("set");
+        assert_eq!(level("follows"), PermissionLevel::CliSettings);
+        db.set_setting(PERMISSION_DEFAULT_SETTING, "fullAccess")
+            .expect("set");
+        assert_eq!(level("follows"), PermissionLevel::FullAccess);
+        assert_eq!(level("own"), PermissionLevel::AllowedTools);
+        let listed = db.list_effective_agent_profiles().expect("list");
+        assert_eq!(
+            listed.iter().filter(|p| p.has_full_access()).count(),
+            1,
+            "{listed:?}"
+        );
+        // The stored definition keeps the profile's own choice.
+        assert_eq!(
+            db.get_agent_profile("follows")
+                .expect("get")
+                .expect("exists")
+                .permission_level,
+            PermissionLevel::AppDefault
+        );
+        assert!(db
+            .get_effective_agent_profile("missing")
+            .expect("get")
+            .is_none());
     }
 
     #[test]

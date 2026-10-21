@@ -6,6 +6,7 @@ import {
   type McpServerConfig,
   type McpToolInfo,
 } from '../lib/integrations';
+import { AgentPermissionsSettings } from './AgentPermissions';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
@@ -182,6 +183,19 @@ export function EnvironmentView(): React.JSX.Element {
             </p>
           </>
         )}
+
+        <h2 id="agent-permissions" style={{ fontSize: 14, marginTop: 20 }}>
+          Agent permissions
+        </h2>
+        <p className="field-hint" style={{ maxWidth: 720 }}>
+          Headless Claude Code and Codex cannot ask for permission while a workflow step
+          runs. Choose once what they may do; every Agent Profile at “App default” follows
+          this, and Agents can give one profile its own level. Orchevia passes only CLI
+          flags and never edits the Claude Code or Codex settings files.
+        </p>
+        <div style={{ maxWidth: 720 }}>
+          <AgentPermissionsSettings />
+        </div>
 
         <h2 style={{ fontSize: 14, marginTop: 20 }}>Git</h2>
         <p className="field-hint" style={{ maxWidth: 720 }}>

@@ -106,10 +106,10 @@ Prefer to start without AI? The [getting-started guide](./docs/getting-started.m
 begins with a one-node [`echo` workflow](./docs/examples/hello-workflow.json).
 
 > [!TIP]
-> Headless Claude Code refuses tools that its settings don't allow, and Orchevia then
-> fails the step with **tools refused**, listing the exact allow rules. Add them to
-> the profile (**Permissions → Allowed tools**) with one click, or declare them on the
-> node as **Required tools** so imports and runs warn you up front.
+> Headless Claude Code and Codex cannot ask for permission mid-run. Decide once, in the
+> setup wizard or **Environment → Agent permissions**: let agents work without asking
+> (full access), or keep each CLI's own settings. With the CLI settings, a refused
+> tool fails the step with **tools refused** and the exact allow rules to add.
 
 ## See it in action
 
@@ -189,8 +189,9 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
   joins, failure edges, bounded retries with backoff, guarded review/fix loops, per-node
   timeouts and typed workflow inputs.
 - **Agent profiles.** Claude Code, Codex or any custom CLI, with model, effort, skills,
-  working directory and a **Permissions** level: your CLI settings, an explicit allow
-  list, or full access (never a default).
+  working directory and a **Permissions** level: the app-wide choice you make once
+  (full access or your CLI settings), or the profile's own CLI settings, explicit allow
+  list or full access.
 - **Integrations.** Safe Git operations (dirty or lossy states refused), GitHub through
   your own `gh` (draft PRs, checks, comments), Jira tickets and other tools through your
   MCP servers.

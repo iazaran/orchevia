@@ -62,3 +62,34 @@ it('sends a profile with its own permission arguments to manual editing', () => 
     screen.getByText(/Legacy sets permissions in its extra argument '--allowedTools'/),
   ).toBeInTheDocument();
 });
+
+it('gives agents full access from a refused step in one confirmed step', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile: AgentProfile = {
+    ...createDefaultProfile('claude'),
+    id: 'prof',
+    name: 'Reviewer',
+    permissionLevel: 'allowedTools',
+    allowedTools: ['Read'],
+  };
+  await backend.saveAgentProfile(profile);
+  useAppStore.setState({ profiles: [profile], agentPermissionDefault: 'cliSettings' });
+  render(
+    <>
+      <PermissionDenials denied={denied} />
+      <ConfirmHost />
+    </>,
+  );
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole('button', { name: 'Let agents work without asking' }),
+  );
+  const confirm = await screen.findByRole('alertdialog');
+  expect(confirm).toHaveTextContent("'Reviewer' switches to the app default.");
+  await user.click(within(confirm).getByRole('button', { name: 'Allow full access' }));
+  expect(await screen.findByText(/Reviewer now allows these tools/)).toBeInTheDocument();
+  expect(await backend.getSetting('agents.permissionDefault')).toBe('fullAccess');
+  expect((await backend.listAgentProfiles())[0]?.permissionLevel).toBe('appDefault');
+  useAppStore.setState({ agentPermissionDefault: null });
+});

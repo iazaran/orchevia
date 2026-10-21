@@ -19,22 +19,51 @@ export const EFFORT_LEVELS: AgentEffort[] = ['low', 'medium', 'high', 'xhigh'];
 /**
  * What a profile's CLI may do without asking (Rust `PermissionLevel`). Passed
  * only as CLI flags; Orchevia never writes Claude Code or Codex settings files.
- * Absent means `cliSettings`, which every profile saved before v0.1.16 keeps.
+ * Absent means `appDefault`: the app-wide agent permission setting, which is
+ * the CLI's own settings until the user chooses (see `withAppDefault`).
  */
-export type PermissionLevel = 'cliSettings' | 'allowedTools' | 'fullAccess';
+export type PermissionLevel =
+  'appDefault' | 'cliSettings' | 'allowedTools' | 'fullAccess';
+
+/** The levels that can apply to every profile (Rust `parse_permission_default`). */
+export type AppPermissionDefault = 'cliSettings' | 'fullAccess';
+
+/** Settings key of the app-wide level (Rust `PERMISSION_DEFAULT_SETTING`). */
+export const PERMISSION_DEFAULT_SETTING = 'agents.permissionDefault';
+
+/** Mirror of Rust `parse_permission_default`. */
+export function parsePermissionDefault(value: string): AppPermissionDefault {
+  if (value === 'cliSettings' || value === 'fullAccess') return value;
+  throw new Error('Agent permissions must be cliSettings or fullAccess.');
+}
+
+/** A stored app-wide level, or `null` while the user has not chosen one. */
+export function readPermissionDefault(value: string | null): AppPermissionDefault | null {
+  return value === 'cliSettings' || value === 'fullAccess' ? value : null;
+}
 
 /** Levels each adapter can express: Codex has no tool allow-list. */
 export function permissionLevels(adapter: AdapterKind): PermissionLevel[] {
-  if (adapter === 'claude') return ['cliSettings', 'allowedTools', 'fullAccess'];
-  if (adapter === 'codex') return ['cliSettings', 'fullAccess'];
-  return ['cliSettings'];
+  if (adapter === 'claude')
+    return ['appDefault', 'cliSettings', 'allowedTools', 'fullAccess'];
+  if (adapter === 'codex') return ['appDefault', 'cliSettings', 'fullAccess'];
+  return ['appDefault'];
+}
+
+/** Label of the app-wide level, `null` meaning not chosen yet. */
+export function permissionDefaultLabel(appDefault: AppPermissionDefault | null): string {
+  if (appDefault === 'fullAccess') return 'Full access';
+  return appDefault === null ? 'CLI settings, not chosen yet' : 'CLI settings';
 }
 
 export function permissionLevelLabel(
   adapter: AdapterKind,
   level: PermissionLevel | undefined,
+  appDefault: AppPermissionDefault | null = null,
 ): string {
-  switch (level ?? 'cliSettings') {
+  switch (level ?? 'appDefault') {
+    case 'appDefault':
+      return `App default (${permissionDefaultLabel(appDefault)})`;
     case 'allowedTools':
       return 'Allowed tools';
     case 'fullAccess':
@@ -76,9 +105,31 @@ export function permissionArgument(profile: AgentProfile): string | null {
   );
 }
 
-/** Mirror of Rust `push_permissions`: the argv for the profile's level. */
+/**
+ * Mirror of Rust `AgentProfile::with_app_default`: the profile as a run uses
+ * it, with `appDefault` replaced by the app-wide level. A Custom CLI, or a
+ * profile whose extra arguments set permissions themselves, keeps its own
+ * behaviour (CLI settings: no flag added).
+ */
+export function withAppDefault(
+  profile: AgentProfile,
+  appDefault: AppPermissionDefault | null,
+): AgentProfile {
+  if ((profile.permissionLevel ?? 'appDefault') !== 'appDefault') return profile;
+  const full =
+    appDefault === 'fullAccess' &&
+    profile.adapter !== 'custom' &&
+    permissionArgument(profile) === null;
+  return { ...profile, permissionLevel: full ? 'fullAccess' : 'cliSettings' };
+}
+
+/**
+ * Mirror of Rust `push_permissions`: the argv for the profile's level. Pass a
+ * profile resolved with `withAppDefault`; an unresolved app default adds no
+ * flag.
+ */
 export function permissionArgs(profile: AgentProfile): string[] {
-  const level = profile.permissionLevel ?? 'cliSettings';
+  const level = profile.permissionLevel ?? 'appDefault';
   if (profile.adapter === 'claude' && level === 'allowedTools')
     return ['--allowedTools', (profile.allowedTools ?? []).join(',')];
   if (profile.adapter === 'claude' && level === 'fullAccess')
@@ -88,7 +139,10 @@ export function permissionArgs(profile: AgentProfile): string[] {
   return [];
 }
 
-/** Mirror of Rust `AgentProfile::has_full_access`. */
+/**
+ * Mirror of Rust `AgentProfile::has_full_access`. Pass a profile resolved with
+ * `withAppDefault`.
+ */
 export function hasFullAccess(profile: AgentProfile): boolean {
   if (profile.permissionLevel === 'fullAccess') return true;
   const args = profile.extraArgs;
@@ -164,7 +218,7 @@ export interface AgentProfile {
   workingDir?: string | undefined;
   defaultTimeoutSecs: number;
   role?: string | undefined;
-  /** Absent reads as `cliSettings` (no permission flag). */
+  /** Absent reads as `appDefault` (the app-wide agent permission setting). */
   permissionLevel?: PermissionLevel | undefined;
   /** Claude Code allow rules, used at the `allowedTools` level. */
   allowedTools?: string[] | undefined;
@@ -426,8 +480,8 @@ export function validateProfile(profile: AgentProfile): string[] {
   if (profile.adapter !== 'claude' && allowedTools.length > 0)
     errors.push('Allowed tools apply only to Claude Code profiles.');
   errors.push(...validateToolRules(allowedTools, 'Allowed tools'));
-  const level = profile.permissionLevel ?? 'cliSettings';
-  if (level !== 'cliSettings') {
+  const level = profile.permissionLevel ?? 'appDefault';
+  if (level !== 'cliSettings' && level !== 'appDefault') {
     if (profile.adapter === 'custom')
       errors.push('Permission levels apply only to Claude Code and Codex profiles.');
     else if (profile.adapter === 'codex' && level === 'allowedTools')

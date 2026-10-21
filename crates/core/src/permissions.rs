@@ -188,11 +188,16 @@ fn safe_word(word: &str, program: bool) -> bool {
         })
 }
 
-/// Split a shell line on `&&`, `||`, `;`, `|`, `&` and newlines outside quotes.
+/// Split a shell line on `&&`, `||`, `;`, `|`, `&` and newlines outside
+/// quotes and arithmetic (`$(( … ))`). Redirections (`2>&1`, `&> log`) are not
+/// separators, and heredoc bodies (`cat <<'EOF'` … `EOF`) are data, so they
+/// are skipped.
 fn split_commands(command: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
+    let mut arithmetic = 0usize;
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         match quote {
@@ -219,11 +224,44 @@ fn split_commands(command: &str) -> Vec<String> {
                         current.push(next);
                     }
                 }
+                // `$((1 << 2))`, `(( i & 1 ))`: shifts and bit operators, not
+                // heredocs or separators.
+                '(' if chars.peek() == Some(&'(') => {
+                    chars.next();
+                    current.push_str("((");
+                    arithmetic += 1;
+                }
+                ')' if arithmetic > 0 && chars.peek() == Some(&')') => {
+                    chars.next();
+                    current.push_str("))");
+                    arithmetic -= 1;
+                }
+                _ if arithmetic > 0 => current.push(c),
+                // `2>&1`, `>&2`, `<&3`, `&>file`: a redirection.
+                '&' if current.ends_with(['>', '<']) || chars.peek() == Some(&'>') => {
+                    current.push(c);
+                }
+                '<' if chars.peek() == Some(&'<') => {
+                    chars.next();
+                    current.push_str("<<");
+                    if chars.peek() == Some(&'<') {
+                        // `<<<` is a here-string, not a heredoc.
+                        chars.next();
+                        current.push('<');
+                    } else if let Some(delimiter) = heredoc_delimiter(&mut chars, &mut current) {
+                        heredocs.push(delimiter);
+                    }
+                }
                 ';' | '\n' | '|' | '&' => {
                     if matches!(c, '|' | '&') && chars.peek() == Some(&c) {
                         chars.next();
                     }
                     segments.push(std::mem::take(&mut current));
+                    if c == '\n' {
+                        for (delimiter, strip_tabs) in std::mem::take(&mut heredocs) {
+                            skip_heredoc_body(&mut chars, &delimiter, strip_tabs);
+                        }
+                    }
                 }
                 _ => current.push(c),
             },
@@ -235,6 +273,59 @@ fn split_commands(command: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Read a heredoc operator's delimiter word (after `<<`), copying it into the
+/// current segment: `EOF`, `'EOF'`, `"EOF"`, `\\EOF`, or `-EOF`, whose body
+/// lines may be indented with tabs (the flag returned with the word).
+fn heredoc_delimiter(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    current: &mut String,
+) -> Option<(String, bool)> {
+    let strip_tabs = chars.peek() == Some(&'-');
+    if strip_tabs {
+        chars.next();
+        current.push('-');
+    }
+    while chars.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
+        current.extend(chars.next());
+    }
+    let mut delimiter = String::new();
+    let mut quote: Option<char> = None;
+    while let Some(&c) = chars.peek() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => delimiter.push(c),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == '\\' => {}
+            None if c.is_whitespace() || ";|&<>()".contains(c) => break,
+            None => delimiter.push(c),
+        }
+        current.push(c);
+        chars.next();
+    }
+    (!delimiter.is_empty()).then_some((delimiter, strip_tabs))
+}
+
+/// Skip a heredoc body: every line up to and including the one that is
+/// exactly the delimiter, as the shell matches it (leading tabs ignored only
+/// for `<<-`).
+fn skip_heredoc_body(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    delimiter: &str,
+    strip_tabs: bool,
+) {
+    while chars.peek().is_some() {
+        let line: String = chars.by_ref().take_while(|c| *c != '\n').collect();
+        let line = if strip_tabs {
+            line.trim_start_matches('\t')
+        } else {
+            &line
+        };
+        if line == delimiter {
+            return;
+        }
+    }
 }
 
 /// Whitespace-separated words with simple quote removal (no expansion).
@@ -304,7 +395,8 @@ pub fn denial_message(denials: &[PermissionDenial]) -> String {
     let calls = denials.len();
     format!(
         "Claude refused {calls} tool call{} under this profile's permissions, so its work is \
-         incomplete: {}. Add the rule{} to the Agent Profile's allowed tools, then retry.",
+         incomplete: {}. Give agents full access (Environment → Agent permissions) or add the \
+         rule{} to the Agent Profile's allowed tools, then retry.",
         if calls == 1 { "" } else { "s" },
         listed.join("; "),
         if denied_rules(denials).len() == 1 {
@@ -420,9 +512,64 @@ mod tests {
             ["Bash"]
         );
         assert_eq!(suggest_rules("Bash", &json!({})), ["Bash"]);
+        // Redirections are not command separators.
+        assert_eq!(
+            suggest_rules(
+                "Bash",
+                &json!({"command": "cat x 2>/dev/null | head -150; make test 2>&1 >&2 &>log"})
+            ),
+            ["Bash(cat *)", "Bash(head *)", "Bash(make test *)"]
+        );
         assert_eq!(
             suggest_rules("Write", &json!({"file_path": "/x"})),
             ["Write"]
+        );
+    }
+
+    #[test]
+    fn heredoc_bodies_are_data_not_commands() {
+        // The refused command from a real run: its PR body became rules such
+        // as `Bash(The *)` and `Bash(EOF *)` before heredocs were skipped.
+        let command = "cd /home/u/.cache/orchevia/ticket-to-pr && printf '%s\\n' '[DEV-1] Fix' > PR_TITLE && cat > PR_BODY.md <<'EOF'\n## What and why\n\nThe server runs PHP.\nNo behaviour change.\n2. Rebuild\n3. Deploy; then | check & done\nDocBlocks stay\nEOF\ngit status --short | head";
+        assert_eq!(
+            suggest_rules("Bash", &json!({ "command": command })),
+            [
+                "Bash(cd *)",
+                "Bash(printf *)",
+                "Bash(cat *)",
+                "Bash(git status *)",
+                "Bash(head *)"
+            ]
+        );
+        // Unquoted, dashed (tab-stripped) and several heredocs on one line.
+        assert_eq!(
+            bash_prefixes(
+                "cat <<-END >a && tee b <<\"X\"\n\tbody one\n\tEND\nbody two\nX\nwc -l a"
+            ),
+            ["cat", "tee", "wc"]
+        );
+        // A here-string is not a heredoc; an unterminated heredoc ends the line.
+        assert_eq!(bash_prefixes("grep x <<< \"$v\"\nls"), ["grep", "ls"]);
+        assert_eq!(bash_prefixes("cat <<EOF\nrm -rf /\n"), ["cat"]);
+        // The delimiter line matches exactly, as in the shell: a quoted
+        // trailing space counts, and only `<<-` ignores leading tabs.
+        assert_eq!(
+            bash_prefixes("cat <<'END '\nbody\nEND \ngit status"),
+            ["cat", "git status"]
+        );
+        assert_eq!(
+            bash_prefixes("cat <<END\n\tEND\nEND \nEND\nwc -l"),
+            ["cat", "wc"]
+        );
+        // Arithmetic shifts and bit operators are neither heredocs nor
+        // separators.
+        assert_eq!(
+            bash_prefixes("echo $((1 << 2))\ngit status; (( n = 3 & 1 | 4 )) && ls"),
+            ["echo", "git status", "ls"]
+        );
+        assert_eq!(
+            bash_prefixes("echo $(( (1 + 2) << 3 )) | tee x"),
+            ["echo", "tee"]
         );
     }
 
@@ -465,7 +612,8 @@ mod tests {
         assert!(message.contains(
             "mcp__claude_ai_Atlassian_Rovo_2__getJiraIssue (allow with mcp__claude_ai_Atlassian_Rovo_2)"
         ));
-        assert!(message.contains("Add the rules to the Agent Profile's allowed tools"));
+        assert!(message.contains("Give agents full access (Environment → Agent permissions)"));
+        assert!(message.contains("add the rules to the Agent Profile's allowed tools"));
         assert!(claude_denials(&json!(null)).is_empty());
     }
 
@@ -478,7 +626,7 @@ mod tests {
         let message = denial_message(&denials);
         assert!(message.contains("2 tool calls"));
         assert!(message.contains("mcp__jira__getIssue ×2 (allow with mcp__jira)"));
-        assert!(message.contains("Add the rule to"));
+        assert!(message.contains("add the rule to"));
     }
 
     #[test]

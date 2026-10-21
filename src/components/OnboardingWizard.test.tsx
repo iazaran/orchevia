@@ -92,3 +92,46 @@ it('can choose an existing assistance profile and preserves all its settings', a
     (await backend.listAgentProfiles()).filter((p) => p.role === 'workflowAssistance'),
   ).toHaveLength(1);
 });
+
+it('asks once in setup whether agents work without asking', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const own = {
+    ...createDefaultProfile('claude'),
+    name: 'Implementer',
+    permissionLevel: 'allowedTools' as const,
+    allowedTools: ['Edit'],
+  };
+  await backend.saveAgentProfile(own);
+  useAppStore.setState({
+    profiles: [own],
+    tools: [],
+    githubState: null,
+    agentPermissionDefault: null,
+  });
+  vi.spyOn(useAppStore.getState(), 'refreshAll').mockResolvedValue(undefined);
+  render(<OnboardingWizard onClose={() => {}} />);
+  const user = userEvent.setup();
+  for (let i = 0; i < 4; i++)
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+  expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('5/7: Permissions');
+  expect(screen.getByText(/Not chosen yet/)).toBeInTheDocument();
+  await user.click(
+    screen.getByRole('radio', { name: /Let agents work without asking \(full access\)/ }),
+  );
+  await waitFor(async () =>
+    expect(await backend.getSetting('agents.permissionDefault')).toBe('fullAccess'),
+  );
+  expect(useAppStore.getState().agentPermissionDefault).toBe('fullAccess');
+  // A profile with its own level is listed, and can follow the choice too.
+  expect(
+    screen.getByRole('list', { name: 'Profiles with their own level' }),
+  ).toHaveTextContent('Implementer');
+  await user.click(
+    screen.getByRole('button', { name: 'Make it follow the app default' }),
+  );
+  await waitFor(async () =>
+    expect((await backend.listAgentProfiles())[0]?.permissionLevel).toBe('appDefault'),
+  );
+  useAppStore.setState({ agentPermissionDefault: null });
+});

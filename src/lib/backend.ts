@@ -56,8 +56,13 @@ import {
   referencedVariables,
   validateProfile,
   permissionArgs,
+  parsePermissionDefault,
+  readPermissionDefault,
+  withAppDefault,
+  PERMISSION_DEFAULT_SETTING,
   type AdapterInfo,
   type AgentProfile,
+  type AppPermissionDefault,
   type AgentSkillInfo,
   type AdapterKind,
 } from './agents';
@@ -1924,6 +1929,20 @@ class MockBackend implements Backend {
     return profile;
   }
 
+  /** Mirror of `SqliteDb::agent_permission_default`. */
+  private permissionDefault(): AppPermissionDefault {
+    return (
+      readPermissionDefault(this.settings.get(PERMISSION_DEFAULT_SETTING) ?? null) ??
+      'cliSettings'
+    );
+  }
+
+  /** Mirror of `SqliteDb::list_effective_agent_profiles`. */
+  private effectiveProfiles(): AgentProfile[] {
+    const appDefault = this.permissionDefault();
+    return [...this.profiles.values()].map((p) => withAppDefault(p, appDefault));
+  }
+
   async deleteAgentProfile(id: string): Promise<boolean> {
     const removed = this.profiles.delete(id);
     this.persist();
@@ -1939,8 +1958,9 @@ class MockBackend implements Backend {
     preview: string;
     referencedVariables: string[];
   }> {
-    const profile = this.profiles.get(profileId);
-    if (profile === undefined) throw new Error(`Unknown Agent Profile '${profileId}'.`);
+    const stored = this.profiles.get(profileId);
+    if (stored === undefined) throw new Error(`Unknown Agent Profile '${profileId}'.`);
+    const profile = withAppDefault(stored, this.permissionDefault());
     const exe = effectiveExecutable(profile);
     const effectivePrompt = composeSkillPrompt(profile, promptTemplate);
     if (promptTemplate.trim() === '') throw new Error('Prompt must not be empty.');
@@ -2074,7 +2094,7 @@ class MockBackend implements Backend {
         throw new Error(`Unknown workflow '${schedule.workflowId}'.`);
       const error = scheduleTrustError(
         stored.definition,
-        [...this.profiles.values()],
+        this.effectiveProfiles(),
         schedule.trusted,
       );
       if (error !== null) throw new Error(error);
@@ -2128,7 +2148,7 @@ class MockBackend implements Backend {
   }
 
   async workflowRisks(workflow: Workflow): Promise<RiskCategory[]> {
-    return workflowRisks(workflow, [...this.profiles.values()]);
+    return workflowRisks(workflow, this.effectiveProfiles());
   }
 
   async getRunFindings(): Promise<GroupedFinding[]> {
@@ -2169,6 +2189,7 @@ class MockBackend implements Backend {
         'ui.theme',
         'onboarding.completed',
         'workflow.assistanceProfileId',
+        PERMISSION_DEFAULT_SETTING,
         'usage.subscriptionFees',
         'usage.extraCharges',
         'usage.allocationShare',
@@ -2186,6 +2207,7 @@ class MockBackend implements Backend {
       if (secs < 30 || secs > 3600)
         throw new Error('Scheduler interval must be 30–3600 s.');
     }
+    if (key === PERMISSION_DEFAULT_SETTING) parsePermissionDefault(value);
     const maxLen = key.startsWith('usage.') ? 8000 : 200;
     if (new TextEncoder().encode(value).length > maxLen)
       throw new Error('Setting value too long.');

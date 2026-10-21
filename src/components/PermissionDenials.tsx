@@ -5,6 +5,7 @@ import {
   allowedToolsBlocker,
   dormantAllowedTools,
   profileGrants,
+  profilesLimitingFullAccess,
   withAllowedTools,
   type PermissionDenied,
 } from '../lib/permissions';
@@ -13,8 +14,9 @@ import { confirmDialog } from './ConfirmDialog';
 
 /**
  * Tool calls Claude refused on a step, each with the allow rule that would
- * admit it, and an action that adds the missing rules to the step's profile
- * (after confirmation). The run itself is recovered separately.
+ * admit it, and actions (after confirmation) that give agents full access or
+ * add the missing rules to the step's profile. The run itself is recovered
+ * separately.
  */
 export function PermissionDenials({
   denied,
@@ -25,6 +27,8 @@ export function PermissionDenials({
   profileId?: string | undefined;
 }): React.JSX.Element {
   const profiles = useAppStore((s) => s.profiles);
+  const appDefault = useAppStore((s) => s.agentPermissionDefault);
+  const setDefault = useAppStore((s) => s.setAgentPermissionDefault);
   const refreshProfiles = useAppStore((s) => s.refreshProfiles);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,15 +37,39 @@ export function PermissionDenials({
   const pending =
     profile === undefined
       ? denied.rules
-      : denied.rules.filter((rule) => !profileGrants(profile, rule));
+      : denied.rules.filter((rule) => !profileGrants(profile, rule, appDefault));
   const blocker = profile === undefined ? null : allowedToolsBlocker(profile);
+
+  const giveFullAccess = (): void => {
+    if (profile === undefined) return;
+    const switching = profilesLimitingFullAccess([profile]);
+    void confirmDialog({
+      title: 'Let agents work without asking?',
+      message: `Claude Code and Codex profiles that follow the app default get full access: they can run any command, change any file and call any MCP tool without asking.${
+        switching.length > 0 ? ` '${profile.name}' switches to the app default.` : ''
+      } Change it anytime in Environment → Agent permissions.`,
+      confirmLabel: 'Allow full access',
+      danger: true,
+    }).then(async (ok) => {
+      if (!ok) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await setDefault('fullAccess', switching);
+      } catch (err: unknown) {
+        setError(errorMessage(err));
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
 
   const add = (): void => {
     if (profile === undefined) return;
-    const next = withAllowedTools(profile, pending);
+    const next = withAllowedTools(profile, pending, appDefault);
     if (next === null) return;
     const dormant = dormantAllowedTools(profile);
-    const switching = (profile.permissionLevel ?? 'cliSettings') === 'cliSettings';
+    const switching = (profile.permissionLevel ?? 'appDefault') !== 'allowedTools';
     void confirmDialog({
       title: `Allow ${String(pending.length)} tool rule${pending.length === 1 ? '' : 's'} for '${profile.name}'?`,
       message: `Adds ${pending.join(', ')} to the profile's allowed tools.${
@@ -120,6 +148,9 @@ export function PermissionDenials({
         <p className="field-hint">{blocker}</p>
       ) : (
         <div className="permission-denials-actions">
+          <button className="btn btn-primary" disabled={busy} onClick={giveFullAccess}>
+            Let agents work without asking
+          </button>
           <button className="btn" disabled={busy} onClick={add}>
             {busy
               ? 'Adding…'

@@ -7,10 +7,13 @@ import {
   missingToolGrants,
   permissionDeniedFrom,
   profileGrants,
+  profilesLimitingFullAccess,
+  profilesWithOwnLevel,
   ruleCovers,
   validateToolRule,
   validateToolRules,
   withAllowedTools,
+  workflowAgentProfiles,
 } from './permissions';
 
 describe('tool permissions', () => {
@@ -185,5 +188,65 @@ describe('tool permissions', () => {
       'Bash',
       'mcp__jira',
     ]);
+  });
+
+  it('grants every tool through a full access app default', () => {
+    const follows = { ...createDefaultProfile('claude'), id: 'a', name: 'Follows' };
+    const restricted = {
+      ...createDefaultProfile('claude'),
+      id: 'b',
+      name: 'Restricted',
+      permissionLevel: 'allowedTools' as const,
+      allowedTools: ['Edit'],
+    };
+    const settings = {
+      ...createDefaultProfile('codex'),
+      id: 'c',
+      name: 'Codex',
+      permissionLevel: 'cliSettings' as const,
+    };
+    const full = {
+      ...createDefaultProfile('claude'),
+      id: 'd',
+      name: 'Full',
+      permissionLevel: 'fullAccess' as const,
+    };
+    const custom = { ...createDefaultProfile('custom'), id: 'e', name: 'Custom' };
+    expect(profileGrants(follows, 'mcp__jira')).toBe(false);
+    expect(profileGrants(follows, 'mcp__jira', 'cliSettings')).toBe(false);
+    expect(profileGrants(follows, 'mcp__jira', 'fullAccess')).toBe(true);
+    // A profile's own level wins over the app default.
+    expect(profileGrants(restricted, 'mcp__jira', 'fullAccess')).toBe(false);
+    expect(profileGrants(restricted, 'Edit', 'fullAccess')).toBe(true);
+    // Nothing to add to a profile that already has full access.
+    expect(withAllowedTools(follows, ['Write'], 'fullAccess')).toBeNull();
+    const all = [follows, restricted, settings, full, custom];
+    expect(profilesWithOwnLevel(all).map((p) => p.name)).toEqual([
+      'Restricted',
+      'Codex',
+      'Full',
+    ]);
+    expect(profilesLimitingFullAccess(all).map((p) => p.name)).toEqual([
+      'Restricted',
+      'Codex',
+    ]);
+    const workflow = createEmptyWorkflow('Agents');
+    const agent = (id: string, config: NodeConfig): WorkflowNode => ({
+      id,
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { prompt: 'Work', ...config },
+    });
+    workflow.nodes.push(
+      agent('a1', { agentProfileId: 'a' }),
+      agent('a2', { agentProfileId: 'a' }),
+      agent('role', { agentRole: 'review' }),
+      agent('custom', { agentProfileId: 'e' }),
+      agent('missing', { agentProfileId: 'gone' }),
+    );
+    expect(
+      workflowAgentProfiles(workflow, all, { review: 'c' }).map((p) => p.name),
+    ).toEqual(['Follows', 'Codex']);
+    expect(workflowAgentProfiles(createEmptyWorkflow('None'), all)).toEqual([]);
   });
 });

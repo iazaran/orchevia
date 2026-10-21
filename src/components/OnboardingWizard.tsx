@@ -8,6 +8,7 @@ import {
 } from '../lib/agents';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
+import { AgentPermissionsSettings } from './AgentPermissions';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
 
@@ -74,6 +75,7 @@ const STEPS = [
   'Tools',
   'Connect',
   'Agents',
+  'Permissions',
   'First workflow',
   'Done',
 ] as const;
@@ -411,6 +413,18 @@ export function OnboardingWizard({
         {step === 4 && (
           <>
             <p className="field-hint">
+              Claude Code and Codex run headless in workflows, so they cannot stop and ask
+              for permission: a tool they are not allowed is refused, and the step fails.
+              Choose once what they may do. Change it anytime in Environment → Agent
+              permissions, or give one profile its own level in Agents.
+            </p>
+            <AgentPermissionsSettings idPrefix="setup-permissions" />
+          </>
+        )}
+
+        {step === 5 && (
+          <>
+            <p className="field-hint">
               Start from a template (9 built-in), generate from a goal (validated preview,
               never auto-runs), or open the Plan → Approve → Implement → Review demo in{' '}
               <strong>Workflows</strong>. Schedules and PR watchers live under{' '}
@@ -419,7 +433,7 @@ export function OnboardingWizard({
           </>
         )}
 
-        {step === 5 && (
+        {step === 6 && (
           <p className="field-hint">
             You are ready. Workflows run only when you press ▶ Run; approvals pause for
             your decision; schedules stay disabled until you trust them. Reopen this

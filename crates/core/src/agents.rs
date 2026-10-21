@@ -280,10 +280,15 @@ impl AgentEffort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionLevel {
-    /// No permission flag: the CLI's own settings decide. The default, and
-    /// what every profile saved before this setting existed reads as, so an
+    /// Follow the app-wide agent permission setting
+    /// ([`PERMISSION_DEFAULT_SETTING`]), resolved by
+    /// [`AgentProfile::with_app_default`] before a run. The default, and what
+    /// every profile saved without an explicit level reads as. While that
+    /// setting is unset it means [`PermissionLevel::CliSettings`], so an
     /// upgrade widens nothing.
     #[default]
+    AppDefault,
+    /// No permission flag: the CLI's own settings decide.
     CliSettings,
     /// Claude Code only: `--allowedTools` with the profile's rules, on top of
     /// whatever the Claude Code settings already allow. Codex has no tool
@@ -296,8 +301,24 @@ pub enum PermissionLevel {
 }
 
 impl PermissionLevel {
-    fn is_cli_settings(&self) -> bool {
-        *self == PermissionLevel::CliSettings
+    fn is_app_default(&self) -> bool {
+        *self == PermissionLevel::AppDefault
+    }
+}
+
+/// Settings key of the app-wide agent permission level that profiles at
+/// [`PermissionLevel::AppDefault`] follow. Unset until the user chooses (setup
+/// wizard, Environment, or the one-time choice before a run), and read as
+/// [`PermissionLevel::CliSettings`] until then.
+pub const PERMISSION_DEFAULT_SETTING: &str = "agents.permissionDefault";
+
+/// Parse a stored app-wide permission level: only the CLI settings and Full
+/// access levels can apply to every profile.
+pub fn parse_permission_default(value: &str) -> Result<PermissionLevel, String> {
+    match value {
+        "cliSettings" => Ok(PermissionLevel::CliSettings),
+        "fullAccess" => Ok(PermissionLevel::FullAccess),
+        _ => Err("Agent permissions must be cliSettings or fullAccess.".to_string()),
     }
 }
 
@@ -356,8 +377,8 @@ pub struct AgentProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// Missing in stored definitions (`agent_profiles.definition`) means
-    /// [`PermissionLevel::CliSettings`].
-    #[serde(default, skip_serializing_if = "PermissionLevel::is_cli_settings")]
+    /// [`PermissionLevel::AppDefault`].
+    #[serde(default, skip_serializing_if = "PermissionLevel::is_app_default")]
     pub permission_level: PermissionLevel,
     /// Claude Code allow rules (`Edit`, `mcp__server`, `Bash(git *)`), passed
     /// as `--allowedTools` at the [`PermissionLevel::AllowedTools`] level and
@@ -434,7 +455,7 @@ impl AgentProfile {
             "Allowed tools",
         ));
         match (self.adapter, self.permission_level) {
-            (_, PermissionLevel::CliSettings) => {}
+            (_, PermissionLevel::AppDefault | PermissionLevel::CliSettings) => {}
             (AdapterKind::Custom, _) => errors.push(
                 "Permission levels apply only to Claude Code and Codex profiles.".to_string(),
             ),
@@ -448,12 +469,11 @@ impl AgentProfile {
             }
             _ => {}
         }
-        if !self.permission_level.is_cli_settings() {
-            if let Some(arg) = self.extra_args.iter().find(|arg| {
-                permission_flags(self.adapter)
-                    .iter()
-                    .any(|flag| *arg == flag || arg.starts_with(&format!("{flag}=")))
-            }) {
+        if matches!(
+            self.permission_level,
+            PermissionLevel::AllowedTools | PermissionLevel::FullAccess
+        ) {
+            if let Some(arg) = self.permission_argument() {
                 errors.push(format!(
                     "Extra argument '{arg}' conflicts with the profile's permission setting. Remove it or use the CLI settings level."
                 ));
@@ -475,8 +495,37 @@ impl AgentProfile {
         errors
     }
 
+    /// The first extra argument that sets permissions itself, if any.
+    fn permission_argument(&self) -> Option<&String> {
+        self.extra_args.iter().find(|arg| {
+            permission_flags(self.adapter)
+                .iter()
+                .any(|flag| *arg == flag || arg.starts_with(&format!("{flag}=")))
+        })
+    }
+
+    /// The profile as a run uses it: [`PermissionLevel::AppDefault`] becomes
+    /// the app-wide level (`default`, CLI settings or Full access). A Custom
+    /// CLI, or a profile whose extra arguments set permissions themselves,
+    /// keeps its own behaviour (CLI settings: no flag added).
+    pub fn with_app_default(mut self, default: PermissionLevel) -> Self {
+        if self.permission_level == PermissionLevel::AppDefault {
+            self.permission_level = match default {
+                PermissionLevel::FullAccess
+                    if self.adapter != AdapterKind::Custom
+                        && self.permission_argument().is_none() =>
+                {
+                    PermissionLevel::FullAccess
+                }
+                _ => PermissionLevel::CliSettings,
+            };
+        }
+        self
+    }
+
     /// Whether runs with this profile bypass every permission check, through
-    /// the Full access level or the profile's own extra arguments.
+    /// the Full access level or the profile's own extra arguments. Call it on
+    /// a profile resolved with [`AgentProfile::with_app_default`].
     pub fn has_full_access(&self) -> bool {
         if self.permission_level == PermissionLevel::FullAccess {
             return true;
@@ -954,22 +1003,102 @@ mod tests {
     }
 
     #[test]
-    fn stored_profiles_without_a_permission_setting_keep_cli_settings() {
+    fn stored_profiles_without_a_permission_setting_follow_the_app_default() {
         let stored = r#"{"id":"p","name":"Old","adapter":"claude","extraArgs":[],"workingDirMode":"node","defaultTimeoutSecs":3600}"#;
         let profile: AgentProfile = serde_json::from_str(stored).expect("legacy definition");
-        assert_eq!(profile.permission_level, PermissionLevel::CliSettings);
+        assert_eq!(profile.permission_level, PermissionLevel::AppDefault);
         assert!(profile.allowed_tools.is_empty());
         assert!(!profile.has_full_access());
-        // The default is not written back, so stored definitions and session
-        // keys of existing profiles stay byte-identical.
+        // The default is not written back, so stored definitions of existing
+        // profiles stay byte-identical.
         let value = serde_json::to_value(&profile).unwrap();
         assert!(value.get("permissionLevel").is_none());
         assert!(value.get("allowedTools").is_none());
-        let spec = build_agent_command(&profile, "hi", None).unwrap();
-        assert_eq!(
-            spec.args,
-            ["-p", "--output-format", "stream-json", "--verbose"]
+        // Until the user chooses, the app default is the CLI's own settings:
+        // no flag, exactly as before this setting existed.
+        for profile in [
+            profile.clone(),
+            profile
+                .clone()
+                .with_app_default(PermissionLevel::CliSettings),
+        ] {
+            let spec = build_agent_command(&profile, "hi", None).unwrap();
+            assert_eq!(
+                spec.args,
+                ["-p", "--output-format", "stream-json", "--verbose"]
+            );
+        }
+        // An explicit CLI settings choice is kept, so it can override a Full
+        // access app default.
+        let mut explicit = profile;
+        explicit.permission_level = PermissionLevel::CliSettings;
+        let value = serde_json::to_value(&explicit).unwrap();
+        assert_eq!(value["permissionLevel"], "cliSettings");
+        let back: AgentProfile = serde_json::from_value(value).unwrap();
+        assert_eq!(back.permission_level, PermissionLevel::CliSettings);
+    }
+
+    #[test]
+    fn the_app_default_resolves_per_profile() {
+        let full = |profile: AgentProfile| profile.with_app_default(PermissionLevel::FullAccess);
+        let mut claude = claude_profile();
+        claude.permission_level = PermissionLevel::AppDefault;
+        let resolved = full(claude.clone());
+        assert_eq!(resolved.permission_level, PermissionLevel::FullAccess);
+        assert!(resolved.has_full_access());
+        assert!(build_agent_command(&resolved, "hi", None)
+            .unwrap()
+            .args
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "bypassPermissions"]));
+        let mut codex = claude.clone();
+        codex.adapter = AdapterKind::Codex;
+        assert!(build_agent_command(&full(codex), "hi", None)
+            .unwrap()
+            .args
+            .iter()
+            .any(|a| a == "--dangerously-bypass-approvals-and-sandbox"));
+        // Explicit levels are the profile's own choice and win.
+        for level in [
+            PermissionLevel::CliSettings,
+            PermissionLevel::AllowedTools,
+            PermissionLevel::FullAccess,
+        ] {
+            let mut own = claude.clone();
+            own.permission_level = level;
+            own.allowed_tools = vec!["Edit".into()];
+            assert_eq!(full(own).permission_level, level);
+        }
+        // A profile whose own arguments set permissions keeps them, and a
+        // Custom CLI has no permission flags to add.
+        let mut own_flags = claude.clone();
+        own_flags.extra_args = vec!["--permission-mode".into(), "acceptEdits".into()];
+        assert!(
+            own_flags.validate().is_empty(),
+            "{:?}",
+            own_flags.validate()
         );
+        let resolved = full(own_flags);
+        assert_eq!(resolved.permission_level, PermissionLevel::CliSettings);
+        assert!(!resolved.has_full_access());
+        let mut custom = claude.clone();
+        custom.adapter = AdapterKind::Custom;
+        custom.executable = Some("/usr/bin/aichat".into());
+        custom.model = None;
+        assert!(custom.validate().is_empty(), "{:?}", custom.validate());
+        assert_eq!(full(custom).permission_level, PermissionLevel::CliSettings);
+        // Only the two app-wide levels parse.
+        assert_eq!(
+            parse_permission_default("fullAccess"),
+            Ok(PermissionLevel::FullAccess)
+        );
+        assert_eq!(
+            parse_permission_default("cliSettings"),
+            Ok(PermissionLevel::CliSettings)
+        );
+        for value in ["allowedTools", "appDefault", "", "FullAccess"] {
+            assert!(parse_permission_default(value).is_err(), "{value}");
+        }
     }
 
     #[test]
