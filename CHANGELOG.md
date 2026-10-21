@@ -6,6 +6,49 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-10-21
+
+### Changed
+
+- **Agent permissions are decided once.** Headless Claude Code and Codex cannot
+  ask for permission mid-run, and since v0.1.16 every refused tool fails the step,
+  so workflows stopped at a different refused tool on each run and asked for new
+  rules every time. Now one app-wide choice covers every Agent Profile:
+  - **Let agents work without asking** gives Claude Code
+    `--permission-mode bypassPermissions` and Codex
+    `--dangerously-bypass-approvals-and-sandbox`, so no step is refused a tool.
+  - **Follow each CLI's own settings** keeps the previous behaviour.
+
+  Choose it in the setup wizard's new **Permissions** step or in **Environment →
+  Agent permissions**. Until you choose, nothing widens: starting a run, using a
+  template or importing one asks once, and can switch profiles that collected
+  their own allow-lists back to the app default.
+
+- Agent Profiles get an **App default** level, the new default for every
+  profile without an explicit level. Agents shows what each profile runs with,
+  and a profile can still keep its own level (CLI settings, Allowed tools or
+  Full access). Profiles whose extra arguments set permissions themselves keep
+  them.
+- Refused steps in Runs offer **Let agents work without asking** next to adding
+  the suggested rules, and the refusal message names it.
+
+### Fixed
+
+- Suggested rules for a refused shell command no longer treat a heredoc body or a
+  redirection as commands. A refused `cat > PR_BODY.md <<'EOF' … EOF` suggested
+  rules such as `Bash(The *)` and `Bash(EOF *)`, which admit nothing.
+
+### Security
+
+- Full access chosen app-wide counts as **Run AI CLI with full access** in
+  workflow risks and schedule trust checks, exactly like a Full access profile.
+  It never enables a schedule or watcher by itself.
+
+### Dependencies
+
+- Refreshed npm and Cargo dependencies within their declared ranges (Tauri
+  2.12.5, Tauri CLI 2.12.4, Vite 8.3.5).
+
 ## [0.1.18] - 2026-10-21
 
 ### Fixed
@@ -642,7 +685,8 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/iazaran/orchevia/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/iazaran/orchevia/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/iazaran/orchevia/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/iazaran/orchevia/compare/v0.1.15...v0.1.16

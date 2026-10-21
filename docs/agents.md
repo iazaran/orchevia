@@ -27,7 +27,7 @@ A profile is a persisted, inspectable recipe for invoking one CLI:
 | Working directory mode | Per-node directory (blank uses the workflow's repository directory), fixed profile directory, or inherit (explicit opt-in)                      |
 | Default timeout        | 1–43200 s per run (12-hour cap; default 3600 s)                                                                                                 |
 | Skills                 | Optional Claude/Codex skill names; leave empty for automatic CLI selection                                                                      |
-| Permissions            | Use the CLI's settings (default), Allowed tools (Claude Code), or Full access; see [Tool permissions](#tool-permissions)                        |
+| Permissions            | App default (the default), the CLI's settings, Allowed tools (Claude Code), or Full access; see [Tool permissions](#tool-permissions)           |
 | Role                   | Optional default mapping: `planning`, `implementation`, `fastReview`, `deepReview`, `workflowGenerator`, `workflowAssistance`, `generalPurpose` |
 
 Manage profiles in the **Agents** tab: create, rename, reconfigure, **Test** (probes the
@@ -80,35 +80,67 @@ on Linux), and does not appear in process listings. Previews show
 
 ## Tool permissions
 
-Each Claude Code or Codex profile has a permission setting. Orchevia passes it only
+Headless Claude Code and Codex cannot stop and ask for permission while a workflow
+step runs, so what they may do is decided up front, once. Orchevia passes it only
 as command-line flags for that run. It never writes `~/.claude/settings.json`, Codex
 config, or any project settings file, because those also govern your interactive
 sessions.
 
-| Level                                      | Claude Code                                     | Codex                                        |
-| ------------------------------------------ | ----------------------------------------------- | -------------------------------------------- |
-| Use Claude Code / Codex settings (default) | no flag                                         | no flag                                      |
-| Allowed tools                              | `--allowedTools <rules>` on top of the settings | not offered: Codex has no tool allow-list    |
-| Full access                                | `--permission-mode bypassPermissions`           | `--dangerously-bypass-approvals-and-sandbox` |
+### Agent permissions (app-wide)
 
-- **Use the CLI's settings** is the default. Profiles saved before v0.1.16 keep it,
-  so upgrading widens nothing. Headless `claude -p` still refuses any tool the
-  settings do not allow; it does not apply `defaultMode: bypassPermissions` from a
-  project's `.claude/settings.local.json`.
+**Environment → Agent permissions** holds one choice for every profile at the
+**App default** level, which is what new profiles and every profile saved without
+an explicit level use:
+
+- **Let agents work without asking (full access)**: Claude Code and Codex skip
+  their permission checks, so a step is never refused a tool.
+- **Follow each CLI's own settings**: no flag, as before v0.1.19. A tool those
+  settings do not allow is refused, and the step fails.
+
+Until you choose, the app default means the CLI's own settings, so upgrading
+widens nothing. The setup wizard asks on its **Permissions** step. Starting a run,
+using a template or importing one asks once more while nothing is chosen, and that
+question can also switch profiles that kept their own allow-list (for example from
+earlier "Add to allowed tools" grants) back to the app default. Environment lists
+the profiles that set their own level and can make them follow the app default.
+The choice is stored as the `agents.permissionDefault` setting (`cliSettings` or
+`fullAccess`).
+
+### Profile levels
+
+Agents can give one profile its own level, which then wins over the app default:
+
+| Level                            | Claude Code                                     | Codex                                        |
+| -------------------------------- | ----------------------------------------------- | -------------------------------------------- |
+| App default (default)            | the app-wide choice below                       | the app-wide choice below                    |
+| Use Claude Code / Codex settings | no flag                                         | no flag                                      |
+| Allowed tools                    | `--allowedTools <rules>` on top of the settings | not offered: Codex has no tool allow-list    |
+| Full access                      | `--permission-mode bypassPermissions`           | `--dangerously-bypass-approvals-and-sandbox` |
+
+- **App default** resolves, before each run, to Full access or the CLI's settings.
+  A Custom CLI, or a profile whose extra arguments set permissions themselves (for
+  example `--permission-mode acceptEdits`), keeps its own behaviour: no flag is
+  added. Runs, schedule trust checks, command previews and workflow generation all
+  use the resolved level.
+- **Use the CLI's settings** keeps the CLI's own settings even when the app-wide
+  choice is full access. Headless `claude -p` still refuses any tool the settings
+  do not allow; it does not apply `defaultMode: bypassPermissions` from a project's
+  `.claude/settings.local.json`. Codex `exec` without a sandbox setting is
+  read-only.
 - **Allowed tools** lists Claude Code allow rules: a tool name (`Edit`, `Write`), an
   MCP server (`mcp__<server>`) or one of its tools, or a tool with a specifier
   (`Bash(git status *)`, `WebFetch(domain:example.com)`). What the Claude Code
   settings already allow still applies. Rules are validated: at most 64, no
   duplicates, no commas or nested parentheses, and nothing that looks like a
   credential.
-- **Full access** skips every permission check. Never the default. A workflow
-  whose Agent nodes use such a profile (or whose extra arguments bypass checks,
-  such as `--dangerously-skip-permissions`) lists **Run AI CLI with full access**
-  among its automation risks, and its schedules need the per-schedule trusted
-  opt-in.
+- **Full access** skips every permission check, for this profile only. Never the
+  default. A workflow whose Agent nodes run with full access (this level, the app
+  default resolved to it, or extra arguments that bypass checks, such as
+  `--dangerously-skip-permissions`) lists **Run AI CLI with full access** among its
+  automation risks, and its schedules need the per-schedule trusted opt-in.
 
-While a profile uses a permission level other than the CLI settings, extra
-arguments that set permissions themselves (`--permission-mode`, `--allowedTools`,
+While a profile uses the Allowed tools or Full access level, extra arguments that
+set permissions themselves (`--permission-mode`, `--allowedTools`,
 `--dangerously-skip-permissions`; Codex `--sandbox`, `--full-auto`) are rejected.
 
 ## Refused tool calls
@@ -125,10 +157,15 @@ result's `permission_denials`, so Orchevia reads them:
   MCP tool suggests its server rule `mcp__<server>`, a Bash command suggests
   `Bash(<command prefix> *)` for each command in the line (`git status`,
   `pnpm test`, `touch`), and any other tool suggests its own name (`Write`).
+  Heredoc bodies (`cat <<'EOF'` … `EOF`) and redirections (`2>&1`) are data, not
+  commands, so they never become rules.
 - The refusals stay in the node's structured result. Runs marks the step **tools
-  refused**, lists each refused call with its suggested rule, and offers a button
-  that adds the missing rules to the step's profile after you confirm. Then use
-  **Recover failed run** to retry the step. The confirmation also lists any saved
+  refused**, lists each refused call with its suggested rule, and offers two
+  fixes after you confirm: **Let agents work without asking** (the app-wide full
+  access choice, which also switches this profile back to the app default) or
+  adding the missing rules to the step's profile. A model that is refused one tool
+  often tries another next time, so allow-lists can take several rounds; full
+  access ends them at once. Then use **Recover failed run** to retry the step. The confirmation also lists any saved
   allowed tools that switching the profile to Allowed tools applies again. A
   profile whose extra arguments set permissions itself (for example
   `--allowedTools`) is not changed automatically: move those rules into Allowed

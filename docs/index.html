@@ -1533,14 +1533,16 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
           <h2 id="local-first-h">Local-first, with permissions you can read</h2>
           <p class="section-intro">
             Orchevia passes permission flags on the command line and never edits your
-            Claude Code or Codex settings. Each Agent Profile picks one level:
+            Claude Code or Codex settings. You decide once, in setup or Environment,
+            whether agents work without asking; an Agent Profile can still pick its own
+            level:
           </p>
           <div class="grid levels">
             <div class="card">
               <h3>Use the CLI's settings</h3>
               <p>
-                The default. No flag is added; your own Claude Code or Codex configuration
-                decides what a step may do.
+                No flag is added; your own Claude Code or Codex configuration decides what
+                a step may do. What every profile uses until you choose.
               </p>
             </div>
             <div class="card">
@@ -1553,8 +1555,8 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             <div class="card">
               <h3>Full access</h3>
               <p>
-                Bypasses permission checks. Never a default, always confirmed, and a
-                schedule that uses it needs its own trust opt-in.
+                Bypasses permission checks, for every agent or one profile. Never chosen
+                for you, and a schedule that uses it needs its own trust opt-in.
               </p>
             </div>
           </div>
