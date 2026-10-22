@@ -570,10 +570,14 @@ pub fn save_schedule(
     if schedule.enabled {
         check_schedule_trust(&state, &schedule.workflow_id, schedule.trusted)?;
     }
-    // (Re)compute the next slot on save so the UI shows it immediately.
-    let now = chrono::Utc::now();
-    let (_, next) = orchevia_core::schedule::evaluate(&schedule, now);
-    schedule.next_run_at = next;
+    // Keep run bookkeeping from the stored copy and recompute the next slot
+    // when timing changes or the schedule is re-enabled, so the UI shows it
+    // immediately and never keeps a slot from the old timing.
+    let previous = state
+        .db
+        .get_schedule(&schedule.id)
+        .map_err(|e| e.to_string())?;
+    schedule.prepare_save(previous.as_ref(), chrono::Utc::now());
     state
         .db
         .upsert_schedule(&schedule)
@@ -616,11 +620,14 @@ pub async fn fire_schedule_now(
             ]),
         )
         .map_err(|e| e.to_string())?;
-    // Record the manual fire on the schedule row.
-    let mut updated = schedule;
-    updated.last_run_at = Some(chrono::Utc::now());
-    updated.last_status = Some(format!("manually started {run_id}"));
-    let _ = state.db.upsert_schedule(&updated);
+    // Record the manual fire on the stored row without overwriting a
+    // concurrent scheduler check or save.
+    let _ = orchevia_core::scheduler::record_manual_run(
+        &state.db,
+        &schedule.id,
+        &run_id,
+        chrono::Utc::now(),
+    );
     Ok(RunStarted { run_id })
 }
 
@@ -643,6 +650,7 @@ pub fn schedule_preview(
         last_run_at: None,
         next_run_at: None,
         last_status: None,
+        deferred_slot: None,
     };
     let errors = probe.validate();
     if !errors.is_empty() {

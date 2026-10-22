@@ -12,7 +12,7 @@
 //! policy decides — `Skip` jumps to the next future slot, `RunOnce` runs a
 //! single catch-up then advances.
 
-use chrono::{DateTime, Datelike, Offset, TimeZone, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -39,6 +39,11 @@ pub struct Schedule {
     pub next_run_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_status: Option<String>,
+    /// A due slot held back by the run limit or an active run. It still runs
+    /// when capacity frees, however late, because Orchevia was running when
+    /// it came due; the missed-run policy is only for closed or asleep time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_slot: Option<DateTime<Utc>>,
 }
 
 fn default_tz() -> String {
@@ -148,6 +153,35 @@ impl Schedule {
         }
         errors
     }
+
+    /// Timing is the kind and timezone: name, workflow, trust and policy edits
+    /// keep the stored slot.
+    pub fn same_timing(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.timezone == other.timezone
+    }
+
+    /// Normalize a schedule submitted by the editor or a card toggle. Run
+    /// bookkeeping comes from the stored copy (the form may be stale). The
+    /// next slot is kept only while the schedule stays enabled with the same
+    /// timing, so a pending (deferred) slot survives a rename; changed timing
+    /// or re-enabling recomputes it from `now`, and a paused schedule has none.
+    pub fn prepare_save(&mut self, previous: Option<&Self>, now: DateTime<Utc>) {
+        if let Some(previous) = previous {
+            self.last_run_at = previous.last_run_at;
+            self.last_status = previous.last_status.clone();
+        }
+        let kept = previous
+            .filter(|previous| self.enabled && previous.enabled && self.same_timing(previous));
+        self.next_run_at = kept.and_then(|previous| previous.next_run_at);
+        self.deferred_slot = kept.and_then(|previous| previous.deferred_slot);
+        if !self.enabled {
+            return;
+        }
+        if self.next_run_at.is_none() {
+            let (_, next) = evaluate(self, now);
+            self.next_run_at = next;
+        }
+    }
 }
 
 /// Resolve a timezone name to a fixed UTC offset in seconds.
@@ -175,58 +209,120 @@ pub fn parse_tz_offset(name: &str, now: DateTime<Utc>) -> Option<i32> {
 }
 
 /// Next fire time strictly after `now`. Pure function of (schedule, now).
+/// `local` follows the system zone's daylight-saving rules for each slot;
+/// fixed offsets never shift. Interval slots sit on a grid aligned to the
+/// zone's midnight (a 15-minute interval fires on the quarter hours).
 pub fn next_run(kind: &ScheduleKind, timezone: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let offset = parse_tz_offset(timezone, now)?;
+    let local = timezone.trim().eq_ignore_ascii_case("local");
+    let fixed = chrono::FixedOffset::east_opt(offset)?;
     match kind {
         ScheduleKind::OneTime { at } => (*at > now).then_some(*at),
         ScheduleKind::Interval { every_secs } => {
             if *every_secs == 0 {
                 return None;
             }
-            let secs = (*every_secs).max(60);
-            let epoch = now.timestamp().div_euclid(secs as i64) * secs as i64 + secs as i64;
-            DateTime::from_timestamp(epoch, 0)
+            let secs = (*every_secs).max(60) as i64;
+            let shifted = now.timestamp() + i64::from(offset);
+            let slot = shifted.div_euclid(secs) * secs + secs - i64::from(offset);
+            DateTime::from_timestamp(slot, 0)
         }
-        ScheduleKind::Daily { hour, minute } => next_daily(*hour, *minute, offset, now),
+        ScheduleKind::Daily { hour, minute } if local => {
+            next_daily_in(&chrono::Local, *hour, *minute, now)
+        }
+        ScheduleKind::Daily { hour, minute } => next_daily_in(&fixed, *hour, *minute, now),
         ScheduleKind::Weekly {
             weekday,
             hour,
             minute,
-        } => next_weekly(weekday.weekday(), *hour, *minute, offset, now),
+        } if local => next_weekly_in(&chrono::Local, weekday.weekday(), *hour, *minute, now),
+        ScheduleKind::Weekly {
+            weekday,
+            hour,
+            minute,
+        } => next_weekly_in(&fixed, weekday.weekday(), *hour, *minute, now),
         ScheduleKind::Cron { expr } => {
             let cron = parse_cron(expr).ok()?;
-            next_cron(&cron, offset, now)
+            if local {
+                next_cron_in(&cron, &chrono::Local, now)
+            } else {
+                next_cron_in(&cron, &fixed, now)
+            }
         }
     }
 }
 
-fn in_zone(offset_secs: i32, utc: DateTime<Utc>) -> chrono::DateTime<chrono::FixedOffset> {
-    let offset = chrono::FixedOffset::east_opt(offset_secs).unwrap_or_else(|| Utc.fix());
-    utc.with_timezone(&offset)
+/// The first instant of a wall-clock time in `tz` that is after `after`.
+/// Across a fall-back hour it picks the occurrence still ahead; a time
+/// skipped by a spring-forward jump has none.
+fn resolve_after<Tz: TimeZone>(
+    tz: &Tz,
+    naive: chrono::NaiveDateTime,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let instant = match tz.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(at) => at.with_timezone(&Utc),
+        chrono::LocalResult::Ambiguous(first, second) => {
+            let first = first.with_timezone(&Utc);
+            if first > after {
+                first
+            } else {
+                second.with_timezone(&Utc)
+            }
+        }
+        chrono::LocalResult::None => return None,
+    };
+    (instant > after).then_some(instant)
 }
 
+/// A daily or weekly time on `date`; a time inside a spring-forward gap runs
+/// an hour later instead of being skipped.
+fn wall_time_after<Tz: TimeZone>(
+    tz: &Tz,
+    date: chrono::NaiveDate,
+    hour: u32,
+    minute: u32,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let naive = date.and_hms_opt(hour, minute, 0)?;
+    resolve_after(tz, naive, after).or_else(|| {
+        let shifted = naive + chrono::Duration::hours(1);
+        match tz.from_local_datetime(&naive) {
+            chrono::LocalResult::None => resolve_after(tz, shifted, after),
+            _ => None,
+        }
+    })
+}
+
+#[cfg(test)]
 fn next_daily(
     hour: u32,
     minute: u32,
     offset_secs: i32,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let offset = chrono::FixedOffset::east_opt(offset_secs)?;
-    let zoned = in_zone(offset_secs, now);
-    let today = zoned.date_naive();
-    let candidate = offset
-        .from_local_datetime(&today.and_hms_opt(hour, minute, 0)?)
-        .single()?;
-    if candidate > zoned {
-        return Some(candidate.with_timezone(&Utc));
-    }
-    let tomorrow = today.succ_opt()?;
-    tomorrow
-        .and_hms_opt(hour, minute, 0)
-        .and_then(|naive| offset.from_local_datetime(&naive).single())
-        .map(|zoned| zoned.with_timezone(&Utc))
+    next_daily_in(
+        &chrono::FixedOffset::east_opt(offset_secs)?,
+        hour,
+        minute,
+        now,
+    )
 }
 
+fn next_daily_in<Tz: TimeZone>(
+    tz: &Tz,
+    hour: u32,
+    minute: u32,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let today = now.with_timezone(tz).date_naive();
+    (0..3).find_map(|delta| {
+        let date = today.checked_add_days(chrono::Days::new(delta))?;
+        wall_time_after(tz, date, hour, minute, now)
+    })
+}
+
+#[cfg(test)]
 fn next_weekly(
     weekday: Weekday,
     hour: u32,
@@ -234,22 +330,30 @@ fn next_weekly(
     offset_secs: i32,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let offset = chrono::FixedOffset::east_opt(offset_secs)?;
-    let zoned = in_zone(offset_secs, now);
-    for delta_days in 0..8 {
-        let date = zoned.date_naive() + chrono::Days::new(delta_days);
+    next_weekly_in(
+        &chrono::FixedOffset::east_opt(offset_secs)?,
+        weekday,
+        hour,
+        minute,
+        now,
+    )
+}
+
+fn next_weekly_in<Tz: TimeZone>(
+    tz: &Tz,
+    weekday: Weekday,
+    hour: u32,
+    minute: u32,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let today = now.with_timezone(tz).date_naive();
+    (0..15).find_map(|delta| {
+        let date = today.checked_add_days(chrono::Days::new(delta))?;
         if date.weekday() != weekday {
-            continue;
+            return None;
         }
-        if let Some(naive) = date.and_hms_opt(hour, minute, 0) {
-            if let Some(candidate) = offset.from_local_datetime(&naive).single() {
-                if candidate > zoned {
-                    return Some(candidate.with_timezone(&Utc));
-                }
-            }
-        }
-    }
-    None
+        wall_time_after(tz, date, hour, minute, now)
+    })
 }
 
 // -- Minimal 5-field cron --------------------------------------------------------
@@ -261,6 +365,42 @@ struct CronSpec {
     days: Vec<u32>,
     months: Vec<u32>,
     weekdays: Vec<u32>, // 0 = Sunday
+    /// Day-of-month / day-of-week fields that start with `*`. As in standard
+    /// cron, when both are restricted a date matching either one runs.
+    days_any: bool,
+    weekdays_any: bool,
+}
+
+impl CronSpec {
+    fn date_matches(&self, date: chrono::NaiveDate) -> bool {
+        if !self.months.contains(&date.month()) {
+            return false;
+        }
+        let day = self.days.contains(&date.day());
+        let weekday = self
+            .weekdays
+            .contains(&date.weekday().num_days_from_sunday());
+        match (self.days_any, self.weekdays_any) {
+            (false, false) => day || weekday,
+            _ => day && weekday,
+        }
+    }
+
+    /// No date can ever match: only day-of-month is restricted and none of
+    /// its days exists in any chosen month (`0 0 31 2 *`). Mirrors
+    /// `cronNeverMatches` in `src/lib/scheduler.ts`.
+    fn never_matches(&self) -> bool {
+        !self.days_any
+            && self.weekdays_any
+            && self.months.iter().all(|month| {
+                let longest = match month {
+                    2 => 29,
+                    4 | 6 | 9 | 11 => 30,
+                    _ => 31,
+                };
+                self.days.iter().all(|day| *day > longest)
+            })
+    }
 }
 
 fn parse_cron_field(text: &str, min: u32, max: u32) -> Result<Vec<u32>, String> {
@@ -319,7 +459,7 @@ fn parse_cron(expr: &str) -> Result<CronSpec, String> {
     if fields.len() != 5 {
         return Err("Cron needs 5 fields: minute hour day month weekday.".to_string());
     }
-    Ok(CronSpec {
+    let spec = CronSpec {
         minutes: parse_cron_field(fields[0], 0, 59)?,
         hours: parse_cron_field(fields[1], 0, 23)?,
         days: parse_cron_field(fields[2], 1, 31)?,
@@ -335,27 +475,40 @@ fn parse_cron(expr: &str) -> Result<CronSpec, String> {
             days.dedup();
             days
         })?,
-    })
+        days_any: fields[2].starts_with('*'),
+        weekdays_any: fields[4].starts_with('*'),
+    };
+    if spec.never_matches() {
+        return Err("Cron never matches: no chosen month has that day.".to_string());
+    }
+    Ok(spec)
 }
 
-fn next_cron(spec: &CronSpec, offset_secs: i32, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    // Minute-by-minute scan, capped at ~366 days (bounded, documented).
-    let mut cursor = now + chrono::Duration::minutes(1);
-    cursor = cursor.with_second(0).and_then(|d| d.with_nanosecond(0))?;
-    for _ in 0..(366 * 24 * 60) {
-        let zoned = in_zone(offset_secs, cursor);
-        let minute = zoned.minute();
-        let hour = zoned.hour();
-        let day = zoned.day();
-        let month = zoned.month();
-        let weekday = zoned.weekday().num_days_from_sunday();
-        if spec.minutes.contains(&minute)
-            && spec.hours.contains(&hour)
-            && spec.days.contains(&day)
-            && spec.months.contains(&month)
-            && spec.weekdays.contains(&weekday)
-        {
-            return Some(cursor);
+/// Walk local wall-clock time, skipping whole days and hours that cannot
+/// match, for up to five years (enough for 29 February). Wall times skipped
+/// by a spring-forward jump do not run.
+fn next_cron_in<Tz: TimeZone>(
+    spec: &CronSpec,
+    tz: &Tz,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let start = now.with_timezone(tz).naive_local() + chrono::Duration::minutes(1);
+    let mut cursor = start.with_second(0)?.with_nanosecond(0)?;
+    let limit = start + chrono::Duration::days(5 * 366);
+    while cursor < limit {
+        let date = cursor.date();
+        if !spec.date_matches(date) {
+            cursor = date.succ_opt()?.and_hms_opt(0, 0, 0)?;
+            continue;
+        }
+        if !spec.hours.contains(&cursor.hour()) {
+            cursor = cursor.with_minute(0)? + chrono::Duration::hours(1);
+            continue;
+        }
+        if spec.minutes.contains(&cursor.minute()) {
+            if let Some(at) = resolve_after(tz, cursor, now) {
+                return Some(at);
+            }
         }
         cursor += chrono::Duration::minutes(1);
     }
@@ -364,6 +517,13 @@ fn next_cron(spec: &CronSpec, offset_secs: i32, now: DateTime<Utc>) -> Option<Da
 
 // -- Evaluation -----------------------------------------------------------------
 
+/// How late a slot may be noticed and still count as on time when the
+/// scheduler cannot tell how long it was away: the first check after launch,
+/// or the first check after the computer slept.
+pub fn default_missed_grace() -> chrono::Duration {
+    chrono::Duration::minutes(5)
+}
+
 /// What the scheduler should do about a schedule at `now`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleDecision {
@@ -371,21 +531,39 @@ pub enum ScheduleDecision {
     Wait,
     /// Due: run exactly once, then advance past `now`.
     Fire,
+    /// A slot passed while Orchevia was closed or asleep and the `Skip`
+    /// policy drops it: advance past `now` without running.
+    SkipMissed,
     /// One-time elapsed long ago / misconfigured: retire without running.
     Retire,
 }
 
-/// Decide + compute the stored `next_run_at` afterwards. Pure and total.
+/// Decide + compute the stored `next_run_at` afterwards, with the default
+/// grace for late slots. Pure and total.
 pub fn evaluate(
     schedule: &Schedule,
     now: DateTime<Utc>,
+) -> (ScheduleDecision, Option<DateTime<Utc>>) {
+    evaluate_with_grace(schedule, now, default_missed_grace())
+}
+
+/// [`evaluate`] with an explicit `grace`: how late a slot may be noticed and
+/// still count as on time. The scheduler widens it to cover the time since its
+/// previous check, so a slot that came due while Orchevia was running is never
+/// treated as one missed while it was closed, however long the check interval.
+pub fn evaluate_with_grace(
+    schedule: &Schedule,
+    now: DateTime<Utc>,
+    grace: chrono::Duration,
 ) -> (ScheduleDecision, Option<DateTime<Utc>>) {
     if !schedule.enabled {
         return (ScheduleDecision::Wait, schedule.next_run_at);
     }
     match &schedule.kind {
         ScheduleKind::OneTime { at } => {
-            if schedule.last_run_at.is_some() {
+            // Complete once it ran at or after its time. A manual run before
+            // it, or a time moved later, leaves it armed.
+            if schedule.last_run_at.is_some_and(|last| last >= *at) {
                 return (ScheduleDecision::Retire, None);
             }
             if *at > now {
@@ -393,7 +571,9 @@ pub fn evaluate(
             }
             // One-time within a grace window still fires once (late boot);
             // ancient ones retire instead of surprising the user.
-            if now.signed_duration_since(*at) <= chrono::Duration::minutes(15) {
+            if schedule.deferred_slot == Some(*at)
+                || now.signed_duration_since(*at) <= grace.max(chrono::Duration::minutes(15))
+            {
                 return (ScheduleDecision::Fire, None);
             }
             match schedule.missed_policy {
@@ -409,23 +589,55 @@ pub fn evaluate(
                 None => (ScheduleDecision::Wait, None),
                 Some(slot) if slot > now => (ScheduleDecision::Wait, Some(slot)),
                 Some(slot) => {
-                    // Missed window: policy decides, then advance past now.
                     let advance = next_run(&schedule.kind, &schedule.timezone, now);
+                    if schedule.deferred_slot == Some(slot)
+                        || now.signed_duration_since(slot) <= grace
+                    {
+                        return (ScheduleDecision::Fire, advance);
+                    }
+                    // Missed while closed or asleep: the policy decides, and
+                    // either way at most one run (no catch-up storm).
                     match schedule.missed_policy {
-                        MissedPolicy::Skip => {
-                            // Skip the stale slot silently (no storm): fire
-                            // only when the slot is fresh (within one poll).
-                            if now.signed_duration_since(slot) <= chrono::Duration::minutes(5) {
-                                (ScheduleDecision::Fire, advance)
-                            } else {
-                                (ScheduleDecision::Wait, advance)
-                            }
-                        }
+                        MissedPolicy::Skip => (ScheduleDecision::SkipMissed, advance),
                         MissedPolicy::RunOnce => (ScheduleDecision::Fire, advance),
                     }
                 }
             }
         }
+    }
+}
+
+/// Grace for the scheduler's next check: the time since its previous check
+/// (plus a minute of slack), never below [`default_missed_grace`]. When the
+/// wall clock moved more than a minute further than the monotonic clock, the
+/// computer slept (or the clock was changed): slots in that gap were missed
+/// while asleep, so the default applies. `previous` is the wall time of the
+/// previous check and `monotonic_elapsed` the monotonic time since it.
+pub fn check_grace(
+    previous: Option<DateTime<Utc>>,
+    monotonic_elapsed: std::time::Duration,
+    now: DateTime<Utc>,
+) -> chrono::Duration {
+    let base = default_missed_grace();
+    let Some(previous) = previous else {
+        return base;
+    };
+    let wall = now.signed_duration_since(previous);
+    let Ok(monotonic) = chrono::Duration::from_std(monotonic_elapsed) else {
+        return base;
+    };
+    if wall < chrono::Duration::zero() || wall - monotonic > chrono::Duration::minutes(1) {
+        return base;
+    }
+    base.max(wall + chrono::Duration::minutes(1))
+}
+
+/// The slot a `Fire` decision is about: the one-time instant, or the stored
+/// next slot of a recurring schedule.
+pub fn due_slot(schedule: &Schedule) -> Option<DateTime<Utc>> {
+    match &schedule.kind {
+        ScheduleKind::OneTime { at } => Some(*at),
+        _ => schedule.next_run_at,
     }
 }
 
@@ -635,6 +847,7 @@ mod tests {
             last_run_at: None,
             next_run_at: Some(at),
             last_status: None,
+            deferred_slot: None,
         };
         assert_eq!(
             evaluate(&schedule, utc(2026, 3, 4, 9, 0)).0,
@@ -667,6 +880,7 @@ mod tests {
             last_run_at: Some(now),
             next_run_at: None,
             last_status: Some("started run".into()),
+            deferred_slot: None,
         };
         assert_eq!(
             evaluate(&schedule, now + chrono::Duration::minutes(1)).0,
@@ -688,9 +902,10 @@ mod tests {
             last_run_at: None,
             next_run_at: Some(utc(2026, 3, 1, 0, 0)), // days stale
             last_status: None,
+            deferred_slot: None,
         };
         let (decision, next) = evaluate(&schedule, utc(2026, 3, 4, 10, 7));
-        assert_eq!(decision, ScheduleDecision::Wait);
+        assert_eq!(decision, ScheduleDecision::SkipMissed);
         assert_eq!(next, Some(utc(2026, 3, 4, 11, 0)));
     }
 
@@ -708,6 +923,7 @@ mod tests {
             last_run_at: None,
             next_run_at: Some(utc(2026, 3, 4, 9, 0)),
             last_status: None,
+            deferred_slot: None,
         };
         assert_eq!(
             evaluate(&schedule, utc(2026, 3, 4, 10, 0)).0,
@@ -729,12 +945,330 @@ mod tests {
             last_run_at: None,
             next_run_at: None,
             last_status: None,
+            deferred_slot: None,
         };
         assert!(!schedule.validate().is_empty());
         schedule.kind = ScheduleKind::Interval { every_secs: 300 };
         assert!(schedule.validate().is_empty());
         schedule.timezone = "Mars/Olympus".into();
         assert!(!schedule.validate().is_empty());
+    }
+
+    /// Berlin rules for 2026 without a tz database: CET (+01:00), CEST
+    /// (+02:00) from 29 March 01:00 UTC to 25 October 01:00 UTC.
+    #[derive(Debug, Clone, Copy)]
+    struct Berlin2026;
+
+    #[derive(Debug, Clone, Copy)]
+    struct BerlinOffset(chrono::FixedOffset);
+
+    impl chrono::Offset for BerlinOffset {
+        fn fix(&self) -> chrono::FixedOffset {
+            self.0
+        }
+    }
+
+    impl Berlin2026 {
+        fn hours(hours: i32) -> BerlinOffset {
+            BerlinOffset(chrono::FixedOffset::east_opt(hours * 3600).expect("offset"))
+        }
+    }
+
+    impl TimeZone for Berlin2026 {
+        type Offset = BerlinOffset;
+
+        fn from_offset(_: &BerlinOffset) -> Self {
+            Berlin2026
+        }
+
+        fn offset_from_local_date(
+            &self,
+            local: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<BerlinOffset> {
+            self.offset_from_local_datetime(&local.and_hms_opt(0, 0, 0).expect("midnight"))
+        }
+
+        fn offset_from_local_datetime(
+            &self,
+            local: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<BerlinOffset> {
+            let valid: Vec<BerlinOffset> = [2, 1]
+                .into_iter()
+                .map(Self::hours)
+                .filter(|offset| {
+                    let utc = *local - chrono::Duration::seconds(offset.0.local_minus_utc().into());
+                    self.offset_from_utc_datetime(&utc).0 == offset.0
+                })
+                .collect();
+            match valid.as_slice() {
+                [] => chrono::LocalResult::None,
+                [one] => chrono::LocalResult::Single(*one),
+                [earlier, later, ..] => chrono::LocalResult::Ambiguous(*earlier, *later),
+            }
+        }
+
+        fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> BerlinOffset {
+            self.offset_from_utc_datetime(&utc.and_hms_opt(0, 0, 0).expect("midnight"))
+        }
+
+        fn offset_from_utc_datetime(&self, instant: &chrono::NaiveDateTime) -> BerlinOffset {
+            let summer = utc(2026, 3, 29, 1, 0).naive_utc()..utc(2026, 10, 25, 1, 0).naive_utc();
+            Self::hours(if summer.contains(instant) { 2 } else { 1 })
+        }
+    }
+
+    #[test]
+    fn daily_local_follows_daylight_saving() {
+        // Computed on Saturday (CEST) for Sunday, after clocks go back.
+        let next = next_daily_in(&Berlin2026, 9, 0, utc(2026, 10, 24, 10, 0));
+        assert_eq!(next, Some(utc(2026, 10, 25, 8, 0)), "09:00 CET");
+        // 02:30 does not exist on 29 March: it runs at 03:30 CEST instead.
+        let next = next_daily_in(&Berlin2026, 2, 30, utc(2026, 3, 28, 12, 0));
+        assert_eq!(next, Some(utc(2026, 3, 29, 1, 30)));
+        let next = next_weekly_in(&Berlin2026, Weekday::Mon, 9, 0, utc(2026, 10, 24, 10, 0));
+        assert_eq!(next, Some(utc(2026, 10, 26, 8, 0)));
+    }
+
+    #[test]
+    fn cron_local_runs_a_repeated_hour_once() {
+        let spec = parse_cron("30 2 * * *").expect("cron");
+        // 02:00 CEST on 25 October: 02:30 comes twice; the first one runs.
+        let first = next_cron_in(&spec, &Berlin2026, utc(2026, 10, 25, 0, 0));
+        assert_eq!(first, Some(utc(2026, 10, 25, 0, 30)));
+        let after = next_cron_in(&spec, &Berlin2026, utc(2026, 10, 25, 0, 30));
+        assert_eq!(
+            after,
+            Some(utc(2026, 10, 26, 1, 30)),
+            "next day, not the repeat"
+        );
+    }
+
+    #[test]
+    fn cron_day_fields_combine_like_standard_cron() {
+        // Restricted day and weekday: either one matches (Monday 26 Oct).
+        let next = next_run(
+            &ScheduleKind::Cron {
+                expr: "0 9 1 * 1".into(),
+            },
+            "utc",
+            utc(2026, 10, 22, 12, 0),
+        );
+        assert_eq!(next, Some(utc(2026, 10, 26, 9, 0)));
+        // A starred weekday leaves the day of month in charge.
+        let next = next_run(
+            &ScheduleKind::Cron {
+                expr: "0 9 1 * *".into(),
+            },
+            "utc",
+            utc(2026, 10, 22, 12, 0),
+        );
+        assert_eq!(next, Some(utc(2026, 11, 1, 9, 0)));
+        // Leap day, more than a year ahead.
+        let next = next_run(
+            &ScheduleKind::Cron {
+                expr: "0 0 29 2 *".into(),
+            },
+            "utc",
+            utc(2026, 10, 22, 12, 0),
+        );
+        assert_eq!(next, Some(utc(2028, 2, 29, 0, 0)));
+    }
+
+    #[test]
+    fn cron_errors_match_the_typescript_mirror() {
+        // Pinned in src/lib/scheduler.test.ts as well.
+        let error = |expr: &str| parse_cron(expr).err().unwrap_or_default();
+        assert_eq!(
+            error("*/15 * * *"),
+            "Cron needs 5 fields: minute hour day month weekday."
+        );
+        assert_eq!(error("99 * * * *"), "Value out of range 0-59 in '99'.");
+        assert_eq!(error("*/0 * * * *"), "Step must be >= 1 in '*/0'.");
+        assert_eq!(error("0 9 * * mon"), "Bad value 'mon' in 'mon'.");
+        assert_eq!(error("1-2-3 * * * *"), "Bad value '2-3' in '1-2-3'.");
+        assert_eq!(error("5-1 * * * *"), "Reversed range '5-1' in '5-1'.");
+        assert_eq!(
+            error("0 0 31 2 *"),
+            "Cron never matches: no chosen month has that day."
+        );
+    }
+
+    #[test]
+    fn cron_that_never_matches_is_invalid() {
+        assert!(parse_cron("0 0 31 2 *").is_err());
+        assert!(parse_cron("0 0 30,31 2 *").is_err());
+        assert!(parse_cron("0 0 31 4,6 *").is_err());
+        assert!(
+            parse_cron("0 0 31 2 1").is_ok(),
+            "Mondays in February still match"
+        );
+        assert!(parse_cron("0 0 31 1-3 *").is_ok());
+    }
+
+    #[test]
+    fn interval_grid_follows_the_timezone() {
+        let now = utc(2026, 3, 4, 10, 7);
+        // 15:37 at +05:30: the next hourly slot is 16:00 local.
+        let next = next_run(&ScheduleKind::Interval { every_secs: 3600 }, "+05:30", now);
+        assert_eq!(next, Some(utc(2026, 3, 4, 10, 30)));
+        // Daily interval at -08:00 lands on local midnight.
+        let next = next_run(
+            &ScheduleKind::Interval { every_secs: 86_400 },
+            "-08:00",
+            now,
+        );
+        assert_eq!(next, Some(utc(2026, 3, 5, 8, 0)));
+    }
+
+    fn interval(every_secs: u64, next_run_at: Option<DateTime<Utc>>) -> Schedule {
+        Schedule {
+            id: "s".into(),
+            name: "Review PRs".into(),
+            workflow_id: "w".into(),
+            kind: ScheduleKind::Interval { every_secs },
+            timezone: "local".into(),
+            enabled: true,
+            trusted: true,
+            missed_policy: MissedPolicy::Skip,
+            last_run_at: None,
+            next_run_at,
+            last_status: None,
+            deferred_slot: None,
+        }
+    }
+
+    #[test]
+    fn slot_noticed_late_while_running_still_fires() {
+        // Hourly checks noticed the 20:00 slot at 20:23; the app was running
+        // the whole time, so the grace covers the gap and the slot runs.
+        let schedule = interval(3600, Some(utc(2026, 10, 22, 20, 0)));
+        let now = utc(2026, 10, 22, 20, 23);
+        assert_eq!(
+            evaluate(&schedule, now).0,
+            ScheduleDecision::SkipMissed,
+            "default grace alone treats it as missed"
+        );
+        let grace = chrono::Duration::minutes(61);
+        let (decision, next) = evaluate_with_grace(&schedule, now, grace);
+        assert_eq!(decision, ScheduleDecision::Fire);
+        assert_eq!(next, Some(utc(2026, 10, 22, 21, 0)));
+    }
+
+    #[test]
+    fn run_once_policy_catches_up_a_single_missed_slot() {
+        let mut schedule = interval(3600, Some(utc(2026, 3, 1, 0, 0)));
+        schedule.missed_policy = MissedPolicy::RunOnce;
+        let (decision, next) = evaluate(&schedule, utc(2026, 3, 4, 10, 7));
+        assert_eq!(decision, ScheduleDecision::Fire);
+        assert_eq!(next, Some(utc(2026, 3, 4, 11, 0)));
+    }
+
+    #[test]
+    fn check_grace_covers_awake_gaps_only() {
+        let now = utc(2026, 10, 22, 20, 23);
+        let hour = std::time::Duration::from_secs(3600);
+        assert_eq!(check_grace(None, hour, now), default_missed_grace());
+        // Awake for the whole hour since the previous check.
+        assert_eq!(
+            check_grace(Some(now - chrono::Duration::hours(1)), hour, now),
+            chrono::Duration::minutes(61)
+        );
+        // A quick re-check never shrinks below the default.
+        assert_eq!(
+            check_grace(
+                Some(now - chrono::Duration::seconds(30)),
+                std::time::Duration::from_secs(30),
+                now
+            ),
+            default_missed_grace()
+        );
+        // Asleep for most of the gap: monotonic time stood still.
+        assert_eq!(
+            check_grace(
+                Some(now - chrono::Duration::hours(1)),
+                std::time::Duration::from_secs(600),
+                now
+            ),
+            default_missed_grace()
+        );
+        // Clock set backwards.
+        assert_eq!(
+            check_grace(Some(now + chrono::Duration::minutes(5)), hour, now),
+            default_missed_grace()
+        );
+    }
+
+    #[test]
+    fn editing_the_interval_recomputes_the_next_slot() {
+        // Stored hourly with the 21:00 slot; edited to every 5 minutes at
+        // 20:42 with the stale slot still in the form.
+        let stored = interval(3600, Some(utc(2026, 10, 22, 21, 0)));
+        let mut edited = interval(300, stored.next_run_at);
+        edited.prepare_save(Some(&stored), utc(2026, 10, 22, 20, 42));
+        assert_eq!(edited.next_run_at, Some(utc(2026, 10, 22, 20, 45)));
+    }
+
+    #[test]
+    fn saving_without_timing_changes_keeps_a_pending_slot() {
+        // A slot deferred by the run limit is still due; a rename keeps it.
+        let mut stored = interval(300, Some(utc(2026, 10, 22, 20, 45)));
+        stored.last_run_at = Some(utc(2026, 10, 22, 20, 40));
+        stored.last_status = Some("deferred: run limit reached".into());
+        let mut edited = stored.clone();
+        edited.name = "Review requested PRs".into();
+        edited.last_run_at = None;
+        edited.last_status = None;
+        edited.prepare_save(Some(&stored), utc(2026, 10, 22, 20, 47));
+        assert_eq!(edited.next_run_at, Some(utc(2026, 10, 22, 20, 45)));
+        assert_eq!(
+            edited.last_run_at, stored.last_run_at,
+            "bookkeeping is kept"
+        );
+        assert_eq!(edited.last_status, stored.last_status);
+    }
+
+    #[test]
+    fn pausing_clears_and_resuming_recomputes_the_slot() {
+        let stored = interval(300, Some(utc(2026, 10, 22, 9, 0)));
+        let mut paused = stored.clone();
+        paused.enabled = false;
+        paused.prepare_save(Some(&stored), utc(2026, 10, 22, 9, 2));
+        assert_eq!(paused.next_run_at, None);
+        // Resumed hours later: no stale slot from before the pause.
+        let mut resumed = paused.clone();
+        resumed.enabled = true;
+        resumed.prepare_save(Some(&paused), utc(2026, 10, 22, 14, 1));
+        assert_eq!(resumed.next_run_at, Some(utc(2026, 10, 22, 14, 5)));
+        // A new schedule gets its first slot.
+        let mut created = interval(300, None);
+        created.prepare_save(None, utc(2026, 10, 22, 14, 1));
+        assert_eq!(created.next_run_at, Some(utc(2026, 10, 22, 14, 5)));
+    }
+
+    #[test]
+    fn one_time_stays_armed_after_an_earlier_manual_run() {
+        let at = utc(2026, 3, 4, 10, 0);
+        let mut schedule = Schedule {
+            kind: ScheduleKind::OneTime { at },
+            next_run_at: Some(at),
+            ..interval(300, None)
+        };
+        // "Run now" an hour before the scheduled time.
+        schedule.last_run_at = Some(utc(2026, 3, 4, 9, 0));
+        assert_eq!(
+            evaluate(&schedule, utc(2026, 3, 4, 9, 30)).0,
+            ScheduleDecision::Wait
+        );
+        assert_eq!(
+            evaluate(&schedule, utc(2026, 3, 4, 10, 0)).0,
+            ScheduleDecision::Fire
+        );
+        // After the scheduled run it is complete.
+        schedule.last_run_at = Some(utc(2026, 3, 4, 10, 0));
+        assert_eq!(
+            evaluate(&schedule, utc(2026, 3, 4, 10, 1)).0,
+            ScheduleDecision::Retire
+        );
     }
 }
 

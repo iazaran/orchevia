@@ -102,6 +102,74 @@ fn parse_time(raw: &str) -> Option<DateTime<Utc>> {
     raw.parse::<DateTime<Utc>>().ok()
 }
 
+/// Longest the app loop sleeps between checks. Due times are computed, so
+/// this only bounds clock changes and sleep/resume.
+pub const MAX_CHECK_WAIT_SECS: u64 = 60;
+/// Re-check delay for work that is due but waiting (run limit, active run).
+pub const DUE_RECHECK_SECS: u64 = 30;
+
+/// Pure core of [`Scheduler::next_wait`].
+pub fn next_wait_for(
+    schedules: &[crate::schedule::Schedule],
+    watchers: &[Watcher],
+    now: DateTime<Utc>,
+) -> std::time::Duration {
+    let schedule_due = schedules
+        .iter()
+        .filter(|schedule| schedule.enabled)
+        .filter_map(|schedule| schedule.next_run_at);
+    let watcher_due =
+        watchers
+            .iter()
+            .filter(|watcher| watcher.enabled)
+            .map(|watcher| match watcher.last_checked_at {
+                None => now,
+                Some(last) => {
+                    last + chrono::Duration::seconds(watcher.check_interval_secs.max(300) as i64)
+                }
+            });
+    let wait_secs = schedule_due
+        .chain(watcher_due)
+        .map(|due| {
+            let until = due.signed_duration_since(now);
+            if until <= chrono::Duration::zero() {
+                DUE_RECHECK_SECS
+            } else {
+                // Round up so the check lands on or just after the slot.
+                let millis = u64::try_from(until.num_milliseconds()).unwrap_or(u64::MAX);
+                millis.div_ceil(1000)
+            }
+        })
+        .min()
+        .unwrap_or(MAX_CHECK_WAIT_SECS);
+    std::time::Duration::from_secs(wait_secs.clamp(1, MAX_CHECK_WAIT_SECS))
+}
+
+/// Record a manual "Run now" on the stored schedule without overwriting a
+/// concurrent save or scheduler check (compare-and-swap, retried).
+pub fn record_manual_run(
+    db: &SqliteDb,
+    schedule_id: &str,
+    run_id: &str,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    for _ in 0..3 {
+        let Some(current) = db.get_schedule(schedule_id).map_err(|e| e.to_string())? else {
+            return Ok(());
+        };
+        let mut updated = current.clone();
+        updated.last_run_at = Some(now);
+        updated.last_status = Some(format!("manually started {run_id}"));
+        if db
+            .record_schedule_check(&current, &updated)
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(());
+        }
+    }
+    Err("The schedule kept changing; the run started but was not recorded on it.".into())
+}
+
 /// Scheduler driver state (cloned into the background task).
 pub struct Scheduler {
     pub db: Arc<SqliteDb>,
@@ -116,12 +184,26 @@ impl Scheduler {
         }
     }
 
-    /// One poll pass: schedules first, then due watchers. Returns human
-    /// summaries for logging (never secrets).
+    /// One poll pass with the default grace for late slots (see
+    /// [`Scheduler::tick`]).
     pub async fn tick_once(
         &self,
         starter: &Arc<dyn RunStarter>,
         now: DateTime<Utc>,
+    ) -> Vec<String> {
+        self.tick(starter, now, crate::schedule::default_missed_grace())
+            .await
+    }
+
+    /// One poll pass: schedules first, then due watchers. `grace` is how late
+    /// a schedule slot may be and still run as on time (the app loop passes
+    /// [`crate::schedule::check_grace`]). Returns human summaries for logging
+    /// (never secrets).
+    pub async fn tick(
+        &self,
+        starter: &Arc<dyn RunStarter>,
+        now: DateTime<Utc>,
+        grace: chrono::Duration,
     ) -> Vec<String> {
         let mut notes = Vec::new();
         let mut budget = self
@@ -129,37 +211,65 @@ impl Scheduler {
             .list_active_runs()
             .map(|runs| self.max_concurrent_runs.saturating_sub(runs.len()))
             .unwrap_or(0);
-        notes.extend(self.tick_schedules(starter, now, &mut budget).await);
+        notes.extend(self.tick_schedules(starter, now, grace, &mut budget).await);
         notes.extend(self.tick_watchers(starter, now, &mut budget).await);
         notes
+    }
+
+    /// How long the app loop may sleep before the next check: until the
+    /// earliest enabled schedule slot or watcher poll, at most
+    /// [`MAX_CHECK_WAIT_SECS`]. Work that is already due but waiting (run
+    /// limit, active workflow) is re-checked after [`DUE_RECHECK_SECS`], so
+    /// deferrals never spin. Saves wake the loop early.
+    pub fn next_wait(&self, now: DateTime<Utc>) -> std::time::Duration {
+        let schedules = self.db.list_schedules().unwrap_or_default();
+        let watchers = self.db.list_watchers().unwrap_or_default();
+        next_wait_for(&schedules, &watchers, now)
     }
 
     async fn tick_schedules(
         &self,
         starter: &Arc<dyn RunStarter>,
         now: DateTime<Utc>,
+        grace: chrono::Duration,
         budget: &mut usize,
     ) -> Vec<String> {
         let mut notes = Vec::new();
         let schedules = self.db.list_schedules().unwrap_or_default();
         for mut schedule in schedules {
             let before = schedule.clone();
-            let (decision, next) = crate::schedule::evaluate(&schedule, now);
+            let (decision, next) = crate::schedule::evaluate_with_grace(&schedule, now, grace);
             match decision {
                 ScheduleDecision::Wait | ScheduleDecision::Retire => {
                     schedule.next_run_at = next;
                     if decision == ScheduleDecision::Retire {
                         schedule.enabled = false;
+                        schedule.deferred_slot = None;
                     }
-                    let _ = self.db.record_schedule_check(&before, &schedule);
+                    self.record_schedule(&before, &schedule, false);
+                }
+                ScheduleDecision::SkipMissed => {
+                    // Visible on the card, so a skipped slot is never silent.
+                    schedule.next_run_at = next;
+                    schedule.deferred_slot = None;
+                    schedule.last_status =
+                        Some("skipped: a run was due while Orchevia was closed or asleep".into());
+                    self.record_schedule(&before, &schedule, false);
+                    notes.push(format!(
+                        "schedule '{}' skipped a missed slot",
+                        schedule.name
+                    ));
                 }
                 ScheduleDecision::Fire => {
+                    // Held back slots keep their place and run once capacity
+                    // frees, however long that takes (see `deferred_slot`).
+                    let defer = |schedule: &mut crate::schedule::Schedule, reason: &str| {
+                        schedule.deferred_slot = crate::schedule::due_slot(schedule);
+                        schedule.last_status = Some(format!("deferred: {reason}"));
+                    };
                     if *budget == 0 {
-                        schedule.last_status = Some("deferred: run limit reached".into());
-                        let _ = self.db.record_schedule_check(&before, &schedule);
-                        continue;
-                    }
-                    if !schedule.enabled {
+                        defer(&mut schedule, "run limit reached");
+                        self.record_schedule(&before, &schedule, false);
                         continue;
                     }
                     // Trust gate: re-check risk at fire time (workflow may
@@ -180,24 +290,31 @@ impl Scheduler {
                         Err(e) => Err(e.to_string()),
                     };
                     if let Err(message) = trust {
+                        // This slot cannot run: move on, and notify once per
+                        // change instead of on every check.
+                        schedule.next_run_at = next;
+                        schedule.deferred_slot = None;
                         schedule.last_status = Some(format!("blocked: {message}"));
-                        let _ = self.db.record_schedule_check(&before, &schedule);
-                        self.notify(
-                            "schedule-blocked",
-                            "Scheduled run blocked",
-                            &format!("Schedule '{}': {message}", schedule.name),
-                            None,
-                        );
+                        let changed = before.last_status != schedule.last_status;
+                        self.record_schedule(&before, &schedule, false);
+                        if changed {
+                            self.notify(
+                                "schedule-blocked",
+                                "Scheduled run blocked",
+                                &format!("Schedule '{}': {message}", schedule.name),
+                                None,
+                            );
+                        }
                         continue;
                     }
                     if self.overlaps(&schedule.workflow_id, None).unwrap_or(true) {
-                        schedule.last_status = Some("deferred: workflow already active".into());
-                        let _ = self.db.record_schedule_check(&before, &schedule);
+                        defer(&mut schedule, "workflow already active");
+                        self.record_schedule(&before, &schedule, false);
                         continue;
                     }
                     if !self.refresh_budget(budget).unwrap_or(false) {
-                        schedule.last_status = Some("deferred: run limit reached".into());
-                        let _ = self.db.record_schedule_check(&before, &schedule);
+                        defer(&mut schedule, "run limit reached");
+                        self.record_schedule(&before, &schedule, false);
                         continue;
                     }
                     let inputs = HashMap::from([
@@ -208,9 +325,10 @@ impl Scheduler {
                         Ok(run_id) => {
                             *budget -= 1;
                             schedule.next_run_at = next;
+                            schedule.deferred_slot = None;
                             schedule.last_run_at = Some(now);
                             schedule.last_status = Some(format!("started {run_id}"));
-                            let _ = self.db.record_schedule_check(&before, &schedule);
+                            self.record_schedule(&before, &schedule, true);
                             notes.push(format!("schedule '{}' started {run_id}", schedule.name));
                             self.notify(
                                 "schedule-started",
@@ -220,15 +338,61 @@ impl Scheduler {
                             );
                         }
                         Err(e) => {
+                            // No retry storm: this slot is spent; the next one
+                            // tries again.
+                            schedule.next_run_at = next;
+                            schedule.deferred_slot = None;
                             schedule.last_status = Some(format!("failed to start: {e}"));
-                            let _ = self.db.record_schedule_check(&before, &schedule);
+                            let changed = before.last_status != schedule.last_status;
+                            self.record_schedule(&before, &schedule, false);
                             notes.push(format!("schedule '{}' failed: {e}", schedule.name));
+                            if changed {
+                                self.notify(
+                                    "schedule-failed",
+                                    "Scheduled run failed to start",
+                                    &format!("Schedule '{}': {e}", schedule.name),
+                                    None,
+                                );
+                            }
                         }
                     }
                 }
             }
         }
         notes
+    }
+
+    /// Persist schedule bookkeeping; unchanged rows are not rewritten. A save
+    /// that lands between this tick's read and write wins, except that a run
+    /// this tick started is merged into the saved row so its slot is not
+    /// started twice.
+    fn record_schedule(
+        &self,
+        before: &crate::schedule::Schedule,
+        after: &crate::schedule::Schedule,
+        started: bool,
+    ) {
+        if before == after
+            || self
+                .db
+                .record_schedule_check(before, after)
+                .unwrap_or(false)
+        {
+            return;
+        }
+        if !started {
+            return;
+        }
+        if let Ok(Some(current)) = self.db.get_schedule(&after.id) {
+            let mut merged = current.clone();
+            merged.last_run_at = after.last_run_at;
+            merged.last_status = after.last_status.clone();
+            if merged.next_run_at == before.next_run_at {
+                merged.next_run_at = after.next_run_at;
+                merged.deferred_slot = None;
+            }
+            let _ = self.db.record_schedule_check(&current, &merged);
+        }
     }
 
     async fn tick_watchers(
@@ -281,15 +445,19 @@ impl Scheduler {
                     // Back off: push next check out instead of hammering.
                     watcher.last_checked_at = Some(now);
                     watcher.last_result = Some(format!("error: {e}"));
+                    let changed = before.last_result != watcher.last_result;
                     let _ = self.db.record_watcher_check(&before, &watcher);
                     notes.push(format!("watcher '{}' error: {e}", watcher.name));
-                    // Failures must be visible: the Inbox shows this with details.
-                    self.notify(
-                        "watcher-error",
-                        "Watcher failed",
-                        &format!("Watcher '{}': {e}", watcher.name),
-                        None,
-                    );
+                    // Failures must be visible: the Inbox shows this with
+                    // details, once per new error rather than every poll.
+                    if changed {
+                        self.notify(
+                            "watcher-error",
+                            "Watcher failed",
+                            &format!("Watcher '{}': {e}", watcher.name),
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -542,21 +710,23 @@ impl Scheduler {
         }))
     }
 
+    /// Inbox entry, plus a desktop notification when system notifications
+    /// are on (Settings) and the matching preference allows it. Routine
+    /// starts stay in the Inbox; blocked, failed and watcher errors follow
+    /// the failure preference.
     fn notify(&self, kind: &str, title: &str, body: &str, run_id: Option<&str>) {
         let _ = self.db.push_notification(kind, title, body, run_id);
-        // Best-effort OS dispatch under the stored prefs (quiet by default
-        // for routine starts: only failures/approvals/findings surface).
-        let prefs = self.db.get_notification_prefs().unwrap_or_default();
-        let event = if kind == "schedule-started" {
-            // Routine starts stay in the Center; no OS ping.
+        if kind == "schedule-started" {
             return;
-        } else {
-            crate::notify::NotifyEvent::FeedbackNeedsAction {
-                watcher: title.to_string(),
-                detail: body.to_string(),
-            }
-        };
-        if crate::notify::should_notify(&prefs, &event) {
+        }
+        let prefs = self.db.get_notification_prefs().unwrap_or_default();
+        let os_enabled = self
+            .db
+            .get_setting("notifications.os")
+            .ok()
+            .flatten()
+            .is_some_and(|v| v == "1");
+        if os_enabled && prefs.on_failure {
             crate::notify::dispatch_os(title, body);
         }
     }
@@ -1008,6 +1178,7 @@ mod tick_tests {
             last_run_at: None,
             next_run_at: Some(now - chrono::Duration::seconds(10)),
             last_status: None,
+            deferred_slot: None,
         })
         .expect("sched");
         let scheduler = Scheduler::new(Arc::clone(&db));
@@ -1021,6 +1192,127 @@ mod tick_tests {
         assert!(!notes.iter().any(|n| n.contains("started")), "{notes:?}");
         let sched = db.get_schedule("s1").expect("get").expect("exists");
         assert!(sched.next_run_at.map(|n| n > now).unwrap_or(false));
+    }
+
+    fn skip_schedule(id: &str, next_run_at: DateTime<Utc>) -> Schedule {
+        Schedule {
+            id: id.into(),
+            name: "Review PRs".into(),
+            workflow_id: "wf-1".into(),
+            kind: ScheduleKind::Interval { every_secs: 3600 },
+            timezone: "utc".into(),
+            enabled: true,
+            trusted: true,
+            missed_policy: MissedPolicy::Skip,
+            last_run_at: None,
+            next_run_at: Some(next_run_at),
+            last_status: None,
+            deferred_slot: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn slot_due_since_the_previous_check_fires_however_late() {
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        db.upsert_workflow(&linear_workflow("wf-1")).expect("wf");
+        let now = Utc::now();
+        db.upsert_schedule(&skip_schedule("s1", now - chrono::Duration::minutes(23)))
+            .expect("sched");
+        let scheduler = Scheduler::new(Arc::clone(&db));
+        let starter: Arc<dyn RunStarter> = Arc::new(FakeStarter {
+            started: Mutex::new(Vec::new()),
+        });
+        // The previous check was an hour ago and the app stayed awake.
+        let grace = crate::schedule::check_grace(
+            Some(now - chrono::Duration::hours(1)),
+            std::time::Duration::from_secs(3600),
+            now,
+        );
+        let notes = scheduler.tick(&starter, now, grace).await;
+        assert!(notes.iter().any(|n| n.contains("started")), "{notes:?}");
+        let sched = db.get_schedule("s1").expect("get").expect("exists");
+        assert_eq!(sched.last_run_at, Some(now));
+    }
+
+    #[tokio::test]
+    async fn slot_missed_while_closed_is_skipped_visibly() {
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        db.upsert_workflow(&linear_workflow("wf-1")).expect("wf");
+        let now = Utc::now();
+        db.upsert_schedule(&skip_schedule("s1", now - chrono::Duration::minutes(23)))
+            .expect("sched");
+        let scheduler = Scheduler::new(Arc::clone(&db));
+        let starter: Arc<dyn RunStarter> = Arc::new(FakeStarter {
+            started: Mutex::new(Vec::new()),
+        });
+        // First check after launch: the default grace applies.
+        let notes = scheduler.tick_once(&starter, now).await;
+        assert!(!notes.iter().any(|n| n.contains("started")), "{notes:?}");
+        let sched = db.get_schedule("s1").expect("get").expect("exists");
+        assert_eq!(sched.last_run_at, None);
+        assert!(sched
+            .last_status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("skipped:")));
+        assert!(sched.next_run_at.is_some_and(|next| next > now));
+    }
+
+    #[test]
+    fn next_wait_lands_on_the_earliest_slot() {
+        let now = Utc::now();
+        let soon = skip_schedule("soon", now + chrono::Duration::milliseconds(12_300));
+        let later = skip_schedule("later", now + chrono::Duration::minutes(40));
+        let mut paused = skip_schedule("paused", now + chrono::Duration::seconds(2));
+        paused.enabled = false;
+        assert_eq!(
+            next_wait_for(&[later.clone(), soon, paused], &[], now),
+            std::time::Duration::from_secs(13)
+        );
+        // Nothing sooner than a minute: re-check within a minute anyway.
+        assert_eq!(
+            next_wait_for(&[later], &[], now),
+            std::time::Duration::from_secs(MAX_CHECK_WAIT_SECS)
+        );
+        assert_eq!(
+            next_wait_for(&[], &[], now),
+            std::time::Duration::from_secs(MAX_CHECK_WAIT_SECS)
+        );
+        // Due but deferred (run limit): no busy loop.
+        let deferred = skip_schedule("deferred", now - chrono::Duration::seconds(5));
+        assert_eq!(
+            next_wait_for(&[deferred], &[], now),
+            std::time::Duration::from_secs(DUE_RECHECK_SECS)
+        );
+    }
+
+    #[test]
+    fn next_wait_counts_watcher_polls() {
+        let now = Utc::now();
+        let watcher = Watcher {
+            id: "w".into(),
+            name: "W".into(),
+            workflow_id: "wf-1".into(),
+            kind: WatcherKind::ReviewRequested,
+            repo_dir: "/tmp/repo".into(),
+            pr_number: None,
+            enabled: true,
+            check_interval_secs: 300,
+            last_head_sha: None,
+            last_checked_at: Some(now - chrono::Duration::seconds(290)),
+            last_result: None,
+        };
+        assert_eq!(
+            next_wait_for(&[], std::slice::from_ref(&watcher), now),
+            std::time::Duration::from_secs(10)
+        );
+        let fresh = Watcher {
+            last_checked_at: None,
+            ..watcher
+        };
+        assert_eq!(
+            next_wait_for(&[], &[fresh], now),
+            std::time::Duration::from_secs(DUE_RECHECK_SECS)
+        );
     }
 
     #[tokio::test]
@@ -1052,6 +1344,7 @@ mod tick_tests {
             last_run_at: None,
             next_run_at: Some(now - chrono::Duration::seconds(10)),
             last_status: None,
+            deferred_slot: None,
         })
         .expect("sched");
         let scheduler = Scheduler::new(Arc::clone(&db));
@@ -1351,6 +1644,7 @@ fi
             last_run_at: None,
             next_run_at: Some(now),
             last_status: None,
+            deferred_slot: None,
         })
         .expect("schedule");
         let starter: Arc<dyn RunStarter> = Arc::new(Recorder {
@@ -1366,6 +1660,139 @@ fi
             saved.last_status.as_deref(),
             Some("deferred: run limit reached")
         );
+    }
+
+    fn due_schedule(id: &str, workflow_id: &str, slot: DateTime<Utc>) -> Schedule {
+        Schedule {
+            id: id.into(),
+            name: "Due".into(),
+            workflow_id: workflow_id.into(),
+            kind: ScheduleKind::Interval { every_secs: 900 },
+            timezone: "utc".into(),
+            enabled: true,
+            trusted: true,
+            missed_policy: MissedPolicy::Skip,
+            last_run_at: None,
+            next_run_at: Some(slot),
+            last_status: None,
+            deferred_slot: None,
+        }
+    }
+
+    use crate::schedule::{MissedPolicy, Schedule, ScheduleKind};
+
+    #[tokio::test]
+    async fn a_held_back_slot_runs_when_capacity_frees_however_late() {
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let wf = sample_workflow();
+        db.upsert_workflow(&wf).expect("wf");
+        for id in ["manual-one", "manual-two"] {
+            db.create_run(id, &wf.id, &HashMap::new()).expect("run");
+        }
+        let slot = Utc::now();
+        db.upsert_schedule(&due_schedule("held", &wf.id, slot))
+            .expect("schedule");
+        let recorder = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let starter: Arc<dyn RunStarter> = recorder.clone();
+        let scheduler = Scheduler::new(Arc::clone(&db));
+        // Ten minutes of 30-second checks while both run slots are taken:
+        // far beyond the default grace, yet the slot is never "missed".
+        for step in 0..=20 {
+            let now = slot + chrono::Duration::seconds(30 * step);
+            let grace = crate::schedule::check_grace(
+                Some(now - chrono::Duration::seconds(30)),
+                std::time::Duration::from_secs(30),
+                now,
+            );
+            scheduler.tick(&starter, now, grace).await;
+        }
+        let saved = db.get_schedule("held").expect("get").expect("exists");
+        assert_eq!(saved.deferred_slot, Some(slot));
+        assert_eq!(saved.next_run_at, Some(slot));
+        assert!(recorder.inputs.lock().expect("rows").is_empty());
+        for id in ["manual-one", "manual-two"] {
+            db.finish_run(id, crate::db::RunStatus::Succeeded)
+                .expect("finish");
+        }
+        let later = slot + chrono::Duration::minutes(11);
+        scheduler.tick_once(&starter, later).await;
+        assert_eq!(recorder.inputs.lock().expect("rows").len(), 1);
+        let saved = db.get_schedule("held").expect("get").expect("exists");
+        assert_eq!(saved.deferred_slot, None);
+        assert!(saved.next_run_at.is_some_and(|next| next > later));
+        assert_eq!(saved.last_run_at, Some(later));
+    }
+
+    #[tokio::test]
+    async fn a_blocked_schedule_notifies_once_and_moves_on() {
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let mut schedule = due_schedule("orphan", "deleted-workflow", Utc::now());
+        schedule.missed_policy = MissedPolicy::RunOnce;
+        let slot = schedule.next_run_at.expect("slot");
+        db.upsert_schedule(&schedule).expect("schedule");
+        let starter: Arc<dyn RunStarter> = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let scheduler = Scheduler::new(Arc::clone(&db));
+        for minutes in [0, 1, 16, 31] {
+            scheduler
+                .tick_once(&starter, slot + chrono::Duration::minutes(minutes))
+                .await;
+        }
+        let saved = db.get_schedule("orphan").expect("get").expect("exists");
+        assert!(saved
+            .last_status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("blocked:")));
+        assert!(saved.next_run_at.is_some_and(|next| next > slot));
+        let blocked = db
+            .list_notifications(50, false)
+            .expect("notes")
+            .into_iter()
+            .filter(|n| n.kind == "schedule-blocked")
+            .count();
+        assert_eq!(blocked, 1);
+    }
+
+    #[tokio::test]
+    async fn a_save_racing_a_started_run_keeps_the_run_recorded() {
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let slot = Utc::now();
+        let before = due_schedule("raced", "wf", slot);
+        // The user renamed the schedule after the tick read it.
+        let mut renamed = before.clone();
+        renamed.name = "Renamed".into();
+        db.upsert_schedule(&renamed).expect("schedule");
+        let mut after = before.clone();
+        after.last_run_at = Some(slot);
+        after.last_status = Some("started run-1".into());
+        after.next_run_at = Some(slot + chrono::Duration::minutes(15));
+        Scheduler::new(Arc::clone(&db)).record_schedule(&before, &after, true);
+        let saved = db.get_schedule("raced").expect("get").expect("exists");
+        assert_eq!(saved.name, "Renamed");
+        assert_eq!(saved.last_run_at, Some(slot));
+        assert_eq!(
+            saved.next_run_at, after.next_run_at,
+            "the slot is not run twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_runs_are_recorded_without_overwriting_the_row() {
+        let db = SqliteDb::open_in_memory().expect("db");
+        let slot = Utc::now();
+        let mut stored = due_schedule("manual", "wf", slot);
+        stored.deferred_slot = Some(slot);
+        db.upsert_schedule(&stored).expect("schedule");
+        record_manual_run(&db, "manual", "run-9", slot).expect("record");
+        let saved = db.get_schedule("manual").expect("get").expect("exists");
+        assert_eq!(saved.last_status.as_deref(), Some("manually started run-9"));
+        assert_eq!(saved.deferred_slot, Some(slot), "scheduler state is kept");
+        assert!(record_manual_run(&db, "missing", "run-1", slot).is_ok());
     }
 
     #[tokio::test]
@@ -1386,6 +1813,7 @@ fi
             last_run_at: None,
             next_run_at: Some(now),
             last_status: None,
+            deferred_slot: None,
         })
         .expect("schedule");
         struct DeleteStarter(Arc<SqliteDb>);

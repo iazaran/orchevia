@@ -105,24 +105,32 @@ fn main() {
                 )
                 .await;
                 let scheduler = orchevia_core::scheduler::Scheduler::new(scheduler_db);
+                let mut previous: Option<(chrono::DateTime<chrono::Utc>, std::time::Instant)> =
+                    None;
                 loop {
                     // Evaluate persisted due slots before advancing them. This
                     // also checks enabled watchers immediately on launch/save.
-                    let notes = scheduler.tick_once(&starter, chrono::Utc::now()).await;
+                    // Slots that came due since the previous check run even if
+                    // noticed late; the missed-run policy covers only time the
+                    // app was closed or the computer slept.
+                    let now = chrono::Utc::now();
+                    let grace = orchevia_core::schedule::check_grace(
+                        previous.map(|(wall, _)| wall),
+                        previous
+                            .map(|(_, instant)| instant.elapsed())
+                            .unwrap_or_default(),
+                        now,
+                    );
+                    previous = Some((now, std::time::Instant::now()));
+                    let notes = scheduler.tick(&starter, now, grace).await;
                     for note in notes {
                         eprintln!("[scheduler] {note}");
                     }
-                    // Interval re-read each pass so Settings apply live.
-                    let interval = scheduler
-                        .db
-                        .get_setting("scheduler.intervalSecs")
-                        .ok()
-                        .flatten()
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .map(|secs| secs.clamp(30, 3600))
-                        .unwrap_or(60);
+                    // Sleep until the next slot or watcher poll (at most a
+                    // minute); saves wake the loop at once.
+                    let wait = scheduler.next_wait(chrono::Utc::now());
                     tokio::select! {
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {},
+                        _ = tokio::time::sleep(wait) => {},
                         _ = scheduler_wake.notified() => {},
                     }
                 }

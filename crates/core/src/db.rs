@@ -2572,6 +2572,7 @@ mod automation_tests {
             last_run_at: None,
             next_run_at: None,
             last_status: None,
+            deferred_slot: None,
         }
     }
 
