@@ -35,6 +35,11 @@ pnpm tauri dev
 The browser mock backend persists workflows to `localStorage` and simulates execution — look
 for it whenever Tauri APIs are unavailable. Real execution only happens in the desktop app.
 
+`pnpm tauri dev` uses the installed app's identifier and data folder, and only one copy runs:
+while an installed Orchevia is open (including hidden in background mode), the development
+build just shows that window and exits. Quit the installed app first (tray menu or
+Automations → Quit Orchevia).
+
 ## Commands
 
 | Command                                                      | What it does                                         |

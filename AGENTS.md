@@ -15,7 +15,9 @@ cargo check -p orchevia                      # Tauri shell (needs no extra setup
 ```
 
 Fix failures instead of weakening rules. `pnpm dev` runs the UI with a
-`localStorage` mock backend; `pnpm tauri dev` runs the real desktop app.
+`localStorage` mock backend; `pnpm tauri dev` runs the real desktop app. Only
+one copy runs (single-instance guard, shared identifier and data folder): quit
+an installed Orchevia first, or the dev build just focuses it and exits.
 
 ## Architecture (do not blur these lines)
 

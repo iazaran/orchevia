@@ -100,7 +100,8 @@
 - Engine emits completion notifications (failures, pref-gated successes,
   actionable findings); scheduler-started runs carry the `run-sched-` prefix.
 - Tauri: tray (generated icon, Show/Quit), hide-on-close background mode,
-  60 s (configurable 30–3600 s) poll loop, settings allowlist, ~15 new
+  single-instance guard, due-time scheduler loop (at most 60 s between checks;
+  the 30–3600 s setting was removed in v0.1.20), settings allowlist, ~15 new
   commands. Frontend: Automations view (schedules/watchers/notifications/
   prefs), inbox bell, per-run findings, PR-review demo template.
 

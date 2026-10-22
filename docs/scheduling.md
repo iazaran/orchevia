@@ -2,7 +2,7 @@
 
 Orchevia is local-first: schedules and watchers run while **the app runs**.
 There is no cloud service and no hidden daemon — background mode keeps the app
-in the system tray when windows close.
+running when the window closes.
 
 ## Schedules
 
@@ -18,33 +18,61 @@ written back with the current field name.
 - New schedules start **disabled** until reviewed.
 - Enabling anything above read-only needs the **Trusted** opt-in; the risk
   summary lists what the workflow may do (see Security).
-- At most one catch-up per policy: `Skip` jumps stale slots silently (no
-  storm after offline periods); `RunOnce` fires a single catch-up.
+- Pause and resume a schedule or watcher with the switch on its card. Pausing
+  clears the next run; resuming, or changing the cadence or timezone, computes a
+  fresh one. Renaming keeps a pending slot.
+- A slot that comes due while Orchevia runs always runs, even when the check that
+  notices it is late. The missed-run policy covers only slots that passed while
+  Orchevia was closed or the computer slept: `Skip` moves to the next slot and
+  records `skipped: …` on the card (no storm after offline periods); `RunOnce`
+  fires a single catch-up. Launch evaluates persisted due slots before advancing
+  them, so `RunOnce` catch-up is retained.
 - Automatic dispatch shares a two-active-run budget across schedules and watchers;
   pending, running and approval-paused runs count toward the budget. A workflow
-  already active is deferred (distinct PR inputs may run separately). Due slots
-  and unstarted revisions remain eligible. The scheduler poll interval is 30–3600 s
-  (default 60 s) and re-read live from Settings. Launch evaluates persisted due
-  slots before advancing them, so `RunOnce` catch-up is retained.
+  already active is deferred (distinct PR inputs may run separately). A held-back
+  slot keeps its place (`deferredSlot`) and runs as soon as capacity frees, however
+  long that takes; unstarted revisions remain eligible.
+- The scheduler wakes when the next slot or watcher poll is due and checks at
+  least once a minute; saves wake it at once. There is no interval setting.
+- A slot that cannot start (the workflow now needs trust, it was deleted, or the
+  start failed) is skipped; the Inbox reports it once per change, not on every
+  check.
 - Missed one-time runs within 15 minutes still fire once (late boot grace);
-  ancient ones retire (Skip) instead of surprising you. A completed one-time
-  schedule cannot start again on the next check.
-- Use **Run now** to fire manually; the schedule row records last status.
+  ancient ones retire (Skip) instead of surprising you. A one-time schedule is
+  complete once it ran at or after its time, so an earlier **Run now** does not
+  use it up and a completed one cannot start again on the next check.
+- Use **Run now** to fire manually; the card shows the last run time and result.
 - Scheduled and watcher-started runs share the manual run cancellation controls.
   Cancel them under **Runs**; partial process output stays in history. Cancellation
   does not undo changes or remote writes already performed.
 
-Intervals use an epoch-aligned grid: a 15-minute schedule has quarter-hour
-slots. Daily, weekly and cron schedules use the chosen offset. Fixed offsets
-do not follow DST; `local` samples the system offset when calculating the next
-slot, so already stored future slots are not an IANA/DST-aware calendar.
+Intervals use a grid aligned to midnight in the schedule's timezone: a
+15-minute schedule has quarter-hour slots, an hourly one runs on the hour local
+time (also in half-hour zones) and a daily interval at local midnight. `local`
+follows the system zone's daylight-saving rules for every slot: a daily time
+skipped by the spring-forward jump runs an hour later, and a repeated fall-back
+hour runs once. Fixed offsets never shift. In cron, when both the day of month
+and the day of week are restricted, a date matching either one runs (standard
+cron); expressions that can never match, such as 31 February, are rejected.
 
 ## Background mode
 
-Settings → Automations → _Run in background when windows close_. Off (default):
-closing the window quits. On: the window hides to the tray (explicit indicator
-in the UI); Quit happens only from the tray menu. No autostart is installed —
-reboot means relaunch, and missed schedules apply their policy on boot.
+Automations → **Background mode** switch. Off (default): closing the window
+quits. On: the window hides and schedules and watchers keep running. Opening
+Orchevia again (app menu, dock, desktop file) shows the running window: only one
+copy ever runs, so there is only one scheduler. Quit from the tray menu or with
+**Quit Orchevia** on the Background mode card.
+
+Some desktops show no tray icons, for example GNOME without the AppIndicator
+extension (`sudo apt install gnome-shell-extension-appindicator`, then log out
+and back in). Orchevia detects this, says so on the card, and the first time the
+window hides it sends a desktop notification explaining how to get back. No
+autostart is installed — reboot means relaunch, and missed schedules apply
+their policy on boot.
+
+Scheduler and watcher desktop notifications follow the same switch as every
+other event (Notification preferences → desktop notifications) and the
+**Failures** preference.
 
 ## Watchers (triggers)
 
