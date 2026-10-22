@@ -5,6 +5,7 @@ import {
   WEEKDAYS,
   describeScheduleKind,
   fromLocalInputValue,
+  oneTimeCompleted,
   oneTimeSpent,
   newScheduleId,
   toLocalInputValue,
@@ -421,7 +422,7 @@ export function AutomationsView(): React.JSX.Element {
                       className="status-pill status-cancelled"
                       title={oneTimeSpent(s) ?? undefined}
                     >
-                      {s.lastRunAt !== undefined ? 'Done' : 'Expired'}
+                      {oneTimeCompleted(s) ? 'Done' : 'Expired'}
                     </span>
                   ) : (
                     <Switch

@@ -81,13 +81,17 @@ races in run bookkeeping.
 - Interval grids are exact (`next_interval`) and shift by the zone offset; for
   `local` that is the standard-time offset (`standard_offset`: the smaller of
   the January and July offsets), so DST never shortens, doubles or drifts them.
-- Cron walks local wall time skipping non-matching days and hours, five years
-  ahead. Day-of-month and day-of-week are OR-ed when neither field starts with `*`
+- Cron walks real time minute by minute through the zone's wall clock, skipping
+  non-matching days and hours, five years ahead, so a repeated fall-back hour is
+  seen twice: a `*` hour field runs through it (Vixie), an hour-restricted cron
+  runs a repeated time once. Day-of-month and day-of-week are OR-ed when neither field starts with `*`
   (Vixie semantics). `never_matches` rejects only-day-of-month expressions with no
   day in any chosen month; it is structural, so the TypeScript mirror is exact.
 
 ## Saves and the mock
 
+- `scheduler::save_schedule` refuses only turning a spent one-time schedule on,
+  so renaming an enabled one that is held back (or ran seconds ago) still saves.
 - `Schedule::prepare_save(previous, now)`: bookkeeping from the stored row; slot
   and `deferredSlot` kept only while enabled before and after with the same kind
   and timezone; otherwise recomputed (none while paused).

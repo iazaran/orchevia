@@ -361,6 +361,13 @@ export function validateSchedule(schedule: Schedule): string[] {
   return errors;
 }
 
+/** Mirrors `Schedule::one_time_completed`: a one-time schedule that ran at or
+ * after its time. */
+export function oneTimeCompleted(schedule: Schedule): boolean {
+  if (schedule.kind.kind !== 'oneTime' || schedule.lastRunAt === undefined) return false;
+  return Date.parse(schedule.lastRunAt) >= Date.parse(schedule.kind.at);
+}
+
 /** Mirrors `Schedule::one_time_spent`: why a one-time schedule cannot be
  * turned on as it is (already ran at its time, or its time passed more than
  * 15 minutes ago with the Skip policy); `null` otherwise. */
@@ -371,8 +378,7 @@ export function oneTimeSpent(
   if (schedule.kind.kind !== 'oneTime') return null;
   const at = Date.parse(schedule.kind.at);
   if (Number.isNaN(at)) return null;
-  const lastRun = schedule.lastRunAt === undefined ? NaN : Date.parse(schedule.lastRunAt);
-  if (!Number.isNaN(lastRun) && lastRun >= at)
+  if (oneTimeCompleted(schedule))
     return 'This one-time schedule already ran. Pick a new time to run it again.';
   if (schedule.missedPolicy === 'skip' && now - at > 15 * 60 * 1000)
     return "This one-time schedule's time has passed. Pick a new time.";

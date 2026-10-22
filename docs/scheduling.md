@@ -60,7 +60,8 @@ use a Daily schedule for a fixed wall-clock time. Daily, weekly and cron
 schedules in `local` follow the system zone's daylight-saving rules for every
 slot: a time skipped by the spring-forward jump runs an hour later (cron skips
 it), and a time repeated by the fall-back hour runs once, at its first
-occurrence. Fixed offsets never shift. In cron, when both the day of month
+occurrence. A cron with `*` in the hour field keeps running through the repeated
+hour, as standard cron does. Fixed offsets never shift. In cron, when both the day of month
 and the day of week are restricted, a date matching either one runs (standard
 cron); expressions that can never match, such as 31 February, are rejected.
 

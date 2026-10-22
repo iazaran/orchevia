@@ -2136,8 +2136,11 @@ class MockBackend implements Backend {
       );
       if (error !== null) throw new Error(error);
     }
-    const schedule = prepareScheduleSave(input, this.schedules.get(input.id));
-    const spent = schedule.enabled ? oneTimeSpent(schedule) : null;
+    const previous = this.schedules.get(input.id);
+    const schedule = prepareScheduleSave(input, previous);
+    // Only turning a schedule on is refused (scheduler::save_schedule).
+    const turningOn = schedule.enabled && previous?.enabled !== true;
+    const spent = turningOn ? oneTimeSpent(schedule) : null;
     if (spent !== null) throw new Error(spent);
     const errors = validateSchedule(schedule);
     if (errors.length > 0) throw new Error(`Invalid schedule: ${errors.join('; ')}`);

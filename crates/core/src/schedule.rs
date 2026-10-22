@@ -162,7 +162,7 @@ impl Schedule {
         let ScheduleKind::OneTime { at } = &self.kind else {
             return None;
         };
-        if self.last_run_at.is_some_and(|last| last >= *at) {
+        if self.one_time_completed() {
             return Some("This one-time schedule already ran. Pick a new time to run it again.");
         }
         if self.missed_policy == MissedPolicy::Skip
@@ -171,6 +171,14 @@ impl Schedule {
             return Some("This one-time schedule's time has passed. Pick a new time.");
         }
         None
+    }
+
+    /// A one-time schedule that ran at or after its time.
+    pub fn one_time_completed(&self) -> bool {
+        match &self.kind {
+            ScheduleKind::OneTime { at } => self.last_run_at.is_some_and(|last| last >= *at),
+            _ => false,
+        }
     }
 
     /// Timing is the kind and timezone: name, workflow, trust and policy edits
@@ -528,30 +536,47 @@ fn parse_cron(expr: &str) -> Result<CronSpec, String> {
     Ok(spec)
 }
 
-/// Walk local wall-clock time, skipping whole days and hours that cannot
-/// match, for up to five years (enough for 29 February). Wall times skipped
-/// by a spring-forward jump do not run.
+/// Walk real time minute by minute in the zone's wall clock, skipping whole
+/// days and hours that cannot match, for up to five years (enough for 29
+/// February). Wall times skipped by a spring-forward jump do not exist, so
+/// they never run. In the repeated fall-back hour a cron with a `*` hour field
+/// keeps running as in any other hour (standard cron), while one restricted to
+/// certain hours runs a repeated time once, at its first occurrence.
 fn next_cron_in<Tz: TimeZone>(
     spec: &CronSpec,
     tz: &Tz,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let start = now.with_timezone(tz).naive_local() + chrono::Duration::minutes(1);
-    let mut cursor = start.with_second(0)?.with_nanosecond(0)?;
-    let limit = start + chrono::Duration::days(5 * 366);
+    let mut cursor = (now + chrono::Duration::minutes(1))
+        .with_second(0)?
+        .with_nanosecond(0)?;
+    let limit = cursor + chrono::Duration::days(5 * 366);
+    let every_hour = spec.hours.len() == 24;
     while cursor < limit {
-        let date = cursor.date();
-        if !spec.date_matches(date) {
-            cursor = date.succ_opt()?.and_hms_opt(0, 0, 0)?;
+        let local = cursor.with_timezone(tz).naive_local();
+        if !spec.date_matches(local.date()) {
+            let midnight = local.date().succ_opt()?.and_hms_opt(0, 0, 0)?;
+            // Midnight may itself fall in a spring-forward gap.
+            let next_day = tz.from_local_datetime(&midnight).earliest().or_else(|| {
+                tz.from_local_datetime(&(midnight + chrono::Duration::hours(1)))
+                    .earliest()
+            })?;
+            cursor = next_day
+                .with_timezone(&Utc)
+                .max(cursor + chrono::Duration::minutes(1));
             continue;
         }
-        if !spec.hours.contains(&cursor.hour()) {
-            cursor = cursor.with_minute(0)? + chrono::Duration::hours(1);
+        if !spec.hours.contains(&local.hour()) {
+            cursor += chrono::Duration::minutes(i64::from(60 - local.minute()));
             continue;
         }
-        if spec.minutes.contains(&cursor.minute()) {
-            if let Some(at) = resolve_after(tz, cursor, now) {
-                return Some(at);
+        if spec.minutes.contains(&local.minute()) {
+            let repeated = match tz.from_local_datetime(&local) {
+                chrono::LocalResult::Ambiguous(first, _) => first.with_timezone(&Utc) != cursor,
+                _ => false,
+            };
+            if every_hour || !repeated {
+                return Some(cursor);
             }
         }
         cursor += chrono::Duration::minutes(1);
@@ -1139,6 +1164,17 @@ mod tests {
         }
         let spring = next_interval(86_400, grid, utc(2026, 3, 28, 23, 0)).expect("next");
         assert_eq!(spring, utc(2026, 3, 29, 23, 0));
+    }
+
+    #[test]
+    fn frequent_local_cron_keeps_running_through_the_repeated_hour() {
+        let quarter = parse_cron("*/15 * * * *").expect("cron");
+        // 02:45 CEST, then the clocks go back to 02:00 CET.
+        let next = next_cron_in(&quarter, &Berlin2026, utc(2026, 10, 25, 0, 45));
+        assert_eq!(next, Some(utc(2026, 10, 25, 1, 0)), "02:00 CET, no gap");
+        let hourly = parse_cron("0 * * * *").expect("cron");
+        let next = next_cron_in(&hourly, &Berlin2026, utc(2026, 10, 25, 0, 0));
+        assert_eq!(next, Some(utc(2026, 10, 25, 1, 0)));
     }
 
     #[test]

@@ -74,7 +74,7 @@ All notable changes are recorded here, following
 - `local` daily, weekly and cron schedules were an hour off after a daylight-saving
   change. Every slot now follows the system zone's rules: a time skipped by the
   spring-forward jump runs an hour later, and a time repeated by the fall-back hour
-  runs once.
+  runs once (a cron with `*` in the hour field keeps running through it).
 - Cron expressions that can never match (31 February) are rejected instead of
   silently never running.
 - The one-time date field showed and saved UTC as if it were local time, moving the

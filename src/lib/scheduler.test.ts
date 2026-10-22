@@ -4,6 +4,7 @@ import { createDefaultProfile } from './agents';
 import {
   RISK_LABELS,
   fromLocalInputValue,
+  oneTimeCompleted,
   oneTimeSpent,
   prepareScheduleSave,
   scheduleTrustError,
@@ -334,5 +335,12 @@ describe('spent one-time schedules (mirror of Schedule::one_time_spent)', () => 
     expect(
       oneTimeSpent({ ...once, kind: { kind: 'interval', everySecs: 300 } }, now),
     ).toBeNull();
+    // Run manually before its time, then expired: not "Done".
+    const early = { ...once, lastRunAt: '2026-10-22T15:00:00Z' };
+    expect(oneTimeCompleted(early)).toBe(false);
+    expect(oneTimeSpent(early, now)).toBe(
+      "This one-time schedule's time has passed. Pick a new time.",
+    );
+    expect(oneTimeCompleted({ ...once, lastRunAt: at })).toBe(true);
   });
 });

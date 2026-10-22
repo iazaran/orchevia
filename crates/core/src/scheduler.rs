@@ -158,7 +158,10 @@ pub fn save_schedule(
         let previous = db.get_schedule(&schedule.id).map_err(|e| e.to_string())?;
         let mut prepared = schedule.clone();
         prepared.prepare_save(previous.as_ref(), now);
-        if prepared.enabled {
+        // Only turning a schedule on is refused; an enabled one-time schedule
+        // that is held back, or ran moments ago, can still be renamed.
+        let turning_on = !previous.as_ref().is_some_and(|previous| previous.enabled);
+        if prepared.enabled && turning_on {
             if let Some(reason) = prepared.one_time_spent(now) {
                 return Err(reason.into());
             }
@@ -1923,6 +1926,16 @@ fi
             save_schedule(&db, &stale, Utc::now()).err().as_deref(),
             Some("This one-time schedule's time has passed. Pick a new time.")
         );
+        // Held back past its time while enabled: a rename still saves, and
+        // the held-back run is kept.
+        let mut held = stale.clone();
+        held.id = "held".into();
+        held.deferred_slot = Some(at);
+        db.upsert_schedule(&held).expect("held");
+        let mut renamed = held.clone();
+        renamed.name = "Renamed".into();
+        let saved = save_schedule(&db, &renamed, Utc::now()).expect("rename");
+        assert_eq!(saved.deferred_slot, Some(at));
     }
 
     #[tokio::test]
