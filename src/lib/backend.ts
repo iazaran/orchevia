@@ -79,6 +79,7 @@ import type {
   WorkflowTemplate,
 } from './generation';
 import {
+  oneTimeSpent,
   prepareScheduleSave,
   prepareWatcherSave,
   scheduleTrustError,
@@ -2136,6 +2137,8 @@ class MockBackend implements Backend {
       if (error !== null) throw new Error(error);
     }
     const schedule = prepareScheduleSave(input, this.schedules.get(input.id));
+    const spent = schedule.enabled ? oneTimeSpent(schedule) : null;
+    if (spent !== null) throw new Error(spent);
     const errors = validateSchedule(schedule);
     if (errors.length > 0) throw new Error(`Invalid schedule: ${errors.join('; ')}`);
     this.schedules.set(schedule.id, schedule);

@@ -17,6 +17,8 @@ export const UPDATE_DISMISSED_SETTING = 'updates.dismissedVersion';
 /** Automatic checks: shortly after launch, then twice a day while running. */
 export const UPDATE_FIRST_CHECK_DELAY_MS = 20_000;
 export const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+/** One request, headers and body together. */
+export const UPDATE_REQUEST_TIMEOUT_MS = 15_000;
 
 /** Facts from the desktop shell (`desktop_info`). */
 export interface DesktopInfo {
@@ -108,7 +110,8 @@ export function parseLatestRelease(json: unknown): LatestRelease | null {
   return release;
 }
 
-/** Ask GitHub for the latest release (15 s timeout). */
+/** Ask GitHub for the latest release. One 15 s timeout covers the headers
+ * and the body, so a stalled connection never leaves a check pending. */
 export async function fetchUpdateCheck(
   current: string,
   fetchImpl: typeof fetch = fetch,
@@ -116,29 +119,37 @@ export async function fetchUpdateCheck(
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
-  }, 15_000);
-  let response: Response;
+  }, UPDATE_REQUEST_TIMEOUT_MS);
   try {
-    response = await fetchImpl(LATEST_RELEASE_API, {
-      headers: { Accept: 'application/vnd.github+json' },
-      signal: controller.signal,
-    });
-  } catch {
-    throw new Error('Could not reach GitHub to check for updates.');
+    let response: Response;
+    try {
+      response = await fetchImpl(LATEST_RELEASE_API, {
+        headers: { Accept: 'application/vnd.github+json' },
+        signal: controller.signal,
+      });
+    } catch {
+      throw new Error('Could not reach GitHub to check for updates.');
+    }
+    if (response.status === 404) throw new Error('No published release was found.');
+    if (!response.ok)
+      throw new Error(`GitHub answered ${String(response.status)} to the update check.`);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error("Could not read GitHub's answer to the update check.");
+    }
+    const latest = parseLatestRelease(body);
+    if (latest === null) throw new Error('GitHub returned an unexpected release format.');
+    return {
+      current,
+      latest,
+      updateAvailable: isNewer(latest.version, current),
+      checkedAt: new Date().toISOString(),
+    };
   } finally {
     clearTimeout(timer);
   }
-  if (response.status === 404) throw new Error('No published release was found.');
-  if (!response.ok)
-    throw new Error(`GitHub answered ${String(response.status)} to the update check.`);
-  const latest = parseLatestRelease(await response.json());
-  if (latest === null) throw new Error('GitHub returned an unexpected release format.');
-  return {
-    current,
-    latest,
-    updateAvailable: isNewer(latest.version, current),
-    checkedAt: new Date().toISOString(),
-  };
 }
 
 /** The installer matching how this copy was installed, if the release has it. */

@@ -134,7 +134,7 @@ fn main() {
                     // noticed late; the missed-run policy covers only time the
                     // app was closed or the computer slept.
                     let now = chrono::Utc::now();
-                    let grace = orchevia_core::schedule::check_grace(
+                    let window = orchevia_core::schedule::check_window(
                         previous.map(|(wall, _)| wall),
                         previous
                             .map(|(_, instant)| instant.elapsed())
@@ -142,7 +142,7 @@ fn main() {
                         now,
                     );
                     previous = Some((now, std::time::Instant::now()));
-                    let notes = scheduler.tick(&starter, now, grace).await;
+                    let notes = scheduler.tick(&starter, now, window).await;
                     for note in notes {
                         eprintln!("[scheduler] {note}");
                     }

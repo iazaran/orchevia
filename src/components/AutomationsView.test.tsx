@@ -242,3 +242,27 @@ it('shows and edits a one-time schedule in local time', async () => {
     '2030-01-02T09:30',
   );
 });
+
+it('shows a finished one-time schedule as done instead of a dead switch', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await storedReadOnlyWorkflow();
+  const at = new Date(Date.now() - 3600_000).toISOString();
+  const done: Schedule = {
+    ...readOnlySchedule(false),
+    kind: { kind: 'oneTime', at },
+    lastRunAt: at,
+  };
+  useAppStore.setState({
+    schedules: [done],
+    watchers: [],
+    notifications: [],
+    notificationPrefs: null,
+  });
+  render(<AutomationsView />);
+  expect(screen.getByText('Done')).toBeInTheDocument();
+  expect(screen.queryByRole('switch', { name: "Run schedule 'Review PRs'" })).toBeNull();
+  await expect(backend.saveSchedule({ ...done, enabled: true })).rejects.toThrow(
+    'This one-time schedule already ran.',
+  );
+});

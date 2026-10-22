@@ -571,7 +571,7 @@ pub fn list_schedules(
 #[tauri::command]
 pub fn save_schedule(
     state: State<AppState>,
-    mut schedule: orchevia_core::schedule::Schedule,
+    schedule: orchevia_core::schedule::Schedule,
 ) -> Result<orchevia_core::schedule::Schedule, String> {
     // Enabling automation over write-capable workflows needs trust.
     if schedule.enabled {
@@ -580,21 +580,9 @@ pub fn save_schedule(
     // Keep run bookkeeping from the stored copy and recompute the next slot
     // when timing changes or the schedule is re-enabled, so the UI shows it
     // immediately and never keeps a slot from the old timing.
-    let previous = state
-        .db
-        .get_schedule(&schedule.id)
-        .map_err(|e| e.to_string())?;
-    schedule.prepare_save(previous.as_ref(), chrono::Utc::now());
-    state
-        .db
-        .upsert_schedule(&schedule)
-        .map_err(|e| e.to_string())?;
+    let saved = orchevia_core::scheduler::save_schedule(&state.db, &schedule, chrono::Utc::now())?;
     state.scheduler_wake.notify_one();
-    state
-        .db
-        .get_schedule(&schedule.id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Failed to read back saved schedule.".to_string())
+    Ok(saved)
 }
 
 #[tauri::command]

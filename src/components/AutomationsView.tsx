@@ -5,6 +5,7 @@ import {
   WEEKDAYS,
   describeScheduleKind,
   fromLocalInputValue,
+  oneTimeSpent,
   newScheduleId,
   toLocalInputValue,
   validateWatcher,
@@ -111,7 +112,15 @@ export function AutomationsView(): React.JSX.Element {
     null,
   );
   const [desktop, setDesktop] = useState<DesktopInfo | null>(null);
-  const [savingId, setSavingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState<ReadonlySet<string>>(new Set());
+  const markSaving = (id: string, busy: boolean): void => {
+    setSaving((current) => {
+      const next = new Set(current);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
   const activeRuns = useAppStore(
     (s) => s.runs.filter((r) => r.status === 'running' || r.status === 'pending').length,
   );
@@ -200,7 +209,7 @@ export function AutomationsView(): React.JSX.Element {
   };
 
   const setScheduleEnabled = (schedule: Schedule, enabled: boolean): void => {
-    setSavingId(schedule.id);
+    markSaving(schedule.id, true);
     void getBackend()
       .saveSchedule({ ...schedule, enabled })
       .then(() => {
@@ -221,12 +230,12 @@ export function AutomationsView(): React.JSX.Element {
         );
       })
       .finally(() => {
-        setSavingId(null);
+        markSaving(schedule.id, false);
       });
   };
 
   const setWatcherEnabled = (watcher: Watcher, enabled: boolean): void => {
-    setSavingId(watcher.id);
+    markSaving(watcher.id, true);
     void getBackend()
       .saveWatcher({ ...watcher, enabled })
       .then(() => {
@@ -241,7 +250,7 @@ export function AutomationsView(): React.JSX.Element {
         setMessage(errorMessage(err), 'error');
       })
       .finally(() => {
-        setSavingId(null);
+        markSaving(watcher.id, false);
       });
   };
 
@@ -406,17 +415,27 @@ export function AutomationsView(): React.JSX.Element {
                   </div>
                 </div>
                 <div className="automation-head-actions">
-                  <Switch
-                    checked={s.enabled}
-                    onChange={(on) => {
-                      setScheduleEnabled(s, on);
-                    }}
-                    label={`Run schedule '${s.name}'`}
-                    title={s.enabled ? 'Pause this schedule' : 'Resume this schedule'}
-                    onText="On"
-                    offText="Paused"
-                    busy={savingId === s.id}
-                  />
+                  {!s.enabled && oneTimeSpent(s) !== null ? (
+                    // A spent one-time schedule needs a new time, not a switch.
+                    <span
+                      className="status-pill status-cancelled"
+                      title={oneTimeSpent(s) ?? undefined}
+                    >
+                      {s.lastRunAt !== undefined ? 'Done' : 'Expired'}
+                    </span>
+                  ) : (
+                    <Switch
+                      checked={s.enabled}
+                      onChange={(on) => {
+                        setScheduleEnabled(s, on);
+                      }}
+                      label={`Run schedule '${s.name}'`}
+                      title={s.enabled ? 'Pause this schedule' : 'Resume this schedule'}
+                      onText="On"
+                      offText="Paused"
+                      busy={saving.has(s.id)}
+                    />
+                  )}
                   <CloseButton
                     variant="card"
                     label={`Delete schedule '${s.name}'`}
@@ -455,11 +474,13 @@ export function AutomationsView(): React.JSX.Element {
                 <div>
                   <dt>Next run</dt>
                   <dd title={s.nextRunAt ?? undefined}>
-                    {!s.enabled
-                      ? 'Paused'
-                      : s.nextRunAt !== undefined
-                        ? formatTime(s.nextRunAt)
-                        : '—'}
+                    {!s.enabled && oneTimeSpent(s) !== null
+                      ? '—'
+                      : !s.enabled
+                        ? 'Paused'
+                        : s.nextRunAt !== undefined
+                          ? formatTime(s.nextRunAt)
+                          : '—'}
                     {overdueNote(s) !== null && (
                       <span className="fact-note">{overdueNote(s)}</span>
                     )}
@@ -547,7 +568,7 @@ export function AutomationsView(): React.JSX.Element {
                     title={w.enabled ? 'Pause this watcher' : 'Resume this watcher'}
                     onText="On"
                     offText="Paused"
-                    busy={savingId === w.id}
+                    busy={saving.has(w.id)}
                   />
                   <CloseButton
                     variant="card"

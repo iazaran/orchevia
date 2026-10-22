@@ -4,6 +4,7 @@ import { createDefaultProfile } from './agents';
 import {
   RISK_LABELS,
   fromLocalInputValue,
+  oneTimeSpent,
   prepareScheduleSave,
   scheduleTrustError,
   toLocalInputValue,
@@ -297,5 +298,41 @@ describe('one-time date field', () => {
     expect(fromLocalInputValue('2030-01-02T09:30')).toBe(at);
     expect(fromLocalInputValue('')).toBeNull();
     expect(toLocalInputValue('not a date')).toBe('');
+  });
+});
+
+describe('spent one-time schedules (mirror of Schedule::one_time_spent)', () => {
+  const at = '2026-10-22T16:00:00Z';
+  const once: Schedule = {
+    id: 'once',
+    name: 'Once',
+    workflowId: 'wf',
+    kind: { kind: 'oneTime', at },
+    timezone: 'local',
+    enabled: false,
+    trusted: false,
+    missedPolicy: 'skip',
+  };
+  const now = Date.parse('2026-10-22T17:00:00Z');
+
+  it('uses the Rust messages', () => {
+    expect(oneTimeSpent({ ...once, lastRunAt: at }, now)).toBe(
+      'This one-time schedule already ran. Pick a new time to run it again.',
+    );
+    expect(oneTimeSpent(once, now)).toBe(
+      "This one-time schedule's time has passed. Pick a new time.",
+    );
+    // Within the late grace, with catch-up, or after an earlier manual run.
+    expect(oneTimeSpent(once, Date.parse('2026-10-22T16:10:00Z'))).toBeNull();
+    expect(oneTimeSpent({ ...once, missedPolicy: 'runOnce' }, now)).toBeNull();
+    expect(
+      oneTimeSpent(
+        { ...once, lastRunAt: '2026-10-22T15:00:00Z' },
+        Date.parse('2026-10-22T15:30:00Z'),
+      ),
+    ).toBeNull();
+    expect(
+      oneTimeSpent({ ...once, kind: { kind: 'interval', everySecs: 300 } }, now),
+    ).toBeNull();
   });
 });

@@ -154,6 +154,25 @@ impl Schedule {
         errors
     }
 
+    /// Why this one-time schedule cannot be turned on as it is: it already ran
+    /// at its time, or the time passed (beyond the 15-minute late grace) and
+    /// the policy skips missed runs. Mirrors `oneTimeSpent` in
+    /// `src/lib/scheduler.ts`.
+    pub fn one_time_spent(&self, now: DateTime<Utc>) -> Option<&'static str> {
+        let ScheduleKind::OneTime { at } = &self.kind else {
+            return None;
+        };
+        if self.last_run_at.is_some_and(|last| last >= *at) {
+            return Some("This one-time schedule already ran. Pick a new time to run it again.");
+        }
+        if self.missed_policy == MissedPolicy::Skip
+            && now.signed_duration_since(*at) > chrono::Duration::minutes(15)
+        {
+            return Some("This one-time schedule's time has passed. Pick a new time.");
+        }
+        None
+    }
+
     /// Timing is the kind and timezone: name, workflow, trust and policy edits
     /// keep the stored slot.
     pub fn same_timing(&self, other: &Self) -> bool {
@@ -209,9 +228,10 @@ pub fn parse_tz_offset(name: &str, now: DateTime<Utc>) -> Option<i32> {
 }
 
 /// Next fire time strictly after `now`. Pure function of (schedule, now).
-/// `local` follows the system zone's daylight-saving rules for each slot;
-/// fixed offsets never shift. Interval slots sit on a grid aligned to the
-/// zone's midnight (a 15-minute interval fires on the quarter hours).
+/// `local` follows the system zone's daylight-saving rules for each daily,
+/// weekly and cron slot; fixed offsets never shift. Interval slots are exactly
+/// N seconds apart on a grid aligned to the zone's (standard-time) midnight:
+/// a 15-minute interval fires on the quarter hours.
 pub fn next_run(kind: &ScheduleKind, timezone: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let offset = parse_tz_offset(timezone, now)?;
     let local = timezone.trim().eq_ignore_ascii_case("local");
@@ -222,10 +242,12 @@ pub fn next_run(kind: &ScheduleKind, timezone: &str, now: DateTime<Utc>) -> Opti
             if *every_secs == 0 {
                 return None;
             }
-            let secs = (*every_secs).max(60) as i64;
-            let shifted = now.timestamp() + i64::from(offset);
-            let slot = shifted.div_euclid(secs) * secs + secs - i64::from(offset);
-            DateTime::from_timestamp(slot, 0)
+            let grid = if local {
+                standard_offset(&chrono::Local, now.year()).unwrap_or(offset)
+            } else {
+                offset
+            };
+            next_interval(*every_secs, grid, now)
         }
         ScheduleKind::Daily { hour, minute } if local => {
             next_daily_in(&chrono::Local, *hour, *minute, now)
@@ -252,27 +274,49 @@ pub fn next_run(kind: &ScheduleKind, timezone: &str, now: DateTime<Utc>) -> Opti
     }
 }
 
-/// The first instant of a wall-clock time in `tz` that is after `after`.
-/// Across a fall-back hour it picks the occurrence still ahead; a time
-/// skipped by a spring-forward jump has none.
+/// A wall-clock time in `tz` as an instant after `after`. A time repeated by
+/// the fall-back hour counts once, at its first occurrence (so the slot that
+/// just ran is never offered again an hour later); a time skipped by a
+/// spring-forward jump has none.
 fn resolve_after<Tz: TimeZone>(
     tz: &Tz,
     naive: chrono::NaiveDateTime,
     after: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
-    let instant = match tz.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(at) => at.with_timezone(&Utc),
-        chrono::LocalResult::Ambiguous(first, second) => {
-            let first = first.with_timezone(&Utc);
-            if first > after {
-                first
-            } else {
-                second.with_timezone(&Utc)
-            }
-        }
-        chrono::LocalResult::None => return None,
-    };
+    let instant = tz
+        .from_local_datetime(&naive)
+        .earliest()?
+        .with_timezone(&Utc);
     (instant > after).then_some(instant)
+}
+
+/// The zone's standard-time offset in `year`: the smaller of its January and
+/// July offsets (daylight saving time only ever adds).
+fn standard_offset<Tz: TimeZone>(tz: &Tz, year: i32) -> Option<i32> {
+    use chrono::Offset;
+    [1, 7]
+        .into_iter()
+        .map(|month| {
+            let instant = Utc.with_ymd_and_hms(year, month, 1, 12, 0, 0).single()?;
+            Some(
+                tz.offset_from_utc_datetime(&instant.naive_utc())
+                    .fix()
+                    .local_minus_utc(),
+            )
+        })
+        .collect::<Option<Vec<i32>>>()?
+        .into_iter()
+        .min()
+}
+
+/// Interval slots are exactly `secs` apart in real time, on a grid aligned to
+/// midnight at `offset_secs` (standard time for `local`, so a daylight-saving
+/// change never shortens, doubles or drifts the grid).
+fn next_interval(secs: u64, offset_secs: i32, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let secs = secs.max(60) as i64;
+    let offset = i64::from(offset_secs);
+    let shifted = now.timestamp() + offset;
+    DateTime::from_timestamp(shifted.div_euclid(secs) * secs + secs - offset, 0)
 }
 
 /// A daily or weekly time on `date`; a time inside a spring-forward gap runs
@@ -607,29 +651,56 @@ pub fn evaluate_with_grace(
     }
 }
 
-/// Grace for the scheduler's next check: the time since its previous check
-/// (plus a minute of slack), never below [`default_missed_grace`]. When the
-/// wall clock moved more than a minute further than the monotonic clock, the
-/// computer slept (or the clock was changed): slots in that gap were missed
-/// while asleep, so the default applies. `previous` is the wall time of the
-/// previous check and `monotonic_elapsed` the monotonic time since it.
+/// What the scheduler knows about the time since its previous check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckWindow {
+    /// How late a slot may be noticed and still run as on time.
+    pub grace: chrono::Duration,
+    /// Orchevia ran and the computer stayed awake since the previous check.
+    /// When false (first check after launch, or after sleep), held-back slots
+    /// lose their place and the missed-run policy decides about them.
+    pub continuous: bool,
+}
+
+/// The window for the scheduler's next check: the grace is the time since its
+/// previous check (plus a minute of slack), never below
+/// [`default_missed_grace`]. When the wall clock moved more than a minute
+/// further than the monotonic clock, the computer slept (or the clock was
+/// changed): slots in that gap were missed while asleep, so the default
+/// applies and the window is not continuous. `previous` is the wall time of
+/// the previous check and `monotonic_elapsed` the monotonic time since it.
+pub fn check_window(
+    previous: Option<DateTime<Utc>>,
+    monotonic_elapsed: std::time::Duration,
+    now: DateTime<Utc>,
+) -> CheckWindow {
+    let interrupted = CheckWindow {
+        grace: default_missed_grace(),
+        continuous: false,
+    };
+    let Some(previous) = previous else {
+        return interrupted;
+    };
+    let wall = now.signed_duration_since(previous);
+    let Ok(monotonic) = chrono::Duration::from_std(monotonic_elapsed) else {
+        return interrupted;
+    };
+    if wall < chrono::Duration::zero() || wall - monotonic > chrono::Duration::minutes(1) {
+        return interrupted;
+    }
+    CheckWindow {
+        grace: default_missed_grace().max(wall + chrono::Duration::minutes(1)),
+        continuous: true,
+    }
+}
+
+/// The grace part of [`check_window`].
 pub fn check_grace(
     previous: Option<DateTime<Utc>>,
     monotonic_elapsed: std::time::Duration,
     now: DateTime<Utc>,
 ) -> chrono::Duration {
-    let base = default_missed_grace();
-    let Some(previous) = previous else {
-        return base;
-    };
-    let wall = now.signed_duration_since(previous);
-    let Ok(monotonic) = chrono::Duration::from_std(monotonic_elapsed) else {
-        return base;
-    };
-    if wall < chrono::Duration::zero() || wall - monotonic > chrono::Duration::minutes(1) {
-        return base;
-    }
-    base.max(wall + chrono::Duration::minutes(1))
+    check_window(previous, monotonic_elapsed, now).grace
 }
 
 /// The slot a `Fire` decision is about: the one-time instant, or the stored
@@ -1041,6 +1112,33 @@ mod tests {
             Some(utc(2026, 10, 26, 1, 30)),
             "next day, not the repeat"
         );
+    }
+
+    #[test]
+    fn daily_local_runs_a_repeated_hour_once() {
+        // 02:30 on 25 October comes twice; after the first run the next
+        // slot is the following day, not the repeat an hour later.
+        let first = next_daily_in(&Berlin2026, 2, 30, utc(2026, 10, 24, 23, 0));
+        assert_eq!(first, Some(utc(2026, 10, 25, 0, 30)));
+        let next = next_daily_in(&Berlin2026, 2, 30, utc(2026, 10, 25, 0, 30));
+        assert_eq!(next, Some(utc(2026, 10, 26, 1, 30)));
+        let weekly = next_weekly_in(&Berlin2026, Weekday::Sun, 2, 30, utc(2026, 10, 25, 0, 30));
+        assert_eq!(weekly, Some(utc(2026, 11, 1, 1, 30)));
+    }
+
+    #[test]
+    fn local_intervals_stay_exact_across_daylight_saving() {
+        let grid = standard_offset(&Berlin2026, 2026).expect("offset");
+        assert_eq!(grid, 3600, "CET is the standard time");
+        // A daily interval: midnight CET, 01:00 during CEST, always 24 h apart.
+        let mut slot = utc(2026, 10, 23, 23, 0);
+        for _ in 0..4 {
+            let next = next_interval(86_400, grid, slot).expect("next");
+            assert_eq!(next - slot, chrono::Duration::hours(24));
+            slot = next;
+        }
+        let spring = next_interval(86_400, grid, utc(2026, 3, 28, 23, 0)).expect("next");
+        assert_eq!(spring, utc(2026, 3, 29, 23, 0));
     }
 
     #[test]

@@ -31,27 +31,36 @@ written back with the current field name.
   pending, running and approval-paused runs count toward the budget. A workflow
   already active is deferred (distinct PR inputs may run separately). A held-back
   slot keeps its place (`deferredSlot`) and runs as soon as capacity frees, however
-  long that takes; unstarted revisions remain eligible.
+  long that takes, while Orchevia keeps running; if it quits or the computer sleeps
+  first, the missed-run policy decides. **Run now** counts as that slot's run.
+  Unstarted revisions remain eligible.
 - The scheduler wakes when the next slot or watcher poll is due and checks at
-  least once a minute; saves wake it at once. There is no interval setting.
+  least once a minute; saves wake it at once. There is no interval setting. A
+  schedule runs at most once per check: if checks fall behind by more than one
+  interval, it runs once and continues from the next slot, never a backlog.
 - A slot that cannot start (the workflow now needs trust, it was deleted, or the
   start failed) is skipped; the Inbox reports it once per change, not on every
   check.
 - Missed one-time runs within 15 minutes still fire once (late boot grace);
   ancient ones retire (Skip) instead of surprising you. A one-time schedule is
   complete once it ran at or after its time, so an earlier **Run now** does not
-  use it up and a completed one cannot start again on the next check.
+  use it up and a completed one cannot start again on the next check. Its card
+  shows **Done** (or **Expired** when the time passed unrun); pick a new time to
+  run it again.
 - Use **Run now** to fire manually; the card shows the last run time and result.
 - Scheduled and watcher-started runs share the manual run cancellation controls.
   Cancel them under **Runs**; partial process output stays in history. Cancellation
   does not undo changes or remote writes already performed.
 
-Intervals use a grid aligned to midnight in the schedule's timezone: a
-15-minute schedule has quarter-hour slots, an hourly one runs on the hour local
-time (also in half-hour zones) and a daily interval at local midnight. `local`
-follows the system zone's daylight-saving rules for every slot: a daily time
-skipped by the spring-forward jump runs an hour later, and a repeated fall-back
-hour runs once. Fixed offsets never shift. In cron, when both the day of month
+Intervals are exactly N seconds apart, on a grid aligned to midnight in the
+schedule's timezone (standard time for `local`): a 15-minute schedule has
+quarter-hour slots and an hourly one runs on the hour, also in half-hour zones.
+A daily interval runs at midnight, or at 01:00 while daylight saving time is on;
+use a Daily schedule for a fixed wall-clock time. Daily, weekly and cron
+schedules in `local` follow the system zone's daylight-saving rules for every
+slot: a time skipped by the spring-forward jump runs an hour later (cron skips
+it), and a time repeated by the fall-back hour runs once, at its first
+occurrence. Fixed offsets never shift. In cron, when both the day of month
 and the day of week are restricted, a date matching either one runs (standard
 cron); expressions that can never match, such as 31 February, are rejected.
 

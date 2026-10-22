@@ -36,6 +36,10 @@ races in run bookkeeping.
   a minute beyond the monotonic clock (`Instant`, which stops during suspend on
   Linux and macOS), the computer slept and the default applies. So slots due while
   the app was awake always fire; `Skip`/`RunOnce` only see closed or asleep time.
+- `check_window` also reports whether the app stayed awake since the previous
+  check (`CheckWindow::continuous`). The first check after launch or sleep clears
+  `deferredSlot` before evaluating, so a slot held back before a quit follows the
+  missed-run policy instead of running days later.
 - `ScheduleDecision::SkipMissed` records `skipped: …` instead of a silent advance.
 - `deferredSlot` marks a slot held back by the run budget or an active run; that
   slot fires whatever the grace (one-time too) and is cleared on fire, skip, retire
@@ -45,12 +49,24 @@ races in run bookkeeping.
   changes.
 - `Scheduler::notify` gates desktop dispatch on `notifications.os` and
   `on_failure`, like `notify::emit_event`.
+- `record_schedule_check`/`record_watcher_check` compare the parsed stored row
+  with `before` under one lock (`replace_definition_if_unchanged`). The old SQL
+  text comparison never matched rows written by older versions (`every_secs`,
+  fields added since), so their bookkeeping was never recorded.
+- `scheduler::save_schedule` reads, runs `prepare_save`, validates and writes
+  through that compare-and-swap (5 tries), so a save racing a fired slot cannot
+  put it back.
 - `record_schedule` skips unchanged rows; when its compare-and-swap loses to a save
   after a run started, it merges `lastRunAt`/`lastStatus` and, if the saved slot is
   still the fired one, the advanced slot. `record_manual_run` replaces the blind
   upsert in `fire_schedule_now`.
 - One-time schedules are complete when `lastRunAt >= at`, so a manual run earlier
   or a moved time leaves them armed.
+  `Schedule::one_time_spent` (mirrored by `oneTimeSpent`) refuses to turn on a
+  completed one, or one whose time passed with Skip; the card shows Done or
+  Expired instead of a switch.
+- `record_manual_run` clears `deferredSlot` and advances a due recurring slot, so
+  the manual run is not followed by an automatic one for the same slot.
 - The loop sleeps `next_wait`: until the earliest enabled schedule slot or watcher
   poll (rounded up to the second), 30 s for due-but-waiting work, at most 60 s. The
   `scheduler.intervalSecs` setting is removed from both allow-lists.
@@ -59,10 +75,12 @@ races in run bookkeeping.
 
 - `next_run` uses `chrono::Local` for `local` (per-slot DST) and `FixedOffset`
   otherwise, through generic `next_daily_in`/`next_weekly_in`/`next_cron_in`.
-  `resolve_after` picks the occurrence still ahead in a fall-back hour; daily and
-  weekly times inside a spring-forward gap run an hour later; cron skips gap
-  minutes. A test `TimeZone` (Berlin 2026 rules) pins this without a tz database.
-- Interval grids shift by the zone offset at `now`.
+  `resolve_after` uses the first occurrence of a wall time repeated by the
+  fall-back hour (the second would run the slot twice); daily and weekly times
+  inside a spring-forward gap run an hour later; cron skips gap minutes. A test `TimeZone` (Berlin 2026 rules) pins this without a tz database.
+- Interval grids are exact (`next_interval`) and shift by the zone offset; for
+  `local` that is the standard-time offset (`standard_offset`: the smaller of
+  the January and July offsets), so DST never shortens, doubles or drifts them.
 - Cron walks local wall time skipping non-matching days and hours, five years
   ahead. Day-of-month and day-of-week are OR-ed when neither field starts with `*`
   (Vixie semantics). `never_matches` rejects only-day-of-month expressions with no

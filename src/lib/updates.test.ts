@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   LATEST_RELEASE_API,
+  UPDATE_REQUEST_TIMEOUT_MS,
   allowedExternalUrl,
   assetFor,
   fetchUpdateCheck,
@@ -98,6 +99,28 @@ describe('latest release', () => {
     await expect(fetchUpdateCheck('0.1.20', fakeFetch(500, {}))).rejects.toThrow('500');
     const offline: typeof fetch = () => Promise.reject(new TypeError('offline'));
     await expect(fetchUpdateCheck('0.1.20', offline)).rejects.toThrow('Could not reach');
+  });
+
+  it('gives up on a body that stalls after the headers', async () => {
+    vi.useFakeTimers();
+    try {
+      const stalled: typeof fetch = (_url, init) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => {
+              controller.error(new DOMException('aborted', 'AbortError'));
+            });
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200 }));
+      };
+      const check = fetchUpdateCheck('0.1.20', stalled);
+      const outcome = expect(check).rejects.toThrow("Could not read GitHub's answer");
+      await vi.advanceTimersByTimeAsync(UPDATE_REQUEST_TIMEOUT_MS);
+      await outcome;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('picks the installer that matches this copy', () => {

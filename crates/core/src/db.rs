@@ -1548,20 +1548,14 @@ impl SqliteDb {
         self.upsert_definition("watchers", &watcher.id, &watcher.name, watcher)
     }
 
+    /// Write scheduler bookkeeping only if the stored row still equals
+    /// `before`; false when it changed meanwhile or was deleted.
     pub fn record_schedule_check(
         &self,
         before: &crate::schedule::Schedule,
         after: &crate::schedule::Schedule,
     ) -> DbResult<bool> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
-        let changed = conn.execute(
-            "UPDATE schedules SET definition = ?1, updated_at = ?2 WHERE id = ?3 AND definition = ?4",
-            params![serde_json::to_string(after)?, Utc::now().to_rfc3339(), before.id, serde_json::to_string(before)?],
-        )?;
-        Ok(changed > 0)
+        self.replace_definition_if_unchanged("schedules", &before.id, &after.name, before, after)
     }
 
     /// Poll bookkeeping must not resurrect deleted watchers or overwrite a
@@ -1571,15 +1565,55 @@ impl SqliteDb {
         before: &crate::schedule::Watcher,
         after: &crate::schedule::Watcher,
     ) -> DbResult<bool> {
+        self.replace_definition_if_unchanged("watchers", &before.id, &after.name, before, after)
+    }
+
+    /// Compare-and-swap on a stored definition, comparing parsed values under
+    /// one lock. Comparing JSON text would never match a row written by an
+    /// older version (renamed or since-added fields), so its bookkeeping
+    /// could never be recorded.
+    fn replace_definition_if_unchanged<T>(
+        &self,
+        table: &str,
+        id: &str,
+        name: &str,
+        before: &T,
+        after: &T,
+    ) -> DbResult<bool>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + PartialEq,
+    {
+        let allowed = ["schedules", "watchers"];
+        if !allowed.contains(&table) {
+            return Err(DbError::Io("Unknown definition table.".to_string()));
+        }
         let conn = self
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
-        let changed = conn.execute(
-            "UPDATE watchers SET definition = ?1, updated_at = ?2 WHERE id = ?3 AND definition = ?4",
-            params![serde_json::to_string(after)?, Utc::now().to_rfc3339(), before.id, serde_json::to_string(before)?],
+        let stored: Option<String> = conn
+            .query_row(
+                &format!("SELECT definition FROM {table} WHERE id = ?1"),
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let current = stored.and_then(|definition| serde_json::from_str::<T>(&definition).ok());
+        if current.as_ref() != Some(before) {
+            return Ok(false);
+        }
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET definition = ?1, name = ?2, updated_at = ?3 WHERE id = ?4"
+            ),
+            params![
+                serde_json::to_string(after)?,
+                name,
+                Utc::now().to_rfc3339(),
+                id
+            ],
         )?;
-        Ok(changed > 0)
+        Ok(true)
     }
 
     pub fn get_watcher(&self, id: &str) -> DbResult<Option<crate::schedule::Watcher>> {
@@ -2558,6 +2592,38 @@ mod tests {
 mod automation_tests {
     use super::*;
     use crate::schedule::{Schedule, ScheduleKind, Watcher, WatcherKind};
+
+    #[test]
+    fn bookkeeping_is_recorded_on_rows_written_by_older_versions() {
+        let db = SqliteDb::open_in_memory().expect("db");
+        // An old row: legacy `every_secs`, no timezone, trust or policy.
+        {
+            let conn = db.conn.lock().expect("lock");
+            conn.execute(
+                "INSERT INTO schedules (id, name, definition, created_at, updated_at) VALUES ('old', 'Old', ?1, ?2, ?2)",
+                params![
+                    r#"{"id":"old","name":"Old","workflowId":"wf-1","kind":{"kind":"interval","every_secs":3600},"enabled":true}"#,
+                    Utc::now().to_rfc3339()
+                ],
+            )
+            .expect("insert");
+        }
+        let before = db.get_schedule("old").expect("get").expect("row");
+        let mut after = before.clone();
+        after.last_status = Some("started run-1".into());
+        assert!(db.record_schedule_check(&before, &after).expect("check"));
+        assert_eq!(
+            db.get_schedule("old")
+                .expect("get")
+                .expect("row")
+                .last_status,
+            after.last_status
+        );
+        // A changed or deleted row is left alone.
+        assert!(!db.record_schedule_check(&before, &after).expect("stale"));
+        db.delete_schedule("old").expect("delete");
+        assert!(!db.record_schedule_check(&after, &before).expect("deleted"));
+    }
 
     fn schedule(id: &str) -> Schedule {
         Schedule {
