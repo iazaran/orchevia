@@ -14,6 +14,10 @@ keep=${APT_KEEP_RELEASES:-3}
 asset=Orchevia-linux-x86_64.deb
 : "${APT_SIGNING_KEY:?APT_SIGNING_KEY must hold the armored signing key}"
 
+# Absolute, because the indexes are written after changing into it.
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 export GNUPGHOME="$work/gnupg"
