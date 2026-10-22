@@ -8,6 +8,7 @@ mod agent_output;
 pub mod agents;
 pub mod conditions;
 pub mod db;
+pub mod desktop;
 pub mod engine;
 pub mod generation;
 pub mod git;
@@ -26,6 +27,7 @@ pub mod templates;
 pub mod ticket;
 pub mod tools;
 pub mod trust;
+pub mod updates;
 pub mod usage;
 pub mod workflow;
 

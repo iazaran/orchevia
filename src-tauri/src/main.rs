@@ -48,8 +48,22 @@ fn background_mode(db: &SqliteDb) -> bool {
         .unwrap_or(false)
 }
 
+/// Bring the main window back (relaunch, tray menu, macOS dock click).
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 fn main() {
     let app = tauri::Builder::default()
+        // First: a second launch (app menu, dock, desktop file) shows the
+        // running window instead of starting another app and scheduler.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let db_path = default_db_path(app.handle());
@@ -92,7 +106,13 @@ fn main() {
             let starter: Arc<dyn orchevia_core::scheduler::RunStarter> =
                 Arc::new(state.scheduler_starter());
             let scheduler_wake = Arc::clone(&state.scheduler_wake);
+            let tray_available = Arc::clone(&state.tray_available);
             app.manage(state);
+            // The tray probe may wait on the session bus; keep it off the UI
+            // thread.
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = tray_available.set(orchevia_core::desktop::tray_available());
+            });
 
             // Background scheduler: schedules + watchers, conservative poll.
             let scheduler_db = Arc::clone(&db);
@@ -162,12 +182,7 @@ fn main() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app_handle, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app_handle),
                     "quit" => app_handle.exit(0),
                     _ => {}
                 })
@@ -176,15 +191,29 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let db = window.state::<AppState>().db.clone();
-                if background_mode(&db) {
-                    // Background mode: hide to tray instead of quitting so
-                    // schedules/watchers keep running. Quit via tray menu.
+                let state = window.state::<AppState>();
+                if background_mode(&state.db) {
+                    // Background mode: hide instead of quitting so
+                    // schedules/watchers keep running. Quit via the tray menu
+                    // or Automations → Background mode.
                     api.prevent_close();
                     let _ = window.hide();
-                    eprintln!(
-                        "[orchevia] hidden to tray (background mode on; Quit from the tray menu)"
-                    );
+                    eprintln!("[orchevia] window hidden (background mode on)");
+                    // Without a tray icon nothing shows the app is still
+                    // running: say so once per session, and how to get back.
+                    let no_tray = state.tray_available.get().copied().flatten() == Some(false);
+                    if no_tray
+                        && !state
+                            .background_notice_shown
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        std::thread::spawn(|| {
+                            orchevia_core::notify::dispatch_os(
+                                "Orchevia is still running",
+                                "Schedules and watchers keep running. Open Orchevia from your app menu to show it again; quit from Automations → Background mode.",
+                            );
+                        });
+                    }
                 }
             }
         })
@@ -235,6 +264,10 @@ fn main() {
             commands::delete_schedule,
             commands::fire_schedule_now,
             commands::schedule_preview,
+            commands::desktop_info,
+            commands::quit_app,
+            commands::open_external_url,
+            commands::record_update_notice,
             commands::list_watchers,
             commands::save_watcher,
             commands::watcher_scope_issues,
@@ -274,11 +307,18 @@ fn main() {
         ])
         .build(tauri::generate_context!());
     match app {
-        Ok(app) => app.run(|_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        Ok(app) => app.run(|_handle, event| match event {
+            tauri::RunEvent::Exit => {
                 // Stop CLI process trees that are still running on quit.
                 orchevia_core::process::terminate_all_process_groups();
             }
+            // Dock click while the window is hidden in background mode.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => show_main_window(_handle),
+            _ => {}
         }),
         Err(error) => {
             eprintln!("Failed to start Orchevia: {error}");
