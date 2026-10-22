@@ -1,6 +1,6 @@
 # Workflow usability — v0.1.6
 
-Implemented from the [approved design](../docs/superpowers/specs/2026-10-02-workflow-usability-design.md) and [implementation plan](../docs/superpowers/plans/2026-10-02-workflow-usability.md).
+Implemented in v0.1.6.
 
 ## Behavior
 
