@@ -13,10 +13,12 @@ export function classifyChanges(paths) {
   for (const path of paths) {
     if (
       path === '.github/workflows/pages.yml' ||
+      path === 'scripts/build-apt-repo.sh' ||
       (path.startsWith('docs/') && !path.endsWith('.md'))
     ) {
+      // The site deployment also builds the apt repository.
       changes.site = true;
-      if (path === '.github/workflows/pages.yml') changes.workflows = true;
+      if (!path.startsWith('docs/')) changes.workflows = true;
     } else if (
       ['.github/workflows/ci.yml', '.github/workflows/release.yml'].includes(path)
     ) {

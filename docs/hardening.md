@@ -51,9 +51,14 @@ Environment → Updates). A newer version shows a banner, one Inbox entry and,
 when desktop notifications are on, one desktop notification, with a link to the
 matching installer.
 
-Nothing installs automatically. Automatic installation waits for signed
+Debian and Ubuntu users can install from the signed apt repository at
+`https://iazaran.github.io/orchevia/apt` (key `orchevia-archive-keyring.gpg`
+there), so `sudo apt upgrade` installs new versions; the app then suggests that
+command instead of a download.
+
+Nothing else installs automatically. AppImage and macOS updates wait for signed
 release metadata: enable the Tauri updater with pinned public-key verification
-(and an apt repository for the .deb) — never weaken signature checks.
+— never weaken signature checks.
 
 ## Release checklist (maintainers)
 
@@ -65,9 +70,13 @@ release metadata: enable the Tauri updater with pinned public-key verification
    writes SHA256SUMS, publishes with the unsigned-macOS notice.
 5. Verify artifacts install + launch; attach notes to the release.
 6. Docs already served from `docs/` via the Pages workflow.
+7. After publishing, the release workflow dispatches the Pages workflow, which
+   rebuilds the signed apt repository from the newest three releases (secret
+   `APT_SIGNING_KEY`). Check `https://iazaran.github.io/orchevia/apt/dists/stable/InRelease`
+   lists the new version's `Packages` hash.
 
 ## Branch protection (recommended)
 
-Required checks: `Frontend (format · lint · typecheck · tests · build)`,
-`Rust (fmt · clippy · tests)`, `Tauri build (ubuntu-latest, macos-latest)`.
-Require PR review; dismiss stale approvals on push.
+Required check: `CI result`. It aggregates every CI job and also reports for
+docs-only changes, so no pull request waits for a skipped job. Require PR review;
+dismiss stale approvals on push; no force pushes to `main`.

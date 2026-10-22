@@ -56,7 +56,17 @@ Pick the installer for your machine from the **[latest release](https://github.c
 | macOS · Apple Silicon | [Orchevia-macos-arm64.dmg](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-arm64.dmg)                                                                                        |
 | macOS · Intel         | [Orchevia-macos-x86_64.dmg](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-macos-x86_64.dmg)                                                                                      |
 | Linux · x86_64        | [AppImage](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.AppImage) · [.deb](https://github.com/iazaran/orchevia/releases/latest/download/Orchevia-linux-x86_64.deb) |
-| Checksums             | [SHA256SUMS](https://github.com/iazaran/orchevia/releases/latest/download/SHA256SUMS)                                                                                                                    |
+
+**Debian and Ubuntu:** install from the signed apt repository instead, and
+`sudo apt upgrade` keeps Orchevia up to date:
+
+```bash
+curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg > /dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg] https://iazaran.github.io/orchevia/apt stable main" | sudo tee /etc/apt/sources.list.d/orchevia.list
+sudo apt update && sudo apt install orchevia
+```
+
+| Checksums | [SHA256SUMS](https://github.com/iazaran/orchevia/releases/latest/download/SHA256SUMS) |
 
 <details>
 <summary><strong>Install steps and checksum verification</strong></summary>
@@ -80,8 +90,9 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 
 Orchevia tells you when a new version is ready (a banner, an Inbox entry and the
 installer link under **Environment → Updates**, where you can also turn the check
-off). It does not install updates by itself yet: install the new file over the old
-one, and your workflows and history are kept.
+off). It does not install updates by itself yet: with the apt repository run
+`sudo apt update && sudo apt upgrade`, otherwise install the new file over the old one.
+Your workflows and history are kept.
 
 </details>
 

@@ -1710,7 +1710,17 @@ shasum -a 256 -c SHA256SUMS --ignore-missing</code></pre>
                 class="install-code"
               ><code>xattr -d com.apple.quarantine /Applications/Orchevia.app</code></pre>
               <p style="color: var(--muted)">
-                <strong style="color: var(--text)">Linux:</strong>
+                <strong style="color: var(--text)">Debian and Ubuntu:</strong> add the
+                signed apt repository, and <code>sudo apt upgrade</code> keeps Orchevia up
+                to date:
+              </p>
+              <pre
+                class="install-code"
+              ><code>curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg &gt; /dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg] https://iazaran.github.io/orchevia/apt stable main" | sudo tee /etc/apt/sources.list.d/orchevia.list
+sudo apt update &amp;&amp; sudo apt install orchevia</code></pre>
+              <p style="color: var(--muted)">
+                <strong style="color: var(--text)">Other Linux:</strong>
                 <code>sudo apt install ./Orchevia-linux-x86_64.deb</code>, or
                 <code>chmod +x</code> the AppImage and run it.
               </p>

@@ -9,6 +9,9 @@ use serde::Serialize;
 /// The only site the app opens in the browser: its own repository pages.
 pub const REPOSITORY_URL: &str = "https://github.com/iazaran/orchevia";
 
+/// The signed apt repository published with the project site.
+pub const APT_REPOSITORY_URL: &str = "https://iazaran.github.io/orchevia/apt";
+
 /// D-Bus name owned by the tray host (StatusNotifierItem watcher). GNOME has
 /// none unless the AppIndicator extension is enabled.
 #[cfg(target_os = "linux")]
@@ -24,7 +27,8 @@ pub struct DesktopInfo {
     pub platform: String,
     /// `x86_64`, `arm64` or the raw architecture name.
     pub arch: String,
-    /// `deb`, `appimage`, `app` (macOS bundle) or `unknown`.
+    /// `apt` (.deb with the apt repository set up), `deb`, `appimage`, `app`
+    /// (macOS bundle) or `unknown`.
     pub install_kind: String,
 }
 
@@ -49,7 +53,9 @@ pub fn arch() -> &'static str {
 }
 
 /// How the running app was installed. On Linux the AppImage runtime sets
-/// `APPIMAGE`; the .deb registers the `orchevia` package with dpkg.
+/// `APPIMAGE`; the .deb registers the `orchevia` package with dpkg, and apt
+/// updates it when a source under `/etc/apt/sources.list.d` names the
+/// project's apt repository.
 pub fn install_kind() -> &'static str {
     if cfg!(target_os = "macos") {
         return "app";
@@ -59,10 +65,36 @@ pub fn install_kind() -> &'static str {
             return "appimage";
         }
         if std::path::Path::new("/var/lib/dpkg/info/orchevia.list").exists() {
-            return "deb";
+            let sources = std::path::Path::new("/etc/apt/sources.list.d");
+            return if apt_source_configured(sources) {
+                "apt"
+            } else {
+                "deb"
+            };
         }
     }
     "unknown"
+}
+
+/// Whether a `.list` or `.sources` file in `dir` names the apt repository.
+pub fn apt_source_configured(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        let source_file = path
+            .extension()
+            .is_some_and(|ext| ext == "list" || ext == "sources");
+        source_file
+            && entry.metadata().is_ok_and(|meta| meta.len() <= 64 * 1024)
+            && std::fs::read_to_string(&path).is_ok_and(|text| {
+                text.lines().any(|line| {
+                    let line = line.trim();
+                    !line.starts_with('#') && line.contains(APT_REPOSITORY_URL)
+                })
+            })
+    })
 }
 
 /// Whether the desktop shows tray icons. macOS and Windows always do. On
@@ -209,6 +241,35 @@ mod tests {
             "https://github.com/iazaran/orchevia/\"$(x)\""
         ));
         assert!(!allowed_external_url("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn detects_the_apt_source_in_list_and_deb822_files() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert!(!apt_source_configured(dir.path()));
+        assert!(!apt_source_configured(&dir.path().join("missing")));
+        std::fs::write(
+            dir.path().join("other.list"),
+            "deb https://example.com/apt stable main\n",
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join("orchevia.list.disabled"),
+            format!("deb {APT_REPOSITORY_URL} stable main\n"),
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join("commented.list"),
+            format!("# deb {APT_REPOSITORY_URL} stable main\n"),
+        )
+        .expect("write");
+        assert!(!apt_source_configured(dir.path()));
+        std::fs::write(
+            dir.path().join("orchevia.sources"),
+            format!("Types: deb\nURIs: {APT_REPOSITORY_URL}\nSuites: stable\n"),
+        )
+        .expect("write");
+        assert!(apt_source_configured(dir.path()));
     }
 
     #[test]

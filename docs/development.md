@@ -251,6 +251,23 @@ The release workflow stages `Orchevia-linux-x86_64.deb`, `Orchevia-linux-x86_64.
 names stable: the README and project page link to them through `releases/latest`.
 Check the version in `src-tauri/tauri.conf.json` before tagging.
 
+### apt repository
+
+Every Pages deployment runs `scripts/build-apt-repo.sh`, which downloads the `.deb`
+of the newest three published releases, checks them against each release's
+`SHA256SUMS`, and writes a repository under `/apt` signed with the
+`APT_SIGNING_KEY` secret (an armored ed25519 signing key without passphrase). The
+release workflow dispatches the Pages workflow on `main` after publishing, so a
+new version reaches `apt upgrade` within minutes. To rebuild by hand:
+
+```bash
+gh workflow run pages.yml --ref main
+```
+
+Pull requests run the same script with a throwaway key and check the signature
+with `gpgv`. If the key ever changes, users must download the new
+`orchevia-archive-keyring.gpg`; keep a backup of the secret key outside GitHub.
+
 ## Complete local quality gate
 
 ```bash

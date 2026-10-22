@@ -2,6 +2,8 @@ name: Pages
 
 # Only site changes start this workflow; Markdown-only docs edits validate but
 # never redeploy (the job-level gate below), and CI checks the page on every PR.
+# Each deployment also rebuilds the signed apt repository under /apt from the
+# newest releases; the release workflow dispatches a run after publishing.
 on:
   push:
     branches: [main]
@@ -9,11 +11,13 @@ on:
       - 'docs/**'
       - '.github/workflows/pages.yml'
       - 'scripts/ci-changes.mjs'
+      - 'scripts/build-apt-repo.sh'
   pull_request:
     paths:
       - 'docs/**'
       - '.github/workflows/pages.yml'
       - 'scripts/ci-changes.mjs'
+      - 'scripts/build-apt-repo.sh'
   workflow_dispatch:
 
 permissions:
@@ -62,6 +66,21 @@ jobs:
               assert (Path('docs') / src).is_file(), src
           print('docs OK')
           PY
+      # Same script as the deployment, signed with a throwaway key, then checked
+      # the way apt checks it.
+      - name: Build the apt repository with a throwaway key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          command -v apt-ftparchive >/dev/null || sudo apt-get install -y --no-install-recommends apt-utils
+          export GNUPGHOME="$RUNNER_TEMP/throwaway-gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase '' --quick-gen-key "CI throwaway" ed25519 sign 1d
+          APT_SIGNING_KEY=$(gpg --armor --export-secret-keys "CI throwaway") \
+            scripts/build-apt-repo.sh "$RUNNER_TEMP/apt"
+          gpgv --keyring "$RUNNER_TEMP/apt/orchevia-archive-keyring.gpg" \
+            "$RUNNER_TEMP/apt/dists/stable/InRelease"
+          grep -q '^Package: orchevia$' "$RUNNER_TEMP/apt/dists/stable/main/binary-amd64/Packages"
 
   deploy:
     name: Deploy to GitHub Pages
@@ -83,8 +102,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/configure-pages@v6
+      # A deployment replaces the whole site, so the apt repository is rebuilt
+      # every time; without the signing key it fails rather than dropping /apt.
+      - name: Assemble the site and the apt repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          command -v apt-ftparchive >/dev/null || sudo apt-get install -y --no-install-recommends apt-utils
+          mkdir -p _site
+          cp -R docs/. _site/
+          scripts/build-apt-repo.sh _site/apt
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: docs
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v5

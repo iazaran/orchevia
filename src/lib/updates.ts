@@ -8,6 +8,8 @@
 
 export const REPOSITORY_URL = 'https://github.com/iazaran/orchevia';
 export const RELEASES_URL = `${REPOSITORY_URL}/releases/latest`;
+/** Signed apt repository published with the project site. */
+export const APT_REPOSITORY_URL = 'https://iazaran.github.io/orchevia/apt';
 export const LATEST_RELEASE_API =
   'https://api.github.com/repos/iazaran/orchevia/releases/latest';
 /** `'0'` turns automatic checks off; unset or `'1'` means on. */
@@ -26,7 +28,8 @@ export interface DesktopInfo {
   trayAvailable?: boolean;
   platform: string;
   arch: string;
-  /** `deb`, `appimage`, `app` (macOS) or `unknown`. */
+  /** `apt` (.deb kept up to date by the apt repository), `deb`, `appimage`,
+   * `app` (macOS) or `unknown`. */
   installKind: string;
 }
 
@@ -152,12 +155,13 @@ export async function fetchUpdateCheck(
   }
 }
 
-/** The installer matching how this copy was installed, if the release has it. */
+/** The installer matching how this copy was installed, if the release has it.
+ * apt installs need none: `apt upgrade` fetches the new version. */
 export function assetFor(
   release: LatestRelease,
   desktop: DesktopInfo | null,
 ): ReleaseAsset | undefined {
-  if (desktop === null) return undefined;
+  if (desktop === null || desktop.installKind === 'apt') return undefined;
   const name =
     desktop.platform === 'macos'
       ? `Orchevia-macos-${desktop.arch}.dmg`
@@ -173,6 +177,8 @@ export function assetFor(
 export function installSteps(desktop: DesktopInfo | null, assetName?: string): string {
   const file = assetName ?? 'the installer';
   switch (desktop?.installKind) {
+    case 'apt':
+      return 'Update it with apt: sudo apt update && sudo apt upgrade. Restart Orchevia afterwards.';
     case 'deb':
       return `Quit Orchevia, then install it over the current version: sudo apt install ~/Downloads/${file}`;
     case 'appimage':

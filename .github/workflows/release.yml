@@ -181,6 +181,7 @@ jobs:
     name: Publish GitHub Release
     permissions:
       contents: write
+      actions: write
     needs: [build]
     runs-on: ubuntu-latest
     steps:
@@ -214,3 +215,10 @@ jobs:
             > macOS builds in early releases are **unsigned** (no notarization).
             > On first launch: right-click → Open, or run
             > `xattr -d com.apple.quarantine /Applications/Orchevia.app`.
+      # The Pages workflow rebuilds the signed apt repository from the published
+      # releases. Dispatching it on main keeps the github-pages environment rules
+      # (main only) and works with the default token.
+      - name: Refresh the apt repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main

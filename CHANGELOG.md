@@ -6,6 +6,15 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Added
+
+- **apt repository.** Debian and Ubuntu users can add the signed repository at
+  `https://iazaran.github.io/orchevia/apt` and get new versions with
+  `sudo apt upgrade` (see the README). It holds the newest three releases and is
+  rebuilt by the Pages workflow after each release.
+- When Orchevia was installed from the apt repository, **Environment → Updates**
+  suggests `sudo apt update && sudo apt upgrade` instead of a download.
+
 ### Removed
 
 - The early planning drafts under `docs/superpowers/`. The same designs are
