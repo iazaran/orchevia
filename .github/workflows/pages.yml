@@ -76,11 +76,11 @@ jobs:
           export GNUPGHOME="$RUNNER_TEMP/throwaway-gnupg"
           mkdir -m 700 "$GNUPGHOME"
           gpg --batch --pinentry-mode loopback --passphrase '' --quick-gen-key "CI throwaway" ed25519 sign 1d
+          # Relative output, exactly like the deployment.
           APT_SIGNING_KEY=$(gpg --armor --export-secret-keys "CI throwaway") \
-            scripts/build-apt-repo.sh "$RUNNER_TEMP/apt"
-          gpgv --keyring "$RUNNER_TEMP/apt/orchevia-archive-keyring.gpg" \
-            "$RUNNER_TEMP/apt/dists/stable/InRelease"
-          grep -q '^Package: orchevia$' "$RUNNER_TEMP/apt/dists/stable/main/binary-amd64/Packages"
+            scripts/build-apt-repo.sh _site/apt
+          gpgv --keyring _site/apt/orchevia-archive-keyring.gpg _site/apt/dists/stable/InRelease
+          grep -q '^Package: orchevia$' _site/apt/dists/stable/main/binary-amd64/Packages
 
   deploy:
     name: Deploy to GitHub Pages
