@@ -41,9 +41,9 @@ concrete use case, fit the existing architecture, and include tests and document
   tools that detach into their own session remain out of reach.
 - A maintained desktop smoke-test matrix covering local generation, approvals,
   automation, restart recovery and all installer architectures.
-- Installing updates in place: signed release metadata for the Tauri updater
-  (AppImage, macOS) and an apt repository for the .deb, so `apt upgrade` picks up
-  new versions. Until then the app announces new releases and links the installer.
+- Installing updates in place for AppImage and macOS: signed release metadata for
+  the Tauri updater. Debian and Ubuntu already update through the signed apt
+  repository; elsewhere the app announces new releases and links the installer.
 
 ## Product boundaries
 

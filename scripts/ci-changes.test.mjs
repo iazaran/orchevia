@@ -52,11 +52,9 @@ test('shared contracts, locks, and delivery scripts validate both stacks', () =>
 });
 
 test('Pages workflow changes validate the site; dependency scheduling avoids compilers', () => {
-  assert.deepEqual(classifyChanges(['.github/workflows/pages.yml']), {
-    ...none,
-    site: true,
-    workflows: true,
-  });
+  for (const path of ['.github/workflows/pages.yml', 'scripts/build-apt-repo.sh']) {
+    assert.deepEqual(classifyChanges([path]), { ...none, site: true, workflows: true });
+  }
   assert.deepEqual(classifyChanges(['.github/dependabot.yml']), none);
 });
 

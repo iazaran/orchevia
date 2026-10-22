@@ -138,5 +138,9 @@ describe('latest release', () => {
     expect(installSteps(deb, 'Orchevia-linux-x86_64.deb')).toContain(
       'sudo apt install ~/Downloads/Orchevia-linux-x86_64.deb',
     );
+    // From the apt repository: no download, apt upgrades it.
+    const apt = { ...deb, installKind: 'apt' };
+    expect(assetFor(parsed, apt)).toBeUndefined();
+    expect(installSteps(apt)).toContain('sudo apt update && sudo apt upgrade');
   });
 });
