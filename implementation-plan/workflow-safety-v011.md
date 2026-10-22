@@ -1,13 +1,9 @@
 # Workflow safety v0.1.11 implementation plan
 
-> Execute inline using superpowers:executing-plans. User approved autonomous
-> implementation on 2026-10-08 without another plan approval checkpoint.
-
 **Goal:** Ship fixture-driven dry-runs, deliberate recovery, timelines and reported-spend guards.
 **Architecture:** Extend the existing engine and persisted run history. Additive
 run execution metadata lives in SQLite and is mirrored through Backend and Tauri.
 **Tech stack:** Rust/Tokio/SQLite, React/TypeScript/Vitest, Tauri 2.
-**Spec:** `docs/superpowers/specs/2026-10-08-workflow-safety-v011-design.md`
 
 ## Global constraints
 

@@ -5,7 +5,7 @@ schema unchanged; template and Simple JSON versions stay 1.
 
 ## Why
 
-A real "Jira ticket to reviewed PR" run (vacayou-admin-services, 2026-10-21)
+A real "Jira ticket to reviewed PR" run (a private service repository, 2026-10-21)
 failed twice on review and implementation steps. Each failure was a different
 refused tool: a `WebFetch` to Docker Hub, then an AWS MCP call, then compound
 shell lines. After v0.1.16 every refusal fails the step, and the only fix on

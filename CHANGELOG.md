@@ -6,6 +6,12 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Removed
+
+- The early planning drafts under `docs/superpowers/`. The same designs are
+  recorded in `implementation-plan/`, and the project website no longer serves
+  them.
+
 ## [0.1.20] - 2026-10-22
 
 ### Added

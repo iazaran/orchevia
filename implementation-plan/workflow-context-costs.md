@@ -1,7 +1,7 @@
 # Workflow context and cost controls implementation plan
 
-> Execute inline using superpowers:executing-plans. Add regression tests before
-> each behavior change; use the existing architecture and perform self-review.
+> Add regression tests before each behavior change; use the existing
+> architecture and review the result before release.
 
 **Goal:** Ship optional reusable sessions and bounded handoffs in v0.1.10.
 
@@ -10,8 +10,6 @@ result metadata. Keep the React Backend boundary and browser mock; use existing
 prompt/reference remapping for portable authoring.
 
 **Tech stack:** Rust/Tokio/SQLite, TypeScript/React/Vitest, Tauri 2.
-
-**Spec:** `docs/superpowers/specs/2026-10-06-workflow-context-costs-design.md`
 
 ## Global constraints
 
