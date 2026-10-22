@@ -14,9 +14,9 @@ are public.
 | Execution       | Parallel paths/joins, bounded loops/retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard |
 | Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                           |
 | Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history     |
-| Automation      | Bounded local schedules/watchers, requested-review scope, revision tracking, check outcomes, inbox, background mode   |
+| Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode   |
 | Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                         |
-| Delivery        | Gated PR/main validation, tag-driven Linux/macOS installers, checksums, latest-release links, project page with demo  |
+| Delivery        | Gated validation, tag-driven Linux/macOS installers, checksums, in-app update notices, project page with demo         |
 
 ## Current priorities
 
@@ -41,6 +41,9 @@ concrete use case, fit the existing architecture, and include tests and document
   tools that detach into their own session remain out of reach.
 - A maintained desktop smoke-test matrix covering local generation, approvals,
   automation, restart recovery and all installer architectures.
+- Installing updates in place: signed release metadata for the Tauri updater
+  (AppImage, macOS) and an apt repository for the .deb, so `apt upgrade` picks up
+  new versions. Until then the app announces new releases and links the installer.
 
 ## Product boundaries
 

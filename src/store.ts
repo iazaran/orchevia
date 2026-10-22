@@ -23,6 +23,7 @@ import type {
   Workflow,
 } from './lib/workflow';
 import { errorMessage } from './lib/errors';
+import type { UpdateCheck } from './lib/updates';
 
 export interface UiNotice {
   id: string;
@@ -78,6 +79,10 @@ interface AppState {
   seenNotificationIds: number[];
   notificationPrefs: NotificationPrefs | null;
   backgroundMode: boolean;
+  /** Last update check (Environment → Updates and the app banner). */
+  updateCheck: UpdateCheck | null;
+  updateError: string | null;
+  updateChecking: boolean;
   builtinTemplates: WorkflowTemplate[];
   userTemplates: WorkflowTemplate[];
   preferences: Preference[];
@@ -110,6 +115,11 @@ interface AppState {
   refreshIntegrations: () => Promise<void>;
   refreshAutomations: () => Promise<void>;
   refreshNotifications: () => Promise<void>;
+  /**
+   * Ask GitHub for the latest release. With `announce`, a newer version is
+   * recorded once in the Inbox (and as a desktop notification when enabled).
+   */
+  checkForUpdates: (announce: boolean) => Promise<void>;
   refreshLibrary: () => Promise<void>;
   selectWorkflow: (id: string | null) => void;
   selectNode: (id: string | null) => void;
@@ -125,6 +135,14 @@ interface AppState {
   setValidation: (issues: ValidationIssue[]) => void;
   selectRun: (id: string | null) => Promise<void>;
   setError: (message: string | null) => void;
+}
+
+/** Popup tone for a new Inbox entry. */
+function noticeVariant(kind: string): 'info' | 'warn' | 'error' {
+  if (['failure', 'schedule-blocked', 'schedule-failed', 'watcher-error'].includes(kind))
+    return 'error';
+  if (kind === 'success' || kind === 'schedule-started') return 'info';
+  return 'warn';
 }
 
 let navigationSequence = 0;
@@ -163,6 +181,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   seenNotificationIds: [],
   notificationPrefs: null,
   backgroundMode: false,
+  updateCheck: null,
+  updateError: null,
+  updateChecking: false,
   builtinTemplates: [],
   userTemplates: [],
   preferences: [],
@@ -367,19 +388,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
       // The first snapshot belongs to Inbox history; never replay it as popups.
       if (current.notificationSnapshotLoaded) {
         for (const notification of incoming.sort((a, b) => a.id - b.id)) {
+          // The update banner already shows new releases.
+          if (notification.kind === 'update') continue;
           get().pushUiNotice({
             content: `${notification.title}: ${notification.body}`,
-            variant:
-              notification.kind === 'failure'
-                ? 'error'
-                : notification.kind === 'success'
-                  ? 'info'
-                  : 'warn',
+            variant: noticeVariant(notification.kind),
           });
         }
       }
     } catch {
       // Mock backend: stay empty.
+    }
+  },
+
+  checkForUpdates: async (announce) => {
+    if (get().updateChecking) return;
+    set({ updateChecking: true });
+    try {
+      const backend = getBackend();
+      const result = await backend.checkForUpdate();
+      set({ updateCheck: result, updateError: null });
+      if (announce && result.updateAvailable) {
+        const created = await backend
+          .recordUpdateNotice(result.latest.version)
+          .catch(() => false);
+        if (created) await get().refreshNotifications();
+      }
+    } catch (err) {
+      set({ updateError: errorMessage(err) });
+    } finally {
+      set({ updateChecking: false });
     }
   },
 

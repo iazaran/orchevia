@@ -13,6 +13,7 @@ import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
 import { errorMessage } from '../lib/errors';
+import { UpdatesSection } from './Updates';
 
 export function EnvironmentView(): React.JSX.Element {
   const tools = useAppStore((s) => s.tools);
@@ -127,7 +128,8 @@ export function EnvironmentView(): React.JSX.Element {
           Orchevia never installs tools for you. Install and authenticate <code>git</code>
           , <code>gh</code>, <code>claude</code> or <code>codex</code> yourself; Orchevia
           discovers them on <code>PATH</code> and delegates AI work to them. Those tools
-          may contact their own providers — Orchevia itself sends nothing anywhere.
+          may contact their own providers — Orchevia itself only asks GitHub for its
+          latest version (see Updates below).
         </Notice>
 
         <h2 style={{ fontSize: 14, marginTop: 20 }}>Local CLIs</h2>
@@ -362,6 +364,11 @@ export function EnvironmentView(): React.JSX.Element {
             </div>
           </Modal>
         )}
+
+        <h2 id="updates" style={{ fontSize: 14, marginTop: 20 }}>
+          Updates
+        </h2>
+        <UpdatesSection />
 
         <h2 style={{ fontSize: 14, marginTop: 20 }}>Diagnostics</h2>
         <p className="field-hint" style={{ maxWidth: 720 }}>

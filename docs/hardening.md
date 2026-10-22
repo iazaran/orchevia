@@ -22,7 +22,8 @@ project accepts. Honest limitations beat aspirational claims.
   on boot; `paused` runs stay resumable.
 - **Performance:** 200-node validation benchmarks (Rust + frontend, <2 s
   budget); memoized canvas nodes; bounded parallelism (≤4); conservative
-  poll intervals (1.5 s runs, 60 s scheduler, ≥300 s watchers).
+  poll intervals (1.5 s runs, scheduler waking at due times and at least every
+  60 s, ≥300 s watchers).
 
 ## Residual risks (accepted)
 
@@ -43,9 +44,16 @@ nothing ever uploads automatically.
 
 ## Updater decision
 
-No automatic updater ships while macOS builds are unsigned: an updater without
-signed metadata would be theater. When signing exists, enable Tauri updater
-with pinned public-key verification — never weaken signature checks.
+Since v0.1.20 Orchevia tells you when a new release is ready: shortly after
+launch and twice a day it asks GitHub's public releases API for this
+repository's latest version (no identifiers, no account; turn it off in
+Environment → Updates). A newer version shows a banner, one Inbox entry and,
+when desktop notifications are on, one desktop notification, with a link to the
+matching installer.
+
+Nothing installs automatically. Automatic installation waits for signed
+release metadata: enable the Tauri updater with pinned public-key verification
+(and an apt repository for the .deb) — never weaken signature checks.
 
 ## Release checklist (maintainers)
 

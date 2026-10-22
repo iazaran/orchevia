@@ -26,6 +26,11 @@ pub struct AppState {
     pub engine: Engine,
     pub cancel: CancellationRegistry,
     pub scheduler_wake: Arc<tokio::sync::Notify>,
+    /// Whether the desktop shows tray icons, probed once off the UI thread at
+    /// launch (unset while probing; `None` inside when unknown).
+    pub tray_available: Arc<std::sync::OnceLock<Option<bool>>>,
+    /// The "still running" notice is shown once per session.
+    pub background_notice_shown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -37,6 +42,8 @@ impl AppState {
             engine,
             cancel,
             scheduler_wake: Arc::new(tokio::sync::Notify::new()),
+            tray_available: Arc::new(std::sync::OnceLock::new()),
+            background_notice_shown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -564,26 +571,18 @@ pub fn list_schedules(
 #[tauri::command]
 pub fn save_schedule(
     state: State<AppState>,
-    mut schedule: orchevia_core::schedule::Schedule,
+    schedule: orchevia_core::schedule::Schedule,
 ) -> Result<orchevia_core::schedule::Schedule, String> {
     // Enabling automation over write-capable workflows needs trust.
     if schedule.enabled {
         check_schedule_trust(&state, &schedule.workflow_id, schedule.trusted)?;
     }
-    // (Re)compute the next slot on save so the UI shows it immediately.
-    let now = chrono::Utc::now();
-    let (_, next) = orchevia_core::schedule::evaluate(&schedule, now);
-    schedule.next_run_at = next;
-    state
-        .db
-        .upsert_schedule(&schedule)
-        .map_err(|e| e.to_string())?;
+    // Keep run bookkeeping from the stored copy and recompute the next slot
+    // when timing changes or the schedule is re-enabled, so the UI shows it
+    // immediately and never keeps a slot from the old timing.
+    let saved = orchevia_core::scheduler::save_schedule(&state.db, &schedule, chrono::Utc::now())?;
     state.scheduler_wake.notify_one();
-    state
-        .db
-        .get_schedule(&schedule.id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Failed to read back saved schedule.".to_string())
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -616,12 +615,41 @@ pub async fn fire_schedule_now(
             ]),
         )
         .map_err(|e| e.to_string())?;
-    // Record the manual fire on the schedule row.
-    let mut updated = schedule;
-    updated.last_run_at = Some(chrono::Utc::now());
-    updated.last_status = Some(format!("manually started {run_id}"));
-    let _ = state.db.upsert_schedule(&updated);
+    // Record the manual fire on the stored row without overwriting a
+    // concurrent scheduler check or save.
+    let _ = orchevia_core::scheduler::record_manual_run(
+        &state.db,
+        &schedule.id,
+        &run_id,
+        chrono::Utc::now(),
+    );
     Ok(RunStarted { run_id })
+}
+
+/// Tray, platform and install facts for the Background and Updates sections.
+#[tauri::command]
+pub fn desktop_info(state: State<AppState>) -> orchevia_core::desktop::DesktopInfo {
+    orchevia_core::desktop::desktop_info(state.tray_available.get().copied().flatten())
+}
+
+/// Quit from inside the app: on desktops without a tray (GNOME without the
+/// AppIndicator extension) this is the only way out of background mode.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Open one of Orchevia's own GitHub pages (release notes, downloads).
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    orchevia_core::desktop::open_external(&url)
+}
+
+/// Announce an available release once: Inbox entry, plus a desktop
+/// notification when system notifications are on.
+#[tauri::command]
+pub fn record_update_notice(state: State<AppState>, version: String) -> Result<bool, String> {
+    orchevia_core::updates::record_update_notice(&state.db, &version)
 }
 
 #[tauri::command]
@@ -643,6 +671,7 @@ pub fn schedule_preview(
         last_run_at: None,
         next_run_at: None,
         last_status: None,
+        deferred_slot: None,
     };
     let errors = probe.validate();
     if !errors.is_empty() {
@@ -826,8 +855,9 @@ pub fn set_notification_prefs(
 const ALLOWED_SETTINGS: &[&str] = &[
     "background.mode",
     "notifications.os",
-    "scheduler.intervalSecs",
     "ui.theme",
+    "updates.check",
+    "updates.dismissedVersion",
     "onboarding.completed",
     "workflow.assistanceProfileId",
     orchevia_core::agents::PERMISSION_DEFAULT_SETTING,
@@ -921,13 +951,11 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     if !ALLOWED_SETTINGS.contains(&key) {
         return Err(format!("Setting '{key}' is not user-configurable."));
     }
-    if key == "scheduler.intervalSecs" {
-        let secs: u64 = value
-            .parse()
-            .map_err(|_| "Interval must be a number.".to_string())?;
-        if !(30..=3600).contains(&secs) {
-            return Err("Scheduler interval must be 30–3600 s.".to_string());
-        }
+    if key == "updates.check" && value != "0" && value != "1" {
+        return Err("Update checks are on ('1') or off ('0').".to_string());
+    }
+    if key == "updates.dismissedVersion" && orchevia_core::updates::parse_version(value).is_none() {
+        return Err(format!("'{value}' is not a release version."));
     }
     // Subscription fee lists are JSON documents; they stay bounded but need
     // more room than scalar preferences.
@@ -1875,7 +1903,7 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
         })).collect::<Vec<_>>(),
         "settings": {
             "background.mode": state.db.get_setting("background.mode").unwrap_or(None),
-            "scheduler.intervalSecs": state.db.get_setting("scheduler.intervalSecs").unwrap_or(None),
+            "updates.check": state.db.get_setting("updates.check").unwrap_or(None),
             "notifications.os": state.db.get_setting("notifications.os").unwrap_or(None),
         },
         "recentErrors": recent_errors,

@@ -1,6 +1,6 @@
 [package]
 name = "orchevia"
-version = "0.1.19"
+version = "0.1.20"
 description = "Orchevia — local-first visual workflow orchestrator for developer AI agents and CLI tools."
 authors = ["Orchevia Contributors"]
 license = "Apache-2.0"
@@ -20,6 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 orchevia-core = { path = "../crates/core" }
+tauri-plugin-single-instance = "2"
 
 [features]
 default = ["custom-protocol"]

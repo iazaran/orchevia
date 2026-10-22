@@ -79,12 +79,24 @@ import type {
   WorkflowTemplate,
 } from './generation';
 import {
+  oneTimeSpent,
+  prepareScheduleSave,
   prepareWatcherSave,
   scheduleTrustError,
+  validateSchedule,
   validateWatcher,
   validateWatcherScope,
   workflowRisks,
 } from './scheduler';
+import {
+  allowedExternalUrl,
+  fetchUpdateCheck,
+  isNewer,
+  parseVersion,
+  type DesktopInfo,
+  type UpdateCheck,
+} from './updates';
+import { version as appVersion } from '../../package.json';
 import type {
   GroupedFinding,
   Notification,
@@ -212,6 +224,16 @@ export interface Backend {
   setNotificationPrefs(prefs: NotificationPrefs): Promise<void>;
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string): Promise<void>;
+  /** Tray, platform and install facts for Background mode and Updates. */
+  desktopInfo(): Promise<DesktopInfo>;
+  /** Quit the app (the only way out of background mode without a tray). */
+  quitApp(): Promise<void>;
+  /** Open one of Orchevia's own GitHub pages in the browser. */
+  openExternalUrl(url: string): Promise<void>;
+  /** Ask GitHub for the latest release. */
+  checkForUpdate(): Promise<UpdateCheck>;
+  /** Announce a newer version once (Inbox + desktop when enabled). */
+  recordUpdateNotice(version: string): Promise<boolean>;
   diagnosticsBundle(): Promise<string>;
   roleMapDefault(): Promise<Record<string, string>>;
   listTemplates(): Promise<{ builtin: WorkflowTemplate[]; user: WorkflowTemplate[] }>;
@@ -501,6 +523,21 @@ class TauriBackend implements Backend {
   }
   setSetting(key: string, value: string): Promise<void> {
     return this.invoke('set_setting', { key, value });
+  }
+  desktopInfo(): Promise<DesktopInfo> {
+    return this.invoke('desktop_info');
+  }
+  quitApp(): Promise<void> {
+    return this.invoke('quit_app');
+  }
+  openExternalUrl(url: string): Promise<void> {
+    return this.invoke('open_external_url', { url });
+  }
+  checkForUpdate(): Promise<UpdateCheck> {
+    return fetchUpdateCheck(appVersion);
+  }
+  recordUpdateNotice(version: string): Promise<boolean> {
+    return this.invoke('record_update_notice', { version });
   }
   diagnosticsBundle(): Promise<string> {
     return this.invoke('diagnostics_bundle');
@@ -2086,21 +2123,29 @@ class MockBackend implements Backend {
     return [...this.schedules.values()];
   }
 
-  async saveSchedule(schedule: Schedule): Promise<Schedule> {
-    // Enabling automation over write-capable workflows needs trust (commands.rs).
-    if (schedule.enabled) {
-      const stored = this.workflows.get(schedule.workflowId);
+  async saveSchedule(input: Schedule): Promise<Schedule> {
+    // Same order as commands.rs: trust, bookkeeping, then validation.
+    if (input.enabled) {
+      const stored = this.workflows.get(input.workflowId);
       if (stored === undefined)
-        throw new Error(`Unknown workflow '${schedule.workflowId}'.`);
+        throw new Error(`Unknown workflow '${input.workflowId}'.`);
       const error = scheduleTrustError(
         stored.definition,
         this.effectiveProfiles(),
-        schedule.trusted,
+        input.trusted,
       );
       if (error !== null) throw new Error(error);
     }
+    const previous = this.schedules.get(input.id);
+    const schedule = prepareScheduleSave(input, previous);
+    // Only turning a schedule on is refused (scheduler::save_schedule).
+    const turningOn = schedule.enabled && previous?.enabled !== true;
+    const spent = turningOn ? oneTimeSpent(schedule) : null;
+    if (spent !== null) throw new Error(spent);
+    const errors = validateSchedule(schedule);
+    if (errors.length > 0) throw new Error(`Invalid schedule: ${errors.join('; ')}`);
     this.schedules.set(schedule.id, schedule);
-    return schedule;
+    return { ...schedule };
   }
 
   async deleteSchedule(id: string): Promise<boolean> {
@@ -2185,8 +2230,9 @@ class MockBackend implements Backend {
       ![
         'background.mode',
         'notifications.os',
-        'scheduler.intervalSecs',
         'ui.theme',
+        'updates.check',
+        'updates.dismissedVersion',
         'onboarding.completed',
         'workflow.assistanceProfileId',
         PERMISSION_DEFAULT_SETTING,
@@ -2201,12 +2247,10 @@ class MockBackend implements Backend {
 
   async setSetting(key: string, value: string): Promise<void> {
     this.validateSettingKey(key);
-    if (key === 'scheduler.intervalSecs') {
-      if (!/^\d+$/.test(value)) throw new Error('Interval must be a number.');
-      const secs = Number(value);
-      if (secs < 30 || secs > 3600)
-        throw new Error('Scheduler interval must be 30–3600 s.');
-    }
+    if (key === 'updates.check' && value !== '0' && value !== '1')
+      throw new Error("Update checks are on ('1') or off ('0').");
+    if (key === 'updates.dismissedVersion' && parseVersion(value) === null)
+      throw new Error(`'${value}' is not a release version.`);
     if (key === PERMISSION_DEFAULT_SETTING) parsePermissionDefault(value);
     const maxLen = key.startsWith('usage.') ? 8000 : 200;
     if (new TextEncoder().encode(value).length > maxLen)
@@ -2214,6 +2258,36 @@ class MockBackend implements Backend {
     validateUsageSetting(key, value);
     this.settings.set(key, value);
     this.persist();
+  }
+
+  async desktopInfo(): Promise<DesktopInfo> {
+    return { platform: 'browser', arch: 'unknown', installKind: 'unknown' };
+  }
+
+  async quitApp(): Promise<void> {
+    throw new Error('Quit is available in the desktop app.');
+  }
+
+  async openExternalUrl(url: string): Promise<void> {
+    if (!allowedExternalUrl(url))
+      throw new Error("Only Orchevia's own GitHub pages can be opened.");
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async checkForUpdate(): Promise<UpdateCheck> {
+    return fetchUpdateCheck(appVersion);
+  }
+
+  async recordUpdateNotice(version: string): Promise<boolean> {
+    const parsed = parseVersion(version);
+    if (parsed === null) throw new Error(`'${version}' is not a release version.`);
+    if (!isNewer(version, appVersion)) return false;
+    const normalized = parsed.join('.');
+    if (this.settings.get('updates.notifiedVersion') === normalized) return false;
+    // The mock keeps no Inbox; it only remembers the announcement.
+    this.settings.set('updates.notifiedVersion', normalized);
+    this.persist();
+    return true;
   }
 
   async diagnosticsBundle(): Promise<string> {

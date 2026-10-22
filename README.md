@@ -78,8 +78,10 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 - **Linux (.deb):** `sudo apt install ./Orchevia-linux-x86_64.deb`
 - **Linux (AppImage):** `chmod +x Orchevia-linux-x86_64.AppImage`, then run it.
 
-Orchevia does not update itself yet. To hear about new versions, choose
-**Watch → Custom → Releases** on this repository.
+Orchevia tells you when a new version is ready (a banner, an Inbox entry and the
+installer link under **Environment → Updates**, where you can also turn the check
+off). It does not install updates by itself yet: install the new file over the old
+one, and your workflows and history are kept.
 
 </details>
 
@@ -196,7 +198,7 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
   your own `gh` (draft PRs, checks, comments), Jira tickets and other tools through your
   MCP servers.
 - **Local automation.** Durable schedules, PR review and feedback watchers with bot-loop
-  guards, a notification inbox, and an opt-in tray mode. Schedules that write need a
+  guards, a notification inbox, and opt-in background mode. Schedules that write need a
   per-schedule trust opt-in.
 - **Reuse and memory.** Nine ready-to-run built-in templates (pick a repository,
   answer the run form) plus your own, versioned JSON
@@ -255,8 +257,9 @@ Details: [security model](./docs/security.md) and [SECURITY.md](./SECURITY.md).
 - **Tools and sign-in:** install and authenticate CLIs yourself. Orchevia reads only
   `PATH` from your login shell; Jira and other MCP servers may need credentials in the
   environment the app was started from.
-- **Local scheduling:** the app must be running. Background mode keeps it in the tray
-  when the window closes; there is no cloud worker.
+- **Local scheduling:** the app must be running. Background mode keeps it running when
+  the window closes (with a tray icon where the desktop shows one); there is no cloud
+  worker.
 - **Refusal detection:** Codex reports no refusal events, and neither do Claude profiles
   whose extra arguments force text output (`--output-format`), so refused tools in
   those steps are not detected.

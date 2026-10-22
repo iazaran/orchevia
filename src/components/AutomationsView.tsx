@@ -4,7 +4,11 @@ import {
   RISK_LABELS,
   WEEKDAYS,
   describeScheduleKind,
+  fromLocalInputValue,
+  oneTimeCompleted,
+  oneTimeSpent,
   newScheduleId,
+  toLocalInputValue,
   validateWatcher,
   watcherNextCheck,
   workflowConsumesPrNumber,
@@ -24,6 +28,8 @@ import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
+import type { DesktopInfo } from '../lib/updates';
+import { Switch } from './Switch';
 
 function emptySchedule(workflowId: string): Schedule {
   return {
@@ -61,72 +67,24 @@ function oneHourFromNow(): string {
   return new Date(Date.now() + 3600000).toISOString();
 }
 
-/**
- * Background scheduler poll interval. The setting existed (backend validates
- * 30–3600 s and the loop re-reads it live) but had no UI — this wires it up.
- */
-function SchedulerInterval({
-  onMessage,
-}: {
-  onMessage: (message: string | null, variant?: 'info' | 'warn' | 'error') => void;
-}): React.JSX.Element {
-  const [value, setValue] = useState('60');
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    void getBackend()
-      .getSetting('scheduler.intervalSecs')
-      .then((stored) => {
-        if (stored !== null) setValue(stored);
-      })
-      .catch(() => {})
-      .finally(() => {
-        setLoaded(true);
-      });
-  }, []);
-  const save = (): void => {
-    const trimmed = value.trim();
-    void getBackend()
-      .setSetting('scheduler.intervalSecs', trimmed)
-      .then(() => {
-        onMessage(`Scheduler checks every ${trimmed} s from now on.`);
-      })
-      .catch((err: unknown) => {
-        onMessage(errorMessage(err), 'error');
-      });
-  };
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 8,
-        alignItems: 'flex-end',
-        marginTop: 10,
-        flexWrap: 'wrap',
-      }}
-    >
-      <div className="field" style={{ marginBottom: 0 }}>
-        <label className="field-label" htmlFor="sched-interval">
-          Scheduler checks every (seconds, 30–3600)
-        </label>
-        <input
-          id="sched-interval"
-          className="input"
-          style={{ width: 140 }}
-          type="number"
-          min={30}
-          max={3600}
-          disabled={!loaded}
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-          }}
-        />
-      </div>
-      <button className="btn" disabled={!loaded} onClick={save}>
-        Save interval
-      </button>
-    </div>
-  );
+/** What closing the window does, given background mode and the tray. */
+function backgroundHint(on: boolean, desktop: DesktopInfo | null): string {
+  if (!on)
+    return 'Closing the window quits Orchevia, so schedules and watchers stop until you open it again.';
+  if (desktop?.trayAvailable === true)
+    return 'Closing the window keeps Orchevia running in the tray. Use the tray icon to show or quit it.';
+  if (desktop?.trayAvailable === false)
+    return 'Closing the window keeps Orchevia running without a window. Open Orchevia from your app menu to bring it back; it never starts a second copy.';
+  return 'Closing the window keeps Orchevia running. Bring it back from the tray icon or by opening Orchevia again from your app menu.';
+}
+
+/** A slot in the past that has not run yet: held back, or waiting for the next check. */
+function overdueNote(schedule: Schedule): string | null {
+  if (!schedule.enabled || schedule.nextRunAt === undefined) return null;
+  if (Date.parse(schedule.nextRunAt) > Date.now()) return null;
+  return schedule.deferredSlot !== undefined
+    ? 'Waiting for a free run slot; it runs as soon as one frees.'
+    : 'Due now; it starts on the next check.';
 }
 
 export function AutomationsView(): React.JSX.Element {
@@ -154,6 +112,32 @@ export function AutomationsView(): React.JSX.Element {
   const [risks, setRisks] = useState<{ workflow: string; risks: RiskCategory[] } | null>(
     null,
   );
+  const [desktop, setDesktop] = useState<DesktopInfo | null>(null);
+  const [saving, setSaving] = useState<ReadonlySet<string>>(new Set());
+  const markSaving = (id: string, busy: boolean): void => {
+    setSaving((current) => {
+      const next = new Set(current);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const activeRuns = useAppStore(
+    (s) => s.runs.filter((r) => r.status === 'running' || r.status === 'pending').length,
+  );
+
+  useEffect(() => {
+    let alive = true;
+    void getBackend()
+      .desktopInfo()
+      .then((info) => {
+        if (alive) setDesktop(info);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const defaultWorkflow = workflows[0]?.id ?? '';
 
@@ -225,6 +209,71 @@ export function AutomationsView(): React.JSX.Element {
       });
   };
 
+  const setScheduleEnabled = (schedule: Schedule, enabled: boolean): void => {
+    markSaving(schedule.id, true);
+    void getBackend()
+      .saveSchedule({ ...schedule, enabled })
+      .then(() => {
+        setMessage(
+          enabled
+            ? `Resumed schedule '${schedule.name}'.`
+            : `Paused schedule '${schedule.name}'. It won't run until you resume it.`,
+        );
+        reload();
+      })
+      .catch((err: unknown) => {
+        const text = errorMessage(err);
+        setMessage(
+          enabled && /trust/i.test(text)
+            ? `${text} Use Edit → Trusted to allow it.`
+            : text,
+          'error',
+        );
+      })
+      .finally(() => {
+        markSaving(schedule.id, false);
+      });
+  };
+
+  const setWatcherEnabled = (watcher: Watcher, enabled: boolean): void => {
+    markSaving(watcher.id, true);
+    void getBackend()
+      .saveWatcher({ ...watcher, enabled })
+      .then(() => {
+        setMessage(
+          enabled
+            ? `Resumed watcher '${watcher.name}'. An eligible check is queued now.`
+            : `Paused watcher '${watcher.name}'. It won't check GitHub until you resume it.`,
+        );
+        reload();
+      })
+      .catch((err: unknown) => {
+        setMessage(errorMessage(err), 'error');
+      })
+      .finally(() => {
+        markSaving(watcher.id, false);
+      });
+  };
+
+  const quit = (): void => {
+    void confirmDialog({
+      title: 'Quit Orchevia?',
+      message:
+        activeRuns > 0
+          ? `${String(activeRuns)} active run(s) will be stopped. Schedules and watchers pause until you open Orchevia again.`
+          : 'Schedules and watchers pause until you open Orchevia again.',
+      confirmLabel: 'Quit',
+      danger: activeRuns > 0,
+    }).then((ok) => {
+      if (!ok) return;
+      return getBackend()
+        .quitApp()
+        .catch((err: unknown) => {
+          setMessage(errorMessage(err), 'error');
+        });
+    });
+  };
+
   const toggleBackground = (on: boolean): void => {
     void getBackend()
       .setSetting('background.mode', on ? '1' : '0')
@@ -282,7 +331,7 @@ export function AutomationsView(): React.JSX.Element {
           <Notice inline style={{ marginBottom: 16 }} onDismiss={dismissHint}>
             <span>
               Orchevia must be running for schedules and watchers to fire (background mode
-              keeps it in the tray when windows close). New automations start{' '}
+              keeps it running when the window closes). New automations start{' '}
               <strong>disabled</strong>; enabling anything above read-only needs an
               explicit trust opt-in. Missed windows never storm: at most one catch-up per
               policy.
@@ -295,33 +344,38 @@ export function AutomationsView(): React.JSX.Element {
           className="tool-card"
           style={{ marginBottom: 16, maxWidth: 680 }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 8,
-            }}
-          >
+          <div className="background-card-head">
             <h3 style={{ margin: 0 }}>Background mode</h3>
-            {backgroundMode && (
-              <span className="status-pill status-running">background on</span>
-            )}
-          </div>
-          <label
-            className="field-hint"
-            style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}
-          >
-            <input
-              type="checkbox"
+            <Switch
               checked={backgroundMode}
-              onChange={(e) => {
-                toggleBackground(e.target.checked);
-              }}
+              onChange={toggleBackground}
+              label="Keep running when the window closes"
+              onText="Keep running when closed"
+              offText="Quit when closed"
             />
-            Run in background when windows close (tray icon stays; Quit from tray)
-          </label>
-          <SchedulerInterval onMessage={setMessage} />
+          </div>
+          <p className="field-hint" style={{ margin: '8px 0 0' }}>
+            {backgroundHint(backgroundMode, desktop)}
+          </p>
+          {backgroundMode && desktop?.trayAvailable === false && (
+            <Notice inline style={{ marginTop: 10 }}>
+              <span>
+                Your desktop shows no tray icons. On GNOME, install the AppIndicator
+                extension (
+                <code>sudo apt install gnome-shell-extension-appindicator</code>
+                ), then log out and back in to get Orchevia&apos;s tray icon.
+              </span>
+            </Notice>
+          )}
+          <div className="background-card-actions">
+            <button className="btn btn-ghost danger-hover" onClick={quit}>
+              Quit Orchevia
+            </button>
+            <span className="field-hint">
+              Schedules start on time while Orchevia runs; it checks again at least every
+              minute.
+            </span>
+          </div>
         </section>
 
         <h2 style={{ fontSize: 14 }}>Schedules ({schedules.length})</h2>
@@ -362,11 +416,27 @@ export function AutomationsView(): React.JSX.Element {
                   </div>
                 </div>
                 <div className="automation-head-actions">
-                  <span
-                    className={`status-pill ${s.enabled ? 'status-succeeded' : 'status-paused'}`}
-                  >
-                    {s.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
+                  {!s.enabled && oneTimeSpent(s) !== null ? (
+                    // A spent one-time schedule needs a new time, not a switch.
+                    <span
+                      className="status-pill status-cancelled"
+                      title={oneTimeSpent(s) ?? undefined}
+                    >
+                      {oneTimeCompleted(s) ? 'Done' : 'Expired'}
+                    </span>
+                  ) : (
+                    <Switch
+                      checked={s.enabled}
+                      onChange={(on) => {
+                        setScheduleEnabled(s, on);
+                      }}
+                      label={`Run schedule '${s.name}'`}
+                      title={s.enabled ? 'Pause this schedule' : 'Resume this schedule'}
+                      onText="On"
+                      offText="Paused"
+                      busy={saving.has(s.id)}
+                    />
+                  )}
                   <CloseButton
                     variant="card"
                     label={`Delete schedule '${s.name}'`}
@@ -405,14 +475,31 @@ export function AutomationsView(): React.JSX.Element {
                 <div>
                   <dt>Next run</dt>
                   <dd title={s.nextRunAt ?? undefined}>
-                    {s.nextRunAt !== undefined ? formatTime(s.nextRunAt) : '—'}
+                    {!s.enabled && oneTimeSpent(s) !== null
+                      ? '—'
+                      : !s.enabled
+                        ? 'Paused'
+                        : s.nextRunAt !== undefined
+                          ? formatTime(s.nextRunAt)
+                          : '—'}
+                    {overdueNote(s) !== null && (
+                      <span className="fact-note">{overdueNote(s)}</span>
+                    )}
                   </dd>
                 </div>
                 <div>
                   <dt>Last run</dt>
-                  <dd title={s.lastStatus ?? 'never'}>{s.lastStatus ?? 'never'}</dd>
+                  <dd title={s.lastRunAt ?? 'never'}>
+                    {s.lastRunAt !== undefined ? formatTime(s.lastRunAt) : 'never'}
+                  </dd>
                 </div>
               </dl>
+              {s.lastStatus !== undefined && (
+                <div className="watcher-result" title={s.lastStatus}>
+                  <span className="field-label">Last result</span>
+                  <span>{s.lastStatus}</span>
+                </div>
+              )}
               <div className="profile-actions">
                 <button className="btn" onClick={() => setEditingSchedule({ ...s })}>
                   Edit
@@ -473,11 +560,17 @@ export function AutomationsView(): React.JSX.Element {
                   </div>
                 </div>
                 <div className="automation-head-actions">
-                  <span
-                    className={`status-pill ${w.enabled ? 'status-succeeded' : 'status-paused'}`}
-                  >
-                    {w.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
+                  <Switch
+                    checked={w.enabled}
+                    onChange={(on) => {
+                      setWatcherEnabled(w, on);
+                    }}
+                    label={`Run watcher '${w.name}'`}
+                    title={w.enabled ? 'Pause this watcher' : 'Resume this watcher'}
+                    onText="On"
+                    offText="Paused"
+                    busy={saving.has(w.id)}
+                  />
                   <CloseButton
                     variant="card"
                     label={`Delete watcher '${w.name}'`}
@@ -521,7 +614,7 @@ export function AutomationsView(): React.JSX.Element {
                   <dt>Next check</dt>
                   <dd title={watcherNextCheck(w)}>
                     {!w.enabled
-                      ? 'Disabled'
+                      ? 'Paused'
                       : watcherNextCheck(w) !== undefined
                         ? formatTime(watcherNextCheck(w) ?? '')
                         : 'Queued for first check'}
@@ -601,6 +694,8 @@ export function AutomationsView(): React.JSX.Element {
         <h2 style={{ fontSize: 14, marginTop: 24 }}>Notifications</h2>
 
         <NotificationPrefsEditor
+          // Remount once stored preferences arrive; later refreshes keep edits.
+          key={notificationPrefs === null ? 'pending' : 'loaded'}
           prefs={notificationPrefs}
           unreadCount={unreadCount}
           onOpenInbox={() => {
@@ -609,10 +704,18 @@ export function AutomationsView(): React.JSX.Element {
           onSaved={() => {
             void refreshAutomations();
           }}
+          onMessage={setMessage}
         />
       </div>
     </>
   );
+}
+
+const TIMEZONES = ['local', 'utc', '+01:00', '+02:00', '+04:00', '-05:00', '-08:00'];
+
+/** Offered zones, plus a stored offset that is not in the short list. */
+function timezoneOptions(current: string): string[] {
+  return TIMEZONES.includes(current) ? TIMEZONES : [...TIMEZONES, current];
 }
 
 function ScheduleEditor({
@@ -693,12 +796,11 @@ function ScheduleEditor({
             value={form.timezone}
             onChange={(e) => set({ timezone: e.target.value })}
           >
-            <option value="local">local (system)</option>
-            <option value="utc">utc</option>
-            <option value="+01:00">+01:00</option>
-            <option value="+02:00">+02:00</option>
-            <option value="-05:00">-05:00</option>
-            <option value="-08:00">-08:00</option>
+            {timezoneOptions(form.timezone).map((zone) => (
+              <option key={zone} value={zone}>
+                {zone === 'local' ? 'local (system time)' : zone}
+              </option>
+            ))}
           </select>
         </div>
         <div className="field">
@@ -814,10 +916,13 @@ function KindEditor({
         <input
           className="input"
           type="datetime-local"
-          value={kind.at.slice(0, 16)}
-          onChange={(e) =>
-            onChange({ kind: 'oneTime', at: new Date(e.target.value).toISOString() })
-          }
+          aria-label="Run once at (local time)"
+          value={toLocalInputValue(kind.at)}
+          onChange={(e) => {
+            const at = fromLocalInputValue(e.target.value);
+            // Keep the last valid time while the field is being cleared.
+            if (at !== null) onChange({ kind: 'oneTime', at });
+          }}
         />
       )}
       {kind.kind === 'interval' && (
@@ -1141,27 +1246,56 @@ function validateScheduleForm(form: Schedule): string[] {
   return [];
 }
 
+function fromPrefs(stored: NotificationPrefs | null): NotificationPrefs {
+  return {
+    onApproval: stored?.onApproval ?? true,
+    onFailure: stored?.onFailure ?? true,
+    onActionableFindings: stored?.onActionableFindings ?? true,
+    onScheduledSuccess: stored?.onScheduledSuccess ?? false,
+    onFeedbackNeedsAction: stored?.onFeedbackNeedsAction ?? true,
+  };
+}
+
 function NotificationPrefsEditor({
   prefs,
   unreadCount,
   onOpenInbox,
   onSaved,
+  onMessage,
 }: {
   prefs: NotificationPrefs | null;
   unreadCount: number;
   onOpenInbox: () => void;
   onSaved: () => void;
+  onMessage: (message: string | null, variant?: 'info' | 'warn' | 'error') => void;
 }): React.JSX.Element {
-  const [form, setForm] = useState({
-    onApproval: prefs?.onApproval ?? true,
-    onFailure: prefs?.onFailure ?? true,
-    onActionableFindings: prefs?.onActionableFindings ?? true,
-    onScheduledSuccess: prefs?.onScheduledSuccess ?? false,
-    onFeedbackNeedsAction: prefs?.onFeedbackNeedsAction ?? true,
-  });
-  const [osEnabled, setOsEnabled] = useState(false);
-  const toggle = (key: keyof typeof form): void => {
+  const [form, setForm] = useState<NotificationPrefs>(() => fromPrefs(prefs));
+  const [osEnabled, setOsEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getBackend()
+      .getSetting('notifications.os')
+      .then((value) => {
+        if (alive) setOsEnabled(value === '1');
+      })
+      .catch(() => {
+        if (alive) setOsEnabled(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const toggle = (key: keyof NotificationPrefs): void => {
     setForm((f) => ({ ...f, [key]: !f[key] }));
+  };
+  const setOs = (on: boolean): void => {
+    setOsEnabled(on);
+    void getBackend()
+      .setSetting('notifications.os', on ? '1' : '0')
+      .catch((err: unknown) => {
+        setOsEnabled(!on);
+        onMessage(errorMessage(err), 'error');
+      });
   };
   return (
     <section
@@ -1169,8 +1303,18 @@ function NotificationPrefsEditor({
       className="tool-card"
       style={{ marginTop: 20, maxWidth: 680 }}
     >
-      <h3 style={{ marginTop: 0 }}>Notification preferences</h3>
-      <p className="field-hint" style={{ marginTop: 0 }}>
+      <div className="background-card-head">
+        <h3 style={{ margin: 0 }}>Notification preferences</h3>
+        <Switch
+          checked={osEnabled === true}
+          onChange={setOs}
+          label="Also send system desktop notifications"
+          onText="Desktop notifications on"
+          offText="Desktop notifications off"
+          disabled={osEnabled === null}
+        />
+      </div>
+      <p className="field-hint">
         {unreadCount} unread — approvals, failures, and findings live in the{' '}
         <button className="btn btn-ghost" onClick={onOpenInbox}>
           Inbox →
@@ -1179,7 +1323,7 @@ function NotificationPrefsEditor({
       {(
         [
           ['onApproval', 'Approval needed'],
-          ['onFailure', 'Workflow failed'],
+          ['onFailure', 'Failures (workflows, blocked schedules, watcher errors)'],
           ['onActionableFindings', 'Actionable P0/P1 findings'],
           ['onScheduledSuccess', 'Scheduled success (off by default — no spam)'],
           ['onFeedbackNeedsAction', 'Feedback needs action'],
@@ -1190,28 +1334,19 @@ function NotificationPrefsEditor({
           {label}
         </label>
       ))}
-      <label className="field-hint" style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-        <input
-          type="checkbox"
-          checked={osEnabled}
-          onChange={(e) => {
-            const on = e.target.checked;
-            setOsEnabled(on);
-            void getBackend()
-              .setSetting('notifications.os', on ? '1' : '0')
-              .catch(() => {});
-          }}
-        />
-        Also send system desktop notifications (notify-send / Notification Center)
-      </label>
       <button
         className="btn"
         style={{ marginTop: 8 }}
         onClick={() => {
           void getBackend()
             .setNotificationPrefs(form)
-            .then(() => onSaved())
-            .catch(() => {});
+            .then(() => {
+              onMessage('Saved notification preferences.');
+              onSaved();
+            })
+            .catch((err: unknown) => {
+              onMessage(errorMessage(err), 'error');
+            });
         }}
       >
         Save preferences

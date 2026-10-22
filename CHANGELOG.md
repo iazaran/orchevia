@@ -6,6 +6,90 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-10-22
+
+### Added
+
+- **Pause and resume from the card.** Schedules and watchers have an on/off switch
+  on their card, so pausing no longer needs the editor. The same shared switch now
+  drives Background mode, desktop notifications and update checks.
+- **Update notices.** Orchevia asks GitHub for its latest release shortly after
+  launch and twice a day. A newer version shows a banner, one Inbox entry and, with
+  desktop notifications on, one desktop notification. **Environment → Updates**
+  shows your version, links the installer that matches your install (.deb,
+  AppImage or DMG) with the steps to apply it, and turns automatic checks off.
+  Nothing installs automatically.
+- **Quit Orchevia** on the Background mode card, for desktops without a tray icon.
+- Schedule cards show the last run time, the last result (started, deferred,
+  skipped, blocked) and a hint when a run is due or waiting for a free slot.
+
+### Changed
+
+- The scheduler sleeps until the next slot or watcher poll is due and checks at
+  least once a minute; saving a schedule or watcher wakes it at once.
+- Interval schedules sit on a grid aligned to midnight in their timezone (standard
+  time for `local`), so hourly runs on the hour in half-hour zones too. Intervals
+  stay exactly N seconds apart across daylight-saving changes; use a Daily schedule
+  for a fixed wall-clock time.
+- Cron with both a day of month and a day of week restricted runs on either one
+  (standard cron). Leap-day expressions are found up to five years ahead.
+- Development: `pnpm tauri dev` while an installed Orchevia runs only focuses the
+  installed app, because they share an identifier; quit it first.
+- Dependencies refreshed within their declared ranges.
+
+### Removed
+
+- The **Scheduler checks every** setting (30–3600 s). Slots no longer depend on it.
+
+### Fixed
+
+- **Schedules run on time while Orchevia is open.** A slot ran only if the scheduler
+  noticed it within 5 minutes, but it could check as rarely as once an hour, so most
+  slots were skipped without a trace. Every slot that comes due while the app runs
+  now starts, however late the check. The missed-run policy covers only time the app
+  was closed or the computer slept, and a skipped slot says so on its card.
+- **Editing a schedule recomputes its next run.** Changing the cadence or timezone
+  kept the next run of the old timing: an hourly schedule changed to every 5 minutes
+  still waited for the next hour. Pausing clears the next run, resuming computes a
+  fresh one, and renaming keeps a pending one. A stale editor copy no longer
+  overwrites the last run or result.
+- **Only one Orchevia runs.** Opening the app while it was hidden in background mode
+  started another copy with its own scheduler on the same database, and that copy
+  marked the first one's active runs as failed. Opening it again now shows the
+  running window; on macOS the Dock icon does too.
+- **Background mode without a tray icon.** GNOME shows no tray icons unless the
+  AppIndicator extension is installed, so a hidden Orchevia could neither be shown
+  nor quit. The Background mode card now says so and offers Quit, and the first
+  hide sends a desktop notification explaining how to get back.
+- **Held-back runs keep their place.** A slot deferred by the two-run limit or an
+  active run of the same workflow was later dropped as "missed" (one-time schedules
+  were retired). It now runs as soon as a slot frees while Orchevia keeps running;
+  after a quit or sleep the missed-run policy decides. **Run now** counts as that
+  slot's run.
+- **Blocked schedules notify once.** A schedule whose workflow now needs trust, was
+  deleted or failed to start notified on every check. It now skips that slot and
+  reports each change once; watcher errors also notify once per new error.
+- Scheduler and watcher desktop notifications ignored the desktop-notification
+  switch. They now follow it and the **Failures** preference.
+- `local` daily, weekly and cron schedules were an hour off after a daylight-saving
+  change. Every slot now follows the system zone's rules: a time skipped by the
+  spring-forward jump runs an hour later, and a time repeated by the fall-back hour
+  runs once (a cron with `*` in the hour field keeps running through it).
+- Cron expressions that can never match (31 February) are rejected instead of
+  silently never running.
+- The one-time date field showed and saved UTC as if it were local time, moving the
+  run by your UTC offset. **Run now** before a one-time schedule's time no longer
+  uses it up, and a finished one shows **Done** instead of a switch that turned
+  itself back off.
+- The desktop-notification checkbox always showed off after reopening Automations.
+- A save racing a scheduler check could lose the run record or put back a slot that
+  just ran, starting it twice, and **Run now** could overwrite a concurrent check.
+  Saves now write only if the stored schedule did not change meanwhile.
+- Schedules and watchers saved by older versions (for example with `every_secs`)
+  could never record a check, so a due slot could start again on every check.
+- The browser mock (`pnpm dev`) validates schedules with the desktop app's rules and
+  messages.
+
 ## [0.1.19] - 2026-10-21
 
 ### Changed

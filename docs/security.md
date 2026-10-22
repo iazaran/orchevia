@@ -36,6 +36,12 @@ the boundaries, and the limits of the current application.
 - Third-party CLIs (Claude Code, Codex) act under their own permissions and may send
   prompt/repo content to their providers. Orchevia cannot make them offline and does
   not claim to.
+- Orchevia's own only network request is the update check: an unauthenticated
+  `GET` to GitHub's releases API for this repository, shortly after launch and
+  twice a day. It carries nothing about you or your work beyond what any HTTPS
+  request does (IP address, user agent), and nothing installs automatically. Turn
+  it off in Environment → Updates. The app opens only this repository's pages in
+  your browser.
 - Ticket/PR text and imported workflows/templates are **untrusted input**. Future AI
   nodes must treat them as data, never as instructions.
 

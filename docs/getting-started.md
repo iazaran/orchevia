@@ -111,7 +111,7 @@ Unsupported integration operations may need Command nodes or manual steps.
 | Git step refuses a dirty repository | Inspect and preserve the changes before retrying; do not discard them to bypass the guard.                 |
 | PR checks are pending or failed     | Inspect the check results under Runs; retrieving them does not wait for CI to complete or approve a merge. |
 | Workflow pauses                     | Open Runs and approve or reject the current gate.                                                          |
-| Schedule does not fire              | Keep the app running, check the schedule, and enable background mode if needed.                            |
+| Schedule does not fire              | Keep the app running (background mode), then read the card's last result: skipped, deferred or blocked.    |
 | Generated graph needs setup         | Read the preview notes, assign profiles/MCP servers, and validate before Run.                              |
 
 Commands and agents execute with your user permissions. Orchevia does not

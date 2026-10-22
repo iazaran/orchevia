@@ -1088,9 +1088,78 @@ it('mirrors desktop settings access and validation', async () => {
   await expect(backend.setSetting('private.setting', 'x')).rejects.toThrow(
     'not user-configurable',
   );
-  await expect(backend.setSetting('scheduler.intervalSecs', '2')).rejects.toThrow(
-    '30–3600',
+  // The poll interval is fixed now; the old key is no longer a setting.
+  await expect(backend.setSetting('scheduler.intervalSecs', '60')).rejects.toThrow(
+    'not user-configurable',
   );
+  await expect(backend.setSetting('updates.check', 'maybe')).rejects.toThrow(
+    "on ('1') or off ('0')",
+  );
+  await expect(backend.setSetting('updates.dismissedVersion', 'soon')).rejects.toThrow(
+    'not a release version',
+  );
+  await backend.setSetting('updates.check', '0');
+  await backend.setSetting('updates.dismissedVersion', '9.9.9');
+  expect(await backend.getSetting('updates.check')).toBe('0');
+});
+
+it('mirrors schedule save bookkeeping and validation', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Read only');
+  workflow.id = 'wf';
+  await backend.saveWorkflow(workflow);
+  const base = {
+    id: 's',
+    name: 'Review PRs',
+    workflowId: 'wf',
+    kind: { kind: 'interval' as const, everySecs: 3600 },
+    timezone: 'local',
+    enabled: true,
+    trusted: true,
+    missedPolicy: 'skip' as const,
+  };
+  await backend.saveSchedule(base);
+  // A stale editor copy cannot overwrite scheduler bookkeeping.
+  const resaved = await backend.saveSchedule({
+    ...base,
+    name: 'Renamed',
+    lastStatus: 'edited in the form',
+    nextRunAt: '2000-01-01T00:00:00Z',
+  });
+  expect(resaved.name).toBe('Renamed');
+  expect(resaved.lastStatus).toBeUndefined();
+  expect(resaved.nextRunAt).toBeUndefined();
+  await expect(
+    backend.saveSchedule({ ...base, kind: { kind: 'cron', expr: '0 9 * * mon' } }),
+  ).rejects.toThrow("Invalid schedule: Invalid cron: Bad value 'mon' in 'mon'.");
+  await expect(
+    backend.saveSchedule({ ...base, kind: { kind: 'cron', expr: '0 0 31 2 *' } }),
+  ).rejects.toThrow('Cron never matches');
+  await expect(
+    backend.saveSchedule({ ...base, timezone: 'Mars/Olympus' }),
+  ).rejects.toThrow("Timezone must be 'utc', 'local', or '±HH:MM'.");
+});
+
+it('mirrors desktop integration commands', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  expect(await backend.desktopInfo()).toEqual({
+    platform: 'browser',
+    arch: 'unknown',
+    installKind: 'unknown',
+  });
+  await expect(backend.quitApp()).rejects.toThrow('desktop app');
+  await expect(backend.openExternalUrl('https://example.com/')).rejects.toThrow(
+    "Only Orchevia's own GitHub pages",
+  );
+  await expect(backend.recordUpdateNotice('soon')).rejects.toThrow(
+    'not a release version',
+  );
+  expect(await backend.recordUpdateNotice('0.0.1')).toBe(false);
+  expect(await backend.recordUpdateNotice('999.0.0')).toBe(true);
+  expect(await backend.recordUpdateNotice('v999.0.0')).toBe(false);
+  expect(await backend.recordUpdateNotice('999.0.1')).toBe(true);
 });
 
 it('resolves same-role profiles in native binary name order', async () => {

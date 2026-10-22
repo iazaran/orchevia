@@ -1738,6 +1738,112 @@ details[open] > .gen-summary::after {
   position: static;
 }
 
+/* Shared on/off switch (Switch.tsx): pause automations, live settings. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.switch:disabled {
+  cursor: default;
+  opacity: var(--btn-disabled-opacity);
+}
+
+.switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--btn-border);
+  background: var(--bg-3);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.switch.is-on .switch-track {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 35%, var(--bg-2));
+}
+
+.switch.is-on .switch-thumb {
+  transform: translateX(14px);
+  background: var(--success);
+}
+
+.switch:not(.is-on) .switch-text {
+  color: var(--text-2);
+}
+
+.switch:focus-visible {
+  outline: none;
+}
+
+.switch:focus-visible .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch-track,
+  .switch-thumb {
+    transition: none;
+  }
+}
+
+/* Background mode card: state switch beside the title, actions below. */
+.background-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.background-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* App-wide "new version ready" banner above the current view. */
+.update-banner {
+  margin: 12px 24px 0;
+}
+
+/* Overdue/held-back slot hint on schedule cards. */
+.fact-note {
+  display: block;
+  color: var(--warning);
+  font-size: 11.5px;
+}
+
 /* Editor actions retain their right edge when the header wraps. */
 .workflow-topbar .topbar-actions {
   justify-content: flex-end;

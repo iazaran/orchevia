@@ -1450,7 +1450,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
               <h3>Local automation</h3>
               <p>
                 Durable schedules, PR review and feedback watchers with bot-loop guards,
-                an inbox, and an opt-in tray mode.
+                an inbox, and opt-in background mode.
               </p>
             </div>
             <div class="card">
@@ -1759,7 +1759,8 @@ pnpm tauri dev</code></pre>
             <summary>Does local-first mean everything stays offline?</summary>
             <p>
               Workflows and run history live in local SQLite, and Orchevia has no
-              telemetry or hosted worker. Your AI CLIs, GitHub operations and MCP
+              telemetry or hosted worker. Orchevia itself only asks GitHub for its latest
+              release, and you can turn that off. Your AI CLIs, GitHub operations and MCP
               integrations may contact their own remote services.
             </p>
           </details>
@@ -1783,8 +1784,8 @@ pnpm tauri dev</code></pre>
           <details>
             <summary>Will schedules run with the app closed?</summary>
             <p>
-              Schedules and watchers need the app running. Background mode keeps it in the
-              system tray when the window closes. Quitting the app or shutting down the
+              Schedules and watchers need the app running. Background mode keeps it
+              running when the window closes. Quitting the app or shutting down the
               machine stops local automation; there is no cloud worker.
             </p>
           </details>
