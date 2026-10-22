@@ -18,6 +18,7 @@ import { errorMessage } from './lib/errors';
 import { readLocal, writeLocal } from './lib/storage';
 import { getBackend } from './lib/backend';
 import { version } from '../package.json';
+import { UpdateBanner, useAutomaticUpdateChecks } from './components/Updates';
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: 'workflows', label: 'Workflows', icon: '◈' },
@@ -41,6 +42,7 @@ export function App(): React.JSX.Element {
   const unread = notifications.filter((n) => !n.read).length;
   const { theme, setTheme } = useTheme();
   const [wizardOpen, setWizardOpen] = useState(false);
+  useAutomaticUpdateChecks();
   const [collapsed, setCollapsed] = useState<boolean>(
     () => readLocal('orchevia.sidebar.v1') === 'collapsed',
   );
@@ -174,6 +176,7 @@ export function App(): React.JSX.Element {
             {error}
           </Notice>
         )}
+        <UpdateBanner />
         <NoticeHost />
         <ConfirmHost />
         {wizardOpen && (
