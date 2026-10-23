@@ -1021,7 +1021,9 @@ export function nextBranchLabel(existing: (string | undefined)[]): 'true' | 'fal
  * Smart-connect: when the user draws S → T, drop edges the new connection
  * makes redundant — an exact duplicate, or a direct P → T line that is now
  * bypassed via P ⇝ S → T (e.g. inserting a node between two linked nodes).
- * Labeled edges (true/false/failure) are never touched.
+ * Labeled edges (true/false/failure) are never touched, and P ⇝ S must use
+ * unlabeled edges only: a path through a branch is conditional, so drawing a
+ * loop-back (fix → review) never removes the review's way in.
  */
 export function bypassedEdgeIds(
   edges: Pick<WorkflowEdge, 'id' | 'source' | 'target' | 'label'>[],
@@ -1039,7 +1041,7 @@ export function bypassedEdgeIds(
       const current = queue.shift() as string;
       if (current === source) return true;
       for (const e of edges) {
-        if (e.id === avoidId) continue;
+        if (e.id === avoidId || !blank(e.label)) continue;
         if (e.source === current && !seen.has(e.target)) {
           seen.add(e.target);
           queue.push(e.target);

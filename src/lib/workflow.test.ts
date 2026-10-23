@@ -273,6 +273,34 @@ describe('smart connect', () => {
     const r = bypassedEdgeIds([e('e1', 'x', 'b')], 'n', 'b');
     expect(r.removeIds).toHaveLength(0);
   });
+
+  it('keeps the way into a review when a loop-back closes the review loop', () => {
+    // impl fans out to two reviews that join before a condition; drawing
+    // fix → revA must not remove impl → revA (the path impl ⇝ fix runs
+    // through the condition's "true" branch).
+    const edges = [
+      e('e1', 'impl', 'revB'),
+      e('e2', 'impl', 'revA'),
+      e('e3', 'revA', 'join'),
+      e('e4', 'revB', 'join'),
+      e('e5', 'join', 'cond'),
+      e('e6', 'cond', 'fix', 'true'),
+      e('e7', 'cond', 'end', 'false'),
+    ];
+    const r = bypassedEdgeIds(edges, 'fix', 'revA');
+    expect(r).toEqual({ dropNew: false, removeIds: [] });
+  });
+
+  it('still removes the direct line when inserting a node inside a loop', () => {
+    // a → b → cond → a (true); inserting n between a and b drops a → b.
+    const edges = [
+      e('e1', 'a', 'b'),
+      e('e2', 'b', 'cond'),
+      e('e3', 'cond', 'a', 'true'),
+      e('e4', 'a', 'n'),
+    ];
+    expect(bypassedEdgeIds(edges, 'n', 'b').removeIds).toEqual(['e1']);
+  });
 });
 
 describe('commit/PR quick flow', () => {
