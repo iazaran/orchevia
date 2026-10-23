@@ -282,6 +282,10 @@ struct RunState {
     visits: HashMap<String, u32>,
     pending: HashMap<String, usize>,
     taken: HashMap<String, bool>,
+    /// Non-loop edges resolved in the current pass, and whether each was
+    /// taken. A later visit of a looping source updates its entry instead of
+    /// counting as another arrival at the target.
+    resolved: HashMap<String, bool>,
 }
 
 impl Engine {
@@ -1360,7 +1364,7 @@ impl Engine {
             let visits = state.visits.get(&edge.target).copied().unwrap_or(0);
             if visits < graph.max_visits(&edge.target) {
                 self.reset_cycle(graph, state, &edge.target, node_id);
-                self.resolve_edge(graph, state, run_id, &edge.target, true, record)?;
+                self.resolve_edge(graph, state, run_id, &edge.target, None, true, record)?;
             } else {
                 effect.run_failed = Some(format!(
                     "Loop limit exceeded at '{}' (max {} visits).",
@@ -1372,6 +1376,9 @@ impl Engine {
         if effect.run_failed.is_some() {
             return Ok(effect);
         }
+        // Whether a taken edge reached a step that can still run; a failure
+        // whose route already ran (in an earlier loop pass) is unhandled.
+        let mut routed = false;
         for edge in &taken_normal {
             if state.terminal.contains_key(&edge.target) {
                 continue;
@@ -1387,7 +1394,16 @@ impl Engine {
                 ));
                 return Ok(effect);
             }
-            self.resolve_edge(graph, state, run_id, &edge.target, true, record)?;
+            routed = true;
+            self.resolve_edge(
+                graph,
+                state,
+                run_id,
+                &edge.target,
+                Some(&edge.id),
+                true,
+                record,
+            )?;
         }
         // Untaken branches resolve immediately — except while a loop
         // continues: sibling targets must wait for the exit visit, otherwise
@@ -1408,17 +1424,29 @@ impl Engine {
                 if loops_back && !can_reach_graph(graph, &edge.target, node_id) {
                     continue;
                 }
-                self.resolve_edge(graph, state, run_id, &edge.target, false, record)?;
+                self.resolve_edge(
+                    graph,
+                    state,
+                    run_id,
+                    &edge.target,
+                    Some(&edge.id),
+                    false,
+                    record,
+                )?;
             }
         }
-        if outcome == NodeOutcome::Failed && taken_normal.is_empty() && taken_loop.is_empty() {
-            // No failure route: the run fails here.
+        if outcome == NodeOutcome::Failed && !routed && taken_loop.is_empty() {
+            // No failure route (or only one that already ran): the run fails here.
             let label = graph
                 .nodes
                 .get(node_id)
                 .and_then(|n| n.label.clone())
                 .unwrap_or_else(|| node_id.to_string());
-            effect.run_failed = Some(format!("Node '{label}' failed with no failure route."));
+            effect.run_failed = Some(if taken_normal.is_empty() {
+                format!("Node '{label}' failed with no failure route.")
+            } else {
+                format!("Node '{label}' failed and its failure route already ran.")
+            });
         }
         Ok(effect)
     }
@@ -1432,7 +1460,7 @@ impl Engine {
         run_id: &str,
         workflow: &Workflow,
     ) -> Result<bool, EngineError> {
-        let waiting: Vec<(String, usize)> = workflow
+        let waiting: Vec<(String, Vec<String>)> = workflow
             .nodes
             .iter()
             .filter(|node| !state.terminal.contains_key(&node.id))
@@ -1443,30 +1471,53 @@ impl Engine {
                         graph.is_loop_edge(&edge.id) || state.terminal.contains_key(&edge.source)
                     });
                 let pending = state.pending.get(&node.id).copied().unwrap_or(0);
-                (settled && pending > 0).then(|| (node.id.clone(), pending))
+                let unresolved = edges
+                    .iter()
+                    .filter(|edge| {
+                        !graph.is_loop_edge(&edge.id) && !state.resolved.contains_key(&edge.id)
+                    })
+                    .map(|edge| edge.id.clone())
+                    .collect();
+                (settled && pending > 0).then(|| (node.id.clone(), unresolved))
             })
             .collect();
-        for (node_id, pending) in &waiting {
-            for _ in 0..*pending {
-                self.resolve_edge(graph, state, run_id, node_id, false, true)?;
+        for (node_id, unresolved) in &waiting {
+            for edge_id in unresolved {
+                self.resolve_edge(graph, state, run_id, node_id, Some(edge_id), false, true)?;
+            }
+            // Anything still counted (should not happen) resolves as before.
+            while !state.terminal.contains_key(node_id)
+                && state.pending.get(node_id).copied().unwrap_or(0) > 0
+            {
+                self.resolve_edge(graph, state, run_id, node_id, None, false, true)?;
             }
         }
         Ok(!waiting.is_empty())
     }
 
     /// Mark one incoming edge resolved for `target`; cascade skip when the
-    /// node can no longer be taken.
+    /// node can no longer be taken. `edge_id` is None for a loop-back edge,
+    /// which is not counted in `pending`.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_edge(
         &self,
         graph: &Graph,
         state: &mut RunState,
         run_id: &str,
         target: &str,
+        edge_id: Option<&str>,
         taken: bool,
         record: bool,
     ) -> Result<(), EngineError> {
         if state.terminal.contains_key(target) {
             return Ok(());
+        }
+        // One arrival per edge per pass: a looping source visited again must
+        // not count as the arrival of another branch.
+        if let Some(id) = edge_id {
+            if state.resolved.insert(id.to_string(), taken).is_some() {
+                return Ok(());
+            }
         }
         if let Some(pending) = state.pending.get_mut(target) {
             *pending = pending.saturating_sub(1);
@@ -1504,44 +1555,93 @@ impl Engine {
             if graph.is_loop_edge(&edge.id) {
                 continue;
             }
-            self.resolve_edge(graph, state, run_id, &edge.target, false, record)?;
+            self.resolve_edge(
+                graph,
+                state,
+                run_id,
+                &edge.target,
+                Some(&edge.id),
+                false,
+                record,
+            )?;
         }
         Ok(())
     }
 
     /// Prepare a loop target for re-execution: clear terminal marks for the
     /// nodes on the cycle (reachable from the target and able to reach the
-    /// source), so they run again bounded by `max_visits`. Nodes off the
-    /// cycle keep their state: exit-path nodes resolve on the exit visit,
-    /// and one-shot side nodes stay completed. History rows stay in SQLite.
+    /// source), so they run again bounded by `max_visits`. Steps the earlier
+    /// pass skipped downstream of the cycle (a failure route it did not take,
+    /// the steps after a condition a failure skipped) are decided again by
+    /// the next pass. Other nodes off the cycle keep their state: exit-path
+    /// nodes resolve on the exit visit, and one-shot side nodes stay
+    /// completed. History rows stay in SQLite.
     fn reset_cycle(&self, graph: &Graph, state: &mut RunState, target: &str, source: &str) {
         let from_target = reachable_from_graph(graph, target);
-        let cycle: Vec<String> = from_target
-            .into_iter()
-            .filter(|id| can_reach_graph(graph, id, source) || id == source)
+        let mut rearmed: HashSet<String> = from_target
+            .iter()
+            .filter(|id| can_reach_graph(graph, id, source) || id.as_str() == source)
+            .cloned()
             .collect();
-        for node_id in &cycle {
+        // The source just completed; it rejoins the cycle as re-runnable.
+        rearmed.insert(source.to_string());
+        loop {
+            let more: Vec<String> = from_target
+                .iter()
+                .filter(|id| {
+                    !rearmed.contains(*id)
+                        && state.terminal.get(*id) == Some(&NodeOutcome::Skipped)
+                        && graph.incoming.get(*id).is_some_and(|edges| {
+                            edges
+                                .iter()
+                                .any(|e| !graph.is_loop_edge(&e.id) && rearmed.contains(&e.source))
+                        })
+                })
+                .cloned()
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            rearmed.extend(more);
+        }
+        for node_id in &rearmed {
             state.terminal.remove(node_id);
         }
-        // The source just completed; it rejoins the cycle as re-runnable.
-        state.terminal.remove(source);
-        let mut cycle_set: HashSet<String> = cycle.into_iter().collect();
-        cycle_set.insert(source.to_string());
-        // Recompute readiness: pending = non-loop incoming from
-        // non-terminal sources; taken cleared (the loop edge re-sets it).
-        for node_id in &cycle_set {
-            let pending = graph
-                .incoming
-                .get(node_id)
-                .map(|edges| {
+        // A re-armed step arrives again at steps still waiting off the
+        // cycle, so its earlier arrival no longer counts. A step already
+        // ready, running or finished keeps the decision.
+        for node_id in &rearmed {
+            for edge in graph.outgoing.get(node_id).into_iter().flatten() {
+                let waiting = !rearmed.contains(&edge.target)
+                    && !state.terminal.contains_key(&edge.target)
+                    && state.pending.get(&edge.target).copied().unwrap_or(0) > 0;
+                if graph.is_loop_edge(&edge.id)
+                    || !waiting
+                    || state.resolved.remove(&edge.id).is_none()
+                {
+                    continue;
+                }
+                *state.pending.entry(edge.target.clone()).or_insert(0) += 1;
+                let still_taken = graph.incoming.get(&edge.target).is_some_and(|edges| {
                     edges
                         .iter()
-                        .filter(|e| {
-                            !graph.is_loop_edge(&e.id) && !state.terminal.contains_key(&e.source)
-                        })
-                        .count()
-                })
-                .unwrap_or(0);
+                        .any(|e| state.resolved.get(&e.id) == Some(&true))
+                });
+                state.taken.insert(edge.target.clone(), still_taken);
+            }
+        }
+        // Recompute readiness: pending = non-loop incoming from
+        // non-terminal sources, which resolve again; taken cleared (the loop
+        // edge re-sets it).
+        for node_id in &rearmed {
+            let mut pending = 0;
+            for edge in graph.incoming.get(node_id).into_iter().flatten() {
+                if graph.is_loop_edge(&edge.id) || state.terminal.contains_key(&edge.source) {
+                    continue;
+                }
+                state.resolved.remove(&edge.id);
+                pending += 1;
+            }
             state.pending.insert(node_id.clone(), pending);
             state.taken.insert(node_id.clone(), false);
         }
@@ -6537,6 +6637,293 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         assert_eq!(status_of(&db, "run-loop-rescue", "rescue"), "succeeded");
         assert_eq!(status_of(&db, "run-loop-rescue", "after"), "skipped");
         assert_eq!(status_of(&db, "run-loop-rescue", "end"), "succeeded");
+    }
+
+    /// A command that fails on its first visit and passes after (or the
+    /// reverse), keyed by a marker file in `dir`.
+    fn flip_node(id: &str, dir: &tempfile::TempDir, fail_first: bool, y: f64) -> Node {
+        let marker = dir.path().join(id);
+        let script = if fail_first {
+            r#"if [ -e "$1" ]; then exit 0; fi; touch "$1"; exit 1"#
+        } else {
+            r#"if [ -e "$1" ]; then exit 1; fi; touch "$1"; exit 0"#
+        };
+        let mut node = command_node(
+            id,
+            "sh",
+            &["-c", script, "orchevia", &marker.to_string_lossy()],
+            y,
+        );
+        node.config.max_visits = Some(3);
+        node
+    }
+
+    fn always_false_gate(id: &str) -> Node {
+        Node {
+            id: id.into(),
+            kind: NodeKind::Condition,
+            position: Position { x: 80.0, y: 200.0 },
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "workflow.name".into(),
+                        op: ConditionOp::Equals,
+                        right: "never".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            label: Some("Again?".into()),
+        }
+    }
+
+    fn loop_wf(id: &str, nodes: Vec<Node>, edges: Vec<Edge>) -> Workflow {
+        Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: id.to_string(),
+            name: id.to_string(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes,
+            edges,
+        }
+    }
+
+    #[tokio::test]
+    async fn steps_after_a_loop_run_when_the_first_pass_failed_into_the_fix() {
+        // tests fails once and routes to fix, which loops back; the second
+        // pass succeeds, so gate (false) must still lead to publish.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let wf = loop_wf(
+            "wf-fail-into-fix",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                flip_node("tests", &dir, true, 100.0),
+                always_false_gate("gate"),
+                fix,
+                command_node("publish", "echo", &["publish"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "tests", None),
+                edge("e1", "tests", "gate", None),
+                edge("e2", "tests", "fix", Some("failure")),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "tests", None),
+                edge("e5", "gate", "publish", Some("false")),
+                edge("e6", "publish", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-fail-into-fix").await;
+        let rows = db.list_node_results("run-fail-into-fix").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(status_of(&db, "run-fail-into-fix", "publish"), "succeeded");
+        assert_eq!(status_of(&db, "run-fail-into-fix", "end"), "succeeded");
+    }
+
+    #[tokio::test]
+    async fn a_failure_on_a_later_loop_visit_takes_its_failure_route() {
+        // work passes on visit 1 (its failure route is not taken then) and
+        // fails on visit 2: the run must route to rescue, not end Succeeded
+        // with rescue never run.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-late-failure",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                flip_node("work", &dir, false, 100.0),
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "fix", "work", None),
+                edge("e4", "gate", "after", Some("false")),
+                edge("e5", "work", "rescue", Some("failure")),
+                edge("e6", "after", "end", None),
+                edge("e7", "rescue", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-late-failure").await;
+        let rows = db.list_node_results("run-late-failure").unwrap();
+        assert_eq!(
+            status_of(&db, "run-late-failure", "work"),
+            "failed",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-late-failure", "rescue"),
+            "succeeded",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-late-failure", "after"),
+            "skipped",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-late-failure", "end"),
+            "succeeded",
+            "{rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rearmed_route_survives_an_approval_pause_and_resume() {
+        // As above, with an approval after rescue: resuming replays history
+        // (including the re-armed rescue) and reaches End.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-rearmed-approval",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                flip_node("work", &dir, false, 100.0),
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("approve", NodeKind::Approval, 450.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "fix", "work", None),
+                edge("e4", "gate", "after", Some("false")),
+                edge("e5", "work", "rescue", Some("failure")),
+                edge("e6", "after", "end", None),
+                edge("e7", "rescue", "approve", None),
+                edge("e8", "approve", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf.clone(), "run-rearmed-approval").await;
+        assert_eq!(db.list_runs(10).unwrap()[0].status, RunStatus::Paused);
+        engine
+            .approve_run("run-rearmed-approval", true, None, wf)
+            .await
+            .expect("approve");
+        let rows = db.list_node_results("run-rearmed-approval").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(status_of(&db, "run-rearmed-approval", "end"), "succeeded");
+        assert_eq!(
+            rows.iter().filter(|r| r.node_id == "end").count(),
+            1,
+            "{rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_join_after_a_loop_waits_for_its_other_branch() {
+        // work loops once; report joins work and a slower lint. The second
+        // visit of work must not count as lint's arrival.
+        let (db, engine) = harness();
+        let mut work = command_node("work", "echo", &["work"], 100.0);
+        work.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-join-after-loop",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                work,
+                command_node("lint", "sh", &["-c", "sleep 1; echo lint-done"], 100.0),
+                gate,
+                fix,
+                command_node("report", "echo", &["{{node.lint.output}}"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "start", "lint", None),
+                edge("e2", "work", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "work", None),
+                edge("e5", "gate", "end", Some("false")),
+                edge("e6", "work", "report", None),
+                edge("e7", "lint", "report", None),
+                edge("e8", "report", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-join-after-loop").await;
+        let rows = db.list_node_results("run-join-after-loop").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        let report = rows.iter().rev().find(|r| r.node_id == "report").unwrap();
+        assert!(report.stdout.contains("lint-done"), "{rows:?}");
     }
 
     #[tokio::test]
