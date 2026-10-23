@@ -4950,7 +4950,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claiming_an_approval_returns_before_the_run_continues() {
+    async fn claiming_an_approval_records_it_once_and_leaves_the_run_to_the_caller() {
         let (db, engine) = harness();
         let wf = vertical_slice();
         db.upsert_workflow(&wf).expect("upsert");
