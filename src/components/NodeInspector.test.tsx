@@ -401,3 +401,34 @@ it("keeps one condition's text error off another condition", () => {
     'true',
   );
 });
+
+it('renames a workflow input in place and never adds a duplicate name', async () => {
+  const user = (await import('@testing-library/user-event')).default.setup();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Inputs');
+  workflow.inputs = [
+    { name: 'input1', default: '' },
+    { name: 'input2', default: '' },
+  ];
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: null,
+    selectedEdgeId: null,
+    overlayRunId: null,
+  });
+  render(<NodeInspector />);
+  const names = (): HTMLInputElement[] =>
+    screen.getAllByLabelText('Input name') as HTMLInputElement[];
+  const first = names()[0];
+  if (first === undefined) throw new Error('missing input row');
+  await user.clear(first);
+  await user.type(first, 'ticket');
+  // Still the same field, still focused, typed in full.
+  expect(first).toHaveFocus();
+  expect(first).toHaveValue('ticket');
+  await user.click(screen.getByRole('button', { name: 'Remove input ticket' }));
+  await user.click(screen.getByRole('button', { name: '+ Add input' }));
+  expect(names().map((input) => input.value)).toEqual(['input2', 'input3']);
+});

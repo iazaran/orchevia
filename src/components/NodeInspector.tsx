@@ -1048,8 +1048,10 @@ export function NodeInspector(): React.JSX.Element | null {
         </div>
         <div className="field">
           <span className="field-label">Workflow inputs (as {'{{input.name}}'})</span>
-          {(workflow.inputs ?? []).map((input) => (
-            <div key={input.name} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+          {/* Rows go by position: a name changes while it is typed and two
+              rows may briefly share one. */}
+          {(workflow.inputs ?? []).map((input, index) => (
+            <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
               <input
                 className="input"
                 value={input.name}
@@ -1057,8 +1059,8 @@ export function NodeInspector(): React.JSX.Element | null {
                 onChange={(e) => {
                   updateActiveWorkflow({
                     ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x) =>
-                      x.name === input.name ? { ...x, name: e.target.value } : x,
+                    inputs: (workflow.inputs ?? []).map((x, i) =>
+                      i === index ? { ...x, name: e.target.value } : x,
                     ),
                   });
                 }}
@@ -1071,8 +1073,8 @@ export function NodeInspector(): React.JSX.Element | null {
                 onChange={(e) => {
                   updateActiveWorkflow({
                     ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x) =>
-                      x.name === input.name
+                    inputs: (workflow.inputs ?? []).map((x, i) =>
+                      i === index
                         ? {
                             ...x,
                             default: e.target.value === '' ? undefined : e.target.value,
@@ -1088,7 +1090,7 @@ export function NodeInspector(): React.JSX.Element | null {
                 onClick={() => {
                   updateActiveWorkflow({
                     ...workflow,
-                    inputs: (workflow.inputs ?? []).filter((x) => x.name !== input.name),
+                    inputs: (workflow.inputs ?? []).filter((_, i) => i !== index),
                   });
                 }}
               >
@@ -1099,7 +1101,10 @@ export function NodeInspector(): React.JSX.Element | null {
           <button
             className="btn btn-ghost"
             onClick={() => {
-              const name = `input${String((workflow.inputs ?? []).length + 1)}`;
+              const taken = new Set((workflow.inputs ?? []).map((x) => x.name));
+              let n = taken.size + 1;
+              while (taken.has(`input${String(n)}`)) n += 1;
+              const name = `input${String(n)}`;
               updateActiveWorkflow({
                 ...workflow,
                 inputs: [...(workflow.inputs ?? []), { name, default: '' }],
