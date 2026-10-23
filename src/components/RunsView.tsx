@@ -11,9 +11,17 @@ import { formatTime } from '../lib/time';
 import {
   agentContextDetails,
   CLI_COST_EXPLANATION,
+  estimatePlanCost,
   extractUsageHints,
   formatDurationMs,
+  formatUsd,
+  formatUsdExact,
+  parsePlanShare,
+  parsePlans,
+  planCostGap,
+  type PlanCost,
 } from '../lib/usage';
+import { reportFields, reportResult, stepCounts } from '../lib/run-report';
 import { useAppStore } from '../store';
 import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
@@ -26,61 +34,222 @@ import { errorMessage } from '../lib/errors';
 import { countAgentAttempts, reportedSpend } from '../lib/run-controls';
 import type { StoredNodeResult, StoredRun } from '../lib/workflow';
 
-/** Compact per-run usage line linking to the full Usage & costs page. */
-function RunUsageLine({
+/** The UTC day a timestamp falls on, or '' when it does not parse. */
+function utcDay(iso: string): string {
+  const time = Date.parse(iso);
+  return Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : '';
+}
+
+/** This run's part of its day on the user's plans, once the run has finished. */
+function useRunPlanCost(
+  run: StoredRun,
+): { cost: PlanCost; plansEntered: boolean } | null {
+  const finished = run.status !== 'running' && run.status !== 'paused';
+  const dry = run.execution?.options.dryRun === true;
+  // Other runs started the same UTC day share its fee, so a run starting or
+  // finishing that day changes this run's part.
+  const day = utcDay(run.startedAt);
+  const sameDay = useAppStore((s) =>
+    s.runs
+      .filter((other) => utcDay(other.startedAt) === day)
+      .map((other) => `${other.id}:${other.status}`)
+      .sort()
+      .join(','),
+  );
+  const key = `${run.id}:${run.status}:${sameDay}`;
+  const [state, setState] = useState<{
+    runId: string;
+    cost: PlanCost;
+    plansEntered: boolean;
+  } | null>(null);
+  useEffect(() => {
+    const started = new Date(run.startedAt);
+    if (!finished || dry || Number.isNaN(started.getTime())) return;
+    // A plan's daily fee is split with everything else that ran that UTC day.
+    const day = started.toISOString().slice(0, 10);
+    const next = new Date(`${day}T00:00:00.000Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    let alive = true;
+    const backend = getBackend();
+    void Promise.all([
+      backend.getSetting('usage.plans'),
+      backend.getSetting('usage.planShare'),
+      backend.usageSummary({
+        from: `${day}T00:00:00.000Z`,
+        to: next.toISOString(),
+        runIds: [run.id],
+      }),
+    ])
+      .then(([plansRaw, shareRaw, summary]) => {
+        if (!alive) return;
+        const plans = parsePlans(plansRaw);
+        setState({
+          runId: run.id,
+          cost: estimatePlanCost(summary.providerDays, plans, parsePlanShare(shareRaw)),
+          plansEntered: Object.keys(plans).length > 0,
+        });
+      })
+      .catch(() => {
+        // The API value still shows; the plan figure is an extra.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [key, finished, dry, run.id, run.startedAt]);
+  // While a newer figure loads, keep showing this run's last one.
+  return state?.runId === run.id ? state : null;
+}
+
+/** Elapsed wall time of a run, live while it runs. */
+function runElapsed(run: StoredRun, now: number): string {
+  const start = Date.parse(run.startedAt);
+  const live = run.status === 'running' || run.status === 'paused';
+  const end = live ? now : Date.parse(run.finishedAt ?? '');
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '';
+  return end === start ? '0s' : formatDurationMs(end - start);
+}
+
+/** The run at a glance: when, how long, how many steps, and what it cost. */
+function RunFacts({
   run,
   results,
   workflow,
+  now,
 }: {
   run: StoredRun;
   results: StoredNodeResult[];
   workflow: Workflow | null;
-}): React.JSX.Element | null {
+  now: number;
+}): React.JSX.Element {
   const setView = useAppStore((s) => s.setView);
   const dry = run.execution?.options.dryRun === true;
+  const live = run.status === 'running' || run.status === 'paused';
   const limit = run.execution?.resolvedLimits?.maxAgentAttempts;
   const consumed =
     run.execution?.consumedAgentAttempts ??
     (workflow ? countAgentAttempts(workflow, results) : 0);
   const spend = workflow ? reportedSpend(workflow, results, dry) : null;
-  if (dry)
-    return (
-      <p className="field-hint">
-        Simulated run — no real usage.{' '}
-        <button
-          className="btn btn-ghost"
-          style={{ padding: '0 8px' }}
-          onClick={() => setView('usage')}
-        >
-          Usage & costs
-        </button>
-      </p>
-    );
+  const planCost = useRunPlanCost(run);
+  const counts = stepCounts(results);
+  const elapsed = runElapsed(run, now);
+  const costUsd = planCost?.plansEntered === true ? planCost.cost.totalUsd : null;
   return (
-    <p className="field-hint">
-      {limit === undefined ? (
-        <>{String(consumed)} agent attempts dispatched (no budget set)</>
+    <dl className="run-facts">
+      <div>
+        <dt>Started</dt>
+        <dd title={run.startedAt}>{formatTime(run.startedAt)}</dd>
+      </div>
+      {elapsed !== '' && (
+        <div>
+          <dt>{live ? 'Running for' : 'Took'}</dt>
+          <dd>{elapsed}</dd>
+        </div>
+      )}
+      <div>
+        <dt>Steps</dt>
+        <dd>
+          {String(counts.total)}
+          {counts.skipped > 0 && <> · {String(counts.skipped)} skipped</>}
+          {counts.failed > 0 && <> · {String(counts.failed)} failed</>}
+          {counts.rejected > 0 && <> · {String(counts.rejected)} rejected</>}
+        </dd>
+      </div>
+      <div>
+        <dt>Agent attempts</dt>
+        <dd>
+          {limit === undefined
+            ? String(consumed)
+            : `${String(consumed)} of ${String(limit)}`}
+          {run.execution?.usagePause !== undefined && ' · paused at budget'}
+        </dd>
+      </div>
+      {dry ? (
+        <div>
+          <dt>Cost</dt>
+          <dd>Simulated, no real usage</dd>
+        </div>
       ) : (
         <>
-          {String(consumed)} of {String(limit)} agent attempts
-          {run.execution?.usagePause !== undefined ? ' · paused at budget' : ''}
+          {costUsd !== null && planCost !== null && (
+            <div>
+              <dt>Cost on your plans</dt>
+              <dd
+                title={`${formatUsdExact(costUsd)}: this run's part of each plan's daily fee, split by agent time with everything else that ran that day.${planCost.cost.complete ? '' : ` Partial: ${planCostGap(planCost.cost) ?? ''}.`}`}
+              >
+                ≈ {formatUsd(costUsd)}
+                {!planCost.cost.complete && (
+                  <span className="coverage-flag"> partial</span>
+                )}
+              </dd>
+            </div>
+          )}
+          {spend !== null && spend.reportedAttempts + spend.unknownAttempts > 0 && (
+            <div>
+              <dt>API value</dt>
+              <dd
+                title={
+                  spend.reportedAttempts > 0
+                    ? formatUsdExact(spend.reportedUsd)
+                    : undefined
+                }
+              >
+                {spend.reportedAttempts > 0
+                  ? formatUsd(spend.reportedUsd)
+                  : 'Not reported'}
+                {spend.unknownAttempts > 0 && spend.reportedAttempts > 0 && (
+                  <> · {String(spend.unknownAttempts)} unreported</>
+                )}
+                {costUsd === null && planCost?.plansEntered === true && (
+                  <span className="fact-note">
+                    {planCostGap(planCost.cost) ?? 'No plan applies to this run.'}
+                  </span>
+                )}
+                {costUsd === null && planCost !== null && !planCost.plansEntered && (
+                  <span className="fact-note">
+                    Pay-as-you-go price, not your bill on a plan.{' '}
+                    <button
+                      className="btn btn-ghost btn-inline"
+                      onClick={() => setView('usage')}
+                    >
+                      Set your plans
+                    </button>
+                  </span>
+                )}
+              </dd>
+            </div>
+          )}
         </>
       )}
-      {spend !== null && spend.reportedAttempts > 0 && (
-        <> · estimated API value USD {spend.reportedUsd.toFixed(4)}</>
+    </dl>
+  );
+}
+
+/** A report: leading `Key: value` lines as a list, the rest as formatted text. */
+function ReportBody({ text }: { text: string }): React.JSX.Element {
+  const { fields, rest } = reportFields(text);
+  return (
+    <>
+      {fields.length > 0 && (
+        <dl className="report-fields">
+          {fields.map((field, index) => (
+            <div key={`${field.key}-${String(index)}`}>
+              <dt>{field.key}</dt>
+              <dd
+                className={field.value.includes('\n') ? 'report-field-lines' : undefined}
+              >
+                {field.value === '' ? '—' : field.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
       )}
-      {spend !== null && spend.unknownAttempts > 0 && (
-        <> · {String(spend.unknownAttempts)} without USD reports</>
-      )}
-      .{' '}
-      <button
-        className="btn btn-ghost"
-        style={{ padding: '0 8px' }}
-        onClick={() => setView('usage')}
-      >
-        Usage & costs
-      </button>
-    </p>
+      {rest !== '' &&
+        (isMarkdown(rest) ? (
+          <MarkdownText text={rest} />
+        ) : (
+          <div className="log-block">{rest}</div>
+        ))}
+    </>
   );
 }
 
@@ -239,12 +408,13 @@ export function RunsView(): React.JSX.Element {
     useNoticeMessage('info');
   const [memoryFields, setMemoryFields] = useState<Record<string, string>>({});
   const [actionError, setActionError, , actionErrorEvent] = useNoticeMessage('error');
-  const [now, setNow] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   const workflows = useAppStore((s) => s.workflows);
 
   const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
   const results = activeRunId !== null ? (runResults[activeRunId] ?? []) : [];
   const pendingApproval = [...results].reverse().find((r) => r.status === 'paused');
+  const stepNumber = new Map(results.map((r, index) => [r.id, index + 1]));
   const workflowName =
     workflows.find((w) => w.id === activeRun?.workflowId)?.name ??
     activeRun?.workflowId ??
@@ -580,7 +750,7 @@ export function RunsView(): React.JSX.Element {
         <div className="topbar-actions">
           <button
             className="btn btn-ghost"
-            title="Aggregated usage, estimates and subscription settings"
+            title="Aggregated usage, your plans and estimated cost"
             onClick={() => setView('usage')}
           >
             Usage & costs
@@ -667,7 +837,9 @@ export function RunsView(): React.JSX.Element {
                     >
                       {formatTime(run.startedAt)}
                       {run.finishedAt !== undefined
-                        ? ` → ${formatTime(run.finishedAt)}`
+                        ? runElapsed(run, now) === ''
+                          ? ''
+                          : ` · took ${runElapsed(run, now)}`
                         : ` · ${elapsedSince(run.startedAt)} so far`}
                     </div>
                   </span>
@@ -690,26 +862,37 @@ export function RunsView(): React.JSX.Element {
               <p className="field-hint">Select a run to inspect node results.</p>
             )}
             {activeRun !== null && (
-              <section aria-label="Run details">
-                <h2 style={{ marginTop: 0 }}>{workflowName}</h2>
-                <p className="field-hint">
-                  {activeRun.id} · started {formatTime(activeRun.startedAt)}
-                </p>
-                {activeRun.execution?.options.dryRun && (
-                  <p className="field-hint">
-                    Simulated test — developer CLIs and integrations were not executed.
-                  </p>
-                )}
-                {activeRun.execution?.recoveredFrom && (
-                  <p className="field-hint">
-                    Recovered from {activeRun.execution.recoveredFrom}; reused outputs
-                    remain historical.
-                  </p>
-                )}
-                <RunUsageLine run={activeRun} results={results} workflow={runWorkflow} />
-                <div
-                  style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}
-                >
+              <section aria-label="Run details" className="run-detail">
+                <header className="run-header">
+                  <div className="run-header-title">
+                    <h2>{workflowName}</h2>
+                    <span className={`status-pill status-${activeRun.status}`}>
+                      {activeRun.status}
+                    </span>
+                    {activeRun.execution?.options.dryRun && (
+                      <span className="status-pill status-paused">DRY RUN</span>
+                    )}
+                  </div>
+                  <RunFacts
+                    run={activeRun}
+                    results={results}
+                    workflow={runWorkflow}
+                    now={now}
+                  />
+                  <p className="field-hint run-header-id">{activeRun.id}</p>
+                  {activeRun.execution?.options.dryRun && (
+                    <p className="field-hint">
+                      Simulated test — developer CLIs and integrations were not executed.
+                    </p>
+                  )}
+                  {activeRun.execution?.recoveredFrom && (
+                    <p className="field-hint">
+                      Recovered from {activeRun.execution.recoveredFrom}; reused outputs
+                      remain historical.
+                    </p>
+                  )}
+                </header>
+                <div className="run-actions">
                   {(activeRun.status === 'running' || activeRun.status === 'paused') && (
                     <button
                       className="btn"
@@ -787,14 +970,6 @@ export function RunsView(): React.JSX.Element {
                       </>
                     )}
                 </div>
-                {runWorkflow && (
-                  <RunTimeline
-                    run={activeRun}
-                    workflow={runWorkflow}
-                    results={results}
-                    now={now}
-                  />
-                )}
                 {activeRun.status === 'paused' &&
                   activeRun.execution?.spendPause === undefined &&
                   activeRun.execution?.usagePause === undefined && (
@@ -814,21 +989,26 @@ export function RunsView(): React.JSX.Element {
                       />
                     </div>
                   )}
-                {results.length === 0 && (
-                  <p className="field-hint">No node results yet.</p>
-                )}
                 {(() => {
                   const finished =
                     activeRun.status !== 'running' && activeRun.status !== 'paused';
-                  const withOutput = [...results].reverse().find((r) => r.stdout !== '');
-                  const agentOutput =
-                    [...results]
-                      .reverse()
-                      .find(
-                        (r) => r.stdout !== '' && nodeFor(r.nodeId)?.type === 'agent',
-                      ) ?? withOutput;
-                  if (!finished || agentOutput === undefined) return null;
-                  const reportNode = nodeFor(agentOutput.nodeId);
+                  const report = reportResult(runWorkflow, results);
+                  // A rejected approval stops a run as surely as a failed step.
+                  const failedRow =
+                    activeRun.status === 'failed'
+                      ? [...results]
+                          .reverse()
+                          .find((r) => r.status === 'failed' || r.status === 'rejected')
+                      : undefined;
+                  // Wait for the run's workflow: without it a branch decision
+                  // cannot be told apart from a real report.
+                  if (
+                    !finished ||
+                    snapshot?.runId !== activeRunId ||
+                    (report === undefined && failedRow === undefined)
+                  )
+                    return null;
+                  const reportNode = report ? nodeFor(report.nodeId) : null;
                   const setAllOutputs = (open: boolean): void => {
                     const next: Record<string, boolean> = {};
                     for (const r of results) {
@@ -838,9 +1018,10 @@ export function RunsView(): React.JSX.Element {
                     setExpandedOutputState({ runId: activeRunId, values: next });
                   };
                   const copyReport = (): void => {
+                    if (report === undefined) return;
                     try {
                       void navigator.clipboard
-                        .writeText(agentOutput.stdout)
+                        .writeText(report.stdout)
                         .then(() => {
                           setCopiedReport(true);
                         })
@@ -852,13 +1033,14 @@ export function RunsView(): React.JSX.Element {
                     }
                   };
                   const downloadReport = (): void => {
-                    const blob = new Blob([agentOutput.stdout], {
+                    if (report === undefined) return;
+                    const blob = new Blob([report.stdout], {
                       type: 'text/markdown',
                     });
                     const url = URL.createObjectURL(blob);
                     const link = document.createElement('a');
                     link.href = url;
-                    link.download = `${activeRun.workflowId}-${agentOutput.nodeId}-report.md`;
+                    link.download = `${activeRun.workflowId}-${report.nodeId}-report.md`;
                     document.body.appendChild(link);
                     link.click();
                     link.remove();
@@ -866,56 +1048,57 @@ export function RunsView(): React.JSX.Element {
                   };
                   return (
                     <>
-                      <section
-                        aria-label="Run report"
-                        className="tool-card"
-                        style={{ marginBottom: 16 }}
-                      >
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <h3 style={{ margin: 0 }}>
-                            Report — {reportNode?.label ?? agentOutput.nodeId}
-                          </h3>
-                          <span className={`status-pill status-${agentOutput.status}`}>
-                            {agentOutput.status}
-                          </span>
-                        </div>
-                        <div className="report-preview" style={{ marginTop: 10 }}>
-                          {isMarkdown(agentOutput.stdout) ? (
-                            <MarkdownText text={agentOutput.stdout} />
-                          ) : (
-                            <div className="log-block">{agentOutput.stdout}</div>
+                      <section aria-label="Run report" className="tool-card run-report">
+                        <div className="run-report-head">
+                          <h3>Report</h3>
+                          {report !== undefined && (
+                            <a
+                              className="run-report-source"
+                              href={`#run-result-${String(report.id)}`}
+                            >
+                              from step {String(stepNumber.get(report.id) ?? '?')} ·{' '}
+                              {reportNode?.label ?? report.nodeId}
+                            </a>
                           )}
                         </div>
-                        <div
-                          style={{
-                            display: 'flex',
-                            gap: 8,
-                            marginTop: 10,
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <button
-                            className="btn"
-                            onClick={() => {
-                              setCopiedReport(false);
-                              setReportOpen(true);
-                            }}
-                          >
-                            Open full report
-                          </button>
-                          <button className="btn btn-ghost" onClick={copyReport}>
-                            {copiedReport ? 'Copied ✓' : 'Copy'}
-                          </button>
-                          <button className="btn btn-ghost" onClick={downloadReport}>
-                            Download .md
-                          </button>
+                        {failedRow !== undefined && (
+                          <Notice inline variant="error" className="run-report-failure">
+                            <a href={`#run-result-${String(failedRow.id)}`}>
+                              Stopped at step{' '}
+                              {String(stepNumber.get(failedRow.id) ?? '?')} ·{' '}
+                              {nodeFor(failedRow.nodeId)?.label ?? failedRow.nodeId}
+                            </a>
+                            {failedRow.status === 'rejected' && <> (rejected)</>}
+                            {failedRow.error !== undefined && failedRow.error !== '' && (
+                              <>: {failedRow.error}</>
+                            )}
+                          </Notice>
+                        )}
+                        {report !== undefined && (
+                          <div className="report-preview">
+                            <ReportBody text={report.stdout} />
+                          </div>
+                        )}
+                        <div className="run-report-actions">
+                          {report !== undefined && (
+                            <>
+                              <button
+                                className="btn"
+                                onClick={() => {
+                                  setCopiedReport(false);
+                                  setReportOpen(true);
+                                }}
+                              >
+                                Open full report
+                              </button>
+                              <button className="btn btn-ghost" onClick={copyReport}>
+                                {copiedReport ? 'Copied ✓' : 'Copy'}
+                              </button>
+                              <button className="btn btn-ghost" onClick={downloadReport}>
+                                Download .md
+                              </button>
+                            </>
+                          )}
                           <button
                             className="btn btn-ghost"
                             onClick={() => {
@@ -935,7 +1118,7 @@ export function RunsView(): React.JSX.Element {
                           </button>
                         </div>
                       </section>
-                      {reportOpen && (
+                      {reportOpen && report !== undefined && (
                         <Modal
                           label="Run report"
                           onClose={() => {
@@ -949,14 +1132,10 @@ export function RunsView(): React.JSX.Element {
                         >
                           <div>
                             <h3 style={{ marginTop: 0 }}>
-                              Report — {reportNode?.label ?? agentOutput.nodeId}
+                              Report — {reportNode?.label ?? report.nodeId}
                             </h3>
                             <div className="report-full">
-                              {isMarkdown(agentOutput.stdout) ? (
-                                <MarkdownText text={agentOutput.stdout} />
-                              ) : (
-                                <div className="log-block">{agentOutput.stdout}</div>
-                              )}
+                              <ReportBody text={report.stdout} />
                             </div>
                             <div
                               style={{
@@ -987,63 +1166,178 @@ export function RunsView(): React.JSX.Element {
                     </>
                   );
                 })()}
+                {runWorkflow && (
+                  <RunTimeline
+                    run={activeRun}
+                    workflow={runWorkflow}
+                    results={results}
+                    now={now}
+                  />
+                )}
+                {results.length === 0 && (
+                  <p className="field-hint">No node results yet.</p>
+                )}
                 <ReviewFindings findings={unassignedFindings} />
-                {results.map((r, index) => {
-                  const node = nodeFor(r.nodeId);
-                  const context = agentContextDetails(r.structuredJson);
-                  const denied = permissionDeniedFrom(r.structuredJson);
-                  const textUsageHints = extractUsageHints(r.stdout, r.stderr);
-                  // The last step (usually the report) opens expanded; the rest
-                  // collapse long logs behind a toggle.
-                  const isLast = index === results.length - 1;
-                  const toggleOutput = (stream: string): void => {
-                    const key = `${String(r.id)}:${stream}`;
-                    setExpandedOutputState((prev) => {
-                      const values = prev.runId === activeRunId ? prev.values : {};
-                      return {
-                        runId: activeRunId,
-                        values: {
-                          ...values,
-                          [key]: !(
-                            values[key] ?? (stream === 'activity' ? false : isLast)
-                          ),
-                        },
-                      };
-                    });
-                  };
-                  return (
-                    <div
-                      id={`run-result-${String(r.id)}`}
-                      key={r.id}
-                      className="run-step"
-                    >
-                      <div className="run-step-head">
-                        <span className="step-index" aria-hidden="true">
-                          {index + 1}
-                        </span>
-                        <span className={`status-pill status-${r.status}`}>
-                          {r.status}
-                        </span>
-                        {denied !== null && (
+                <ol className="run-steps" role="list" aria-label="Steps">
+                  {results.map((r, index) => {
+                    const node = nodeFor(r.nodeId);
+                    const context = agentContextDetails(r.structuredJson);
+                    const denied = permissionDeniedFrom(r.structuredJson);
+                    const textUsageHints = extractUsageHints(r.stdout, r.stderr);
+                    const profile = profileForNode(r.nodeId);
+                    // The last step (usually the report) opens expanded; the rest
+                    // collapse long logs behind a toggle.
+                    const isLast = index === results.length - 1;
+                    const toggleOutput = (stream: string): void => {
+                      const key = `${String(r.id)}:${stream}`;
+                      setExpandedOutputState((prev) => {
+                        const values = prev.runId === activeRunId ? prev.values : {};
+                        return {
+                          runId: activeRunId,
+                          values: {
+                            ...values,
+                            [key]: !(
+                              values[key] ?? (stream === 'activity' ? false : isLast)
+                            ),
+                          },
+                        };
+                      });
+                    };
+                    const playbook =
+                      activeRun.status === 'succeeded' &&
+                      node?.type === 'command' &&
+                      r.status === 'succeeded' &&
+                      !activeRun.execution?.options.dryRun &&
+                      resultMetadata(r).reusedFrom === undefined &&
+                      [...results].reverse().find((result) => result.nodeId === r.nodeId)
+                        ?.id === r.id;
+                    const meta = [
+                      profile !== null ? `via ${profile}` : null,
+                      r.exitCode !== undefined ? `exit ${String(r.exitCode)}` : null,
+                      (r.attempt ?? 1) > 1 ? `attempt ${String(r.attempt)}` : null,
+                      context?.sessionLabel ?? null,
+                    ].filter((item): item is string => item !== null && item !== '');
+                    return (
+                      <li
+                        id={`run-result-${String(r.id)}`}
+                        key={r.id}
+                        className={`run-step step-${r.status}`}
+                      >
+                        <div className="run-step-head">
                           <span
-                            className="status-pill status-failed"
-                            title="Claude refused tool calls under this profile's permissions"
+                            className="step-index"
+                            title={`Step ${String(index + 1)}`}
                           >
-                            tools refused
+                            {index + 1}
                           </span>
+                          <strong className="run-step-title" title={r.nodeId}>
+                            {node?.label ?? r.nodeId}
+                          </strong>
+                          <span className={`status-pill status-${r.status}`}>
+                            {r.status}
+                          </span>
+                          {denied !== null && (
+                            <span
+                              className="status-pill status-failed"
+                              title="Claude refused tool calls under this profile's permissions"
+                            >
+                              tools refused
+                            </span>
+                          )}
+                          {node !== null && (
+                            <span className="step-kind">{node.type}</span>
+                          )}
+                          {(r.durationMs ?? 0) > 0 && (
+                            <span className="run-step-duration">
+                              {formatDurationMs(r.durationMs ?? 0)}
+                            </span>
+                          )}
+                        </div>
+                        {meta.length > 0 && (
+                          <div className="run-step-meta" title={context?.group}>
+                            {meta.join(' · ')}
+                          </div>
                         )}
-                        <strong>{node?.label ?? r.nodeId}</strong>
-                        {activeRun.status === 'succeeded' &&
-                          node?.type === 'command' &&
-                          r.status === 'succeeded' &&
-                          !activeRun.execution?.options.dryRun &&
-                          resultMetadata(r).reusedFrom === undefined &&
-                          [...results]
-                            .reverse()
-                            .find((result) => result.nodeId === r.nodeId)?.id ===
-                            r.id && (
-                            <>
+                        <div className="run-step-body">
+                          {r.error !== undefined && r.error !== '' && (
+                            <Notice inline variant="error">
+                              {r.error}
+                            </Notice>
+                          )}
+                          {denied !== null && (
+                            <PermissionDenials
+                              denied={denied}
+                              profileId={
+                                runWorkflow?.nodes.find((n) => n.id === r.nodeId)?.config
+                                  .agentProfileId
+                              }
+                            />
+                          )}
+                          <ReviewFindings findings={findingsByResult.get(r.id) ?? []} />
+                          {((context?.usageHints.length ?? 0) > 0 ||
+                            textUsageHints.length > 0) && (
+                            <details className="cli-usage-details">
+                              <summary>CLI usage</summary>
+                              {(context?.usageHints.length ?? 0) > 0 && (
+                                <p className="field-hint">
+                                  {context?.usageHints.join(' · ')}
+                                </p>
+                              )}
+                              {textUsageHints.length > 0 && (
+                                <p className="field-hint">
+                                  Unverified text hints: {textUsageHints.join(' · ')}
+                                </p>
+                              )}
+                              <p className="field-hint">{CLI_COST_EXPLANATION}</p>
+                            </details>
+                          )}
+                          {context?.outputNote && (
+                            <p className="field-hint">{context.outputNote}</p>
+                          )}
+                          <OutputBlock
+                            text={r.stdout}
+                            live={r.status === 'running'}
+                            label="stdout"
+                            rich={node?.type === 'agent'}
+                            defaultOpen={isLast}
+                            expanded={expandedOutputs[`${String(r.id)}:out`]}
+                            onToggle={() => {
+                              toggleOutput('out');
+                            }}
+                          />
+                          {context?.activity &&
+                            context.activity.trim() !== r.stdout.trim() && (
+                              <OutputBlock
+                                text={context.activity}
+                                live={r.status === 'running'}
+                                label="Agent activity"
+                                defaultOpen={false}
+                                expanded={expandedOutputs[`${String(r.id)}:activity`]}
+                                onToggle={() => {
+                                  toggleOutput('activity');
+                                }}
+                              />
+                            )}
+                          <OutputBlock
+                            text={r.stderr}
+                            live={r.status === 'running'}
+                            label="stderr"
+                            defaultOpen={isLast}
+                            expanded={expandedOutputs[`${String(r.id)}:err`]}
+                            onToggle={() => {
+                              toggleOutput('err');
+                            }}
+                          />
+                        </div>
+                        {playbook && (
+                          <details className="run-step-playbook">
+                            <summary>Save this command to the project playbook…</summary>
+                            <div className="run-step-playbook-form">
+                              <label htmlFor={`playbook-field-${String(r.id)}`}>
+                                Save it as the project&apos;s
+                              </label>
                               <select
+                                id={`playbook-field-${String(r.id)}`}
                                 className="select"
                                 aria-label={'Playbook field for ' + r.nodeId}
                                 value={memoryFields[r.nodeId] ?? 'testCommand'}
@@ -1065,116 +1359,13 @@ export function RunsView(): React.JSX.Element {
                               >
                                 Save command to playbook
                               </button>
-                            </>
-                          )}
-                        {node !== null && (
-                          <span className="status-pill status-cancelled">
-                            {node.type}
-                          </span>
+                            </div>
+                          </details>
                         )}
-                        {node !== null && node.label !== r.nodeId && (
-                          <span className="wf-card-meta" title={r.nodeId}>
-                            {r.nodeId}
-                          </span>
-                        )}
-                        {profileForNode(r.nodeId) !== null && (
-                          <span className="field-hint">
-                            via {profileForNode(r.nodeId) as string}
-                          </span>
-                        )}
-                        {r.exitCode !== undefined && (
-                          <span className="field-hint">exit {r.exitCode}</span>
-                        )}
-                        {(r.attempt ?? 1) > 1 && (
-                          <span className="field-hint">attempt {r.attempt}</span>
-                        )}
-                        {(r.durationMs ?? 0) > 0 && (
-                          <span className="field-hint">
-                            {formatDurationMs(r.durationMs ?? 0)}
-                          </span>
-                        )}
-                        {context?.sessionLabel && (
-                          <span className="field-hint" title={context.group}>
-                            {context.sessionLabel}
-                          </span>
-                        )}
-                      </div>
-                      {r.error !== undefined && r.error !== '' && (
-                        <Notice inline variant="error">
-                          {r.error}
-                        </Notice>
-                      )}
-                      {denied !== null && (
-                        <PermissionDenials
-                          denied={denied}
-                          profileId={
-                            runWorkflow?.nodes.find((n) => n.id === r.nodeId)?.config
-                              .agentProfileId
-                          }
-                        />
-                      )}
-                      <ReviewFindings findings={findingsByResult.get(r.id) ?? []} />
-                      {((context?.usageHints.length ?? 0) > 0 ||
-                        textUsageHints.length > 0) && (
-                        <details className="cli-usage-details">
-                          <summary>CLI usage</summary>
-                          {(context?.usageHints.length ?? 0) > 0 && (
-                            <p className="field-hint">
-                              {context?.usageHints.join(' · ')}
-                            </p>
-                          )}
-                          {textUsageHints.length > 0 && (
-                            <p className="field-hint">
-                              Unverified text hints: {textUsageHints.join(' · ')}
-                            </p>
-                          )}
-                          <p className="field-hint">{CLI_COST_EXPLANATION}</p>
-                        </details>
-                      )}
-                      {context?.outputNote && (
-                        <p className="field-hint">{context.outputNote}</p>
-                      )}
-                      <OutputBlock
-                        text={r.stdout}
-                        live={r.status === 'running'}
-                        label="stdout"
-                        rich={node?.type === 'agent'}
-                        defaultOpen={isLast}
-                        expanded={expandedOutputs[`${String(r.id)}:out`]}
-                        onToggle={() => {
-                          toggleOutput('out');
-                        }}
-                      />
-                      {context?.activity &&
-                        context.activity.trim() !== r.stdout.trim() && (
-                          <div style={{ marginTop: 6 }}>
-                            <OutputBlock
-                              text={context.activity}
-                              live={r.status === 'running'}
-                              label="Agent activity"
-                              defaultOpen={false}
-                              expanded={expandedOutputs[`${String(r.id)}:activity`]}
-                              onToggle={() => {
-                                toggleOutput('activity');
-                              }}
-                            />
-                          </div>
-                        )}
-                      <div style={{ marginTop: 6 }}>
-                        <OutputBlock
-                          text={r.stderr}
-                          live={r.status === 'running'}
-                          label="stderr"
-                          defaultOpen={isLast}
-                          expanded={expandedOutputs[`${String(r.id)}:err`]}
-                          onToggle={() => {
-                            toggleOutput('err');
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                      </li>
+                    );
+                  })}
+                </ol>
               </section>
             )}
           </div>

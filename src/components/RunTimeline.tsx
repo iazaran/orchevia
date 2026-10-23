@@ -57,7 +57,7 @@ export function RunTimeline({
         <p className="field-hint">No step timing yet.</p>
       ) : (
         <div className="timeline-rows">
-          {entries.map((entry) => {
+          {entries.map((entry, index) => {
             const row = results.find((r) => r.id === entry.id);
             const label =
               workflow.nodes.find((n) => n.id === entry.nodeId)?.label ??
@@ -72,7 +72,15 @@ export function RunTimeline({
                       : ''
                   }
                 >
-                  {label} · attempt {entry.attempt}
+                  <span
+                    className={`timeline-step step-${entry.status}`}
+                    aria-hidden="true"
+                  >
+                    {index + 1}
+                  </span>
+                  <span className="sr-only">Step {index + 1}: </span>
+                  {label}
+                  {entry.attempt > 1 ? ` · attempt ${String(entry.attempt)}` : ''}
                 </a>
                 <div className="timeline-track" aria-hidden="true">
                   {entry.offsetMs !== null && entry.durationMs !== null && (

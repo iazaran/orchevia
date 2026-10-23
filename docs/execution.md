@@ -113,6 +113,17 @@ every 250 ms when output changes. The Runs view polls while a run is running or
 paused (every 1.5 s); a finished selected run is not reloaded unless its results can
 still change. Canvas overlays show status badges rather than log tails.
 
+A run's page opens with its facts (start, duration, step count with skipped and
+failed steps, agent attempts, cost on your plans and API value), then a
+**Report** taken from the step that leads straight to an End node (a summary
+step), falling back to the last agent output. Leading `Key: value` and
+`KEY=value` lines show as a two-column list; the rest is formatted text. A
+failed run's report names the step it stopped at, or the approval that was
+rejected. Condition and approval steps never supply the report themselves. The timeline and each step
+card carry the same step number; every step is its own card with its status
+colour down the left edge, and its controls (such as saving a command to the
+project playbook) stay inside that card.
+
 Command and Agent output is capped at 200,000 characters per stream; capture
 retains at most 800,004 bytes per stream to accommodate UTF-8. Additional output
 is drained and discarded while still extending an output-sensitive deadline.

@@ -5,8 +5,9 @@ import { __setMockBackendForTests, type Backend } from '../lib/backend';
 import { createDefaultProfile } from '../lib/agents';
 import { useAppStore } from '../store';
 import type { GroupedFinding } from '../lib/scheduler';
-import type { RunStatus, StoredNodeResult, StoredRun } from '../lib/workflow';
+import type { RunStatus, StoredNodeResult, StoredRun, Workflow } from '../lib/workflow';
 import { RunsView } from './RunsView';
+import { emptyUsageSummary } from '../lib/usage';
 
 const originalShowRunOverlay = useAppStore.getState().showRunOverlay;
 
@@ -146,9 +147,12 @@ it('promotes the successful snapshot command with run evidence only', async () =
   });
   render(<RunsView />);
   const user = userEvent.setup();
-  await user.click(
-    await screen.findByRole('button', { name: 'Save command to playbook' }),
-  );
+  // The playbook control sits inside its own step's card, folded away.
+  await user.click(await screen.findByText('Save this command to the project playbook…'));
+  const save = screen.getByRole('button', { name: 'Save command to playbook' });
+  expect(save.closest('.run-step')).toHaveTextContent('Tests');
+  expect(screen.getByLabelText("Save it as the project's")).toHaveValue('testCommand');
+  await user.click(save);
   expect(await screen.findByText(/Saved verified command/)).toBeInTheDocument();
   const context = await backend.getProjectMemoryContext('/project');
   expect(context.text).toContain('make test');
@@ -520,7 +524,7 @@ async function renderLiveOutput(
     profiles: [],
   });
   render(<RunsView />);
-  await screen.findByText('Writer');
+  await screen.findByText('Writer', { selector: '.run-step-title' });
   return result;
 }
 
@@ -817,4 +821,447 @@ it('shows refused tool calls and adds the suggested rules to the profile', async
   expect(
     await within(panel).findByText(/Ticket reader now allows these tools/),
   ).toBeInTheDocument();
+});
+
+it('reports the final summary step and numbers every step in its own card', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'summary-run',
+    workflowId: 'ticket-wf',
+    status: 'succeeded',
+    startedAt: '2026-10-23T19:44:26.000Z',
+    finishedAt: '2026-10-23T20:30:54.000Z',
+  };
+  const row = (
+    id: number,
+    nodeId: string,
+    stdout: string,
+    status = 'succeeded',
+  ): StoredNodeResult => ({
+    id,
+    runId: run.id,
+    nodeId,
+    status,
+    stdout,
+    stderr: '',
+    startedAt: run.startedAt,
+  });
+  const results: StoredNodeResult[] = [
+    row(1, 'start', ''),
+    row(2, 'coderabbit', 'No new review has arrived.'),
+    row(3, 'fallback', '', 'skipped'),
+    row(
+      4,
+      'summary',
+      'Ticket:     DEV-6195\nPR:         https://example.test/pull/3081\n\nAll done.',
+    ),
+    row(5, 'end', ''),
+  ];
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'ticket-wf',
+    name: 'Ticket',
+    nodes: [
+      {
+        id: 'start',
+        type: 'start',
+        label: 'Start',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+      {
+        id: 'coderabbit',
+        type: 'agent',
+        label: 'Handle CodeRabbit findings',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+      {
+        id: 'fallback',
+        type: 'command',
+        label: 'Fallback',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+      {
+        id: 'summary',
+        type: 'command',
+        label: 'Summary',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+      { id: 'end', type: 'end', label: 'End', position: { x: 0, y: 0 }, config: {} },
+    ],
+    edges: [
+      { id: 'a', source: 'start', target: 'coderabbit' },
+      { id: 'b', source: 'coderabbit', target: 'summary' },
+      { id: 'c', source: 'summary', target: 'end' },
+    ],
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const report = await screen.findByRole('region', { name: 'Run report' });
+  await waitFor(() => expect(report).toHaveTextContent('from step 4 · Summary'));
+  expect(report).not.toHaveTextContent('No new review has arrived.');
+  const fields = within(report).getByText('Ticket').closest('dl');
+  expect(fields).toHaveTextContent('DEV-6195');
+  expect(fields).toHaveTextContent('https://example.test/pull/3081');
+  expect(report).toHaveTextContent('All done.');
+  const facts = screen.getByText('Steps').closest('div');
+  expect(facts).toHaveTextContent('5 · 1 skipped');
+  expect(screen.getByText('Took').closest('div')).toHaveTextContent('46m 28s');
+  const steps = within(screen.getByRole('list', { name: 'Steps' })).getAllByRole(
+    'listitem',
+  );
+  expect(steps).toHaveLength(5);
+  expect(steps[3]).toHaveClass('run-step', 'step-succeeded');
+  expect(within(steps[3]!).getByText('4')).toHaveClass('step-index');
+  expect(steps[2]).toHaveClass('step-skipped');
+  // The timeline numbers its rows the same way and links to each card.
+  const timeline = screen.getByRole('region', { name: 'Run timeline' });
+  const link = within(timeline).getByRole('link', { name: /^Step 4:\s*Summary$/ });
+  expect(link).toHaveAttribute('href', '#run-result-4');
+});
+
+it('names the step a failed run stopped at in its report', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'failed-run',
+    workflowId: 'wf',
+    status: 'failed',
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:01:00.000Z',
+  };
+  const failed: StoredNodeResult = {
+    id: 7,
+    runId: run.id,
+    nodeId: 'tests',
+    status: 'failed',
+    stdout: '',
+    stderr: '',
+    error: 'exit status 2',
+    startedAt: run.startedAt,
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([failed]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: [
+      {
+        id: 'tests',
+        type: 'command',
+        label: 'Run tests',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+    ],
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [failed] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const report = await screen.findByRole('region', { name: 'Run report' });
+  await waitFor(() =>
+    expect(report).toHaveTextContent('Stopped at step 1 · Run tests: exit status 2'),
+  );
+  expect(within(report).queryByRole('button', { name: 'Open full report' })).toBeNull();
+});
+
+it('names a rejected approval as the step a run stopped at', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'rejected-run',
+    workflowId: 'wf',
+    status: 'failed',
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:05:00.000Z',
+  };
+  const rejected: StoredNodeResult = {
+    id: 3,
+    runId: run.id,
+    nodeId: 'approve',
+    status: 'rejected',
+    stdout: '',
+    stderr: '',
+    startedAt: run.startedAt,
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([rejected]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: [
+      {
+        id: 'approve',
+        type: 'approval',
+        label: 'Approve the plan',
+        position: { x: 0, y: 0 },
+        config: {},
+      },
+    ],
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [rejected] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const report = await screen.findByRole('region', { name: 'Run report' });
+  await waitFor(() =>
+    expect(report).toHaveTextContent('Stopped at step 1 · Approve the plan (rejected)'),
+  );
+  expect(screen.getByText('Steps').closest('div')).toHaveTextContent('1 · 1 rejected');
+});
+
+it("works out a run's plan cost again when another run that day changes", async () => {
+  const backend = __setMockBackendForTests();
+  await backend.setSetting(
+    'usage.plans',
+    '{"claude":{"billing":"subscription","monthlyUsd":124}}',
+  );
+  const run: StoredRun = {
+    id: 'early-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-23T09:00:00.000Z',
+    finishedAt: '2026-10-23T09:10:00.000Z',
+  };
+  const later: StoredRun = {
+    id: 'later-run',
+    workflowId: 'wf',
+    status: 'running',
+    startedAt: '2026-10-23T11:00:00.000Z',
+  };
+  const day = (allDurationMs: number): ReturnType<typeof emptyUsageSummary> => {
+    const summary = emptyUsageSummary();
+    summary.providerDays = [
+      {
+        day: '2026-10-23',
+        adapter: 'claude',
+        agentAttempts: 1,
+        durationMs: 600_000,
+        reportedUsd: 1,
+        reportedUsdAttempts: 1,
+        allAgentAttempts: 2,
+        allDurationMs,
+      },
+    ];
+    return summary;
+  };
+  const usage = vi
+    .spyOn(backend, 'usageSummary')
+    .mockResolvedValueOnce(day(600_000))
+    .mockResolvedValue(day(1_200_000));
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: [],
+  });
+  useAppStore.setState({
+    runs: [run, later],
+    activeRunId: run.id,
+    runResults: { [run.id]: [] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  expect(
+    (await screen.findByText('Cost on your plans')).closest('div'),
+  ).toHaveTextContent('≈ USD 4.00');
+  // The later run finishing that day halves this run's part of the fee.
+  act(() => useAppStore.setState({ runs: [run, { ...later, status: 'succeeded' }] }));
+  // The previous figure stays while the new one loads; no "Set your plans" flash.
+  expect(screen.getByText('Cost on your plans')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Set your plans' })).toBeNull();
+  await waitFor(() =>
+    expect(screen.getByText('Cost on your plans').closest('div')).toHaveTextContent(
+      '≈ USD 2.00',
+    ),
+  );
+  expect(usage.mock.calls.length).toBeGreaterThanOrEqual(2);
+});
+
+it('shows a finished run at its plan cost beside the API value', async () => {
+  const backend = __setMockBackendForTests();
+  await backend.setSetting(
+    'usage.plans',
+    '{"claude":{"billing":"subscription","monthlyUsd":124}}',
+  );
+  const run: StoredRun = {
+    id: 'planned-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:10:00.000Z',
+  };
+  const agent: StoredNodeResult = {
+    id: 1,
+    runId: run.id,
+    nodeId: 'agent',
+    status: 'succeeded',
+    stdout: 'done',
+    stderr: '',
+    startedAt: run.startedAt,
+    durationMs: 600_000,
+    structuredJson: JSON.stringify({
+      agentUsage: { adapter: 'claude', model: 'm', reported_cost_usd: 55.7567 },
+    }),
+  };
+  const summary = emptyUsageSummary();
+  summary.providerDays = [
+    {
+      day: '2026-10-23',
+      adapter: 'claude',
+      agentAttempts: 1,
+      durationMs: 600_000,
+      reportedUsd: 55.7567,
+      reportedUsdAttempts: 1,
+      allAgentAttempts: 2,
+      allDurationMs: 1_200_000,
+    },
+  ];
+  const usage = vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([agent]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: [{ id: 'agent', type: 'agent', position: { x: 0, y: 0 }, config: {} }],
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [agent] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  // Half of the day's agent time on a USD 124/month (31-day) plan.
+  expect(
+    (await screen.findByText('Cost on your plans')).closest('div'),
+  ).toHaveTextContent('≈ USD 2.00');
+  expect(usage).toHaveBeenCalledWith({
+    from: '2026-10-23T00:00:00.000Z',
+    to: '2026-10-24T00:00:00.000Z',
+    runIds: ['planned-run'],
+  });
+  const value = screen.getByText('API value', { selector: 'dt' }).closest('div');
+  expect(value).toHaveTextContent('USD 55.76');
+  expect(value).not.toHaveTextContent('Set your plans');
+});
+
+it('waits for the run workflow before choosing the report', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'gated-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:01:00.000Z',
+  };
+  const rows: StoredNodeResult[] = [
+    {
+      id: 1,
+      runId: run.id,
+      nodeId: 'review',
+      status: 'succeeded',
+      stdout: 'No blocking findings.',
+      stderr: '',
+      startedAt: run.startedAt,
+    },
+    {
+      id: 2,
+      runId: run.id,
+      nodeId: 'gate',
+      status: 'succeeded',
+      stdout: 'false',
+      stderr: '',
+      startedAt: run.startedAt,
+    },
+  ];
+  let release: (workflow: Workflow) => void = () => {};
+  vi.spyOn(backend, 'getRunWorkflow').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(rows);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: rows },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await screen.findByRole('list', { name: 'Steps' });
+  // Until the workflow arrives, "false" could be mistaken for the report.
+  expect(screen.queryByRole('region', { name: 'Run report' })).toBeNull();
+  await act(async () => {
+    release({
+      schemaVersion: 6,
+      id: 'wf',
+      name: 'W',
+      nodes: [
+        {
+          id: 'review',
+          type: 'agent',
+          label: 'Review',
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+        {
+          id: 'gate',
+          type: 'condition',
+          label: 'Gate',
+          position: { x: 0, y: 0 },
+          config: {},
+        },
+        { id: 'end', type: 'end', label: 'End', position: { x: 0, y: 0 }, config: {} },
+      ],
+      edges: [
+        { id: 'a', source: 'review', target: 'gate' },
+        { id: 'b', source: 'gate', target: 'end', label: 'false' },
+      ],
+    });
+    await Promise.resolve();
+  });
+  const report = await screen.findByRole('region', { name: 'Run report' });
+  expect(report).toHaveTextContent('from step 1 · Review');
+  expect(report).toHaveTextContent('No blocking findings.');
 });
