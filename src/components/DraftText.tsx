@@ -31,7 +31,10 @@ export function LinesTextarea({
 }: {
   value: readonly string[];
   onChange: (lines: string[]) => void;
-} & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>): React.JSX.Element {
+} & Omit<
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>,
+  'value' | 'onChange'
+>): React.JSX.Element {
   const [shown, setDraft] = useDraftText(value.join('\n'), (text) =>
     parseLines(text).join('\n'),
   );
@@ -72,7 +75,10 @@ export function KeyValueTextarea({
 }: {
   value: Readonly<Record<string, string>>;
   onChange: (pairs: Record<string, string>) => void;
-} & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>): React.JSX.Element {
+} & Omit<
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>,
+  'value' | 'onChange'
+>): React.JSX.Element {
   const [shown, setDraft] = useDraftText(formatKeyValueLines(value), (text) =>
     formatKeyValueLines(parseKeyValueLines(text)),
   );

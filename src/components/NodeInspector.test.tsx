@@ -420,7 +420,7 @@ it('renames a workflow input in place and never adds a duplicate name', async ()
   });
   render(<NodeInspector />);
   const names = (): HTMLInputElement[] =>
-    screen.getAllByLabelText('Input name') as HTMLInputElement[];
+    screen.getAllByLabelText<HTMLInputElement>('Input name');
   const first = names()[0];
   if (first === undefined) throw new Error('missing input row');
   await user.clear(first);

@@ -25,8 +25,13 @@ function Lines({ initial = [] }: { initial?: string[] }): React.JSX.Element {
 describe('LinesTextarea', () => {
   it('lets Enter start the next argument instead of merging them', async () => {
     render(<Lines />);
-    await userEvent.type(screen.getByLabelText('Arguments'), 'mcp-atlassian{Enter}--read-only');
-    expect(screen.getByRole('status')).toHaveTextContent('["mcp-atlassian","--read-only"]');
+    await userEvent.type(
+      screen.getByLabelText('Arguments'),
+      'mcp-atlassian{Enter}--read-only',
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '["mcp-atlassian","--read-only"]',
+    );
     expect(screen.getByLabelText('Arguments')).toHaveValue('mcp-atlassian\n--read-only');
   });
 
@@ -50,7 +55,11 @@ describe('KeyValueTextarea', () => {
       const [pairs, setPairs] = useState<Record<string, string>>({});
       return (
         <>
-          <KeyValueTextarea aria-label="MCP arguments" value={pairs} onChange={setPairs} />
+          <KeyValueTextarea
+            aria-label="MCP arguments"
+            value={pairs}
+            onChange={setPairs}
+          />
           <output>{JSON.stringify(pairs)}</output>
         </>
       );
