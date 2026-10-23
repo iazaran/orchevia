@@ -68,11 +68,18 @@ export function opSymbol(op: ConditionOp): string {
   return OP_SYMBOLS[op];
 }
 
-function tokenize(text: string): string[] {
-  const tokens: string[] = [];
+/** A word of condition text; a quoted one is always a value, never `and`/`or`. */
+interface Token {
+  text: string;
+  quoted: boolean;
+}
+
+function tokenize(text: string): Token[] {
+  const tokens: Token[] = [];
   let current = '';
   let inQuotes = false;
   let inToken = false;
+  let quoted = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string;
     if (inQuotes) {
@@ -89,11 +96,13 @@ function tokenize(text: string): string[] {
     if (c === '"') {
       inQuotes = true;
       inToken = true;
+      quoted = true;
     } else if (/\s/.test(c)) {
       if (inToken) {
-        tokens.push(current);
+        tokens.push({ text: current, quoted });
         current = '';
         inToken = false;
+        quoted = false;
       }
     } else {
       current += c;
@@ -101,24 +110,30 @@ function tokenize(text: string): string[] {
     }
   }
   if (inQuotes) throw new Error('Condition has an unterminated quote.');
-  if (inToken) tokens.push(current);
+  if (inToken) tokens.push({ text: current, quoted });
   return tokens;
 }
 
 const REF_PART = '[A-Za-z0-9_-]+';
 const REF_PATTERN = new RegExp(`^${REF_PART}(\\.${REF_PART})*$`);
 
-function parseClause(tokens: string[]): ConditionClause {
+function parseClause(tokens: Token[]): ConditionClause {
   // Allow two-word `not contains` operator.
   const normalized: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    const lower = (tokens[i] as string).toLowerCase();
+    const token = tokens[i] as Token;
     const next = tokens[i + 1];
-    if (lower === 'not' && next !== undefined && next.toLowerCase() === 'contains') {
+    if (
+      !token.quoted &&
+      token.text.toLowerCase() === 'not' &&
+      next !== undefined &&
+      !next.quoted &&
+      next.text.toLowerCase() === 'contains'
+    ) {
       normalized.push('not contains');
       i++;
     } else {
-      normalized.push(tokens[i] as string);
+      normalized.push(token.text);
     }
   }
   if (normalized.length < 3) {
@@ -152,15 +167,15 @@ export function parseCondition(text: string): ConditionConfig {
   if (tokens.length === 0) throw new Error('Condition must not be empty.');
   const clauses: ConditionClause[] = [];
   let logic: ConditionLogic | null = null;
-  let current: string[] = [];
+  let current: Token[] = [];
   const flush = (): void => {
     if (current.length === 0) throw new Error("Condition has a dangling 'and'/'or'.");
     clauses.push(parseClause(current));
     current = [];
   };
   for (const token of tokens) {
-    const lower = token.toLowerCase();
-    if (lower === 'and' || lower === 'or') {
+    const lower = token.text.toLowerCase();
+    if (!token.quoted && (lower === 'and' || lower === 'or')) {
       flush();
       if (logic === null) {
         logic = lower;
@@ -179,7 +194,10 @@ export function parseCondition(text: string): ConditionConfig {
 }
 
 function quoteIfNeeded(s: string): string {
-  if (s === '' || /[\s"]/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
+  // Quote what the parser would otherwise split or unescape, and a value
+  // that reads as a connector.
+  if (s === '' || /[\s"\\]/.test(s) || /^(and|or)$/i.test(s))
+    return `"${s.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
   return s;
 }
 

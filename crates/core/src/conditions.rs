@@ -27,9 +27,9 @@ pub fn parse_condition(text: &str) -> Result<ConditionConfig, String> {
     let mut clauses = Vec::new();
     let mut logic: Option<ConditionLogic> = None;
     let mut current: Vec<String> = Vec::new();
-    for token in tokens {
+    for (token, quoted) in tokens {
         let lower = token.to_ascii_lowercase();
-        if lower == "and" || lower == "or" {
+        if !quoted && (lower == "and" || lower == "or") {
             if current.is_empty() {
                 return Err("Condition has a dangling 'and'/'or'.".to_string());
             }
@@ -74,7 +74,7 @@ pub fn render_condition(config: &ConditionConfig) -> String {
         .iter()
         .map(|c| {
             let right = if needs_quotes(&c.right) {
-                format!("\"{}\"", c.right.replace('"', "\\\""))
+                format!("\"{}\"", c.right.replace('\\', "\\\\").replace('"', "\\\""))
             } else {
                 c.right.clone()
             };
@@ -183,17 +183,25 @@ fn is_reference(s: &str) -> bool {
         })
 }
 
+/// Quote what the parser would otherwise split or unescape, and a value that
+/// reads as a connector.
 fn needs_quotes(s: &str) -> bool {
-    s.is_empty() || s.chars().any(|c| c.is_whitespace() || c == '"')
+    s.is_empty()
+        || s.chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+        || s.eq_ignore_ascii_case("and")
+        || s.eq_ignore_ascii_case("or")
 }
 
 /// Split text into tokens, honouring double quotes (with backslash escapes).
-fn tokenize(text: &str) -> Result<Vec<String>, String> {
+/// Each token says whether it was quoted: a quoted one is always a value.
+fn tokenize(text: &str) -> Result<Vec<(String, bool)>, String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut chars = text.chars().peekable();
     let mut in_quotes = false;
     let mut in_token = false;
+    let mut quoted = false;
     while let Some(c) = chars.next() {
         if in_quotes {
             if c == '\\' {
@@ -212,11 +220,13 @@ fn tokenize(text: &str) -> Result<Vec<String>, String> {
             '"' => {
                 in_quotes = true;
                 in_token = true;
+                quoted = true;
             }
             c if c.is_whitespace() => {
                 if in_token {
-                    tokens.push(std::mem::take(&mut current));
+                    tokens.push((std::mem::take(&mut current), quoted));
                     in_token = false;
+                    quoted = false;
                 }
             }
             _ => {
@@ -229,7 +239,7 @@ fn tokenize(text: &str) -> Result<Vec<String>, String> {
         return Err("Condition has an unterminated quote.".to_string());
     }
     if in_token {
-        tokens.push(current);
+        tokens.push((current, quoted));
     }
     Ok(tokens)
 }
@@ -243,6 +253,24 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn rendering_round_trips_every_value() {
+        for right in ["a b\\c", "or", "AND", "x\\\"y z", "\"", "C:\\path", "plain"] {
+            let config = ConditionConfig {
+                logic: ConditionLogic::And,
+                clauses: vec![ConditionClause {
+                    left: "input.x".into(),
+                    op: ConditionOp::Equals,
+                    right: right.into(),
+                }],
+            };
+            let text = render_condition(&config);
+            assert_eq!(parse_condition(&text), Ok(config), "{right} -> {text}");
+        }
+        let joined = parse_condition(r#"input.a == "or" or input.b == and2"#).unwrap();
+        assert_eq!(joined.clauses.len(), 2);
     }
 
     #[test]
