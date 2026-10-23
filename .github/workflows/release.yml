@@ -120,6 +120,15 @@ jobs:
             target/*/release/bundle/dmg/bundle_dmg.sh
           retention-days: 7
           if-no-files-found: error
+      # v0.1.20 shipped an app only the linker had signed, which macOS reports as
+      # "damaged" once downloaded. Refuse that, check the DMG holds the same
+      # signed app, and launch it (Intel under Rosetta) before anything ships.
+      - name: Verify the macOS app
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: bash scripts/verify-macos-app.sh "target/$RELEASE_TARGET/release/bundle" --launch
       - name: Stage artifacts
         env:
           RELEASE_ARCH: ${{ matrix.arch }}
@@ -212,9 +221,11 @@ jobs:
           files: release-artifacts/*
           generate_release_notes: true
           body: |
-            > macOS builds in early releases are **unsigned** (no notarization).
-            > On first launch: right-click → Open, or run
-            > `xattr -d com.apple.quarantine /Applications/Orchevia.app`.
+            > macOS builds are not notarized yet, so macOS blocks the first launch with a
+            > warning that it cannot verify Orchevia. Close the warning, then choose
+            > **Open Anyway** in System Settings → Privacy & Security (System
+            > Preferences → Security & Privacy on macOS 12 and earlier), or run
+            > `xattr -dr com.apple.quarantine /Applications/Orchevia.app`.
       # The Pages workflow rebuilds the signed apt repository from the published
       # releases. Dispatching it on main keeps the github-pages environment rules
       # (main only) and works with the default token.

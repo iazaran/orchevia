@@ -8,6 +8,7 @@ const none = {
   desktop: false,
   site: false,
   workflows: false,
+  macos: false,
 };
 
 test('documentation edits avoid compilers but site edits request deployment', () => {
@@ -26,10 +27,30 @@ test('Rust and shell edits validate core and desktop', () => {
   for (const path of [
     'crates/core/src/engine.rs',
     'src-tauri/src/main.rs',
-    'src-tauri/icons/icon.icns',
+    'src-tauri/tests/commands.rs',
   ]) {
     assert.deepEqual(classifyChanges([path]), { ...none, rust: true, desktop: true });
   }
+});
+
+test('bundle inputs also package and verify the macOS app', () => {
+  for (const path of [
+    'src-tauri/icons/icon.icns',
+    'src-tauri/Cargo.toml',
+    'src-tauri/build.rs',
+  ]) {
+    assert.deepEqual(classifyChanges([path]), {
+      ...none,
+      rust: true,
+      desktop: true,
+      macos: true,
+    });
+  }
+  // A later Rust source path must not clear an earlier bundle input.
+  assert.equal(
+    classifyChanges(['src-tauri/tauri.conf.json', 'crates/core/src/lib.rs']).macos,
+    true,
+  );
 });
 
 test('shared contracts, locks, and delivery scripts validate both stacks', () => {
@@ -47,6 +68,7 @@ test('shared contracts, locks, and delivery scripts validate both stacks', () =>
       rust: true,
       desktop: true,
       workflows: true,
+      macos: true,
     });
   }
 });
@@ -58,9 +80,13 @@ test('Pages workflow changes validate the site; dependency scheduling avoids com
   assert.deepEqual(classifyChanges(['.github/dependabot.yml']), none);
 });
 
-test('known workflow edits request linting without rebuilding unchanged application code', () => {
-  for (const path of ['.github/workflows/ci.yml', '.github/workflows/release.yml']) {
-    assert.deepEqual(classifyChanges([path]), { ...none, workflows: true });
+test('known workflow edits request linting and macOS packaging without other compilers', () => {
+  for (const path of [
+    '.github/workflows/ci.yml',
+    '.github/workflows/release.yml',
+    'scripts/verify-macos-app.sh',
+  ]) {
+    assert.deepEqual(classifyChanges([path]), { ...none, workflows: true, macos: true });
   }
   assert.deepEqual(classifyChanges(['.github/workflows/new.yml']), {
     ...none,
@@ -68,6 +94,7 @@ test('known workflow edits request linting without rebuilding unchanged applicat
     rust: true,
     desktop: true,
     workflows: true,
+    macos: true,
   });
 });
 
@@ -78,6 +105,7 @@ test('unknown inputs fail safe and changed sets combine their requirements', () 
     rust: true,
     desktop: true,
     workflows: true,
+    macos: true,
   });
   assert.deepEqual(classifyChanges([]), none);
   assert.deepEqual(
@@ -91,6 +119,7 @@ test('desktop config JSON stays in the native validation scope', () => {
     ...none,
     rust: true,
     desktop: true,
+    macos: true,
   });
 });
 

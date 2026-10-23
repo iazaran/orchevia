@@ -138,6 +138,13 @@ describe('latest release', () => {
     expect(installSteps(deb, 'Orchevia-linux-x86_64.deb')).toContain(
       'sudo apt install ~/Downloads/Orchevia-linux-x86_64.deb',
     );
+    // A new DMG is quarantined again, and macOS asks for Open Anyway.
+    expect(
+      installSteps(
+        { platform: 'macos', arch: 'arm64', installKind: 'app' },
+        'Orchevia-macos-arm64.dmg',
+      ),
+    ).toContain('Open Anyway in System Settings → Privacy & Security');
     // From the apt repository: no download, apt upgrades it.
     const apt = { ...deb, installKind: 'apt' };
     expect(assetFor(parsed, apt)).toBeUndefined();

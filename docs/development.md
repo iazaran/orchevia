@@ -54,7 +54,8 @@ Changed frontend inputs also run lint, typecheck, all UI tests, and a production
 build. Native inputs run core fmt/clippy/tests and Linux desktop compilation and
 command tests. Shared manifests, locks, build scripts, and unfamiliar inputs run
 both stacks. Edits to the three existing workflows run actionlint and the delivery
-regressions without compiling unchanged application code; new workflows fail safe
+regressions without compiling unchanged application code (CI and release edits
+also package for macOS, see below); new workflows fail safe
 and run both stacks as well. Pure prose changes avoid compilers; formatting still runs.
 
 `scripts/ci-changes.mjs` compares the PR head with its merge base, or the entire
@@ -65,7 +66,7 @@ Use **CI result** as the required check if adding branch rules; **Validate docs 
 runs only for site changes, so it must not be required. The old Tauri matrix check names have been retired; no status contexts were
 required when this change was prepared. Repository protection is not changed here.
 
-PR/main no longer build or upload installers. Linux desktop compilation uses the
+PR and main runs upload no installers. Linux desktop compilation uses the
 production `custom-protocol` feature, which requires `dist/`. When native checks
 apply, the frontend job builds it once and shares a one-day `ci-frontend` artifact
 with the read-only desktop job in the same run. That artifact is never consumed by
@@ -75,8 +76,12 @@ entire shell with production default features and runs its tests in one profile.
 A preceding `cargo check` would compile dependencies again as metadata only.
 All three real platform packages are built on release tags. A UI-only change runs
 frontend validation; a core or desktop
-change also compiles/tests the Linux shell. macOS compilation and packaging are
-verified at release time, so platform-specific failures can first appear there.
+change also compiles/tests the Linux shell. Changes to macOS packaging inputs (the
+Tauri config, icons and manifests under `src-tauri/`, both workflows,
+`scripts/verify-macos-app.sh`, locks and unfamiliar files) also build the Apple
+Silicon app and DMG and run the release's macOS checks (**Desktop macOS**). Other
+macOS compilation is verified at release time, so platform-specific Rust failures
+can first appear there.
 
 pnpm caches its store by lockfile. Rust caches the actual workspace `target/`
 (no redundant `src-tauri/target`), with separate core-check and desktop-check keys.
@@ -134,7 +139,16 @@ Publication accepts only artifacts from that tag workflow run, never PR artifact
 or a `workflow_run` handoff. It requires all four expected nonempty installer files
 before generating `SHA256SUMS` and publishing with generated notes. Builds and
 validation have read-only contents permission; only publication has contents write.
-Installers remain unsigned on macOS. Release installer artifacts are kept for one
+The macOS app is signed ad-hoc (`bundle.macOS.signingIdentity: "-"`), not with a
+Developer ID, and is not notarized. Apple Silicon runs signed code only, and the
+linker's automatic signature covers the executable alone: v0.1.20 shipped that,
+and macOS reported every downloaded copy as damaged. `scripts/verify-macos-app.sh`
+runs before staging and refuses an app whose signature does not bind
+`Info.plist`, seal the resources and carry the bundle identifier, checks that the
+DMG holds the same signature, and launches the DMG's copy until it opens its
+database (the Intel build under Rosetta). Pull requests that change packaging
+inputs run the same build and checks for Apple Silicon in CI
+(`Desktop macOS`). Release installer artifacts are kept for one
 day (publication follows within minutes); packaging failure logs and the generated
 DMG script are retained for 7 days.
 

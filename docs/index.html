@@ -1702,13 +1702,17 @@ shasum -a 256 -c SHA256SUMS --ignore-missing</code></pre>
             <div>
               <h3>First launch</h3>
               <p style="color: var(--muted)">
-                <strong style="color: var(--text)">macOS:</strong> builds are not signed
-                or notarized yet. Run the command below, or open the app once and choose
-                <em>Open Anyway</em> in System Settings → Privacy &amp; Security.
+                <strong style="color: var(--text)">macOS:</strong> builds are not
+                notarized yet, so macOS blocks the first launch with a warning that it
+                cannot verify Orchevia. Close the warning, then choose
+                <em>Open Anyway</em> in System Settings → Privacy &amp; Security (System
+                Preferences → Security &amp; Privacy on macOS 12 and earlier), or run the
+                command below. It also opens an older copy that says it “is damaged”
+                (fixed in v0.1.21).
               </p>
               <pre
                 class="install-code"
-              ><code>xattr -d com.apple.quarantine /Applications/Orchevia.app</code></pre>
+              ><code>xattr -dr com.apple.quarantine /Applications/Orchevia.app</code></pre>
               <p style="color: var(--muted)">
                 <strong style="color: var(--text)">Debian and Ubuntu:</strong> add the
                 signed apt repository, and <code>sudo apt upgrade</code> keeps Orchevia up
@@ -1803,8 +1807,9 @@ pnpm tauri dev</code></pre>
             <summary>Which platforms are supported?</summary>
             <p>
               Linux x86_64 and macOS on Apple Silicon and Intel. Windows is not supported
-              yet. macOS installers are not signed or notarized. Steps run with your user
-              permissions and are not sandboxed.
+              yet. macOS installers are ad-hoc signed but not notarized, so the first
+              launch needs Open Anyway. Steps run with your user permissions and are not
+              sandboxed.
             </p>
           </details>
         </section>

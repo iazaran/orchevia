@@ -81,10 +81,13 @@ sha256sum -c SHA256SUMS --ignore-missing
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
-- **macOS:** open the DMG and drag Orchevia to Applications. Builds are not signed or
-  notarized yet, so macOS blocks the first launch. Either run
-  `xattr -d com.apple.quarantine /Applications/Orchevia.app`, or try to open the app once
-  and choose **Open Anyway** in **System Settings → Privacy & Security**.
+- **macOS:** open the DMG and drag Orchevia to Applications. Builds are not notarized
+  yet, so macOS blocks the first launch with a warning that it cannot verify Orchevia.
+  Close the warning, then choose **Open Anyway** in **System Settings → Privacy &
+  Security** (**System Preferences → Security & Privacy** on macOS 12 and earlier), or
+  run `xattr -dr com.apple.quarantine /Applications/Orchevia.app`. If an older copy says it
+  "is damaged", that was a signing bug fixed in v0.1.21: install the latest DMG, or run
+  the same command.
 - **Linux (.deb):** `sudo apt install ./Orchevia-linux-x86_64.deb`
 - **Linux (AppImage):** `chmod +x Orchevia-linux-x86_64.AppImage`, then run it.
 
@@ -264,7 +267,8 @@ Details: [security model](./docs/security.md) and [SECURITY.md](./SECURITY.md).
 ## Current limits
 
 - **Beta:** Linux x86_64 and macOS (Apple Silicon and Intel). Windows is not supported
-  yet. macOS builds are unsigned and not notarized.
+  yet. macOS builds are ad-hoc signed but not notarized, so the first launch needs
+  **Open Anyway**.
 - **Tools and sign-in:** install and authenticate CLIs yourself. Orchevia reads only
   `PATH` from your login shell; Jira and other MCP servers may need credentials in the
   environment the app was started from.
