@@ -432,3 +432,39 @@ it('renames a workflow input in place and never adds a duplicate name', async ()
   await user.click(screen.getByRole('button', { name: '+ Add input' }));
   expect(names().map((input) => input.value)).toEqual(['input2', 'input3']);
 });
+
+it('stores only whole numbers from number fields', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Numbers');
+  workflow.nodes.push({
+    id: 'command',
+    type: 'command',
+    position: { x: 0, y: 0 },
+    config: { executable: 'echo' },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'command',
+    selectedEdgeId: null,
+    overlayRunId: null,
+  });
+  render(<NodeInspector />);
+  const timeout = screen.getByLabelText(/^Timeout in seconds/);
+  const saved = (): number | undefined =>
+    useAppStore
+      .getState()
+      .workflows.find((w) => w.id === stored.id)
+      ?.definition.nodes.find((n) => n.id === 'command')?.config.timeoutSecs;
+  fireEvent.change(timeout, { target: { value: '30' } });
+  expect(saved()).toBe(30);
+  // The desktop app stores whole seconds; these never reach the workflow.
+  for (const typed of ['1.5', '-1']) {
+    fireEvent.change(timeout, { target: { value: typed } });
+    expect(saved()).toBe(30);
+    expect(timeout).toHaveValue(30);
+  }
+  fireEvent.change(timeout, { target: { value: '' } });
+  expect(saved()).toBeUndefined();
+});

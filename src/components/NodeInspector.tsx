@@ -25,6 +25,17 @@ const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
 
 const EDGE_LABELS = ['', 'success', 'failure', 'true', 'false'];
 
+/**
+ * A typed whole number ≥ 0, or null for anything else. Steps store these
+ * as unsigned integers, so a field ignores "1.5", "-1" or "7a" (React
+ * then puts the field back to the stored value) instead of saving a value
+ * the desktop app cannot read.
+ */
+function wholeNumber(text: string): number | null {
+  const value = Number(text.trim());
+  return text.trim() !== '' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 function useNodeConfig(
   workflow: Workflow,
   nodeId: string,
@@ -329,7 +340,11 @@ export function GitHubEditor({
           label="PR number"
           value={String(op.number)}
           placeholder="7"
-          onChange={(v) => setOp({ ...op, number: Number(v) })}
+          onChange={(v) => {
+            // Cleared while retyping reads as 0, as before.
+            const number = v.trim() === '' ? 0 : wholeNumber(v);
+            if (number !== null) setOp({ ...op, number });
+          }}
         />
       )}
       {op.op === 'listPrs' && (
@@ -387,7 +402,11 @@ export function GitHubEditor({
             label="PR number"
             value={String(op.number)}
             placeholder="7"
-            onChange={(v) => setOp({ ...op, number: Number(v) })}
+            onChange={(v) => {
+              // Cleared while retyping reads as 0, as before.
+              const number = v.trim() === '' ? 0 : wholeNumber(v);
+              if (number !== null) setOp({ ...op, number });
+            }}
           />
           <GitTextField
             label="Body (explicit action)"
@@ -780,7 +799,9 @@ export function RetryEditor({
             max={10}
             value={retry.maxAttempts}
             onChange={(e) => {
-              setRetry({ ...retry, maxAttempts: Number(e.target.value) });
+              const maxAttempts =
+                e.target.value.trim() === '' ? 0 : wholeNumber(e.target.value);
+              if (maxAttempts !== null) setRetry({ ...retry, maxAttempts });
             }}
           />
         </label>
@@ -793,7 +814,9 @@ export function RetryEditor({
             max={60000}
             value={retry.delayMs ?? 0}
             onChange={(e) => {
-              setRetry({ ...retry, delayMs: Number(e.target.value) });
+              const delayMs =
+                e.target.value.trim() === '' ? 0 : wholeNumber(e.target.value);
+              if (delayMs !== null) setRetry({ ...retry, delayMs });
             }}
           />
         </label>
@@ -1256,7 +1279,9 @@ export function NodeInspector(): React.JSX.Element | null {
                 if (e.target.value === '') {
                   delete config.timeoutSecs;
                 } else {
-                  config.timeoutSecs = Number(e.target.value);
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.timeoutSecs = value;
                 }
                 patch(config, node.label);
               }}
@@ -1424,7 +1449,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.sessionMaxTurns;
-                else config.sessionMaxTurns = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.sessionMaxTurns = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1493,7 +1522,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.contextMaxChars;
-                else config.contextMaxChars = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.contextMaxChars = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1517,7 +1550,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.maxToolCalls;
-                else config.maxToolCalls = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.maxToolCalls = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1542,7 +1579,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.maxSubagents;
-                else config.maxSubagents = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.maxSubagents = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1591,7 +1632,9 @@ export function NodeInspector(): React.JSX.Element | null {
                 if (e.target.value === '') {
                   delete config.timeoutSecs;
                 } else {
-                  config.timeoutSecs = Number(e.target.value);
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.timeoutSecs = value;
                 }
                 patch(config, node.label);
               }}
@@ -1692,7 +1735,9 @@ export function NodeInspector(): React.JSX.Element | null {
             if (e.target.value === '') {
               delete config.maxVisits;
             } else {
-              config.maxVisits = Number(e.target.value);
+              const value = wholeNumber(e.target.value);
+              if (value === null) return;
+              config.maxVisits = value;
             }
             patch(config, node.label);
           }}
