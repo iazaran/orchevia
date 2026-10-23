@@ -211,7 +211,7 @@ change. `social-preview.jpg` (1280×640) is the link-preview image; upload it un
 
 ## Dependency updates
 
-Dependencies are refreshed in every release PR, not by separate bot PRs:
+Dependencies are refreshed in every release PR, alongside automatic patch PRs:
 
 ```bash
 pnpm deps:update   # pnpm update + cargo update within declared ranges, then checks
@@ -223,11 +223,26 @@ and `Cargo.toml`, re-runs `pnpm version:check`, and lists what it did not update
 held back by their ranges. Treat those as deliberate upgrades in their own change.
 Then run the complete gate below; no test or security rule is relaxed.
 
-Dependabot (`.github/dependabot.yml`) keeps version-update PRs only for GitHub
-Actions (monthly, grouped). npm and Cargo version updates are disabled with
-`open-pull-requests-limit: 0`; security updates are separate and still open PRs
-when Dependabot security updates are enabled for the repository. If a bot PR is
-open when a release PR is prepared, include its commit and close it with a link.
+Dependabot (`.github/dependabot.yml`) opens monthly grouped patch version PRs for
+npm and Cargo, with at most one open version PR per ecosystem. The `allow` rules
+restrict routine version updates to patches; security updates remain independent
+and can propose a larger upgrade when needed and resolvable. GitHub Actions
+retains its monthly grouped updates. If a bot PR is open when a release PR is
+prepared, include its commit and close it with a link. PRs still need review and
+passing checks; nothing merges automatically.
+
+Keep compatible ranges: npm `^2.12.2` permits compatible 2.x releases, and Cargo
+`"2.12"` means `>=2.12.0, <3.0.0`. Both already allow patch releases. A blanket
+`2.12.*` would narrow those ranges. Cargo's 0.x compatibility boundaries differ:
+`"0.18"` allows 0.18 patches but excludes 0.19 and 0.20. Commit both lockfiles to
+keep builds reproducible; updates change the lockfiles through reviewed PRs.
+
+The workspace currently patches glib to `vendor/glib` to backport
+RUSTSEC-2024-0429 without mixing incompatible GTK binding generations. See
+[the backport notes](../vendor/README.md) for provenance, verification and removal
+criteria. Dependabot does not maintain this local source copy: review it when
+the parent dependencies change, and remove the override when they support a
+fixed registry release. Flexible ranges cannot solve incompatible parent ranges.
 
 `pnpm version:check` fails when a Tauri npm package and its Rust crate differ in
 major.minor (`@tauri-apps/api` ↔ `tauri`, `@tauri-apps/plugin-<name>` ↔

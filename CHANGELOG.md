@@ -6,6 +6,16 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Fixed
+
+- Backport the upstream glib string-iterator safety fix (RUSTSEC-2024-0429) to
+  the GTK-compatible 0.18.5 dependency, with an optimized Linux regression test.
+
+### Changed
+
+- Re-enable monthly grouped npm and Cargo patch PRs from Dependabot while
+  retaining compatible version ranges and independent security updates.
+
 ### Added
 
 - **apt repository.** Debian and Ubuntu users can add the signed repository at
