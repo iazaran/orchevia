@@ -1069,7 +1069,10 @@ class MockBackend implements Backend {
           }
         }
         run.status = 'paused';
-        this.pushResult(runId, nodeId, 'paused', 'Waiting for human approval (mock).');
+        // Like the core: the approval's message is the paused row's error.
+        const paused = this.pushResult(runId, nodeId, 'paused', '');
+        paused.error = node.config.message?.trim() || 'Waiting for human approval.';
+        this.persist();
         return;
       }
       if (node.type === 'condition') {

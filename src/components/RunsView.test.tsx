@@ -1265,3 +1265,140 @@ it('waits for the run workflow before choosing the report', async () => {
   expect(report).toHaveTextContent('from step 1 · Review');
   expect(report).toHaveTextContent('No blocking findings.');
 });
+
+it('reads a paused run as still going and its approval prompt as a prompt', async () => {
+  const backend = __setMockBackendForTests();
+  // The core stamps finishedAt when a run pauses; it has not finished.
+  const paused: StoredRun = {
+    ...liveRun('paused', 'paused'),
+    finishedAt: '2026-10-08T10:05:00Z',
+  };
+  const done: StoredRun = {
+    ...liveRun('done', 'succeeded'),
+    finishedAt: '2026-10-08T10:05:00Z',
+  };
+  const prompt = (runId: string, id: number): StoredNodeResult => ({
+    ...resultRow(runId, id, 'paused'),
+    nodeId: 'gate',
+    stdout: '',
+    error: 'Check the plan before tests run.',
+  });
+  const rows: Record<string, StoredNodeResult[]> = {
+    paused: [prompt('paused', 1)],
+    done: [prompt('done', 1), { ...resultRow('done', 2, 'approved'), nodeId: 'gate' }],
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([paused, done]);
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(rows[id] ?? []),
+  );
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs: [paused, done],
+    activeRunId: 'paused',
+    runResults: rows,
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const rowsInList = screen.getAllByRole('button', {
+    name: /^(PAUSED|SUCCEEDED|paused|succeeded)/,
+  });
+  expect(rowsInList[0]).toHaveTextContent('so far');
+  expect(rowsInList[0]).not.toHaveTextContent('took');
+  expect(rowsInList[1]).toHaveTextContent('took 5m');
+  const message = await screen.findByText('Check the plan before tests run.');
+  expect(message.closest('[role="alert"]')).toBeNull();
+  // Once decided, the waiting row reads as history next to the decision.
+  await userEvent.setup().click(rowsInList[1]!);
+  const steps = await screen.findByRole('list', { name: 'Steps' });
+  await waitFor(() => expect(within(steps).getAllByRole('listitem')).toHaveLength(2));
+  const [asked, decision] = within(steps).getAllByRole('listitem');
+  expect(asked).toHaveClass('step-waited');
+  expect(within(asked!).getByText('waited')).toBeInTheDocument();
+  expect(decision).toHaveTextContent('approved');
+});
+
+it('keeps an approval note with the run it was typed for', async () => {
+  const backend = __setMockBackendForTests();
+  const runs = [liveRun('a', 'paused'), liveRun('b', 'paused')];
+  const rows: Record<string, StoredNodeResult[]> = {
+    a: [{ ...resultRow('a', 1, 'paused'), nodeId: 'gate' }],
+    b: [{ ...resultRow('b', 1, 'paused'), nodeId: 'gate' }],
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue(runs);
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(rows[id] ?? []),
+  );
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs,
+    activeRunId: 'a',
+    runResults: rows,
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const user = userEvent.setup();
+  await user.type(await screen.findByLabelText(/^Note/), 'LGTM');
+  act(() => {
+    useAppStore.setState({ activeRunId: 'b' });
+  });
+  expect(await screen.findByLabelText(/^Note/)).toHaveValue('');
+  act(() => {
+    useAppStore.setState({ activeRunId: 'a' });
+  });
+  expect(await screen.findByLabelText(/^Note/)).toHaveValue('LGTM');
+});
+
+it('shows a run started in the background while nothing else runs', async () => {
+  vi.useFakeTimers();
+  const backend = __setMockBackendForTests();
+  let runs = [liveRun('old', 'succeeded')];
+  vi.spyOn(backend, 'listRuns').mockImplementation(() => Promise.resolve(runs));
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(null);
+  useAppStore.setState({
+    runs,
+    activeRunId: null,
+    runResults: {},
+    runResultStatus: {},
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await advance(0);
+  // A schedule starts a run while the page is open and idle.
+  runs = [liveRun('scheduled', 'running'), ...runs];
+  await advance(10_000);
+  expect(screen.getAllByLabelText('Live run')).toHaveLength(1);
+});
+
+it('titles a run of a deleted workflow with the name saved in the run', async () => {
+  const backend = __setMockBackendForTests();
+  const run = { ...liveRun('orphan', 'succeeded'), workflowId: 'wf-gone' };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf-gone',
+    name: 'Nightly checks',
+    nodes: [],
+    edges: [],
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  expect(
+    await screen.findByRole('heading', { name: 'Nightly checks' }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('wf-gone')).toBeNull();
+});

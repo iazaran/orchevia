@@ -2268,6 +2268,9 @@ details[open] > .gen-summary::after {
 .timeline-bar.status-paused {
   background: var(--warning);
 }
+.timeline-bar.status-cancelled {
+  background: var(--text-2);
+}
 .fixture-editor {
   width: 100%;
   min-height: 240px;
