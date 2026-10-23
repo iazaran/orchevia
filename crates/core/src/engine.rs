@@ -3528,7 +3528,10 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
     if let Some(dir) = working_dir {
         let _ = db.touch_known_folder(dir);
     }
-    for attempt in 1..=max_attempts {
+    // A run paused at its usage budget between retries resumes the count
+    // where it stopped instead of starting over.
+    let first_attempt = (attempts_used_this_visit(db, run_id, node_id) + 1).min(max_attempts);
+    for attempt in first_attempt..=max_attempts {
         if flag.load(Ordering::SeqCst) {
             let _ = db.record_node_result(NewNodeResult {
                 structured_json: r#"{"notDispatched":true}"#,
@@ -4219,13 +4222,16 @@ async fn run_command_with_output(
         if let Some(output) = agent_output.as_ref().and_then(|s| s.lock().ok()) {
             stdout = output.activity.clone();
         }
+        // Truncation keeps the start of the output, so the reason a process
+        // was stopped goes after it.
+        stderr = truncate_chars(stderr);
         if ceiling_hit {
             stderr.push_str(&format!(
                 "\nStopped after {}s (extend-on-output ceiling of 12 h).",
                 MAX_TIMEOUT_SECS
             ));
         }
-        (truncate_chars(stdout), truncate_chars(stderr))
+        (truncate_chars(stdout), stderr)
     };
     let mut last_persisted = (0usize, 0usize);
     let mut last_flush = started;
@@ -4323,7 +4329,7 @@ async fn run_command_with_output(
             return CommandOutcome::Completed {
                 code: None,
                 stdout,
-                stderr: truncate_chars(stderr),
+                stderr,
                 timed_out: true,
                 started: true,
             };
@@ -4407,6 +4413,21 @@ fn stamp_agent_meta(
 /// Check an executable name/path (exec bit included) without spawning it.
 fn is_executable_available(exe: &str) -> bool {
     crate::tools::find_executable(exe).is_some()
+}
+
+/// Attempts this node's current visit already used: its `retrying` rows
+/// since its last finished row.
+fn attempts_used_this_visit(db: &SqliteDb, run_id: &str, node_id: &str) -> u32 {
+    let Ok(rows) = db.list_node_results(run_id) else {
+        return 0;
+    };
+    rows.iter()
+        .filter(|row| row.node_id == node_id)
+        .fold(0, |used, row| match row.status.as_str() {
+            "retrying" => used + 1,
+            "running" => used,
+            _ => 0,
+        })
 }
 
 fn truncate_chars(s: String) -> String {
@@ -7118,6 +7139,64 @@ exit 1"#;
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn retries_continue_their_count_after_a_usage_pause() {
+        // maxAttempts 3, budget 1: attempt 1 fails, the run pauses before
+        // attempt 2. Continuing must run attempts 2 and 3, not 3 more.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["transient"],"usage":{"input_tokens":1}}'
+exit 1"#;
+        let profile = structured_profile(dir.path(), AdapterKind::Claude, Some(events));
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+            max_attempts: 3,
+            delay_ms: 0,
+            backoff: false,
+        });
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "retry-resume",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf, "retry-resume".into()).await;
+        let pause = db
+            .get_run("retry-resume")
+            .unwrap()
+            .unwrap()
+            .execution
+            .usage_pause
+            .expect("paused");
+        engine
+            .continue_usage_run("retry-resume", pause.id, Some(10))
+            .await
+            .unwrap();
+        let rows = db.list_node_results("retry-resume").unwrap();
+        let attempts: Vec<(u32, &str)> = rows
+            .iter()
+            .filter(|r| r.node_id == "agent1")
+            .map(|r| (r.attempt, r.status.as_str()))
+            .collect();
+        assert_eq!(
+            attempts,
+            vec![(1, "retrying"), (2, "retrying"), (3, "failed")],
+            "{rows:?}"
+        );
+        assert_eq!(
+            db.get_run("retry-resume").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn review_usage_saved_spend_target_pauses_and_continues() {
         let dir = tempfile::tempdir().unwrap();
         let (db, engine) = harness();
@@ -8349,6 +8428,33 @@ mod integration_tests {
             }
             CommandOutcome::Cancelled { .. } => panic!("must time out, not cancel"),
         }
+    }
+
+    #[tokio::test]
+    async fn timeout_reason_survives_a_full_stderr() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let outcome = run_command_cancellable(
+            "sh",
+            &[
+                "-c".to_string(),
+                "head -c 300000 /dev/zero | tr '\\0' x >&2; sleep 30".to_string(),
+            ],
+            None,
+            Duration::from_millis(1500),
+            false,
+            &flag,
+            None,
+        )
+        .await;
+        let CommandOutcome::Completed { stderr, .. } = outcome else {
+            panic!("must time out, not cancel");
+        };
+        assert!(stderr.contains("[truncated]"), "{}", stderr.len());
+        assert!(
+            stderr.ends_with("and was killed."),
+            "{}",
+            &stderr[stderr.len() - 80..]
+        );
     }
 
     #[tokio::test]
