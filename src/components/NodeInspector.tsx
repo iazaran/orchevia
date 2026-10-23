@@ -7,6 +7,7 @@ import { profileGrants } from '../lib/permissions';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
 import { ToolRulesField } from './ToolRulesField';
+import { KeyValueTextarea, LinesTextarea } from './DraftText';
 import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
@@ -23,6 +24,17 @@ const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
 ];
 
 const EDGE_LABELS = ['', 'success', 'failure', 'true', 'false'];
+
+/**
+ * A typed whole number ≥ 0, or null for anything else. Steps store these
+ * as unsigned integers, so a field ignores "1.5", "-1" or "7a" (React
+ * then puts the field back to the stored value) instead of saving a value
+ * the desktop app cannot read.
+ */
+function wholeNumber(text: string): number | null {
+  const value = Number(text.trim());
+  return text.trim() !== '' && Number.isInteger(value) && value >= 0 ? value : null;
+}
 
 function useNodeConfig(
   workflow: Workflow,
@@ -83,7 +95,7 @@ export function GitEditor({
     if (value.trim() === '') {
       delete config.workingDir;
     } else {
-      config.workingDir = value;
+      config.workingDir = value.trim();
     }
     patchNode(config, node.label);
   };
@@ -146,18 +158,11 @@ export function GitEditor({
       {op.op === 'stage' && (
         <div className="field">
           <label className="field-label">Paths (one per line, explicit)</label>
-          <textarea
-            className="textarea"
+          <LinesTextarea
             rows={2}
-            value={(op.paths ?? []).join('\n')}
-            onChange={(e) => {
-              setOp({
-                ...op,
-                paths: e.target.value
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter((s) => s !== ''),
-              });
+            value={op.paths ?? []}
+            onChange={(paths) => {
+              setOp({ ...op, paths });
             }}
           />
         </div>
@@ -325,7 +330,7 @@ export function GitHubEditor({
           if (v.trim() === '') {
             delete config.workingDir;
           } else {
-            config.workingDir = v;
+            config.workingDir = v.trim();
           }
           patchNode(config, node.label);
         }}
@@ -335,7 +340,11 @@ export function GitHubEditor({
           label="PR number"
           value={String(op.number)}
           placeholder="7"
-          onChange={(v) => setOp({ ...op, number: Number(v) })}
+          onChange={(v) => {
+            // Cleared while retyping reads as 0, as before.
+            const number = v.trim() === '' ? 0 : wholeNumber(v);
+            if (number !== null) setOp({ ...op, number });
+          }}
         />
       )}
       {op.op === 'listPrs' && (
@@ -393,7 +402,11 @@ export function GitHubEditor({
             label="PR number"
             value={String(op.number)}
             placeholder="7"
-            onChange={(v) => setOp({ ...op, number: Number(v) })}
+            onChange={(v) => {
+              // Cleared while retyping reads as 0, as before.
+              const number = v.trim() === '' ? 0 : wholeNumber(v);
+              if (number !== null) setOp({ ...op, number });
+            }}
           />
           <GitTextField
             label="Body (explicit action)"
@@ -532,20 +545,12 @@ export function McpNodeEditor({
         <label className="field-label">
           Arguments (one KEY=value per line, values support {'{{…}}'})
         </label>
-        <textarea
-          className="textarea"
+        <KeyValueTextarea
           rows={3}
           placeholder="key=DEV-1234"
-          value={Object.entries(node.config.mcpArgs ?? {})
-            .map(([k, v]) => `${k}=${v}`)
-            .join('\n')}
-          onChange={(e) => {
-            const args: Record<string, string> = {};
-            for (const line of e.target.value.split('\n')) {
-              const at = line.indexOf('=');
-              if (at > 0) args[line.slice(0, at).trim()] = line.slice(at + 1).trim();
-            }
-            patchNode({ ...node.config, mcpArgs: args }, node.label);
+          value={node.config.mcpArgs ?? {}}
+          onChange={(mcpArgs) => {
+            patchNode({ ...node.config, mcpArgs }, node.label);
           }}
         />
         <span className="field-hint">
@@ -794,7 +799,9 @@ export function RetryEditor({
             max={10}
             value={retry.maxAttempts}
             onChange={(e) => {
-              setRetry({ ...retry, maxAttempts: Number(e.target.value) });
+              const maxAttempts =
+                e.target.value.trim() === '' ? 0 : wholeNumber(e.target.value);
+              if (maxAttempts !== null) setRetry({ ...retry, maxAttempts });
             }}
           />
         </label>
@@ -807,7 +814,9 @@ export function RetryEditor({
             max={60000}
             value={retry.delayMs ?? 0}
             onChange={(e) => {
-              setRetry({ ...retry, delayMs: Number(e.target.value) });
+              const delayMs =
+                e.target.value.trim() === '' ? 0 : wholeNumber(e.target.value);
+              if (delayMs !== null) setRetry({ ...retry, delayMs });
             }}
           />
         </label>
@@ -1062,8 +1071,10 @@ export function NodeInspector(): React.JSX.Element | null {
         </div>
         <div className="field">
           <span className="field-label">Workflow inputs (as {'{{input.name}}'})</span>
-          {(workflow.inputs ?? []).map((input) => (
-            <div key={input.name} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+          {/* Rows go by position: a name changes while it is typed and two
+              rows may briefly share one. */}
+          {(workflow.inputs ?? []).map((input, index) => (
+            <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
               <input
                 className="input"
                 value={input.name}
@@ -1071,8 +1082,8 @@ export function NodeInspector(): React.JSX.Element | null {
                 onChange={(e) => {
                   updateActiveWorkflow({
                     ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x) =>
-                      x.name === input.name ? { ...x, name: e.target.value } : x,
+                    inputs: (workflow.inputs ?? []).map((x, i) =>
+                      i === index ? { ...x, name: e.target.value } : x,
                     ),
                   });
                 }}
@@ -1085,8 +1096,8 @@ export function NodeInspector(): React.JSX.Element | null {
                 onChange={(e) => {
                   updateActiveWorkflow({
                     ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x) =>
-                      x.name === input.name
+                    inputs: (workflow.inputs ?? []).map((x, i) =>
+                      i === index
                         ? {
                             ...x,
                             default: e.target.value === '' ? undefined : e.target.value,
@@ -1102,7 +1113,7 @@ export function NodeInspector(): React.JSX.Element | null {
                 onClick={() => {
                   updateActiveWorkflow({
                     ...workflow,
-                    inputs: (workflow.inputs ?? []).filter((x) => x.name !== input.name),
+                    inputs: (workflow.inputs ?? []).filter((_, i) => i !== index),
                   });
                 }}
               >
@@ -1113,7 +1124,10 @@ export function NodeInspector(): React.JSX.Element | null {
           <button
             className="btn btn-ghost"
             onClick={() => {
-              const name = `input${String((workflow.inputs ?? []).length + 1)}`;
+              const taken = new Set((workflow.inputs ?? []).map((x) => x.name));
+              let n = taken.size + 1;
+              while (taken.has(`input${String(n)}`)) n += 1;
+              const name = `input${String(n)}`;
               updateActiveWorkflow({
                 ...workflow,
                 inputs: [...(workflow.inputs ?? []), { name, default: '' }],
@@ -1211,22 +1225,12 @@ export function NodeInspector(): React.JSX.Element | null {
             <label className="field-label" htmlFor="node-args">
               Arguments (one per line)
             </label>
-            <textarea
+            <LinesTextarea
               id="node-args"
-              className="textarea"
               rows={4}
-              value={(node.config.args ?? []).join('\n')}
-              onChange={(e) => {
-                patch(
-                  {
-                    ...node.config,
-                    args: e.target.value
-                      .split('\n')
-                      .map((s) => s.trim())
-                      .filter((s) => s !== ''),
-                  },
-                  node.label,
-                );
+              value={node.config.args ?? []}
+              onChange={(args) => {
+                patch({ ...node.config, args }, node.label);
               }}
               onBlur={() => {
                 refreshPreview();
@@ -1275,7 +1279,9 @@ export function NodeInspector(): React.JSX.Element | null {
                 if (e.target.value === '') {
                   delete config.timeoutSecs;
                 } else {
-                  config.timeoutSecs = Number(e.target.value);
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.timeoutSecs = value;
                 }
                 patch(config, node.label);
               }}
@@ -1443,7 +1449,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.sessionMaxTurns;
-                else config.sessionMaxTurns = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.sessionMaxTurns = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1512,7 +1522,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.contextMaxChars;
-                else config.contextMaxChars = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.contextMaxChars = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1536,7 +1550,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.maxToolCalls;
-                else config.maxToolCalls = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.maxToolCalls = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1561,7 +1579,11 @@ export function NodeInspector(): React.JSX.Element | null {
               onChange={(e) => {
                 const config = { ...node.config };
                 if (!e.target.value) delete config.maxSubagents;
-                else config.maxSubagents = Number(e.target.value);
+                else {
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.maxSubagents = value;
+                }
                 patch(config, node.label);
               }}
             />
@@ -1610,7 +1632,9 @@ export function NodeInspector(): React.JSX.Element | null {
                 if (e.target.value === '') {
                   delete config.timeoutSecs;
                 } else {
-                  config.timeoutSecs = Number(e.target.value);
+                  const value = wholeNumber(e.target.value);
+                  if (value === null) return;
+                  config.timeoutSecs = value;
                 }
                 patch(config, node.label);
               }}
@@ -1711,7 +1735,9 @@ export function NodeInspector(): React.JSX.Element | null {
             if (e.target.value === '') {
               delete config.maxVisits;
             } else {
-              config.maxVisits = Number(e.target.value);
+              const value = wholeNumber(e.target.value);
+              if (value === null) return;
+              config.maxVisits = value;
             }
             patch(config, node.label);
           }}

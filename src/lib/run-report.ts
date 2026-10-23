@@ -99,3 +99,32 @@ export function stepCounts(results: StoredNodeResult[]): {
     rejected: results.filter((row) => row.status === 'rejected').length,
   };
 }
+
+/** Readable names for the rows the engine records for its own guards. */
+const GUARD_LABELS: Record<string, string> = {
+  __spend_guard: 'Spend guard',
+  __usage_guard: 'Usage guard',
+};
+
+/** A step's display name: its label, a guard's name, or the node id. */
+export function stepLabel(nodeId: string, label: string | undefined): string {
+  return label ?? GUARD_LABELS[nodeId] ?? nodeId;
+}
+
+/** The timeline bar colour for a step status (one of the status-* pills). */
+export function timelineBarStatus(status: string): string {
+  switch (status) {
+    case 'approved':
+    case 'guardContinued':
+      return 'succeeded';
+    case 'rejected':
+      return 'failed';
+    case 'guardPaused':
+    case 'retrying':
+      return 'paused';
+    case 'skipped':
+      return 'cancelled';
+    default:
+      return status;
+  }
+}

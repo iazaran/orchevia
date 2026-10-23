@@ -47,3 +47,25 @@ describe('snake_case operator aliases', () => {
     expect(parseCondition('a less_or_equal b').clauses[0]?.op).toBe('lessOrEqual');
   });
 });
+
+describe('rendering round-trips every value', () => {
+  it.each(['a b\\c', 'or', 'AND', 'x\\"y z', '"', 'C:\\path', 'plain'])(
+    'keeps %s as the value',
+    (right) => {
+      const config = {
+        logic: 'and' as const,
+        clauses: [{ left: 'input.x', op: 'equals' as const, right }],
+      };
+      expect(parseCondition(renderCondition(config))).toEqual(config);
+    },
+  );
+
+  it('still joins clauses on bare and/or', () => {
+    expect(parseCondition('input.a == "or" or input.b == and2').clauses).toHaveLength(2);
+  });
+});
+
+it('reads not contains like the core does', () => {
+  expect(parseCondition('input.a not contains "P0"').clauses[0]?.op).toBe('notContains');
+  expect(() => parseCondition('input.a "not" "contains" x')).toThrow();
+});

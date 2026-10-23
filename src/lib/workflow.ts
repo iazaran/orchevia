@@ -1018,10 +1018,74 @@ export function nextBranchLabel(existing: (string | undefined)[]): 'true' | 'fal
 }
 
 /**
+ * Delete steps and edges together: a step's edges go with it, and the steps
+ * that remain stop referring to it (handoff context and input refs), so no
+ * stale id is left that the inspector cannot show or clear.
+ */
+export function removeFromWorkflow(
+  workflow: Workflow,
+  nodeIds: ReadonlySet<string>,
+  edgeIds: ReadonlySet<string>,
+): Workflow {
+  if (nodeIds.size === 0 && edgeIds.size === 0) return workflow;
+  const keep = (id: string): boolean => !nodeIds.has(id);
+  return {
+    ...workflow,
+    nodes: workflow.nodes
+      .filter((n) => keep(n.id))
+      .map((n) => {
+        const contextRefs = n.config.contextRefs;
+        const inputRefs = n.config.inputRefs;
+        const staleContext = contextRefs?.some((id) => !keep(id)) === true;
+        const staleInputs = inputRefs?.some((id) => !keep(id)) === true;
+        if (!staleContext && !staleInputs) return n;
+        const config = { ...n.config };
+        if (staleContext) {
+          const kept = contextRefs.filter(keep);
+          if (kept.length > 0) {
+            config.contextRefs = kept;
+          } else {
+            delete config.contextRefs;
+            delete config.contextMaxChars;
+          }
+        }
+        if (staleInputs) {
+          const kept = inputRefs.filter(keep);
+          if (kept.length > 0) config.inputRefs = kept;
+          else delete config.inputRefs;
+        }
+        return { ...n, config };
+      }),
+    edges: workflow.edges.filter(
+      (e) => !edgeIds.has(e.id) && keep(e.source) && keep(e.target),
+    ),
+  };
+}
+
+/**
+ * Start and End steps a deletion must spare: the toolbar cannot add either
+ * back, so deleting every Start (or every End) at once keeps the first.
+ */
+export function sparedAnchors(
+  workflow: Workflow,
+  doomed: ReadonlySet<string>,
+): Set<string> {
+  const spared = new Set<string>();
+  for (const kind of ['start', 'end'] as const) {
+    const all = workflow.nodes.filter((n) => n.type === kind);
+    const first = all[0];
+    if (first !== undefined && all.every((n) => doomed.has(n.id))) spared.add(first.id);
+  }
+  return spared;
+}
+
+/**
  * Smart-connect: when the user draws S → T, drop edges the new connection
  * makes redundant — an exact duplicate, or a direct P → T line that is now
  * bypassed via P ⇝ S → T (e.g. inserting a node between two linked nodes).
- * Labeled edges (true/false/failure) are never touched.
+ * Labeled edges (true/false/failure) are never touched, and P ⇝ S must use
+ * unlabeled edges only: a path through a branch is conditional, so drawing a
+ * loop-back (fix → review) never removes the review's way in.
  */
 export function bypassedEdgeIds(
   edges: Pick<WorkflowEdge, 'id' | 'source' | 'target' | 'label'>[],
@@ -1039,7 +1103,7 @@ export function bypassedEdgeIds(
       const current = queue.shift() as string;
       if (current === source) return true;
       for (const e of edges) {
-        if (e.id === avoidId) continue;
+        if (e.id === avoidId || !blank(e.label)) continue;
         if (e.source === current && !seen.has(e.target)) {
           seen.add(e.target);
           queue.push(e.target);

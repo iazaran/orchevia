@@ -795,7 +795,11 @@ function ScheduleEditor({
             id="sched-tz"
             className="input"
             value={form.timezone}
-            onChange={(e) => set({ timezone: e.target.value })}
+            onChange={(e) => {
+              // Slots shown for the old timezone no longer apply.
+              set({ timezone: e.target.value });
+              setPreview(null);
+            }}
           >
             {timezoneOptions(form.timezone).map((zone) => (
               <option key={zone} value={zone}>
@@ -1223,15 +1227,23 @@ function validateScheduleForm(form: Schedule): string[] {
     if (Number.isNaN(Date.parse(kind.at)))
       return ['One-time schedules need a valid date.'];
   } else if (kind.kind === 'interval') {
+    // The core stores whole seconds, hours and minutes.
     if (
-      !Number.isFinite(kind.everySecs) ||
+      !Number.isInteger(kind.everySecs) ||
       kind.everySecs < 60 ||
       kind.everySecs > 2592000
     )
-      return ['Interval must be between 60 s and 30 days.'];
+      return ['Interval must be a whole number of seconds from 60 s to 30 days.'];
   } else if (kind.kind === 'daily' || kind.kind === 'weekly') {
-    if (kind.hour < 0 || kind.hour > 23 || kind.minute < 0 || kind.minute > 59)
-      return ['Hour must be 0–23 and minute 0–59.'];
+    if (
+      !Number.isInteger(kind.hour) ||
+      !Number.isInteger(kind.minute) ||
+      kind.hour < 0 ||
+      kind.hour > 23 ||
+      kind.minute < 0 ||
+      kind.minute > 59
+    )
+      return ['Hour must be a whole number 0–23 and minute 0–59.'];
   } else if (kind.expr.trim() === '') {
     return ['Cron expression must not be empty (e.g. “0 2 * * *”).'];
   }

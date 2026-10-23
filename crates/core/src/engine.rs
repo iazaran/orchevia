@@ -282,6 +282,14 @@ struct RunState {
     visits: HashMap<String, u32>,
     pending: HashMap<String, usize>,
     taken: HashMap<String, bool>,
+    /// Non-loop edges resolved in the current pass, and whether each was
+    /// taken. A later visit of a looping source updates its entry instead of
+    /// counting as another arrival at the target.
+    resolved: HashMap<String, bool>,
+    /// While a live completion is routed: when that step finished. Skips it
+    /// causes are recorded at that time, so resuming replays them right
+    /// after it, before anything that finished later.
+    cause_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Engine {
@@ -888,8 +896,16 @@ impl Engine {
         }
         // Replay durable history (resume path): same routing as live.
         // Condition branches come from stored rows, so no re-evaluation.
+        // In the order steps finished: a long step's row keeps the id it got
+        // when it started, so id order can put its completion (and a loop
+        // reset it caused) before a skip recorded while it ran.
         let rows = self.db.list_node_results(run_id)?;
-        for row in rows.iter().filter(|r| is_terminal_status(&r.status)) {
+        let mut finished: Vec<&StoredNodeResult> = rows
+            .iter()
+            .filter(|r| is_terminal_status(&r.status))
+            .collect();
+        finished.sort_by(|a, b| a.finished_at.cmp(&b.finished_at).then(a.id.cmp(&b.id)));
+        for row in finished {
             let outcome = outcome_of_status(&row.status);
             // Replaying an upstream skip may already cascade into this node.
             // Its durable row must not resolve the same outgoing join twice.
@@ -1285,6 +1301,14 @@ impl Engine {
                 }
                 continue;
             }
+            // Another step may have finished before this one is routed: date
+            // the skips this routing causes by this step's own finish.
+            state.cause_at = self.db.list_node_results(run_id).ok().and_then(|rows| {
+                rows.iter()
+                    .rev()
+                    .find(|r| r.node_id == node_id && is_terminal_status(&r.status))
+                    .and_then(|r| r.finished_at)
+            });
             let effect = self.apply_completion(
                 &graph,
                 &mut state,
@@ -1295,9 +1319,19 @@ impl Engine {
                     branch,
                     record: true,
                 },
-            )?;
+            );
+            state.cause_at = None;
+            let effect = effect?;
             if let Some(message) = effect.run_failed {
-                fail_fast = Some(FailFast::Failure(message));
+                // A step that fails after the user cancelled (a git call
+                // cannot be interrupted) leaves the run cancelled. Only a
+                // cancel sets the flag before fail-fast does.
+                if fail_fast.is_none() && flag.load(Ordering::SeqCst) {
+                    fail_fast = Some(FailFast::Cancelled);
+                }
+                if !matches!(fail_fast, Some(FailFast::Cancelled)) {
+                    fail_fast = Some(FailFast::Failure(message));
+                }
                 // Fail fast: stop siblings promptly; drained below.
                 flag.store(true, Ordering::SeqCst);
             }
@@ -1360,7 +1394,7 @@ impl Engine {
             let visits = state.visits.get(&edge.target).copied().unwrap_or(0);
             if visits < graph.max_visits(&edge.target) {
                 self.reset_cycle(graph, state, &edge.target, node_id);
-                self.resolve_edge(graph, state, run_id, &edge.target, true, record)?;
+                self.resolve_edge(graph, state, run_id, &edge.target, None, true, record)?;
             } else {
                 effect.run_failed = Some(format!(
                     "Loop limit exceeded at '{}' (max {} visits).",
@@ -1372,6 +1406,9 @@ impl Engine {
         if effect.run_failed.is_some() {
             return Ok(effect);
         }
+        // Whether a taken edge reached a step that can still run; a failure
+        // whose route already ran (in an earlier loop pass) is unhandled.
+        let mut routed = false;
         for edge in &taken_normal {
             if state.terminal.contains_key(&edge.target) {
                 continue;
@@ -1387,7 +1424,16 @@ impl Engine {
                 ));
                 return Ok(effect);
             }
-            self.resolve_edge(graph, state, run_id, &edge.target, true, record)?;
+            routed = true;
+            self.resolve_edge(
+                graph,
+                state,
+                run_id,
+                &edge.target,
+                Some(&edge.id),
+                true,
+                record,
+            )?;
         }
         // Untaken branches resolve immediately — except while a loop
         // continues: sibling targets must wait for the exit visit, otherwise
@@ -1408,17 +1454,29 @@ impl Engine {
                 if loops_back && !can_reach_graph(graph, &edge.target, node_id) {
                     continue;
                 }
-                self.resolve_edge(graph, state, run_id, &edge.target, false, record)?;
+                self.resolve_edge(
+                    graph,
+                    state,
+                    run_id,
+                    &edge.target,
+                    Some(&edge.id),
+                    false,
+                    record,
+                )?;
             }
         }
-        if outcome == NodeOutcome::Failed && taken_normal.is_empty() && taken_loop.is_empty() {
-            // No failure route: the run fails here.
+        if outcome == NodeOutcome::Failed && !routed && taken_loop.is_empty() {
+            // No failure route (or only one that already ran): the run fails here.
             let label = graph
                 .nodes
                 .get(node_id)
                 .and_then(|n| n.label.clone())
                 .unwrap_or_else(|| node_id.to_string());
-            effect.run_failed = Some(format!("Node '{label}' failed with no failure route."));
+            effect.run_failed = Some(if taken_normal.is_empty() {
+                format!("Node '{label}' failed with no failure route.")
+            } else {
+                format!("Node '{label}' failed and its failure route already ran.")
+            });
         }
         Ok(effect)
     }
@@ -1432,7 +1490,7 @@ impl Engine {
         run_id: &str,
         workflow: &Workflow,
     ) -> Result<bool, EngineError> {
-        let waiting: Vec<(String, usize)> = workflow
+        let waiting: Vec<(String, Vec<String>)> = workflow
             .nodes
             .iter()
             .filter(|node| !state.terminal.contains_key(&node.id))
@@ -1443,30 +1501,53 @@ impl Engine {
                         graph.is_loop_edge(&edge.id) || state.terminal.contains_key(&edge.source)
                     });
                 let pending = state.pending.get(&node.id).copied().unwrap_or(0);
-                (settled && pending > 0).then(|| (node.id.clone(), pending))
+                let unresolved = edges
+                    .iter()
+                    .filter(|edge| {
+                        !graph.is_loop_edge(&edge.id) && !state.resolved.contains_key(&edge.id)
+                    })
+                    .map(|edge| edge.id.clone())
+                    .collect();
+                (settled && pending > 0).then(|| (node.id.clone(), unresolved))
             })
             .collect();
-        for (node_id, pending) in &waiting {
-            for _ in 0..*pending {
-                self.resolve_edge(graph, state, run_id, node_id, false, true)?;
+        for (node_id, unresolved) in &waiting {
+            for edge_id in unresolved {
+                self.resolve_edge(graph, state, run_id, node_id, Some(edge_id), false, true)?;
+            }
+            // Anything still counted (should not happen) resolves as before.
+            while !state.terminal.contains_key(node_id)
+                && state.pending.get(node_id).copied().unwrap_or(0) > 0
+            {
+                self.resolve_edge(graph, state, run_id, node_id, None, false, true)?;
             }
         }
         Ok(!waiting.is_empty())
     }
 
     /// Mark one incoming edge resolved for `target`; cascade skip when the
-    /// node can no longer be taken.
+    /// node can no longer be taken. `edge_id` is None for a loop-back edge,
+    /// which is not counted in `pending`.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_edge(
         &self,
         graph: &Graph,
         state: &mut RunState,
         run_id: &str,
         target: &str,
+        edge_id: Option<&str>,
         taken: bool,
         record: bool,
     ) -> Result<(), EngineError> {
         if state.terminal.contains_key(target) {
             return Ok(());
+        }
+        // One arrival per edge per pass: a looping source visited again must
+        // not count as the arrival of another branch.
+        if let Some(id) = edge_id {
+            if state.resolved.insert(id.to_string(), taken).is_some() {
+                return Ok(());
+            }
         }
         if let Some(pending) = state.pending.get_mut(target) {
             *pending = pending.saturating_sub(1);
@@ -1494,7 +1575,10 @@ impl Engine {
             return Ok(());
         }
         if record {
-            self.record_simple(run_id, node_id, "skipped", None, None)?;
+            match state.cause_at {
+                Some(at) => self.db.record_skip_at(run_id, node_id, at)?,
+                None => self.record_simple(run_id, node_id, "skipped", None, None)?,
+            }
         }
         state
             .terminal
@@ -1504,44 +1588,93 @@ impl Engine {
             if graph.is_loop_edge(&edge.id) {
                 continue;
             }
-            self.resolve_edge(graph, state, run_id, &edge.target, false, record)?;
+            self.resolve_edge(
+                graph,
+                state,
+                run_id,
+                &edge.target,
+                Some(&edge.id),
+                false,
+                record,
+            )?;
         }
         Ok(())
     }
 
     /// Prepare a loop target for re-execution: clear terminal marks for the
     /// nodes on the cycle (reachable from the target and able to reach the
-    /// source), so they run again bounded by `max_visits`. Nodes off the
-    /// cycle keep their state: exit-path nodes resolve on the exit visit,
-    /// and one-shot side nodes stay completed. History rows stay in SQLite.
+    /// source), so they run again bounded by `max_visits`. Steps the earlier
+    /// pass skipped downstream of the cycle (a failure route it did not take,
+    /// the steps after a condition a failure skipped) are decided again by
+    /// the next pass. Other nodes off the cycle keep their state: exit-path
+    /// nodes resolve on the exit visit, and one-shot side nodes stay
+    /// completed. History rows stay in SQLite.
     fn reset_cycle(&self, graph: &Graph, state: &mut RunState, target: &str, source: &str) {
         let from_target = reachable_from_graph(graph, target);
-        let cycle: Vec<String> = from_target
-            .into_iter()
-            .filter(|id| can_reach_graph(graph, id, source) || id == source)
+        let mut rearmed: HashSet<String> = from_target
+            .iter()
+            .filter(|id| can_reach_graph(graph, id, source) || id.as_str() == source)
+            .cloned()
             .collect();
-        for node_id in &cycle {
+        // The source just completed; it rejoins the cycle as re-runnable.
+        rearmed.insert(source.to_string());
+        loop {
+            let more: Vec<String> = from_target
+                .iter()
+                .filter(|id| {
+                    !rearmed.contains(*id)
+                        && state.terminal.get(*id) == Some(&NodeOutcome::Skipped)
+                        && graph.incoming.get(*id).is_some_and(|edges| {
+                            edges
+                                .iter()
+                                .any(|e| !graph.is_loop_edge(&e.id) && rearmed.contains(&e.source))
+                        })
+                })
+                .cloned()
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            rearmed.extend(more);
+        }
+        for node_id in &rearmed {
             state.terminal.remove(node_id);
         }
-        // The source just completed; it rejoins the cycle as re-runnable.
-        state.terminal.remove(source);
-        let mut cycle_set: HashSet<String> = cycle.into_iter().collect();
-        cycle_set.insert(source.to_string());
-        // Recompute readiness: pending = non-loop incoming from
-        // non-terminal sources; taken cleared (the loop edge re-sets it).
-        for node_id in &cycle_set {
-            let pending = graph
-                .incoming
-                .get(node_id)
-                .map(|edges| {
+        // A re-armed step arrives again at steps still waiting off the
+        // cycle, so its earlier arrival no longer counts. A step already
+        // ready, running or finished keeps the decision.
+        for node_id in &rearmed {
+            for edge in graph.outgoing.get(node_id).into_iter().flatten() {
+                let waiting = !rearmed.contains(&edge.target)
+                    && !state.terminal.contains_key(&edge.target)
+                    && state.pending.get(&edge.target).copied().unwrap_or(0) > 0;
+                if graph.is_loop_edge(&edge.id)
+                    || !waiting
+                    || state.resolved.remove(&edge.id).is_none()
+                {
+                    continue;
+                }
+                *state.pending.entry(edge.target.clone()).or_insert(0) += 1;
+                let still_taken = graph.incoming.get(&edge.target).is_some_and(|edges| {
                     edges
                         .iter()
-                        .filter(|e| {
-                            !graph.is_loop_edge(&e.id) && !state.terminal.contains_key(&e.source)
-                        })
-                        .count()
-                })
-                .unwrap_or(0);
+                        .any(|e| state.resolved.get(&e.id) == Some(&true))
+                });
+                state.taken.insert(edge.target.clone(), still_taken);
+            }
+        }
+        // Recompute readiness: pending = non-loop incoming from
+        // non-terminal sources, which resolve again; taken cleared (the loop
+        // edge re-sets it).
+        for node_id in &rearmed {
+            let mut pending = 0;
+            for edge in graph.incoming.get(node_id).into_iter().flatten() {
+                if graph.is_loop_edge(&edge.id) || state.terminal.contains_key(&edge.source) {
+                    continue;
+                }
+                state.resolved.remove(&edge.id);
+                pending += 1;
+            }
             state.pending.insert(node_id.clone(), pending);
             state.taken.insert(node_id.clone(), false);
         }
@@ -1567,8 +1700,27 @@ impl Engine {
         expected_approval_id: Option<i64>,
         workflow: Workflow,
     ) -> Result<(), EngineError> {
-        let workflow = self.db.get_run_workflow(run_id)?.unwrap_or(workflow);
+        if let Some(workflow) =
+            self.claim_approval(run_id, approved, note, expected_approval_id, workflow)?
+        {
+            self.execute(workflow, run_id.to_string()).await;
+        }
+        Ok(())
+    }
 
+    /// Record an approval decision. Returns the workflow to continue the run
+    /// with when it was approved; the caller runs it (in the background for
+    /// the app, so the decision returns at once instead of when the run
+    /// ends).
+    pub fn claim_approval(
+        &self,
+        run_id: &str,
+        approved: bool,
+        note: Option<&str>,
+        expected_approval_id: Option<i64>,
+        workflow: Workflow,
+    ) -> Result<Option<Workflow>, EngineError> {
+        let workflow = self.db.get_run_workflow(run_id)?.unwrap_or(workflow);
         if !self.cancel.decide_paused_run(
             &self.db,
             run_id,
@@ -1578,10 +1730,7 @@ impl Engine {
         )? {
             return Err(EngineError::NotPaused(run_id.to_string()));
         }
-        if approved {
-            self.execute(workflow, run_id.to_string()).await;
-        }
-        Ok(())
+        Ok(approved.then_some(workflow))
     }
 }
 
@@ -1625,9 +1774,11 @@ struct TaskInput {
 type SessionLocks = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
 fn execute_reused_task(db: &SqliteDb, task: &TaskInput) -> TaskOutcome {
+    // Seeds are the source run's succeeded rows, numbered in order, so count
+    // visits the same way: a pass that skipped this step is not a visit.
     let visit = db.list_node_results(&task.run_id).map(|rows| {
         rows.iter()
-            .filter(|r| r.node_id == task.node.id && is_terminal_status(&r.status))
+            .filter(|r| r.node_id == task.node.id && r.status == "succeeded")
             .count() as u32
             + 1
     });
@@ -2500,16 +2651,8 @@ async fn execute_git_task(
     let started = Instant::now();
     let blocking = tokio::task::spawn_blocking(move || do_git_op(&op, &root)).await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
-        let _ = db.record_node_result(NewNodeResult::simple(
-            &task.run_id,
-            node_id,
-            "cancelled",
-            None,
-            Some("Cancelled by user."),
-        ));
-        return TaskOutcome::Cancelled;
-    }
+    // The call cannot be interrupted, so it finished: record what it did even
+    // when the run was cancelled or failed fast meanwhile.
     match blocking {
         Ok(outcome) => {
             record_integration_result(db, &task.run_id, node_id, duration_ms, outcome, "git")
@@ -2703,16 +2846,8 @@ async fn execute_github_task(
     let started = Instant::now();
     let blocking = tokio::task::spawn_blocking(move || do_github_op(&op, &root, timeout)).await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
-        let _ = db.record_node_result(NewNodeResult::simple(
-            &task.run_id,
-            node_id,
-            "cancelled",
-            None,
-            Some("Cancelled by user."),
-        ));
-        return TaskOutcome::Cancelled;
-    }
+    // The call cannot be interrupted, so it finished: record what it did even
+    // when the run was cancelled or failed fast meanwhile.
     match blocking {
         Ok(outcome) => {
             record_integration_result(db, &task.run_id, node_id, duration_ms, outcome, "gh")
@@ -3040,7 +3175,8 @@ async fn execute_ticket_task(
     })
     .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
+    // A cancel interrupts the call; one that finished first keeps its result.
+    if flag.load(Ordering::SeqCst) && !matches!(blocking, Ok(Ok(_))) {
         let _ = db.record_node_result(NewNodeResult::simple(
             &task.run_id,
             node_id,
@@ -3183,7 +3319,8 @@ async fn execute_mcp_task(
     })
     .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
+    // A cancel interrupts the call; one that finished first keeps its result.
+    if flag.load(Ordering::SeqCst) && !matches!(blocking, Ok(Ok(_))) {
         let _ = db.record_node_result(NewNodeResult::simple(
             &task.run_id,
             node_id,
@@ -3442,7 +3579,10 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
     if let Some(dir) = working_dir {
         let _ = db.touch_known_folder(dir);
     }
-    for attempt in 1..=max_attempts {
+    // A run paused at its usage budget between retries resumes the count
+    // where it stopped instead of starting over.
+    let first_attempt = (attempts_used_this_visit(db, run_id, node_id) + 1).min(max_attempts);
+    for attempt in first_attempt..=max_attempts {
         if flag.load(Ordering::SeqCst) {
             let _ = db.record_node_result(NewNodeResult {
                 structured_json: r#"{"notDispatched":true}"#,
@@ -4133,13 +4273,16 @@ async fn run_command_with_output(
         if let Some(output) = agent_output.as_ref().and_then(|s| s.lock().ok()) {
             stdout = output.activity.clone();
         }
+        // Truncation keeps the start of the output, so the reason a process
+        // was stopped goes after it.
+        stderr = truncate_chars(stderr);
         if ceiling_hit {
             stderr.push_str(&format!(
                 "\nStopped after {}s (extend-on-output ceiling of 12 h).",
                 MAX_TIMEOUT_SECS
             ));
         }
-        (truncate_chars(stdout), truncate_chars(stderr))
+        (truncate_chars(stdout), stderr)
     };
     let mut last_persisted = (0usize, 0usize);
     let mut last_flush = started;
@@ -4237,7 +4380,7 @@ async fn run_command_with_output(
             return CommandOutcome::Completed {
                 code: None,
                 stdout,
-                stderr: truncate_chars(stderr),
+                stderr,
                 timed_out: true,
                 started: true,
             };
@@ -4321,6 +4464,21 @@ fn stamp_agent_meta(
 /// Check an executable name/path (exec bit included) without spawning it.
 fn is_executable_available(exe: &str) -> bool {
     crate::tools::find_executable(exe).is_some()
+}
+
+/// Attempts this node's current visit already used: its `retrying` rows
+/// since its last finished row.
+fn attempts_used_this_visit(db: &SqliteDb, run_id: &str, node_id: &str) -> u32 {
+    let Ok(rows) = db.list_node_results(run_id) else {
+        return 0;
+    };
+    rows.iter()
+        .filter(|row| row.node_id == node_id)
+        .fold(0, |used, row| match row.status.as_str() {
+            "retrying" => used + 1,
+            "running" => used,
+            _ => 0,
+        })
 }
 
 fn truncate_chars(s: String) -> String {
@@ -4806,6 +4964,42 @@ mod tests {
         assert_eq!(final_row.status, "succeeded");
         assert_eq!(final_row.stdout, "earlylate");
         assert!(final_row.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn claiming_an_approval_records_it_once_and_leaves_the_run_to_the_caller() {
+        let (db, engine) = harness();
+        let wf = vertical_slice();
+        db.upsert_workflow(&wf).expect("upsert");
+        for (run_id, approved) in [("claim-yes", true), ("claim-no", false)] {
+            engine
+                .start_run(&wf, run_id, &empty_inputs())
+                .expect("start");
+            engine.execute(wf.clone(), run_id.to_string()).await;
+            assert_eq!(
+                db.get_run(run_id).unwrap().unwrap().status,
+                RunStatus::Paused
+            );
+            let resumed = engine
+                .claim_approval(run_id, approved, Some("ok"), None, wf.clone())
+                .expect("claim");
+            assert_eq!(resumed.is_some(), approved, "{run_id}");
+            // A decision is recorded once.
+            assert!(engine
+                .claim_approval(run_id, approved, None, None, wf.clone())
+                .is_err());
+            if let Some(workflow) = resumed {
+                engine.execute(workflow, run_id.to_string()).await;
+            }
+        }
+        assert_eq!(
+            db.get_run("claim-yes").unwrap().unwrap().status,
+            RunStatus::Succeeded
+        );
+        assert_eq!(
+            db.get_run("claim-no").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
     }
 
     #[tokio::test]
@@ -6539,6 +6733,410 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         assert_eq!(status_of(&db, "run-loop-rescue", "end"), "succeeded");
     }
 
+    /// A command that fails on its first visit and passes after (or the
+    /// reverse), keyed by a marker file in `dir`.
+    fn flip_node(id: &str, dir: &tempfile::TempDir, fail_first: bool, y: f64) -> Node {
+        let marker = dir.path().join(id);
+        let script = if fail_first {
+            r#"if [ -e "$1" ]; then exit 0; fi; touch "$1"; exit 1"#
+        } else {
+            r#"if [ -e "$1" ]; then exit 1; fi; touch "$1"; exit 0"#
+        };
+        let mut node = command_node(
+            id,
+            "sh",
+            &["-c", script, "orchevia", &marker.to_string_lossy()],
+            y,
+        );
+        node.config.max_visits = Some(3);
+        node
+    }
+
+    fn always_false_gate(id: &str) -> Node {
+        Node {
+            id: id.into(),
+            kind: NodeKind::Condition,
+            position: Position { x: 80.0, y: 200.0 },
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "workflow.name".into(),
+                        op: ConditionOp::Equals,
+                        right: "never".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            label: Some("Again?".into()),
+        }
+    }
+
+    fn loop_wf(id: &str, nodes: Vec<Node>, edges: Vec<Edge>) -> Workflow {
+        Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: id.to_string(),
+            name: id.to_string(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes,
+            edges,
+        }
+    }
+
+    #[tokio::test]
+    async fn steps_after_a_loop_run_when_the_first_pass_failed_into_the_fix() {
+        // tests fails once and routes to fix, which loops back; the second
+        // pass succeeds, so gate (false) must still lead to publish.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let wf = loop_wf(
+            "wf-fail-into-fix",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                flip_node("tests", &dir, true, 100.0),
+                always_false_gate("gate"),
+                fix,
+                command_node("publish", "echo", &["publish"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "tests", None),
+                edge("e1", "tests", "gate", None),
+                edge("e2", "tests", "fix", Some("failure")),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "tests", None),
+                edge("e5", "gate", "publish", Some("false")),
+                edge("e6", "publish", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-fail-into-fix").await;
+        let rows = db.list_node_results("run-fail-into-fix").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(status_of(&db, "run-fail-into-fix", "publish"), "succeeded");
+        assert_eq!(status_of(&db, "run-fail-into-fix", "end"), "succeeded");
+    }
+
+    #[tokio::test]
+    async fn a_failure_on_a_later_loop_visit_takes_its_failure_route() {
+        // work passes on visit 1 (its failure route is not taken then) and
+        // fails on visit 2: the run must route to rescue, not end Succeeded
+        // with rescue never run.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-late-failure",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                flip_node("work", &dir, false, 100.0),
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "fix", "work", None),
+                edge("e4", "gate", "after", Some("false")),
+                edge("e5", "work", "rescue", Some("failure")),
+                edge("e6", "after", "end", None),
+                edge("e7", "rescue", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-late-failure").await;
+        let rows = db.list_node_results("run-late-failure").unwrap();
+        assert_eq!(
+            status_of(&db, "run-late-failure", "work"),
+            "failed",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-late-failure", "rescue"),
+            "succeeded",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-late-failure", "after"),
+            "skipped",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-late-failure", "end"),
+            "succeeded",
+            "{rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rearmed_route_survives_an_approval_pause_and_resume() {
+        // As above, with an approval after rescue: resuming replays history
+        // (including the re-armed rescue) and reaches End.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-rearmed-approval",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                flip_node("work", &dir, false, 100.0),
+                gate,
+                fix,
+                command_node("after", "echo", &["after"], 400.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("approve", NodeKind::Approval, 450.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "work", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "fix", "work", None),
+                edge("e4", "gate", "after", Some("false")),
+                edge("e5", "work", "rescue", Some("failure")),
+                edge("e6", "after", "end", None),
+                edge("e7", "rescue", "approve", None),
+                edge("e8", "approve", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf.clone(), "run-rearmed-approval").await;
+        assert_eq!(db.list_runs(10).unwrap()[0].status, RunStatus::Paused);
+        engine
+            .approve_run("run-rearmed-approval", true, None, wf)
+            .await
+            .expect("approve");
+        let rows = db.list_node_results("run-rearmed-approval").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(status_of(&db, "run-rearmed-approval", "end"), "succeeded");
+        assert_eq!(
+            rows.iter().filter(|r| r.node_id == "end").count(),
+            1,
+            "{rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_replays_steps_in_the_order_they_finished() {
+        // appr -> work -> gate -true-> fix -> appr (loop). bg fails (handled)
+        // while the slow fix runs, so rescue is skipped after fix started and
+        // re-armed when fix finishes. Resuming at the second approval must
+        // replay that skip before fix's completion, so work's failure on its
+        // second visit still reaches rescue.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut appr = simple_node("appr", NodeKind::Approval, 50.0);
+        appr.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "sh", &["-c", "sleep 1"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-replay-order",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                appr,
+                flip_node("work", &dir, false, 100.0),
+                gate,
+                fix,
+                command_node("bg", "sh", &["-c", "sleep 0.2; exit 1"], 100.0),
+                command_node("bgdone", "echo", &["handled"], 200.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "appr", None),
+                edge("e1", "appr", "work", None),
+                edge("e2", "work", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "appr", None),
+                edge("e5", "gate", "end", Some("false")),
+                edge("e6", "appr", "bg", None),
+                edge("e7", "bg", "bgdone", Some("failure")),
+                edge("e8", "bg", "rescue", None),
+                edge("e9", "work", "rescue", Some("failure")),
+                edge("e10", "bgdone", "end", None),
+                edge("e11", "rescue", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf.clone(), "run-replay-order").await;
+        for _ in 0..2 {
+            assert_eq!(db.list_runs(10).unwrap()[0].status, RunStatus::Paused);
+            engine
+                .approve_run("run-replay-order", true, None, wf.clone())
+                .await
+                .expect("approve");
+        }
+        let rows = db.list_node_results("run-replay-order").unwrap();
+        assert_eq!(
+            status_of(&db, "run-replay-order", "work"),
+            "failed",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-replay-order", "rescue"),
+            "succeeded",
+            "{rows:?}"
+        );
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_skip_is_dated_by_the_step_whose_routing_caused_it() {
+        // a fails, so its success edge is not taken and b is skipped. The
+        // skip carries a's finish time (not the moment it was routed), so a
+        // resume replays it right after a.
+        let (db, engine) = harness();
+        let wf = loop_wf(
+            "wf-skip-dated",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                command_node("a", "sh", &["-c", "exit 1"], 100.0),
+                command_node("handle", "echo", &["handled"], 200.0),
+                command_node("b", "echo", &["b"], 200.0),
+                simple_node("end", NodeKind::End, 300.0),
+            ],
+            vec![
+                edge("e0", "start", "a", None),
+                edge("e1", "a", "handle", Some("failure")),
+                edge("e2", "a", "b", None),
+                edge("e3", "handle", "end", None),
+                edge("e4", "b", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-skip-dated").await;
+        let rows = db.list_node_results("run-skip-dated").unwrap();
+        let finished = |id: &str| {
+            rows.iter()
+                .find(|r| r.node_id == id)
+                .and_then(|r| r.finished_at)
+        };
+        assert_eq!(status_of(&db, "run-skip-dated", "b"), "skipped", "{rows:?}");
+        assert!(finished("a").is_some());
+        assert_eq!(finished("b"), finished("a"), "{rows:?}");
+    }
+
+    #[tokio::test]
+    async fn a_join_after_a_loop_waits_for_its_other_branch() {
+        // work loops once; report joins work and a slower lint. The second
+        // visit of work must not count as lint's arrival.
+        let (db, engine) = harness();
+        let mut work = command_node("work", "echo", &["work"], 100.0);
+        work.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "echo", &["fix"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-join-after-loop",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                work,
+                command_node("lint", "sh", &["-c", "sleep 1; echo lint-done"], 100.0),
+                gate,
+                fix,
+                command_node("report", "echo", &["{{node.lint.output}}"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "work", None),
+                edge("e1", "start", "lint", None),
+                edge("e2", "work", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "work", None),
+                edge("e5", "gate", "end", Some("false")),
+                edge("e6", "work", "report", None),
+                edge("e7", "lint", "report", None),
+                edge("e8", "report", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-join-after-loop").await;
+        let rows = db.list_node_results("run-join-after-loop").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        let report = rows.iter().rev().find(|r| r.node_id == "report").unwrap();
+        assert!(report.stdout.contains("lint-done"), "{rows:?}");
+    }
+
     #[tokio::test]
     async fn template_test_command_preserves_compound_shell_argument() {
         let template = crate::templates::builtin_templates().remove(0);
@@ -6741,6 +7339,64 @@ exit 1"#;
                 1
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retries_continue_their_count_after_a_usage_pause() {
+        // maxAttempts 3, budget 1: attempt 1 fails, the run pauses before
+        // attempt 2. Continuing must run attempts 2 and 3, not 3 more.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let events = r#"printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["transient"],"usage":{"input_tokens":1}}'
+exit 1"#;
+        let profile = structured_profile(dir.path(), AdapterKind::Claude, Some(events));
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.nodes[1].config.retry = Some(crate::workflow::RetryPolicy {
+            max_attempts: 3,
+            delay_ms: 0,
+            backoff: false,
+        });
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run_with_options(
+                &wf,
+                "retry-resume",
+                &empty_inputs(),
+                &RunOptions {
+                    max_agent_attempts: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        engine.execute(wf, "retry-resume".into()).await;
+        let pause = db
+            .get_run("retry-resume")
+            .unwrap()
+            .unwrap()
+            .execution
+            .usage_pause
+            .expect("paused");
+        engine
+            .continue_usage_run("retry-resume", pause.id, Some(10))
+            .await
+            .unwrap();
+        let rows = db.list_node_results("retry-resume").unwrap();
+        let attempts: Vec<(u32, &str)> = rows
+            .iter()
+            .filter(|r| r.node_id == "agent1")
+            .map(|r| (r.attempt, r.status.as_str()))
+            .collect();
+        assert_eq!(
+            attempts,
+            vec![(1, "retrying"), (2, "retrying"), (3, "failed")],
+            "{rows:?}"
+        );
+        assert_eq!(
+            db.get_run("retry-resume").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
     }
 
     #[cfg(unix)]
@@ -7703,6 +8359,175 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn a_finished_git_commit_keeps_its_result_when_a_parallel_step_fails() {
+        // boom fails while the commit (slowed by a pre-commit hook) runs. A
+        // git call cannot be interrupted, so the commit happened: its row
+        // must say so instead of "cancelled".
+        let Some((dir, root)) = fresh_repo() else {
+            eprintln!("SKIP: git not installed");
+            return;
+        };
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nsleep 1\n").expect("hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        std::fs::write(dir.path().join("b.txt"), "b\n").expect("write");
+        let staged = std::process::Command::new("git")
+            .args(["add", "b.txt"])
+            .current_dir(&root)
+            .status()
+            .expect("git add");
+        assert!(staged.success());
+        let (db, engine) = harness();
+        let node = |id: &str, kind: NodeKind, config: NodeConfig| Node {
+            id: id.into(),
+            kind,
+            position: Position::default(),
+            config,
+            label: None,
+        };
+        let link = |id: &str, source: &str, target: &str| Edge {
+            id: id.into(),
+            source: source.into(),
+            target: target.into(),
+            label: None,
+        };
+        let wf = linear_git_workflow(
+            vec![
+                node("start", NodeKind::Start, NodeConfig::default()),
+                git_node(
+                    "commit",
+                    GitOp::Commit {
+                        message: "Add b".into(),
+                    },
+                    &root,
+                ),
+                node(
+                    "boom",
+                    NodeKind::Command,
+                    NodeConfig {
+                        executable: Some("sh".into()),
+                        args: vec!["-c".into(), "exit 1".into()],
+                        ..NodeConfig::default()
+                    },
+                ),
+                node("end", NodeKind::End, NodeConfig::default()),
+            ],
+            vec![
+                link("e0", "start", "commit"),
+                link("e1", "start", "boom"),
+                link("e2", "commit", "end"),
+                link("e3", "boom", "end"),
+            ],
+            "wf-commit-failfast",
+        );
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "run-commit-failfast", &HashMap::new())
+            .expect("start");
+        engine.execute(wf, "run-commit-failfast".to_string()).await;
+        assert_eq!(db.list_runs(10).expect("runs")[0].status, RunStatus::Failed);
+        let rows = db
+            .list_node_results("run-commit-failfast")
+            .expect("results");
+        let commit = rows.iter().find(|r| r.node_id == "commit").expect("row");
+        assert_eq!(commit.status, "succeeded", "{rows:?}");
+        let log = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(&root)
+            .output()
+            .expect("git log");
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "Add b");
+    }
+
+    #[tokio::test]
+    async fn a_git_step_failing_after_a_cancel_leaves_the_run_cancelled() {
+        let Some((dir, root)) = fresh_repo() else {
+            eprintln!("SKIP: git not installed");
+            return;
+        };
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nsleep 1\nexit 1\n").expect("hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        std::fs::write(dir.path().join("b.txt"), "b\n").expect("write");
+        let staged = std::process::Command::new("git")
+            .args(["add", "b.txt"])
+            .current_dir(&root)
+            .status()
+            .expect("git add");
+        assert!(staged.success());
+        let db = Arc::new(SqliteDb::open_in_memory().expect("in-memory db"));
+        let registry = CancellationRegistry::default();
+        let engine = Engine::new(Arc::clone(&db), registry.clone());
+        let canceller = Engine::new(Arc::clone(&db), registry);
+        let wf = linear_git_workflow(
+            vec![
+                Node {
+                    id: "start".into(),
+                    kind: NodeKind::Start,
+                    position: Position::default(),
+                    config: NodeConfig::default(),
+                    label: None,
+                },
+                git_node(
+                    "commit",
+                    GitOp::Commit {
+                        message: "Add b".into(),
+                    },
+                    &root,
+                ),
+                Node {
+                    id: "end".into(),
+                    kind: NodeKind::End,
+                    position: Position::default(),
+                    config: NodeConfig::default(),
+                    label: None,
+                },
+            ],
+            vec![
+                Edge {
+                    id: "e0".into(),
+                    source: "start".into(),
+                    target: "commit".into(),
+                    label: None,
+                },
+                Edge {
+                    id: "e1".into(),
+                    source: "commit".into(),
+                    target: "end".into(),
+                    label: None,
+                },
+            ],
+            "wf-commit-cancel",
+        );
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "run-commit-cancel", &HashMap::new())
+            .expect("start");
+        let cancel = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            canceller.cancel_run("run-commit-cancel").expect("cancel");
+        });
+        engine.execute(wf, "run-commit-cancel".to_string()).await;
+        cancel.await.expect("cancel task");
+        assert_eq!(
+            db.list_runs(10).expect("runs")[0].status,
+            RunStatus::Cancelled
+        );
+        // The step's own row still says what git did.
+        let rows = db.list_node_results("run-commit-cancel").expect("results");
+        let commit = rows.iter().find(|r| r.node_id == "commit").expect("row");
+        assert_eq!(commit.status, "failed", "{rows:?}");
+    }
+
+    #[tokio::test]
     async fn git_status_node_reports_branch() {
         let Some((_dir, root)) = fresh_repo() else {
             eprintln!("SKIP: git not installed");
@@ -7891,6 +8716,33 @@ mod integration_tests {
             }
             CommandOutcome::Cancelled { .. } => panic!("must time out, not cancel"),
         }
+    }
+
+    #[tokio::test]
+    async fn timeout_reason_survives_a_full_stderr() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let outcome = run_command_cancellable(
+            "sh",
+            &[
+                "-c".to_string(),
+                "head -c 300000 /dev/zero | tr '\\0' x >&2; sleep 30".to_string(),
+            ],
+            None,
+            Duration::from_millis(1500),
+            false,
+            &flag,
+            None,
+        )
+        .await;
+        let CommandOutcome::Completed { stderr, .. } = outcome else {
+            panic!("must time out, not cancel");
+        };
+        assert!(stderr.contains("[truncated]"), "{}", stderr.len());
+        assert!(
+            stderr.ends_with("and was killed."),
+            "{}",
+            &stderr[stderr.len() - 80..]
+        );
     }
 
     #[tokio::test]

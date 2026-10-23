@@ -1365,3 +1365,70 @@ it('aggregates usage over more than fifty runs with date boundaries', async () =
     "Invalid 'from' date",
   );
 }, 20000);
+
+describe('mock parity with the desktop backend', () => {
+  it('keeps schedules, notification choices and custom models across a reload', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    const workflow = createEmptyWorkflow('Nightly');
+    workflow.id = 'wf';
+    await backend.saveWorkflow(workflow);
+    await backend.saveSchedule({
+      id: 's',
+      name: 'Nightly',
+      workflowId: 'wf',
+      kind: { kind: 'interval', everySecs: 3600 },
+      timezone: 'local',
+      enabled: true,
+      trusted: true,
+      missedPolicy: 'skip',
+    });
+    // Each save is kept on its own, without a later unrelated save.
+    expect((await __setMockBackendForTests().listSchedules()).map((s) => s.name)).toEqual(
+      ['Nightly'],
+    );
+    const prefs = { ...(await backend.getNotificationPrefs()), onFailure: false };
+    await backend.setNotificationPrefs(prefs);
+    await backend.saveCustomModels('claude', [' opus ', 'opus', '', 'sonnet']);
+    const reopened = __setMockBackendForTests();
+    expect((await reopened.listSchedules()).map((s) => s.name)).toEqual(['Nightly']);
+    expect(await reopened.getNotificationPrefs()).toEqual(prefs);
+    expect(await reopened.listCustomModels('claude')).toEqual(['opus', 'sonnet']);
+    await reopened.deleteSchedule('s');
+    expect(await __setMockBackendForTests().listSchedules()).toEqual([]);
+  });
+
+  it('rejects what the desktop backend rejects', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    await expect(backend.saveCustomModels('gemini', ['x'])).rejects.toThrow(
+      'Unknown adapter.',
+    );
+    await expect(
+      backend.saveCustomModels(
+        'codex',
+        Array.from({ length: 51 }, (_, i) => `m${String(i)}`),
+      ),
+    ).rejects.toThrow('At most 50 custom models per adapter.');
+    await expect(backend.saveCustomModels('codex', ['x'.repeat(121)])).rejects.toThrow(
+      'at most 120 characters',
+    );
+    await expect(
+      backend.saveMcpServer({
+        id: 'm',
+        name: 'M',
+        command: ' ',
+        args: [],
+        enabled: true,
+      }),
+    ).rejects.toThrow('Invalid MCP server');
+  });
+
+  it('previews an agent command before its prompt is written', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    const profile = await backend.saveAgentProfile(createDefaultProfile('claude'));
+    const preview = await backend.previewAgentCommand(profile.id, '');
+    expect(preview.executable).not.toBe('');
+  });
+});

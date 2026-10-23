@@ -79,6 +79,12 @@ body,
   height: 100%;
 }
 
+/* The app shell owns all scrolling; the window itself never scrolls. */
+html,
+body {
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-family: var(--font-sans);
@@ -394,8 +400,11 @@ textarea {
   color: var(--text-2);
 }
 
-/* Views */
+/* Views. Positioned so absolutely positioned children (.sr-only labels,
+   corner buttons) stay inside the view's scroll area instead of stretching
+   the window below the app. */
 .view {
+  position: relative;
   flex: 1;
   overflow: auto;
   padding: 20px;
@@ -947,6 +956,11 @@ input[type='radio'] {
   place-items: center;
   z-index: 50;
   padding: 16px;
+}
+
+/* A confirmation always opens over the dialog that asked for it. */
+.modal-backdrop[role='alertdialog'] {
+  z-index: 60;
 }
 
 .modal-card {
@@ -2224,6 +2238,7 @@ details[open] > .gen-summary::after {
 }
 .timeline-rows,
 .recovery-steps {
+  position: relative;
   max-height: 420px;
   overflow: auto;
 }
@@ -2257,6 +2272,9 @@ details[open] > .gen-summary::after {
 }
 .timeline-bar.status-paused {
   background: var(--warning);
+}
+.timeline-bar.status-cancelled {
+  background: var(--text-2);
 }
 .fixture-editor {
   width: 100%;
@@ -2568,6 +2586,7 @@ details[open] > .gen-summary::after {
 }
 /* Numeric table columns: right-aligned tabular figures. */
 .table-wrap {
+  position: relative;
   overflow-x: auto;
   max-width: 100%;
 }

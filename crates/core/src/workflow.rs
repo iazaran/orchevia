@@ -933,7 +933,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         "Git node requires an operation.".to_string(),
                         Some(node.id.clone()),
                     ),
-                    Some(op) => validate_git_op(node, op, &mut issues),
+                    Some(op) => validate_git_op(node, op, default_branch(wf), &mut issues),
                 }
                 if node
                     .config
@@ -967,7 +967,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         "GitHub node requires an operation.".to_string(),
                         Some(node.id.clone()),
                     ),
-                    Some(op) => validate_github_op(node, op, &mut issues),
+                    Some(op) => validate_github_op(node, op, default_branch(wf), &mut issues),
                 }
                 if node
                     .config
@@ -1319,8 +1319,23 @@ fn node_label(node: &Node) -> String {
         .unwrap_or_else(|| format!("{:?} ({})", node.kind, node.id))
 }
 
+/// The workflow's default branch, trimmed, when one is set. The engine fills
+/// blank branch fields from it, so validation accepts them too.
+fn default_branch(wf: &Workflow) -> Option<&str> {
+    wf.defaults
+        .as_ref()
+        .and_then(|d| d.branch.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 /// Validate per-operation Git fields.
-fn validate_git_op(node: &Node, op: &GitOp, issues: &mut Vec<ValidationIssue>) {
+fn validate_git_op(
+    node: &Node,
+    op: &GitOp,
+    default_branch: Option<&str>,
+    issues: &mut Vec<ValidationIssue>,
+) {
     let blank = |s: &str| s.trim().is_empty();
     let mut err = |code: &str, message: String| {
         push_error(issues, code, message, Some(node.id.clone()));
@@ -1328,10 +1343,15 @@ fn validate_git_op(node: &Node, op: &GitOp, issues: &mut Vec<ValidationIssue>) {
     match op {
         GitOp::Status | GitOp::DiffSummary | GitOp::WorktreeList | GitOp::Remotes => {}
         GitOp::BranchCreate { name } | GitOp::Checkout { name, .. } => {
+            let name = if blank(name) {
+                default_branch.unwrap_or("")
+            } else {
+                name.as_str()
+            };
             if blank(name) {
                 err(
                     "git-branch-required",
-                    "Git branch operation needs a name.".to_string(),
+                    "Git branch operation needs a name: set it on the step or set a workflow default branch.".to_string(),
                 );
             } else if let Err(message) = crate::git::validate_branch_name(name) {
                 err("git-branch-invalid", message);
@@ -1380,7 +1400,12 @@ fn validate_git_op(node: &Node, op: &GitOp, issues: &mut Vec<ValidationIssue>) {
 }
 
 /// Validate per-operation GitHub fields.
-fn validate_github_op(node: &Node, op: &GitHubOp, issues: &mut Vec<ValidationIssue>) {
+fn validate_github_op(
+    node: &Node,
+    op: &GitHubOp,
+    default_branch: Option<&str>,
+    issues: &mut Vec<ValidationIssue>,
+) {
     let mut err = |code: &str, message: String| {
         push_error(issues, code, message, Some(node.id.clone()));
     };
@@ -1399,10 +1424,10 @@ fn validate_github_op(node: &Node, op: &GitHubOp, issues: &mut Vec<ValidationIss
                     "PR creation needs an explicit title.".to_string(),
                 );
             }
-            if base.trim().is_empty() || head.trim().is_empty() {
+            if base.trim().is_empty() || (head.trim().is_empty() && default_branch.is_none()) {
                 err(
                     "github-branches-required",
-                    "PR creation needs explicit base and head branches.".to_string(),
+                    "PR creation needs base and head branches (a blank head uses the workflow default branch).".to_string(),
                 );
             }
         }
@@ -2206,6 +2231,65 @@ mod integration_validation_tests {
         let issues = validate_workflow(&wf);
         assert!(issues.iter().any(|i| i.code == "github-title-required"));
         assert!(issues.iter().any(|i| i.code == "github-branches-required"));
+    }
+
+    #[test]
+    fn blank_branches_use_the_workflow_default_branch() {
+        let checkout = node_with(
+            "co",
+            NodeKind::Git,
+            NodeConfig {
+                git_op: Some(GitOp::Checkout {
+                    name: " ".into(),
+                    allow_dirty: false,
+                }),
+                ..NodeConfig::default()
+            },
+        );
+        let pr = node_with(
+            "pr",
+            NodeKind::GitHub,
+            NodeConfig {
+                github_op: Some(GitHubOp::CreatePr {
+                    title: "Ship it".into(),
+                    body: String::new(),
+                    base: "main".into(),
+                    head: String::new(),
+                    draft: true,
+                }),
+                ..NodeConfig::default()
+            },
+        );
+        let branch_codes = |wf: &Workflow| -> Vec<String> {
+            validate_workflow(wf)
+                .into_iter()
+                .filter(|i| {
+                    i.code.starts_with("git-branch") || i.code == "github-branches-required"
+                })
+                .map(|i| i.code)
+                .collect()
+        };
+        let mut wf = shell(vec![checkout, pr]);
+        wf.defaults = Some(WorkflowDefaults {
+            repo_dir: Some("/tmp".into()),
+            branch: None,
+        });
+        assert_eq!(
+            branch_codes(&wf),
+            vec!["git-branch-required", "github-branches-required"]
+        );
+        // The engine fills both blanks from the default, so validation agrees.
+        wf.defaults = Some(WorkflowDefaults {
+            repo_dir: Some("/tmp".into()),
+            branch: Some("feature/x".into()),
+        });
+        assert!(branch_codes(&wf).is_empty(), "{:?}", validate_workflow(&wf));
+        // An invalid default is reported on the step that would use it.
+        wf.defaults = Some(WorkflowDefaults {
+            repo_dir: Some("/tmp".into()),
+            branch: Some("bad..name".into()),
+        });
+        assert_eq!(branch_codes(&wf), vec!["git-branch-invalid"]);
     }
 
     #[test]

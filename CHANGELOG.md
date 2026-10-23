@@ -6,6 +6,89 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-10-24
+
+### Fixed
+
+- **The Runs page no longer scrolls past its last step.** A long run's page kept
+  scrolling into blank space below the End step and pulled the sidebar up with
+  it: the hidden "Step N:" label on each timeline row (added in 0.1.22) was
+  placed against the window instead of its view. The window itself no longer
+  scrolls, and jumping to a step from the timeline stays inside the page.
+- **Loops route the way they read.** Three single-loop cases ended a run as
+  **Succeeded** without doing everything:
+  - a first pass that failed into its fix step skipped the steps after the loop;
+  - a failure on a later pass was dropped when its failure route had been
+    skipped on an earlier pass;
+  - a step's second pass counted as the arrival of another branch at a join
+    after the loop, which then started early and read that branch's partial
+    output.
+
+  A step that fails when its only failure route already ran now fails the run, and
+  resuming a paused run replays its history in the order steps finished.
+
+- **Steps that finished keep their result.** A Git or GitHub step that was
+  already running when a parallel step failed, or the run was cancelled, was
+  recorded as cancelled though the commit or PR existed (and recovery offered to
+  repeat it). Ticket and MCP steps record cancelled only when the stop interrupted
+  the call, and a step that fails after you cancel leaves the run cancelled.
+- **Retries and timeouts.** A run paused at its agent-attempt budget between
+  retries started the retries over when continued (a policy of three ran four).
+  A command that filled its error output before timing out lost the "timed out
+  after Ns" reason.
+- **Recovery** finds a reused result for a step on a branch inside a loop that an
+  earlier pass skipped, instead of failing with "No reusable result for this
+  visit".
+- **The run page:**
+  - A run waiting for approval reads "so far" in the run list, not "took 12m"
+    ticking up.
+  - An approval's prompt is shown as a prompt, not a red error; once decided, the
+    waiting row reads "waited" next to the decision.
+  - Runs a schedule or watcher starts appear while the page sits idle.
+  - The approval note, "Copied" and the playbook field choice stay with their own
+    run; approving no longer jumps back to that run when it finishes.
+  - A run of a deleted workflow keeps the workflow's name; the usage guard row is
+    named, and rejected, skipped and retrying steps have their own timeline colour.
+- **Typing in list and folder fields.** Arguments (Command steps, agent profiles,
+  MCP servers), Git stage paths and MCP key=value lines dropped Enter, so a second
+  line could not be started and lines merged; folder fields dropped a space typed
+  at the end of a word.
+- **The workflow editor:**
+  - Drawing the loop-back of a hand-built review loop no longer deletes the line
+    into the first review.
+  - Deleting a step removes it from other steps' context and input references,
+    and deleting a step together with an edge no longer brings the edge back.
+  - The only Start or End can no longer be deleted (the toolbar cannot add them).
+  - Renaming a workflow input keeps focus, and a new input never repeats a name.
+  - Number fields accept only whole numbers, instead of saving values the app
+    could not read ("Save failed: invalid args").
+  - A condition's text form keeps backslashes and values such as "or".
+  - Git branch and checkout steps and a PR's head branch may be left blank when
+    the workflow has a default branch, as their fields say.
+- **Workflow assistance.** Arrange and Optimize accept workflows with unfinished
+  steps, and those steps alone no longer block accepting the result. Optimize keeps
+  each Agent step's required tools and, when a proposal leaves out its edges, the
+  saved connections. Accepted and discarded generations are recorded as such.
+- **Dialogs.** A confirmation asked for from inside a dialog opens above it
+  instead of behind it; selecting text and letting go outside an editor no longer
+  closes it; focus returns to the button that opened a confirmation.
+- **Schedules** refuse fractional hours, minutes and intervals with a clear message,
+  "Preview next runs" clears when the timezone changes, and a huge cron step no
+  longer wraps around to every minute.
+- **Git and GitHub.** Relative and `~/` worktree paths resolve inside the
+  repository and the home folder, as git does. A new PR is read back by the URL gh
+  prints, so one opened from a fork head (`owner:branch`) no longer fails. The GitHub status names the account for older
+  `gh` versions too, and never as "null".
+- **The window stays responsive** while gh, branch detection, Usage & costs and the
+  diagnostics bundle work; they no longer run on the window's main thread.
+- **Development:** the browser mock (`pnpm dev`) keeps schedules, watchers,
+  notification choices and custom models across reloads and checks MCP servers and
+  custom models as the desktop app does.
+
+### Changed
+
+- Dependencies refreshed within their declared ranges.
+
 ## [0.1.22] - 2026-10-23
 
 ### Changed

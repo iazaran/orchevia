@@ -331,12 +331,35 @@ pub fn worktree_list(root: &str) -> Result<Vec<WorktreeInfo>, String> {
     Ok(worktrees)
 }
 
+/// Where git puts a worktree path. A relative path is inside `root` (git's
+/// working directory), not Orchevia's own folder, and `~/…` is the home
+/// folder: with no shell in between, git would make a literal `~` folder.
+fn worktree_path(root: &str, path: &str) -> Result<String, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("Worktree path must not be empty.".to_string());
+    }
+    let home = || {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|home| home.is_absolute())
+            .ok_or_else(|| format!("Cannot expand '~' in '{path}': HOME is not set."))
+    };
+    let resolved = if path == "~" {
+        home()?
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home()?.join(rest)
+    } else {
+        std::path::Path::new(root).join(path)
+    };
+    Ok(resolved.to_string_lossy().into_owned())
+}
+
 /// Add an isolated worktree. The path must not exist yet; the branch is
 /// created when missing (`-b`), reused otherwise. Never deletes user work.
 pub fn worktree_add(root: &str, path: &str, branch: Option<&str>) -> Result<String, String> {
-    if path.trim().is_empty() {
-        return Err("Worktree path must not be empty.".to_string());
-    }
+    let path = worktree_path(root, path)?;
+    let path = path.as_str();
     if std::path::Path::new(path).exists() {
         return Err(format!("Worktree path already exists: {path}"));
     }
@@ -375,9 +398,8 @@ pub fn worktree_add(root: &str, path: &str, branch: Option<&str>) -> Result<Stri
 /// no user work is ever deleted. There is intentionally no force flag — `git`
 /// itself would require `--force`, which Orchevia never passes.
 pub fn worktree_remove(root: &str, path: &str) -> Result<String, String> {
-    if path.trim().is_empty() {
-        return Err("Worktree path must not be empty.".to_string());
-    }
+    let path = worktree_path(root, path)?;
+    let path = path.as_str();
     let main = discover_root(root).unwrap_or_else(|| root.to_string());
     if same_path(path, &main) {
         return Err("Refusing to remove the main worktree.".to_string());
@@ -551,6 +573,37 @@ mod tests {
         assert!(!relisted.iter().any(|w| w.path == wt));
         // Main worktree can never be removed through this path.
         assert!(worktree_remove(&root, &root).is_err());
+    }
+
+    #[test]
+    fn relative_worktree_paths_live_inside_the_repository() {
+        let Some(dir) = fresh_repo() else {
+            eprintln!("SKIP: git not installed");
+            return;
+        };
+        let root = dir.path().to_string_lossy().into_owned();
+        // Orchevia's own folder (the test's) must not receive the parent.
+        let stray = std::env::current_dir().unwrap().join("wt-rel-parent");
+        worktree_add(&root, "wt-rel-parent/wt", Some("rel-branch")).expect("add");
+        assert!(dir.path().join("wt-rel-parent/wt/a.txt").exists());
+        assert!(!stray.exists());
+        worktree_remove(&root, "wt-rel-parent/wt").expect("remove");
+        assert!(!dir.path().join("wt-rel-parent/wt").exists());
+    }
+
+    #[test]
+    fn tilde_worktree_paths_expand_to_home() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !std::path::Path::new(&home).is_absolute() {
+            return;
+        }
+        assert_eq!(
+            worktree_path("/repo", "~/wt/x").unwrap(),
+            std::path::Path::new(&home).join("wt/x").to_string_lossy()
+        );
+        assert_eq!(worktree_path("/repo", "/abs/wt").unwrap(), "/abs/wt");
+        assert_eq!(worktree_path("/repo", "wt").unwrap(), "/repo/wt");
+        assert!(worktree_path("/repo", "  ").is_err());
     }
 
     #[test]

@@ -178,7 +178,6 @@ export function App(): React.JSX.Element {
         )}
         <UpdateBanner />
         <NoticeHost />
-        <ConfirmHost />
         {wizardOpen && (
           <OnboardingWizard
             onClose={() => {
@@ -197,6 +196,8 @@ export function App(): React.JSX.Element {
           {view === 'environment' && <EnvironmentView />}
           {view === 'usage' && <UsageView />}
         </ViewErrorBoundary>
+        {/* Last, so a confirmation asked for by an open dialog is the top dialog. */}
+        <ConfirmHost />
       </main>
     </div>
   );

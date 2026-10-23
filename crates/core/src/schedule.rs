@@ -498,7 +498,11 @@ fn parse_cron_field(text: &str, min: u32, max: u32) -> Result<Vec<u32>, String> 
         let mut v = low;
         while v <= high {
             values.push(v);
-            v += step;
+            // A huge step ends the field instead of wrapping around.
+            let Some(next) = v.checked_add(step) else {
+                break;
+            };
+            v = next;
         }
     }
     values.sort_unstable();
@@ -1225,6 +1229,14 @@ mod tests {
             error("0 0 31 2 *"),
             "Cron never matches: no chosen month has that day."
         );
+    }
+
+    #[test]
+    fn a_huge_cron_step_matches_only_its_start() {
+        // Wrapping around u32 used to turn this into "every minute"; the
+        // TypeScript preview gives [59].
+        assert_eq!(parse_cron_field("59/4294967295", 0, 59).unwrap(), vec![59]);
+        assert_eq!(parse_cron_field("*/4294967295", 0, 59).unwrap(), vec![0]);
     }
 
     #[test]

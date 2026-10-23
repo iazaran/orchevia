@@ -253,7 +253,7 @@ pub async fn continue_usage_run(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn usage_summary(
     state: State<AppState>,
     filter: Option<orchevia_core::usage::UsageFilter>,
@@ -299,16 +299,23 @@ pub async fn approve_run(
     let engine_db = Arc::clone(&state.db);
     let cancel = state.cancel.clone();
     let engine = Engine::new(engine_db, cancel);
-    engine
-        .approve_run_with_approval(
+    // Record the decision now and continue the run in the background, like
+    // spend and usage continuations: the call must not wait for the run.
+    let resumed = engine
+        .claim_approval(
             &run_id,
             approved,
             note.as_deref(),
             expected_approval_id,
             workflow,
         )
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(workflow) = resumed {
+        tokio::spawn(async move {
+            engine.execute(workflow, run_id).await;
+        });
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -331,7 +338,10 @@ pub fn list_known_folders(
 pub struct GitHubState {
     pub installed: bool,
     pub authenticated: bool,
+    // Absent rather than null: the UI types these as optional strings.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
 
@@ -345,7 +355,7 @@ pub struct GitBranches {
 /// Branches of the repo containing `working_dir`: current + list for branch
 /// pickers. Narrow helper for branch fields (with one-click Detect): the full
 /// repo inspector stays removed by design.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_branches(working_dir: String) -> Result<GitBranches, String> {
     let root = orchevia_core::git::discover_root(working_dir.trim())
         .ok_or_else(|| "Not a git repository.".to_string())?;
@@ -357,12 +367,12 @@ pub fn git_branches(working_dir: String) -> Result<GitBranches, String> {
 }
 
 /// Back-compat alias returning just the current branch.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_current_branch(working_dir: String) -> Result<String, String> {
     Ok(git_branches(working_dir)?.current)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn github_state() -> Result<GitHubState, String> {
     let installed = orchevia_core::tools::find_executable("gh").is_some();
     if !installed {
@@ -1671,22 +1681,15 @@ pub fn mark_generation_status(
     if !["proposed", "accepted", "discarded", "failed"].contains(&status.as_str()) {
         return Err("Unknown generation status.".to_string());
     }
-    // Generations are append-only history; status flips via re-record.
-    let generations = state.db.list_generations(500).map_err(|e| e.to_string())?;
-    let generation = generations
-        .into_iter()
-        .find(|g| g.id == id)
-        .ok_or_else(|| format!("Unknown generation '{id}'."))?;
-    state
+    if state
         .db
-        .record_generation(
-            &id,
-            &generation.goal,
-            &generation.generator_profile,
-            &generation.proposal_json,
-            &status,
-        )
-        .map_err(|e| e.to_string())
+        .update_generation_status(&id, &status)
+        .map_err(|e| e.to_string())?
+    {
+        Ok(())
+    } else {
+        Err(format!("Unknown generation '{id}'."))
+    }
 }
 
 #[tauri::command]
@@ -1842,7 +1845,7 @@ pub fn observe_edits(
 /// Privacy-preserving local diagnostics bundle: versions, counts, tool
 /// availability, recent error kinds. No prompts, no file contents, no
 /// credentials, no environment dumps. Preview in the UI; never uploaded.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
     let tools = discover_tools(&default_tools());
     let search = orchevia_core::tools::search_environment();

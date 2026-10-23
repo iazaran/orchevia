@@ -1,6 +1,7 @@
 import type { StoredNodeResult, StoredRun, Workflow } from '../lib/workflow';
 import { reportedSpend, timelineEntries } from '../lib/run-controls';
 import { CLI_COST_EXPLANATION, formatDurationMs } from '../lib/usage';
+import { stepLabel, timelineBarStatus } from '../lib/run-report';
 
 export function RunTimeline({
   run,
@@ -59,9 +60,10 @@ export function RunTimeline({
         <div className="timeline-rows">
           {entries.map((entry, index) => {
             const row = results.find((r) => r.id === entry.id);
-            const label =
-              workflow.nodes.find((n) => n.id === entry.nodeId)?.label ??
-              (entry.nodeId === '__spend_guard' ? 'Spend guard' : entry.nodeId);
+            const label = stepLabel(
+              entry.nodeId,
+              workflow.nodes.find((n) => n.id === entry.nodeId)?.label,
+            );
             return (
               <div className="timeline-row" key={entry.id}>
                 <a
@@ -85,7 +87,7 @@ export function RunTimeline({
                 <div className="timeline-track" aria-hidden="true">
                   {entry.offsetMs !== null && entry.durationMs !== null && (
                     <span
-                      className={`timeline-bar status-${entry.status === 'approved' ? 'succeeded' : entry.status === 'guardPaused' ? 'paused' : entry.status}`}
+                      className={`timeline-bar status-${timelineBarStatus(entry.status)}`}
                       style={{
                         left: `${String((entry.offsetMs / extent) * 100)}%`,
                         width: `${String(Math.max(0.5, (entry.durationMs / extent) * 100))}%`,

@@ -15,6 +15,7 @@ import { Notice, useNoticeMessage } from './Notice';
 import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 import { UpdatesSection } from './Updates';
+import { LinesTextarea } from './DraftText';
 
 export function EnvironmentView(): React.JSX.Element {
   const tools = useAppStore((s) => s.tools);
@@ -573,18 +574,12 @@ function McpEditor({
         <label className="field-label" htmlFor="mcp-args">
           Arguments (one per line, no secrets)
         </label>
-        <textarea
+        <LinesTextarea
           id="mcp-args"
-          className="textarea"
           rows={2}
-          value={form.args.join('\n')}
-          onChange={(e) => {
-            set({
-              args: e.target.value
-                .split('\n')
-                .map((s) => s.trim())
-                .filter((s) => s !== ''),
-            });
+          value={form.args}
+          onChange={(args) => {
+            set({ args });
           }}
         />
       </div>

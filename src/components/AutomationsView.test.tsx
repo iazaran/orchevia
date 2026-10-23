@@ -1,6 +1,6 @@
 import userEvent from '@testing-library/user-event';
 import { createEmptyWorkflow } from '../lib/workflow';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
@@ -293,4 +293,33 @@ it('shows a finished one-time schedule as done instead of a dead switch', async 
   await expect(backend.saveSchedule({ ...done, enabled: true })).rejects.toThrow(
     'This one-time schedule already ran.',
   );
+});
+
+it('refuses a fractional interval and drops a preview when the timezone changes', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await storedReadOnlyWorkflow();
+  useAppStore.setState({
+    schedules: [readOnlySchedule(false)],
+    watchers: [],
+    notifications: [],
+    notificationPrefs: null,
+  });
+  const save = vi.spyOn(backend, 'saveSchedule');
+  const user = userEvent.setup();
+  render(<AutomationsView />);
+  await user.click(screen.getByRole('button', { name: 'Edit' }));
+  await user.click(screen.getByRole('button', { name: 'Preview next runs' }));
+  expect(await screen.findByText(/\d{4}/)).toBeInTheDocument();
+  const zone = screen.getByLabelText('Timezone');
+  const other = [...zone.querySelectorAll('option')].find((o) => o.value !== 'local');
+  expect(other).toBeDefined();
+  await user.selectOptions(zone, other?.value ?? 'UTC');
+  expect(screen.queryByText(/\d{4}-\d{2}-\d{2}/)).toBeNull();
+  const every = screen.getByLabelText(/^Every \(seconds/);
+  await user.clear(every);
+  await user.type(every, '90.5');
+  await user.click(screen.getByRole('button', { name: 'Save schedule' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('whole number of seconds');
+  expect(save).not.toHaveBeenCalled();
 });

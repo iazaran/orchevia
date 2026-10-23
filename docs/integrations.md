@@ -22,7 +22,8 @@ Safety rules enforced by the adapter (not just the UI):
 - Dirty-checkout requires an explicit opt-in (and still never discards).
 - Commits refuse empty staging; staging requires explicit paths (no implicit `-A`).
 - Worktree paths must not exist yet; removal works **only on clean worktrees**
-  and never on the main checkout — failed runs stay debuggable.
+  and never on the main checkout — failed runs stay debuggable. A relative path
+  is inside the repository (as git resolves it) and `~/` is your home folder.
 - Branch names are validated; conflicts block branch creation.
 
 ## Isolated worktrees (optional)

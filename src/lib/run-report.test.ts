@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { reportFields, reportResult, stepCounts } from './run-report';
+import {
+  reportFields,
+  reportResult,
+  stepCounts,
+  stepLabel,
+  timelineBarStatus,
+} from './run-report';
 import { createEmptyWorkflow, type StoredNodeResult, type Workflow } from './workflow';
 
 function row(
@@ -130,5 +136,22 @@ describe('run report', () => {
         row(4, 'd', '', 'rejected'),
       ]),
     ).toEqual({ total: 4, skipped: 1, failed: 1, rejected: 1 });
+  });
+});
+
+describe('step names and timeline colours', () => {
+  it("names the engine's guard rows", () => {
+    expect(stepLabel('__usage_guard', undefined)).toBe('Usage guard');
+    expect(stepLabel('__spend_guard', undefined)).toBe('Spend guard');
+    expect(stepLabel('build', 'Build')).toBe('Build');
+    expect(stepLabel('build', undefined)).toBe('build');
+  });
+
+  it('colours every finished status like its outcome', () => {
+    expect(timelineBarStatus('rejected')).toBe('failed');
+    expect(timelineBarStatus('approved')).toBe('succeeded');
+    expect(timelineBarStatus('retrying')).toBe('paused');
+    expect(timelineBarStatus('skipped')).toBe('cancelled');
+    expect(timelineBarStatus('running')).toBe('running');
   });
 });

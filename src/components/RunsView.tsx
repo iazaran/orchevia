@@ -21,7 +21,7 @@ import {
   planCostGap,
   type PlanCost,
 } from '../lib/usage';
-import { reportFields, reportResult, stepCounts } from '../lib/run-report';
+import { reportFields, reportResult, stepCounts, stepLabel } from '../lib/run-report';
 import { useAppStore } from '../store';
 import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
@@ -406,7 +406,9 @@ export function RunsView(): React.JSX.Element {
   } | null>(null);
   const [memoryMessage, setMemoryMessage, , memoryMessageEvent] =
     useNoticeMessage('info');
+  // Keyed by run and node, so a choice made in one run is not preselected in another.
   const [memoryFields, setMemoryFields] = useState<Record<string, string>>({});
+  const memoryKey = (runId: string, nodeId: string): string => `${runId}\u0000${nodeId}`;
   const [actionError, setActionError, , actionErrorEvent] = useNoticeMessage('error');
   const [now, setNow] = useState(() => Date.now());
   const workflows = useAppStore((s) => s.workflows);
@@ -415,11 +417,13 @@ export function RunsView(): React.JSX.Element {
   const results = activeRunId !== null ? (runResults[activeRunId] ?? []) : [];
   const pendingApproval = [...results].reverse().find((r) => r.status === 'paused');
   const stepNumber = new Map(results.map((r, index) => [r.id, index + 1]));
+  const runWorkflow = snapshot?.runId === activeRunId ? snapshot.workflow : null;
+  // A deleted workflow keeps the name saved with its run.
   const workflowName =
     workflows.find((w) => w.id === activeRun?.workflowId)?.name ??
+    runWorkflow?.name ??
     activeRun?.workflowId ??
     '';
-  const runWorkflow = snapshot?.runId === activeRunId ? snapshot.workflow : null;
   const profiles = useAppStore((s) => s.profiles);
 
   const profileForNode = (nodeId: string): string | null => {
@@ -456,7 +460,7 @@ export function RunsView(): React.JSX.Element {
   const promoteCommand = (runId: string, nodeId: string): void => {
     setMemoryBusy(true);
     setMemoryMessage(null);
-    const field = memoryFields[nodeId] ?? 'testCommand';
+    const field = memoryFields[memoryKey(runId, nodeId)] ?? 'testCommand';
     void (async () => {
       const backend = getBackend();
       const [run, workflow, recorded] = await Promise.all([
@@ -536,13 +540,17 @@ export function RunsView(): React.JSX.Element {
   }, [refreshRunData]);
 
   // Keep one timer, independent of changes to result/list object identities.
+  // While nothing runs it still checks now and then, so a run a schedule or
+  // watcher starts appears without pressing Refresh.
   const hasActiveRuns = runs.some((r) => r.status === 'running' || r.status === 'paused');
   useEffect(() => {
-    if (!hasActiveRuns) return;
-    const timer = setInterval(() => {
-      setNow(Date.now());
-      void refreshRunData({ poll: true });
-    }, 1500);
+    const timer = setInterval(
+      () => {
+        setNow(Date.now());
+        void refreshRunData({ poll: true });
+      },
+      hasActiveRuns ? 1500 : 10_000,
+    );
     return () => clearInterval(timer);
   }, [hasActiveRuns, refreshRunData]);
 
@@ -559,7 +567,8 @@ export function RunsView(): React.JSX.Element {
     try {
       await action();
       await refreshRuns();
-      await selectRun(runId);
+      // Reload the run's steps, unless the reader has moved to another run.
+      if (useAppStore.getState().activeRunId === runId) await selectRun(runId);
     } catch (error: unknown) {
       setActionError(errorMessage(error));
     } finally {
@@ -572,7 +581,12 @@ export function RunsView(): React.JSX.Element {
     void actOnRun(runId, 'cancel', () => getBackend().cancelRun(runId));
   };
 
-  const [note, setNote] = useState('');
+  // The approval note belongs to the run it was typed for.
+  const [noteDraft, setNoteDraft] = useState<{ runId: string | null; text: string }>({
+    runId: null,
+    text: '',
+  });
+  const note = noteDraft.runId === activeRunId ? noteDraft.text : '';
   const [expandedOutputState, setExpandedOutputState] = useState<{
     runId: string | null;
     values: Record<string, boolean>;
@@ -580,7 +594,9 @@ export function RunsView(): React.JSX.Element {
   const expandedOutputs =
     expandedOutputState.runId === activeRunId ? expandedOutputState.values : {};
   const [reportOpen, setReportOpen] = useState(false);
-  const [copiedReport, setCopiedReport] = useState(false);
+  // The run whose report was just copied.
+  const [copiedReportRun, setCopiedReportRun] = useState<string | null>(null);
+  const copiedReport = copiedReportRun !== null && copiedReportRun === activeRunId;
   const showRunOverlay = useAppStore((s) => s.showRunOverlay);
   const setView = useAppStore((s) => s.setView);
   const [findingsState, setFindingsState] = useState<{
@@ -642,14 +658,43 @@ export function RunsView(): React.JSX.Element {
         note === '' ? undefined : note,
         pendingApproval.id,
       );
-      setNote('');
+      setNoteDraft((draft) => (draft.runId === runId ? { runId, text: '' } : draft));
     });
   };
 
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
 
-  const runWorkflowName = (workflowId: string): string =>
-    workflows.find((w) => w.id === workflowId)?.name ?? workflowId;
+  // A run of a deleted workflow is named from the workflow saved with it,
+  // looked up once per run.
+  const [savedNames, setSavedNames] = useState<Record<string, string>>({});
+  const requestedNames = useRef(new Set<string>());
+  useEffect(() => {
+    const known = new Set(workflows.map((w) => w.id));
+    for (const run of runs) {
+      // The selected run's saved workflow is loaded already (runWorkflow).
+      if (
+        known.has(run.workflowId) ||
+        run.id === activeRunId ||
+        requestedNames.current.has(run.id)
+      )
+        continue;
+      requestedNames.current.add(run.id);
+      void getBackend()
+        .getRunWorkflow(run.id)
+        .then((workflow) => {
+          if (workflow !== null && mounted.current)
+            setSavedNames((names) => ({ ...names, [run.id]: workflow.name }));
+        })
+        .catch(() => {
+          // The id stays as the title.
+        });
+    }
+  }, [runs, workflows, activeRunId]);
+  const runWorkflowName = (run: StoredRun): string =>
+    workflows.find((w) => w.id === run.workflowId)?.name ??
+    savedNames[run.id] ??
+    (run.id === activeRunId ? runWorkflow?.name : undefined) ??
+    run.workflowId;
 
   const elapsedSince = (iso: string): string => {
     const ms = now - new Date(iso).getTime();
@@ -824,23 +869,25 @@ export function RunsView(): React.JSX.Element {
                     </span>
                   )}
                   <span style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 600 }}>
-                      {runWorkflowName(run.workflowId)}
-                    </div>
+                    <div style={{ fontWeight: 600 }}>{runWorkflowName(run)}</div>
                     <div
                       className="wf-card-meta run-row-meta"
                       title={
+                        // A paused run has a finishedAt (when it paused) but has
+                        // not finished.
+                        run.status !== 'running' &&
+                        run.status !== 'paused' &&
                         run.finishedAt !== undefined
                           ? `${formatTime(run.startedAt)} → ${formatTime(run.finishedAt)}`
                           : `${formatTime(run.startedAt)} · ${elapsedSince(run.startedAt)} so far`
                       }
                     >
                       {formatTime(run.startedAt)}
-                      {run.finishedAt !== undefined
-                        ? runElapsed(run, now) === ''
+                      {run.status === 'running' || run.status === 'paused'
+                        ? ` · ${elapsedSince(run.startedAt)} so far`
+                        : runElapsed(run, now) === ''
                           ? ''
-                          : ` · took ${runElapsed(run, now)}`
-                        : ` · ${elapsedSince(run.startedAt)} so far`}
+                          : ` · took ${runElapsed(run, now)}`}
                     </div>
                   </span>
                 </button>
@@ -984,7 +1031,7 @@ export function RunsView(): React.JSX.Element {
                         placeholder="e.g. Plan looks good, proceed with tests after."
                         value={note}
                         onChange={(e) => {
-                          setNote(e.target.value);
+                          setNoteDraft({ runId: activeRunId, text: e.target.value });
                         }}
                       />
                     </div>
@@ -1019,17 +1066,18 @@ export function RunsView(): React.JSX.Element {
                   };
                   const copyReport = (): void => {
                     if (report === undefined) return;
+                    const runId = activeRun.id;
                     try {
                       void navigator.clipboard
                         .writeText(report.stdout)
                         .then(() => {
-                          setCopiedReport(true);
+                          setCopiedReportRun(runId);
                         })
                         .catch(() => {
-                          setCopiedReport(false);
+                          setCopiedReportRun(null);
                         });
                     } catch {
-                      setCopiedReport(false);
+                      setCopiedReportRun(null);
                     }
                   };
                   const downloadReport = (): void => {
@@ -1085,7 +1133,7 @@ export function RunsView(): React.JSX.Element {
                               <button
                                 className="btn"
                                 onClick={() => {
-                                  setCopiedReport(false);
+                                  setCopiedReportRun(null);
                                   setReportOpen(true);
                                 }}
                               >
@@ -1211,6 +1259,12 @@ export function RunsView(): React.JSX.Element {
                       resultMetadata(r).reusedFrom === undefined &&
                       [...results].reverse().find((result) => result.nodeId === r.nodeId)
                         ?.id === r.id;
+                    // A paused approval row stays in the history after its
+                    // decision (a later row for the same step).
+                    const decided =
+                      r.status === 'paused' &&
+                      results.slice(index + 1).some((later) => later.nodeId === r.nodeId);
+                    const shownStatus = decided ? 'waited' : r.status;
                     const meta = [
                       profile !== null ? `via ${profile}` : null,
                       r.exitCode !== undefined ? `exit ${String(r.exitCode)}` : null,
@@ -1221,7 +1275,7 @@ export function RunsView(): React.JSX.Element {
                       <li
                         id={`run-result-${String(r.id)}`}
                         key={r.id}
-                        className={`run-step step-${r.status}`}
+                        className={`run-step step-${shownStatus}`}
                       >
                         <div className="run-step-head">
                           <span
@@ -1231,10 +1285,17 @@ export function RunsView(): React.JSX.Element {
                             {index + 1}
                           </span>
                           <strong className="run-step-title" title={r.nodeId}>
-                            {node?.label ?? r.nodeId}
+                            {stepLabel(r.nodeId, node?.label)}
                           </strong>
-                          <span className={`status-pill status-${r.status}`}>
-                            {r.status}
+                          <span
+                            className={`status-pill status-${decided ? 'cancelled' : r.status}`}
+                            title={
+                              decided
+                                ? 'Waited for a decision; the next step shows it.'
+                                : undefined
+                            }
+                          >
+                            {shownStatus}
                           </span>
                           {denied !== null && (
                             <span
@@ -1259,11 +1320,16 @@ export function RunsView(): React.JSX.Element {
                           </div>
                         )}
                         <div className="run-step-body">
-                          {r.error !== undefined && r.error !== '' && (
-                            <Notice inline variant="error">
-                              {r.error}
-                            </Notice>
-                          )}
+                          {r.error !== undefined &&
+                            r.error !== '' &&
+                            (r.status === 'paused' ? (
+                              // An approval's prompt, not an error.
+                              <p className="field-hint">{r.error}</p>
+                            ) : (
+                              <Notice inline variant="error">
+                                {r.error}
+                              </Notice>
+                            ))}
                           {denied !== null && (
                             <PermissionDenials
                               denied={denied}
@@ -1340,11 +1406,14 @@ export function RunsView(): React.JSX.Element {
                                 id={`playbook-field-${String(r.id)}`}
                                 className="select"
                                 aria-label={'Playbook field for ' + r.nodeId}
-                                value={memoryFields[r.nodeId] ?? 'testCommand'}
+                                value={
+                                  memoryFields[memoryKey(activeRun.id, r.nodeId)] ??
+                                  'testCommand'
+                                }
                                 onChange={(e) =>
                                   setMemoryFields({
                                     ...memoryFields,
-                                    [r.nodeId]: e.target.value,
+                                    [memoryKey(activeRun.id, r.nodeId)]: e.target.value,
                                   })
                                 }
                               >

@@ -10,6 +10,8 @@ import {
   createSampleWorkflow,
   CURRENT_SCHEMA_VERSION,
   bypassedEdgeIds,
+  removeFromWorkflow,
+  sparedAnchors,
   nextBranchLabel,
   planExecutionOrder,
   setWorkflowDefaults,
@@ -272,6 +274,34 @@ describe('smart connect', () => {
     // x → b exists but x cannot reach n: drawing n → b keeps it.
     const r = bypassedEdgeIds([e('e1', 'x', 'b')], 'n', 'b');
     expect(r.removeIds).toHaveLength(0);
+  });
+
+  it('keeps the way into a review when a loop-back closes the review loop', () => {
+    // impl fans out to two reviews that join before a condition; drawing
+    // fix → revA must not remove impl → revA (the path impl ⇝ fix runs
+    // through the condition's "true" branch).
+    const edges = [
+      e('e1', 'impl', 'revB'),
+      e('e2', 'impl', 'revA'),
+      e('e3', 'revA', 'join'),
+      e('e4', 'revB', 'join'),
+      e('e5', 'join', 'cond'),
+      e('e6', 'cond', 'fix', 'true'),
+      e('e7', 'cond', 'end', 'false'),
+    ];
+    const r = bypassedEdgeIds(edges, 'fix', 'revA');
+    expect(r).toEqual({ dropNew: false, removeIds: [] });
+  });
+
+  it('still removes the direct line when inserting a node inside a loop', () => {
+    // a → b → cond → a (true); inserting n between a and b drops a → b.
+    const edges = [
+      e('e1', 'a', 'b'),
+      e('e2', 'b', 'cond'),
+      e('e3', 'cond', 'a', 'true'),
+      e('e4', 'a', 'n'),
+    ];
+    expect(bypassedEdgeIds(edges, 'n', 'b').removeIds).toEqual(['e1']);
   });
 });
 
@@ -613,4 +643,46 @@ it('samples re-review with both reviewers and confirm before posting findings', 
       .filter((i) => i.severity === 'error')
       .map((i) => i.code),
   ).toEqual(['git-dir-required', 'git-dir-required', 'git-dir-required']);
+});
+
+describe('removeFromWorkflow', () => {
+  const node = (id: string, config: WorkflowNode['config'] = {}): WorkflowNode => ({
+    id,
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config,
+  });
+
+  it('drops the steps, their edges and every reference to them', () => {
+    const wf: Workflow = {
+      ...createEmptyWorkflow('Refs'),
+      nodes: [
+        node('a'),
+        node('b'),
+        node('c', { contextRefs: ['a', 'b'], contextMaxChars: 2000, inputRefs: ['a'] }),
+      ],
+      edges: [
+        { id: 'ab', source: 'a', target: 'b' },
+        { id: 'bc', source: 'b', target: 'c' },
+      ],
+    };
+    const next = removeFromWorkflow(wf, new Set(['a']), new Set(['bc']));
+    expect(next.nodes.map((n) => n.id)).toEqual(['b', 'c']);
+    expect(next.edges).toEqual([]);
+    expect(next.nodes[1]?.config).toEqual({ contextRefs: ['b'], contextMaxChars: 2000 });
+    const none = removeFromWorkflow(next, new Set(['b']), new Set());
+    expect(none.nodes[0]?.config).toEqual({});
+  });
+});
+
+describe('sparedAnchors', () => {
+  it('keeps one End when every End is deleted at once', () => {
+    const wf = createEmptyWorkflow('Two ends');
+    const [start, end] = wf.nodes;
+    if (start === undefined || end === undefined) throw new Error('empty workflow');
+    wf.nodes.push({ ...end, id: 'end-2' });
+    expect([...sparedAnchors(wf, new Set([end.id, 'end-2']))]).toEqual([end.id]);
+    expect(sparedAnchors(wf, new Set(['end-2'])).size).toBe(0);
+    expect([...sparedAnchors(wf, new Set([start.id]))]).toEqual([start.id]);
+  });
 });
