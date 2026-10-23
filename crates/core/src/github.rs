@@ -563,16 +563,27 @@ pub fn create_pr(
     }
     let argv = preview_create_pr(request);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let _out = runner.run(cwd, &refs)?;
-    // Re-read the PR for the head branch to return normalized details. A
-    // fork head (`owner:branch`) is listed by its branch alone; branch names
-    // cannot contain ':'.
+    let out = runner.run(cwd, &refs)?;
+    // gh prints the new PR's URL: read that PR back by number.
+    if let Some(number) = pr_number_from_url(&out) {
+        return pr_details(runner, cwd, number);
+    }
+    // Otherwise find it by its head branch. A fork head (`owner:branch`) is
+    // listed by its branch alone; branch names cannot contain ':'.
     let head = request.head.trim();
     let branch = head.rsplit_once(':').map_or(head, |(_, branch)| branch);
     let prs = list_prs(runner, cwd, "open")?;
     prs.into_iter()
         .find(|pr| pr.head_branch == branch)
         .ok_or_else(|| "PR created but could not be read back.".to_string())
+}
+
+/// The number in a `…/pull/<n>` URL printed by `gh pr create`.
+fn pr_number_from_url(out: &str) -> Option<u64> {
+    out.lines().rev().find_map(|line| {
+        let (_, rest) = line.trim().rsplit_once("/pull/")?;
+        rest.split(['/', '?', '#']).next()?.parse().ok()
+    })
 }
 
 /// Post a comment (explicit workflow action only).
@@ -638,7 +649,7 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ] && [ "$5" = "files" ]; then
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  echo '{"number":7,"title":"Fix cart","state":"open","author":{"login":"bob"},"headRefName":"fix-cart","baseRefName":"main","headRefOid":"abc123","url":"https://github.com/acme/shop/pull/7","isDraft":true,"reviewRequests":[{"login":"alice"}],"labels":[],"reviews":[{"author":{"login":"coderabbitai[bot]"},"body":"coderabbit: possible N+1","submittedAt":"2026-01-01T00:00:00Z"}],"comments":[{"author":{"login":"alice"},"body":"please rebase","path":"a.ts","line":12,"createdAt":"2026-01-02T00:00:00Z"}]}'
+  printf '{"number":%s,"title":"Fix cart","state":"open","author":{"login":"bob"},"headRefName":"fix-cart","baseRefName":"main","headRefOid":"abc123","url":"https://github.com/acme/shop/pull/7","isDraft":true,"reviewRequests":[{"login":"alice"}],"labels":[],"reviews":[{"author":{"login":"coderabbitai[bot]"},"body":"coderabbit: possible N+1","submittedAt":"2026-01-01T00:00:00Z"}],"comments":[{"author":{"login":"alice"},"body":"please rebase","path":"a.ts","line":12,"createdAt":"2026-01-02T00:00:00Z"}]}\n' "$3"
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
@@ -713,6 +724,19 @@ exit 1
     }
 
     #[test]
+    fn pr_number_comes_from_the_created_url() {
+        assert_eq!(
+            pr_number_from_url("Creating pull request\nhttps://github.com/acme/shop/pull/8\n"),
+            Some(8)
+        );
+        assert_eq!(
+            pr_number_from_url("https://ghe.example/o/r/pull/12/files"),
+            Some(12)
+        );
+        assert_eq!(pr_number_from_url("created"), None);
+    }
+
+    #[test]
     fn repo_identity_parses_owner_repo() {
         let (dir, runner) = fixture_runner();
         let identity = repo_identity(&runner, &cwd(&dir)).expect("identity");
@@ -775,15 +799,17 @@ exit 1
         };
         let preview = preview_create_pr(&request);
         assert!(preview.contains(&"--draft".to_string()));
+        // The fixture's create prints .../pull/8: that PR is read back, not the
+        // listed #7 that shares the head branch.
         let created = create_pr(&runner, &cwd(&dir), &request).expect("create");
-        assert_eq!(created.number, 7);
+        assert_eq!(created.number, 8);
         let fork = CreatePrRequest {
             head: "contributor:fix-cart".into(),
             ..request
         };
         assert_eq!(
             create_pr(&runner, &cwd(&dir), &fork).expect("fork").number,
-            7
+            8
         );
         assert!(post_comment(&runner, &cwd(&dir), 7, "hello").is_ok());
         assert!(post_comment(&runner, &cwd(&dir), 7, "   ").is_err());
