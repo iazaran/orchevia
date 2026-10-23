@@ -83,14 +83,42 @@ it('shows repository validation before allowing an enabled watcher save', async 
   render(<AutomationsView />);
   await user.click(screen.getByRole('button', { name: 'Edit' }));
   await user.click(screen.getByRole('checkbox', { name: /Enabled/ }));
-  await waitFor(() =>
-    expect(
-      screen.getByText(/Watcher repository does not match workflow node/),
-    ).toBeDefined(),
+  const save = screen.getByRole('button', { name: 'Save watcher' });
+  // The scope check finishes before Save is offered; its problem waits for Save.
+  await waitFor(() => expect(save).toBeEnabled());
+  expect(screen.queryByText(/Watcher repository does not match/)).toBeNull();
+  await user.click(save);
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    /Watcher repository does not match workflow node/,
   );
-  expect(
-    screen.getByRole('button', { name: 'Save watcher' }).hasAttribute('disabled'),
-  ).toBe(true);
+  expect((await backend.listWatchers())[0]?.enabled).toBe(false);
+});
+
+it('waits for Save before naming a missing schedule field', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await storedReadOnlyWorkflow();
+  useAppStore.setState({
+    schedules: [],
+    watchers: [],
+    notifications: [],
+    notificationPrefs: null,
+  });
+  const user = userEvent.setup();
+  render(<AutomationsView />);
+  const [newSchedule] = screen.getAllByRole('button', { name: '+ New schedule' });
+  await user.click(newSchedule as HTMLElement);
+  const name = screen.getByLabelText('Name');
+  await user.clear(name);
+  expect(screen.queryByRole('alert')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Save schedule' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Schedule name must not be empty.',
+  );
+  expect(await backend.listSchedules()).toEqual([]);
+  // Once shown, the message follows the form and clears when it is fixed.
+  await user.type(name, 'Nightly');
+  expect(screen.queryByRole('alert')).toBeNull();
 });
 
 it('keeps automation reference guidance in the view rather than expiring it', async () => {

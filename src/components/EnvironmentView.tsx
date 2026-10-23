@@ -12,6 +12,7 @@ import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
+import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 import { UpdatesSection } from './Updates';
 
@@ -481,7 +482,7 @@ function McpEditor({
   onSave: (s: McpServerConfig) => void;
 }): React.JSX.Element {
   const [form, setForm] = useState<McpServerConfig>(initial);
-  const errors = validateMcpServer(form);
+  const validation = useSubmitValidation(validateMcpServer(form));
   const set = (patch: Partial<McpServerConfig>): void => {
     setForm((f) => ({ ...f, ...patch }));
   };
@@ -587,16 +588,11 @@ function McpEditor({
           }}
         />
       </div>
-      {errors.length > 0 && (
-        <Notice variant="error" style={{ marginBottom: 12 }}>
-          {errors[0]}
-        </Notice>
-      )}
+      <FormError error={validation.error} />
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button
           className="btn btn-primary"
-          disabled={errors.length > 0}
-          onClick={() => onSave(form)}
+          onClick={() => validation.attempt(() => onSave(form))}
         >
           Save server
         </button>

@@ -103,64 +103,204 @@ it('keeps the newest usage response after filters change', async () => {
   expect(screen.getByText('7')).toBeInTheDocument();
 });
 
-it('keeps subscription allocation independent of filtered execution counts', async () => {
-  localStorage.clear();
-  const backend = __setMockBackendForTests();
-  await backend.setSetting(
-    'usage.subscriptionFees',
-    JSON.stringify([
-      { label: 'Claude', amountUsd: 120, period: '2026-10-01/2026-11-01' },
-    ]),
-  );
-  await backend.setSetting('usage.allocationShare', '50');
+function plannedDaySummary(): UsageSummary {
   const summary = emptyUsageSummary();
   summary.runsScanned = 1;
   summary.totals.runs = 1;
-  summary.totals.agentAttempts = 2;
-  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
+  summary.totals.agentAttempts = 14;
+  summary.totals.reportedUsd = 62.88;
+  summary.totals.reportedUsdAttempts = 13;
+  summary.totals.unknownUsdAttempts = 1;
+  summary.days = [
+    {
+      day: '2026-10-23',
+      runs: 1,
+      agentAttempts: 14,
+      reportedUsd: 62.88,
+      inputTokens: 0,
+      outputTokens: 0,
+    },
+  ];
+  summary.providerDays = [
+    {
+      day: '2026-10-23',
+      adapter: 'claude',
+      agentAttempts: 13,
+      durationMs: 2_000_000,
+      reportedUsd: 62.88,
+      reportedUsdAttempts: 13,
+      allAgentAttempts: 13,
+      allDurationMs: 2_000_000,
+    },
+    {
+      day: '2026-10-23',
+      adapter: 'codex',
+      agentAttempts: 1,
+      durationMs: 160_000,
+      reportedUsd: 0,
+      reportedUsdAttempts: 0,
+      allAgentAttempts: 1,
+      allDurationMs: 160_000,
+    },
+  ];
+  return summary;
+}
+
+it('asks for plans instead of passing API value off as the cost', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(plannedDaySummary());
   useAppStore.setState({ workflows: [] });
   render(<UsageView />);
-  await waitFor(() =>
-    expect(screen.getByText(/Allocated to Orchevia-tracked work/)).toBeInTheDocument(),
-  );
-  expect(screen.queryByText(/per tracked attempt/)).not.toBeInTheDocument();
-  expect(screen.queryByText(/per tracked run/)).not.toBeInTheDocument();
-  expect(
-    screen.getByText(/independent of the current history filters/),
-  ).toBeInTheDocument();
+  const card = (await screen.findByText('Estimated cost')).closest('.usage-card');
+  expect(card).toHaveTextContent('Not set');
+  expect(card).toHaveTextContent('Enter your plans to see it');
+  expect(await screen.findByText(/not your bill/)).toBeInTheDocument();
+  const value = screen.getByText('API value', { selector: '.usage-card-label' });
+  expect(value.closest('.usage-card')).toHaveTextContent('USD 62.88');
 });
 
-it('allocates full overlapping billing periods while retaining outside and legacy fees', async () => {
+it('shows a heavy day at its plan cost, beside the API value it bought', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(plannedDaySummary());
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  const user = userEvent.setup();
+  await user.selectOptions(await screen.findByLabelText('Claude Code'), 'subscription');
+  await user.type(screen.getAllByLabelText('Plan name (optional)')[0]!, 'Max 5×');
+  await user.type(screen.getAllByLabelText('You pay per month (USD)')[0]!, '124');
+  await user.selectOptions(screen.getByLabelText('Codex'), 'subscription');
+  await user.type(screen.getAllByLabelText('You pay per month (USD)')[1]!, '24.8');
+  expect(screen.getByText('Unsaved changes.')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
+  await waitFor(() => expect(screen.getByText('Plans saved.')).toBeInTheDocument());
+  // USD 124/31 days + USD 24.8/31 days for the one day both ran.
+  const card = screen.getByText('Estimated cost', { selector: '.usage-card-label' });
+  expect(card.closest('.usage-card')).toHaveTextContent('USD 4.80');
+  expect(card.closest('.usage-card')).toHaveTextContent('On your plans');
+  // Codex reported no dollar figure, so the API value is partial: no "N×".
+  expect(
+    screen
+      .getByText('API value', { selector: '.usage-card-label' })
+      .closest('.usage-card'),
+  ).not.toHaveTextContent('your estimated cost');
+  const providers = screen.getByRole('region', { name: 'Cost by provider' });
+  const claude = within(providers).getByRole('row', { name: /Claude Code/ });
+  expect(claude).toHaveTextContent('Max 5× · USD 124.00/month');
+  expect(claude).toHaveTextContent('USD 4.00');
+  expect(claude).toHaveTextContent('USD 62.88');
+  expect(within(providers).getByRole('row', { name: /Codex/ })).toHaveTextContent(
+    'Not reported',
+  );
+  expect(await backend.getSetting('usage.plans')).toBe(
+    JSON.stringify({
+      claude: { billing: 'subscription', monthlyUsd: 124, name: 'Max 5×' },
+      codex: { billing: 'subscription', monthlyUsd: 24.8 },
+    }),
+  );
+});
+
+it('compares API value with the cost only when both are complete', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();
   await backend.setSetting(
-    'usage.subscriptionFees',
-    JSON.stringify([
-      { label: 'Current', amountUsd: 120, period: '2026-10-01/2026-11-01' },
-      { label: 'Past', amountUsd: 120, period: '2026-09-01/2026-10-01' },
-      { label: 'Legacy', amountUsd: 50, period: 'monthly' },
-    ]),
+    'usage.plans',
+    '{"claude":{"billing":"subscription","monthlyUsd":124}}',
   );
-  await backend.setSetting('usage.allocationShare', '50');
+  const summary = plannedDaySummary();
+  summary.totals.agentAttempts = 13;
+  summary.totals.unknownUsdAttempts = 0;
+  summary.providerDays = summary.providerDays.filter((day) => day.adapter === 'claude');
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(summary);
   useAppStore.setState({ workflows: [] });
   render(<UsageView />);
-  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
-    target: { value: '2026-10-10' },
-  });
-  fireEvent.change(screen.getByLabelText('To (inclusive)'), {
-    target: { value: '2026-10-15' },
-  });
+  // USD 62.88 of API value on USD 124/31 = USD 4.00 of plan.
   await waitFor(() =>
-    expect(screen.getByText(/Allocated to Orchevia-tracked work/)).toHaveTextContent(
-      'USD 60.00',
-    ),
+    expect(
+      screen
+        .getByText('API value', { selector: '.usage-card-label' })
+        .closest('.usage-card'),
+    ).toHaveTextContent('16× your estimated cost'),
   );
-  const past = screen.getByRole('row', { name: /Past/ });
-  expect(past).toHaveTextContent('USD 120.00');
-  expect(past).toHaveTextContent('outside allocation');
-  const legacy = screen.getByRole('row', { name: /Legacy/ });
-  expect(legacy).toHaveTextContent('USD 50.00');
-  expect(legacy).toHaveTextContent('outside allocation');
+});
+
+it('waits for Save before naming a missing plan amount', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  const user = userEvent.setup();
+  await user.selectOptions(await screen.findByLabelText('Claude Code'), 'subscription');
+  expect(screen.queryByRole('alert')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Enter what you pay each month for Claude Code',
+  );
+  expect(await backend.getSetting('usage.plans')).toBeNull();
+});
+
+it('says why an estimate is partial', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.setSetting(
+    'usage.plans',
+    '{"claude":{"billing":"subscription","monthlyUsd":124},"codex":{"billing":"api"}}',
+  );
+  vi.spyOn(backend, 'usageSummary').mockResolvedValue(plannedDaySummary());
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  const card = (
+    await screen.findByText('Estimated cost', { selector: '.usage-card-label' })
+  ).closest('.usage-card');
+  await waitFor(() => expect(card).toHaveTextContent('USD 4.00 partial'));
+  expect(card).toHaveTextContent('1 pay-per-use attempt reported no dollar figure');
+  // No "N× your estimated cost" against a partial estimate.
+  expect(
+    screen
+      .getByText('API value', { selector: '.usage-card-label' })
+      .closest('.usage-card'),
+  ).not.toHaveTextContent('your estimated cost');
+  // The day's own estimate says it is partial too.
+  await userEvent.setup().click(screen.getByText(/Daily table/));
+  expect(screen.getByRole('row', { name: /2026-10-23/ })).toHaveTextContent(
+    'USD 4.00 partial',
+  );
+});
+
+it("saves only what a provider's billing shows", async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  const user = userEvent.setup();
+  const claude = await screen.findByLabelText('Claude Code');
+  await user.selectOptions(claude, 'subscription');
+  await user.type(screen.getByLabelText('Plan name (optional)'), 'x'.repeat(81));
+  // Switching away hides the name; it no longer blocks saving or gets saved.
+  await user.selectOptions(claude, 'api');
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
+  await waitFor(async () =>
+    expect(await backend.getSetting('usage.plans')).toBe('{"claude":{"billing":"api"}}'),
+  );
+  await user.selectOptions(claude, '');
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
+  await waitFor(async () => expect(await backend.getSetting('usage.plans')).toBe('{}'));
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('reads saved plans and share back into the form', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.setSetting('usage.plans', '{"codex":{"billing":"api"}}');
+  await backend.setSetting('usage.planShare', '60');
+  useAppStore.setState({ workflows: [] });
+  render(<UsageView />);
+  await waitFor(() => expect(screen.getByLabelText('Codex')).toHaveValue('api'));
+  expect(screen.getByLabelText('Claude Code')).toHaveValue('');
+  expect(screen.getByLabelText(/Orchevia's share/)).toHaveValue(60);
+  expect(screen.getByText(/does not report a dollar figure/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save plans' })).toBeDisabled();
 });
 
 function workflowWithAgent(name: string): ReturnType<typeof createEmptyWorkflow> {
@@ -201,43 +341,13 @@ it('aggregates mock history with honest unknown coverage and separate money lane
   // Mock agent rows carry no CLI usage envelope: attempts exist, USD unknown.
   // The label appears on the overview card and the daily table header.
   expect(screen.getAllByText('Agent attempts', { exact: true })).toHaveLength(2);
-  expect(screen.getByText('Estimated API value', { exact: true })).toBeInTheDocument();
+  expect(screen.getByText('API value', { selector: '.usage-card-label' })).toBeVisible();
   expect(screen.getByText(/legacy unknown/)).toBeInTheDocument();
-  // Money lanes stay visibly separate.
-  expect(screen.getByText(/Subscription & allocation settings/)).toBeInTheDocument();
+  // What you pay and what the CLI reports stay visibly separate.
+  expect(screen.getByRole('heading', { name: 'Your plans' })).toBeInTheDocument();
   expect(screen.getByText(/API-equivalent target/)).toBeInTheDocument();
   // Thin history offers no fabricated rates.
   expect(screen.getByText(/Insufficient history/)).toBeInTheDocument();
-});
-
-it('saves subscription fees and shows an explicitly labeled allocation', async () => {
-  localStorage.clear();
-  __setMockBackendForTests();
-  useAppStore.setState({ workflows: [] });
-  render(<UsageView />);
-  const user = userEvent.setup();
-  await user.type(screen.getByLabelText('Fee label'), 'Claude');
-  await user.type(screen.getByLabelText('Fee amount (USD)'), '120');
-  await user.type(
-    screen.getByLabelText('Billing period (UTC range)'),
-    '2026-10-01/2026-11-01',
-  );
-  await user.click(screen.getByRole('button', { name: 'Add fee' }));
-  expect(screen.getByText(/Unsaved changes/)).toBeInTheDocument();
-  await user.type(screen.getByLabelText('Orchevia share %'), '50');
-  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
-  await waitFor(() =>
-    expect(screen.getByText(/Allocated to Orchevia-tracked work/)).toBeInTheDocument(),
-  );
-  expect(screen.getByText(/Outside or untracked usage is excluded/)).toBeInTheDocument();
-  expect(
-    screen.getByRole('button', { name: 'Save subscription settings' }),
-  ).toBeDisabled();
-  const backend = __setMockBackendForTests();
-  // Settings persist through the backend contract (mock twin included).
-  await waitFor(async () =>
-    expect(await backend.getSetting('usage.subscriptionFees')).toContain('Claude'),
-  );
 });
 
 function usageSummaryWithDays(): UsageSummary {
@@ -297,7 +407,7 @@ it('fills sparse days with explicit zeroes, draws no bar for zero, and tables ex
   const tableToggle = screen.getByText(/Daily table \(5 days, UTC\)/);
   await userEvent.setup().click(tableToggle);
   const table = screen.getByRole('table', {
-    name: /reported USD subtotal per UTC day/i,
+    name: /reported API value per UTC day/i,
   });
   const gapRow = within(table).getByRole('row', { name: /2026-10-03/ });
   expect(gapRow).toHaveTextContent('0');
@@ -400,7 +510,7 @@ it('applies date presets and resets every filter', async () => {
   expect(screen.getByLabelText('Model')).toHaveValue('');
 });
 
-it('keeps subscription drafts and reports failure without claiming success', async () => {
+it('keeps plan drafts and reports failure without claiming success', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();
   useAppStore.setState({ workflows: [] });
@@ -409,23 +519,16 @@ it('keeps subscription drafts and reports failure without claiming success', asy
   render(<UsageView />);
   const user = userEvent.setup();
   await screen.findByText(/No runs in this range/);
-  await user.type(screen.getByLabelText('Fee label'), 'Claude');
-  await user.type(screen.getByLabelText('Fee amount (USD)'), '120');
-  await user.type(
-    screen.getByLabelText('Billing period (UTC range)'),
-    '2026-10-01/2026-11-01',
-  );
-  await user.click(screen.getByRole('button', { name: 'Add fee' }));
-  await user.type(screen.getByLabelText('Orchevia share %'), '50');
-  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
+  await user.selectOptions(screen.getByLabelText('Claude Code'), 'subscription');
+  await user.type(screen.getByLabelText('You pay per month (USD)'), '120');
+  await user.type(screen.getByLabelText(/Orchevia's share/), '50');
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('disk full');
-  expect(screen.queryByText(/Subscription settings saved/)).not.toBeInTheDocument();
+  expect(screen.queryByText('Plans saved.')).not.toBeInTheDocument();
   // The draft survives the failure and still needs saving.
-  expect(screen.getByRole('row', { name: /Claude/ })).toHaveTextContent('USD 120.00');
-  expect(screen.getByText(/Unsaved changes/)).toBeInTheDocument();
-  expect(
-    screen.getByRole('button', { name: 'Save subscription settings' }),
-  ).toBeEnabled();
+  expect(screen.getByLabelText('You pay per month (USD)')).toHaveValue(120);
+  expect(screen.getByText('Unsaved changes.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save plans' })).toBeEnabled();
 });
 
 function modelSummary(): UsageSummary {
@@ -583,25 +686,23 @@ it('keeps a year-long chart coordinate width bounded so its axes remain readable
   expect(within(chart).getByText('0')).toBeInTheDocument();
 });
 
-it('retries failed subscription loading before allowing edits and saves', async () => {
+it('retries failed plan loading before allowing edits and saves', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();
   vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
   vi.spyOn(backend, 'getSetting').mockRejectedValueOnce(new Error('read failed'));
   render(<UsageView />);
   expect(await screen.findByRole('alert')).toHaveTextContent('read failed');
-  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  expect(screen.getByLabelText('Claude Code')).toBeDisabled();
   const user = userEvent.setup();
-  await user.click(
-    screen.getByRole('button', { name: 'Retry loading subscription settings' }),
-  );
-  await waitFor(() => expect(screen.getByLabelText('Orchevia share %')).toBeEnabled());
-  await user.type(screen.getByLabelText('Orchevia share %'), '50');
-  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
-  expect(await screen.findByText('Subscription settings saved.')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Retry loading your plans' }));
+  await waitFor(() => expect(screen.getByLabelText(/Orchevia's share/)).toBeEnabled());
+  await user.type(screen.getByLabelText(/Orchevia's share/), '50');
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
+  expect(await screen.findByText('Plans saved.')).toBeInTheDocument();
 });
 
-it('locks subscription drafts during loading and saving', async () => {
+it('locks plan drafts during loading and saving', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();
   vi.spyOn(backend, 'usageSummary').mockResolvedValue(emptyUsageSummary());
@@ -613,14 +714,14 @@ it('locks subscription drafts during loading and saving', async () => {
       }),
   );
   render(<UsageView />);
-  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  expect(screen.getByLabelText('Claude Code')).toBeDisabled();
   await act(async () => {
     finishLoad(null);
     await Promise.resolve();
   });
-  await waitFor(() => expect(screen.getByLabelText('Fee label')).toBeEnabled());
+  await waitFor(() => expect(screen.getByLabelText('Claude Code')).toBeEnabled());
   const user = userEvent.setup();
-  await user.type(screen.getByLabelText('Orchevia share %'), '50');
+  await user.type(screen.getByLabelText(/Orchevia's share/), '50');
   let finishSave: () => void = () => {};
   vi.spyOn(backend, 'setSetting').mockImplementationOnce(
     () =>
@@ -628,14 +729,14 @@ it('locks subscription drafts during loading and saving', async () => {
         finishSave = resolve;
       }),
   );
-  await user.click(screen.getByRole('button', { name: 'Save subscription settings' }));
-  expect(screen.getByLabelText('Orchevia share %')).toBeDisabled();
-  expect(screen.getByLabelText('Fee label')).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Save plans' }));
+  expect(screen.getByLabelText(/Orchevia's share/)).toBeDisabled();
+  expect(screen.getByLabelText('Claude Code')).toBeDisabled();
   await act(async () => {
     finishSave();
     await Promise.resolve();
   });
-  expect(await screen.findByText('Subscription settings saved.')).toBeInTheDocument();
+  expect(await screen.findByText('Plans saved.')).toBeInTheDocument();
 });
 
 it('supports keyboard navigation between breakdown tabs', async () => {

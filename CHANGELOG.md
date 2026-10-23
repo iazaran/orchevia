@@ -6,6 +6,39 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-10-23
+
+### Changed
+
+- **Validation waits until you ask for something.** Schedule, watcher, agent
+  profile and MCP server editors no longer open with a red error about fields you
+  have not reached: Save stays clickable, and the first Save names what is missing
+  next to the button. The workflow editor no longer pops up validation messages
+  while you build. A quiet count in the canvas toolbar ("2 to finish") opens the
+  list, and each entry selects its step; the selected step's inspector shows what
+  it still needs, and pressing Run lists the unfinished steps with **Show step**.
+  A condition typed in text form shows its parse error under the field once you
+  leave it, instead of on every keystroke.
+- **Usage & costs shows what the work cost on your plans.** Enter what you pay
+  each month for Claude Code and Codex (or choose pay per use) under **Your plans**.
+  **Estimated cost** spreads each monthly fee over the days its CLI ran agents in
+  Orchevia, split by agent time when a workflow or model filter is on,
+  with an optional share for use outside Orchevia. The CLI's dollar figure is now
+  called **API value** (what pay-as-you-go pricing would charge) and, when every
+  figure is known, shows how many times your plan cost it is worth. **Cost by provider** and the daily table add
+  the estimate; each finished run's header shows its own **Cost on your plans**.
+  The billing-period fee lists and manual allocation are replaced; enter your plans
+  again if you had used them.
+- **The run page is easier to read.** It opens with the run's facts (start,
+  duration, steps with skipped and failed counts, agent attempts, cost, API value),
+  then a **Report** from the workflow's final step (a Summary step rather than the
+  last agent check), with `Key: value` lines as a two-column list. A failed run's
+  report names the step it stopped at, or the approval that was rejected. Every step is a numbered card with its
+  status colour down the left edge and its own controls inside it; the timeline
+  uses the same numbers. Saving a command to the project playbook now sits folded
+  inside its step as **Save this command to the project playbook…**.
+- Dependencies refreshed within their declared ranges.
+
 ## [0.1.21] - 2026-10-23
 
 ### Fixed
@@ -813,7 +846,8 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.22...HEAD
+[0.1.22]: https://github.com/iazaran/orchevia/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/iazaran/orchevia/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/iazaran/orchevia/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/iazaran/orchevia/compare/v0.1.18...v0.1.19

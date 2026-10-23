@@ -613,6 +613,14 @@ export function planExecutionOrder(wf: Workflow): string[] {
   return order;
 }
 
+/** The step an issue belongs to, by its label (or id); null for workflow-wide issues. */
+export function issueNodeLabel(wf: Workflow, issue: ValidationIssue): string | null {
+  if (issue.nodeId === undefined) return null;
+  const node = wf.nodes.find((n) => n.id === issue.nodeId);
+  if (node === undefined) return null;
+  return node.label?.trim() || node.id;
+}
+
 /** Lightweight client-side validation (backend re-validates authoritatively). */
 export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
   const issues: ValidationIssue[] = [];

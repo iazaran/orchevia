@@ -41,11 +41,9 @@ it('shows overlapping execution separately from wall time and unknown cost cover
   const details = screen.getByText('CLI usage details').closest('details');
   expect(details).not.toHaveAttribute('open');
   fireEvent.click(screen.getByText('CLI usage details'));
-  expect(details).toHaveTextContent('Estimated API value: USD 2.0000');
-  expect(details).toHaveTextContent('not your subscription bill');
-  expect(details).toHaveTextContent(
-    'Subscription limits and remaining quota are unavailable',
-  );
+  expect(details).toHaveTextContent('API value: USD 2.0000');
+  expect(details).toHaveTextContent('On a monthly plan you pay the plan fee instead');
+  expect(details).toHaveTextContent("Remaining quota is on your provider's usage page");
   expect(screen.getByLabelText('Run timeline')).toHaveTextContent(
     '1 attempt without a USD report',
   );

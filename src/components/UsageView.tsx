@@ -1,27 +1,99 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, useNoticeMessage } from './Notice';
-import { confirmDialog } from './ConfirmDialog';
+import { FormError, useSubmitValidation } from './FormValidation';
 import { getBackend } from '../lib/backend';
 import { errorMessage } from '../lib/errors';
 import { estimateRangeUsd } from '../lib/run-controls';
 import { formatTime } from '../lib/time';
 import {
   emptyUsageSummary,
-  parseMoneyList,
-  subscriptionTotal,
-  billingPeriod,
+  estimatePlanCost,
   formatDurationMs,
-  type ExtraCharge,
-  type SubscriptionFee,
+  formatUsd,
+  formatUsdExact,
+  MAX_PLAN_MONTHLY_USD,
+  parsePlanShare,
+  parsePlans,
+  planCostGap,
+  PLAN_PROVIDER_LABELS,
+  providerLabel,
+  PLAN_PROVIDERS,
+  type PlanCostLine,
+  type PlanProvider,
+  type ProviderPlans,
   type UsageDay,
   type UsageSummary,
+  validateUsageSetting,
 } from '../lib/usage';
 import { useAppStore } from '../store';
 
-const FEES_KEY = 'usage.subscriptionFees';
-const EXTRAS_KEY = 'usage.extraCharges';
-const SHARE_KEY = 'usage.allocationShare';
-const METHOD_KEY = 'usage.allocationMethod';
+const PLANS_KEY = 'usage.plans';
+const SHARE_KEY = 'usage.planShare';
+
+/** Plan names only, to save typing; amounts always come from the user. */
+const PLAN_NAME_SUGGESTIONS: Record<PlanProvider, string[]> = {
+  claude: ['Pro', 'Max 5×', 'Max 20×', 'Team', 'Enterprise'],
+  codex: ['ChatGPT Plus', 'ChatGPT Pro', 'ChatGPT Business', 'ChatGPT Enterprise'],
+};
+
+type PlanDraft = Record<
+  PlanProvider,
+  { billing: '' | 'subscription' | 'api'; name: string; amount: string }
+>;
+
+function draftFromPlans(plans: ProviderPlans): PlanDraft {
+  const draft = {} as PlanDraft;
+  for (const provider of PLAN_PROVIDERS) {
+    const plan = plans[provider];
+    draft[provider] = {
+      billing: plan?.billing ?? '',
+      name: plan?.name ?? '',
+      amount: plan?.billing === 'subscription' ? String(plan.monthlyUsd) : '',
+    };
+  }
+  return draft;
+}
+
+/** The plans a draft describes, or what has to be fixed before saving it. */
+function plansFromDraft(draft: PlanDraft): { plans: ProviderPlans; errors: string[] } {
+  const plans: ProviderPlans = {};
+  const errors: string[] = [];
+  for (const provider of PLAN_PROVIDERS) {
+    const entry = draft[provider];
+    const label = PLAN_PROVIDER_LABELS[provider];
+    // Only a monthly plan shows the name field, so only it keeps a name.
+    if (entry.billing === 'api') plans[provider] = { billing: 'api' };
+    if (entry.billing === 'subscription') {
+      const name = entry.name.trim();
+      if (new TextEncoder().encode(name).length > 80)
+        errors.push(`Keep the ${label} plan name under 80 bytes.`);
+      const named = name === '' ? {} : { name };
+      const amount = Number(entry.amount);
+      if (
+        entry.amount.trim() === '' ||
+        !Number.isFinite(amount) ||
+        amount < 0 ||
+        amount > MAX_PLAN_MONTHLY_USD
+      )
+        errors.push(
+          `Enter what you pay each month for ${label}, in USD (0 to ${String(MAX_PLAN_MONTHLY_USD)}).`,
+        );
+      else plans[provider] = { billing: 'subscription', monthlyUsd: amount, ...named };
+    }
+  }
+  return { plans, errors };
+}
+
+/** "Max 5× · USD 120/month", "Pay per use" or "Not set". */
+function planLabel(line: Pick<PlanCostLine, 'plan'>): string {
+  const plan = line.plan;
+  if (plan === null) return 'Not set';
+  const name = plan.name !== undefined && plan.name !== '' ? `${plan.name} · ` : '';
+  return plan.billing === 'api'
+    ? `${name}Pay per use`
+    : `${name}${formatUsd(plan.monthlyUsd)}/month`;
+}
+
 /** Zero-filled calendar span is capped so unbounded ranges stay cheap. */
 const MAX_CHART_DAYS = 366;
 
@@ -35,18 +107,11 @@ function formatCount(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-/**
- * Readable USD with two decimals. A small positive amount never renders as
- * measured zero.
- */
-function formatUsd(value: number): string {
-  if (value > 0 && value < 0.005) return '< USD 0.01';
-  return `USD ${value.toFixed(2)}`;
-}
-
-/** Exact reported precision for tooltips and detail rows. */
-function formatUsdExact(value: number): string {
-  return `USD ${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 20, useGrouping: false })}`;
+/** "13× your estimated cost": how much API value the plans bought. */
+function valueMultiple(apiValue: number, costUsd: number): string {
+  const ratio = apiValue / costUsd;
+  if (!Number.isFinite(ratio)) return '';
+  return `${ratio >= 10 ? ratio.toFixed(0) : ratio.toFixed(1)}× your estimated cost`;
 }
 
 function isDayString(value: string): boolean {
@@ -197,8 +262,8 @@ function DailyChart({ days }: { days: UsageDay[] }): React.JSX.Element {
                 >
                   <title>
                     {day.day}: {formatCount(day.agentAttempts)} attempts,{' '}
-                    {formatCount(day.runs)} runs, {formatUsdExact(day.reportedUsd)}{' '}
-                    reported subtotal
+                    {formatCount(day.runs)} runs, {formatUsdExact(day.reportedUsd)} API
+                    value reported
                   </title>
                 </rect>
               )}
@@ -287,10 +352,10 @@ export function UsageView(): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError, , errorEvent] = useNoticeMessage('error');
   const filterError = dateRangeError(from, to);
-  const [fees, setFees] = useState<SubscriptionFee[]>([]);
-  const [extras, setExtras] = useState<ExtraCharge[]>([]);
+  const [draft, setDraft] = useState<PlanDraft>(() => draftFromPlans({}));
   const [share, setShare] = useState('');
-  const [method, setMethod] = useState('manual');
+  const [savedPlans, setSavedPlans] = useState<ProviderPlans>({});
+  const [savedShare, setSavedShare] = useState(100);
   const [settingsError, setSettingsError, , settingsErrorEvent] =
     useNoticeMessage('error');
   const [settingsSaved, setSettingsSaved] = useState(false);
@@ -299,23 +364,36 @@ export function UsageView(): React.JSX.Element {
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
   const [target, setTarget] = useState('');
-  const [newFeeLabel, setNewFeeLabel] = useState('');
-  const [newFeeAmount, setNewFeeAmount] = useState('');
-  const [newFeePeriod, setNewFeePeriod] = useState('');
-  const [newExtraLabel, setNewExtraLabel] = useState('');
-  const [newExtraAmount, setNewExtraAmount] = useState('');
-  const [newExtraPeriod, setNewExtraPeriod] = useState('');
   const refreshGeneration = useRef(0);
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+  const planDraft = plansFromDraft(draft);
+  const shareError = ((): string | null => {
+    try {
+      validateUsageSetting(SHARE_KEY, share);
+      return null;
+    } catch (err: unknown) {
+      return errorMessage(err);
+    }
+  })();
+  const planValidation = useSubmitValidation([
+    ...planDraft.errors,
+    ...(shareError === null ? [] : [shareError]),
+  ]);
 
-  const draftSnapshot = JSON.stringify({
-    fees,
-    extras,
-    share: share.trim(),
-    method,
-  });
+  const draftSnapshot = JSON.stringify({ draft, share: share.trim() });
   const settingsLoaded = savedSnapshot !== null;
   const settingsDirty = settingsLoaded && draftSnapshot !== savedSnapshot;
+  const plansEntered = Object.keys(savedPlans).length > 0;
+  const setPlanField = (
+    provider: PlanProvider,
+    patch: Partial<PlanDraft[PlanProvider]>,
+  ): void => {
+    setSettingsSaved(false);
+    setDraft((current) => ({
+      ...current,
+      [provider]: { ...current[provider], ...patch },
+    }));
+  };
 
   const refresh = useCallback(() => {
     // Invalid or reversed dates show inline validation; no request is built.
@@ -366,42 +444,19 @@ export function UsageView(): React.JSX.Element {
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
-      getBackend().getSetting(FEES_KEY),
-      getBackend().getSetting(EXTRAS_KEY),
+      getBackend().getSetting(PLANS_KEY),
       getBackend().getSetting(SHARE_KEY),
-      getBackend().getSetting(METHOD_KEY),
     ])
-      .then(([feesRaw, extrasRaw, shareRaw, methodRaw]) => {
+      .then(([plansRaw, shareRaw]) => {
         if (cancelled) return;
-        const nextFees = parseMoneyList<SubscriptionFee>(feesRaw, (entry) =>
-          typeof entry.label === 'string' && typeof entry.period === 'string'
-            ? {
-                label: entry.label,
-                amountUsd: typeof entry.amountUsd === 'number' ? entry.amountUsd : NaN,
-                period: entry.period,
-              }
-            : null,
-        );
-        const nextExtras = parseMoneyList<ExtraCharge>(extrasRaw, (entry) =>
-          typeof entry.label === 'string'
-            ? {
-                label: entry.label,
-                amountUsd: typeof entry.amountUsd === 'number' ? entry.amountUsd : NaN,
-                ...(typeof entry.period === 'string' ? { period: entry.period } : {}),
-              }
-            : null,
-        );
-        setFees(nextFees);
-        setExtras(nextExtras);
-        setShare(shareRaw ?? '');
-        setMethod('manual');
+        const plans = parsePlans(plansRaw);
+        const shareText = (shareRaw ?? '').trim();
+        setDraft(draftFromPlans(plans));
+        setShare(shareText);
+        setSavedPlans(plans);
+        setSavedShare(parsePlanShare(shareText));
         setSavedSnapshot(
-          JSON.stringify({
-            fees: nextFees,
-            extras: nextExtras,
-            share: (shareRaw ?? '').trim(),
-            method: methodRaw === 'manual' ? methodRaw : 'manual',
-          }),
+          JSON.stringify({ draft: draftFromPlans(plans), share: shareText }),
         );
       })
       .catch((err: unknown) => {
@@ -415,22 +470,24 @@ export function UsageView(): React.JSX.Element {
     };
   }, [setSettingsError, settingsLoadAttempt]);
 
-  const saveSettings = (): void => {
+  const savePlans = (): void => {
     if (savingRef.current || !settingsDirty) return;
     savingRef.current = true;
     setSettingsError(null);
     setSettingsSaved(false);
     setSaving(true);
+    const { plans } = planDraft;
+    const shareText = share.trim();
     const snapshot = draftSnapshot;
     void (async () => {
       try {
         const backend = getBackend();
-        await backend.setSetting(FEES_KEY, JSON.stringify(fees));
-        await backend.setSetting(EXTRAS_KEY, JSON.stringify(extras));
-        await backend.setSetting(SHARE_KEY, share.trim());
-        await backend.setSetting(METHOD_KEY, method);
-        // Success is claimed only when every required write succeeded.
-        // Drafts stay in state either way, so a failure loses nothing.
+        await backend.setSetting(PLANS_KEY, JSON.stringify(plans));
+        await backend.setSetting(SHARE_KEY, shareText);
+        // Success is claimed only when both writes succeeded. The draft stays
+        // in state either way, so a failure loses nothing.
+        setSavedPlans(plans);
+        setSavedShare(parsePlanShare(shareText));
         setSavedSnapshot(snapshot);
         setSettingsSaved(true);
       } catch (err: unknown) {
@@ -442,61 +499,13 @@ export function UsageView(): React.JSX.Element {
     })();
   };
 
-  const removeFee = (index: number): void => {
-    const fee = fees[index];
-    void confirmDialog({
-      title: 'Remove this fee?',
-      message: `“${fee?.label ?? ''}” leaves the draft. Save to persist the removal.`,
-      confirmLabel: 'Remove',
-      danger: true,
-    }).then((ok) => {
-      if (ok) {
-        setSettingsSaved(false);
-        setFees(fees.filter((_, i) => i !== index));
-      }
-    });
-  };
-
-  const removeExtra = (index: number): void => {
-    const extra = extras[index];
-    void confirmDialog({
-      title: 'Remove this extra charge?',
-      message: `“${extra?.label ?? ''}” leaves the draft. Save to persist the removal.`,
-      confirmLabel: 'Remove',
-      danger: true,
-    }).then((ok) => {
-      if (ok) {
-        setSettingsSaved(false);
-        setExtras(extras.filter((_, i) => i !== index));
-      }
-    });
-  };
-
   const totals = summary.totals;
-  const feeTotal = useMemo(() => subscriptionTotal(fees, extras), [fees, extras]);
-  const inAllocationRange = useCallback(
-    (period: string): boolean => {
-      const bounds = billingPeriod(period);
-      return (
-        bounds !== null &&
-        (from === '' || bounds.to > from) &&
-        (to === '' || bounds.from <= to)
-      );
-    },
-    [from, to],
+  const cost = useMemo(
+    () => estimatePlanCost(summary.providerDays, savedPlans, savedShare),
+    [summary.providerDays, savedPlans, savedShare],
   );
-  const allocationPool = useMemo(
-    () =>
-      subscriptionTotal(
-        fees.filter((fee) => inAllocationRange(fee.period)),
-        extras.filter((extra) => inAllocationRange(extra.period ?? '')),
-      ),
-    [fees, extras, inAllocationRange],
-  );
-  const sharePct = Number(share);
-  const shareValid =
-    share.trim() !== '' && Number.isFinite(sharePct) && sharePct >= 0 && sharePct <= 100;
-  const allocated = shareValid ? (allocationPool * sharePct) / 100 : null;
+  // A provider filter keeps whole provider-days; workflow and model filters split them.
+  const splitsDays = workflowId !== '' || model.trim() !== '';
   const targetNum = Number(target);
   const estimate = useMemo(
     () =>
@@ -555,19 +564,20 @@ export function UsageView(): React.JSX.Element {
       </div>
       <div className="view usage-view">
         <p className="field-hint" style={{ marginTop: 0 }}>
-          Subscription fees you enter, CLI-reported API-equivalent estimates with their
-          coverage, and an optional manual allocation stay in separate lanes. Orchevia
-          cannot see subscription balances or remaining quota.
+          Estimated cost follows the plans you enter below; API value is what
+          pay-as-you-go pricing would charge for the same tokens. Orchevia cannot see your
+          remaining quota.
         </p>
         <details className="field-hint usage-about">
           <summary>What each figure means</summary>
           <p>
             Dates group by UTC day; your display timezone is {summary.timezone || 'UTC'}.
             Dry runs never contribute to consumption totals. History aggregates over every
-            stored run, not just the recent Runs list. CLI dollar figures are
-            API-equivalent estimates reported by the CLI itself — never subscription
-            spend, remaining quota, or an enforceable provider allowance. Missing reports
-            are unknown, not zero; reused and simulated results are not new consumption.
+            stored run, not just the recent Runs list. API value is the dollar figure the
+            CLI itself reports at pay-as-you-go prices — on a monthly plan it is the value
+            you got, not money spent. Estimated cost spreads each plan&apos;s monthly fee
+            over the days its CLI ran agents here. Missing reports are unknown, not zero;
+            reused and simulated results are not new consumption.
           </p>
         </details>
         <section aria-label="Filters" className="usage-filters-section">
@@ -714,6 +724,39 @@ export function UsageView(): React.JSX.Element {
                   </span>
                 </div>
               </div>
+              <div className="usage-card usage-card-primary">
+                <div
+                  className="usage-card-value"
+                  title={
+                    cost.totalUsd === null ? undefined : formatUsdExact(cost.totalUsd)
+                  }
+                >
+                  {cost.totalUsd !== null
+                    ? formatUsd(cost.totalUsd)
+                    : !plansEntered
+                      ? 'Not set'
+                      : cost.lines.length === 0
+                        ? '—'
+                        : 'Unknown'}
+                  {cost.totalUsd !== null && !cost.complete && (
+                    <span className="coverage-flag"> partial</span>
+                  )}
+                </div>
+                <div className="usage-card-label">
+                  Estimated cost
+                  <span className="usage-card-sub">
+                    {!plansEntered ? (
+                      <a href="#usage-plans">Enter your plans to see it</a>
+                    ) : cost.lines.length === 0 ? (
+                      'No agent work in this range'
+                    ) : cost.complete ? (
+                      'On your plans, for the days they were used'
+                    ) : (
+                      planCostGap(cost)
+                    )}
+                  </span>
+                </div>
+              </div>
               <div className="usage-card">
                 <div
                   className="usage-card-value"
@@ -728,10 +771,18 @@ export function UsageView(): React.JSX.Element {
                     : 'Unknown'}
                 </div>
                 <div className="usage-card-label">
-                  Estimated API value
+                  API value
                   <span className="usage-card-sub">
-                    CLI-reported · {formatCount(totals.reportedUsdAttempts)}/
+                    Pay-as-you-go price the CLI reports ·{' '}
+                    {formatCount(totals.reportedUsdAttempts)}/
                     {formatCount(totals.agentAttempts)} reports
+                    {cost.complete &&
+                      cost.totalUsd !== null &&
+                      cost.totalUsd > 0 &&
+                      totals.reportedUsdAttempts > 0 &&
+                      totals.reportedUsdAttempts === totals.agentAttempts && (
+                        <> · {valueMultiple(totals.reportedUsd, cost.totalUsd)}</>
+                      )}
                   </span>
                 </div>
               </div>
@@ -793,6 +844,77 @@ export function UsageView(): React.JSX.Element {
                 ticket counts.
               </p>
             </details>
+            {!plansEntered && settingsLoaded && (
+              <Notice inline>
+                Paying a monthly plan for Claude Code or Codex? API value is what
+                pay-as-you-go pricing would charge, not your bill.{' '}
+                <a href="#usage-plans">Enter your plans</a> and this page shows what the
+                work cost on them.
+              </Notice>
+            )}
+            {plansEntered && cost.lines.length > 0 && (
+              <section aria-label="Cost by provider">
+                <h2>Cost by provider</h2>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Provider</th>
+                        <th scope="col">Your plan</th>
+                        <th scope="col" className="num">
+                          Days used
+                        </th>
+                        <th scope="col" className="num">
+                          Attempts
+                        </th>
+                        <th scope="col" className="num">
+                          Estimated cost
+                        </th>
+                        <th scope="col" className="num">
+                          API value
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cost.lines.map((line) => (
+                        <tr key={line.adapter}>
+                          <td>{providerLabel(line.adapter)}</td>
+                          <td>{planLabel(line)}</td>
+                          <td className="num">{formatCount(line.activeDays)}</td>
+                          <td className="num">{formatCount(line.agentAttempts)}</td>
+                          <td
+                            className="num"
+                            title={
+                              line.usd === null ? undefined : formatUsdExact(line.usd)
+                            }
+                          >
+                            {line.usd === null ? 'Unknown' : formatUsd(line.usd)}
+                            {line.plan?.billing === 'api' &&
+                              line.unknownUsdAttempts > 0 && (
+                                <span className="coverage-flag"> partial</span>
+                              )}
+                          </td>
+                          <td className="num" title={formatUsdExact(line.reportedUsd)}>
+                            {line.unknownUsdAttempts === line.agentAttempts
+                              ? 'Not reported'
+                              : formatUsd(line.reportedUsd)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="field-hint">
+                  A monthly plan costs its fee divided by the days in that month, for each
+                  day its CLI ran agents here
+                  {savedShare !== 100 ? `, times your ${String(savedShare)}% share` : ''}.
+                  {splitsDays
+                    ? ' With a workflow or model filter, each day is split by agent time with everything else that provider ran on it.'
+                    : ''}{' '}
+                  Pay per use costs the API value. Days are UTC.
+                </p>
+              </section>
+            )}
             <section aria-label="Daily activity">
               <h2>Daily activity — agent attempts</h2>
               {chart.days.length === 0 ? (
@@ -816,9 +938,9 @@ export function UsageView(): React.JSX.Element {
                     <div className="table-wrap">
                       <table>
                         <caption className="sr-only">
-                          Agent attempts, runs and reported USD subtotal per UTC day. USD
-                          is a reported subtotal with missing reports excluded, not
-                          complete coverage.
+                          Agent attempts, runs, estimated cost on your plans and reported
+                          API value per UTC day. API value is a reported subtotal with
+                          missing reports excluded, not complete coverage.
                         </caption>
                         <thead>
                           <tr>
@@ -829,8 +951,13 @@ export function UsageView(): React.JSX.Element {
                             <th scope="col" className="num">
                               Agent attempts
                             </th>
+                            {plansEntered && (
+                              <th scope="col" className="num">
+                                Estimated cost
+                              </th>
+                            )}
                             <th scope="col" className="num">
-                              Reported USD subtotal
+                              API value
                             </th>
                           </tr>
                         </thead>
@@ -840,6 +967,19 @@ export function UsageView(): React.JSX.Element {
                               <td>{day.day}</td>
                               <td className="num">{formatCount(day.runs)}</td>
                               <td className="num">{formatCount(day.agentAttempts)}</td>
+                              {plansEntered && (
+                                <td className="num">
+                                  {day.agentAttempts === 0
+                                    ? '—'
+                                    : cost.byDay[day.day] === undefined
+                                      ? 'Unknown'
+                                      : formatUsd(cost.byDay[day.day] ?? 0)}
+                                  {cost.byDay[day.day] !== undefined &&
+                                    cost.partialDays.includes(day.day) && (
+                                      <span className="coverage-flag"> partial</span>
+                                    )}
+                                </td>
+                              )}
                               <td className="num" title={formatUsdExact(day.reportedUsd)}>
                                 {day.agentAttempts === 0
                                   ? '—'
@@ -851,9 +991,9 @@ export function UsageView(): React.JSX.Element {
                       </table>
                     </div>
                     <p className="field-hint">
-                      Daily USD is the reported subtotal for that day (missing reports
-                      excluded). The current daily figures cannot prove complete coverage
-                      — see the report counts in the breakdown below.
+                      Daily API value is the reported subtotal for that day (missing
+                      reports excluded), so it cannot prove complete coverage — see the
+                      report counts in the breakdown below.
                     </p>
                   </details>
                 </>
@@ -917,7 +1057,7 @@ export function UsageView(): React.JSX.Element {
                               Attempts
                             </th>
                             <th scope="col" className="num">
-                              Est. API USD
+                              API value
                             </th>
                             <th scope="col" className="num">
                               Attempts missing USD
@@ -974,7 +1114,7 @@ export function UsageView(): React.JSX.Element {
                             <th scope="col">Execution time</th>
                             <th scope="col">Last run</th>
                             <th scope="col" className="num">
-                              Est. API USD
+                              API value
                             </th>
                           </tr>
                         </thead>
@@ -1067,7 +1207,7 @@ export function UsageView(): React.JSX.Element {
                               Tokens out
                             </th>
                             <th scope="col" className="num">
-                              Est. API USD
+                              API value
                             </th>
                             <th scope="col">Details</th>
                           </tr>
@@ -1212,14 +1352,12 @@ export function UsageView(): React.JSX.Element {
             </section>
           </>
         )}
-        <section aria-label="Subscription and allocation settings">
-          <h2>Subscription & allocation settings</h2>
+        <section aria-label="Your plans" id="usage-plans">
+          <h2>Your plans</h2>
           <p className="field-hint">
-            Illustrative settings for your own bookkeeping — not defaults, not verified
-            provider prices, and never mixed into API-equivalent estimates. A partial date
-            range never prorates a full monthly fee. Billing periods use UTC
-            start-inclusive/end-exclusive dates; unspecified or unrecognized periods
-            remain visible outside allocation.
+            What you pay for each CLI, so the estimated cost above follows your bill
+            instead of API prices. Enter what you are charged each month, tax included.
+            Orchevia never looks prices up and never sends these figures anywhere.
           </p>
           {settingsError !== null && (
             <Notice
@@ -1232,7 +1370,7 @@ export function UsageView(): React.JSX.Element {
           )}
           {settingsLoading && (
             <p className="field-hint" role="status">
-              Loading subscription settings…
+              Loading your plans…
             </p>
           )}
           {!settingsLoaded && !settingsLoading && (
@@ -1244,256 +1382,101 @@ export function UsageView(): React.JSX.Element {
                 setSettingsLoadAttempt((attempt) => attempt + 1);
               }}
             >
-              Retry loading subscription settings
+              Retry loading your plans
             </button>
           )}
           <fieldset
             className="usage-settings-fields"
             disabled={!settingsLoaded || saving}
-            aria-label="Subscription settings"
-            onChange={() => setSettingsSaved(false)}
+            aria-label="Plans"
           >
-            {fees.length === 0 && extras.length === 0 ? (
-              <p className="field-hint">No fees entered yet.</p>
-            ) : (
-              <div className="table-wrap">
-                <table aria-label="Entered subscription fees and extra charges">
-                  <thead>
-                    <tr>
-                      <th scope="col">Label</th>
-                      <th scope="col" className="num">
-                        Amount (USD)
-                      </th>
-                      <th scope="col">Billing period</th>
-                      <th scope="col">Allocation</th>
-                      <th scope="col">
-                        <span className="sr-only">Actions</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fees.map((fee, index) => (
-                      <tr key={`fee-${String(index)}-${fee.label}`}>
-                        <td>{fee.label}</td>
-                        <td className="num" title={formatUsdExact(fee.amountUsd)}>
-                          {formatUsd(fee.amountUsd)}
-                        </td>
-                        <td>{fee.period || 'period unspecified'}</td>
-                        <td>
-                          {!inAllocationRange(fee.period) && (
-                            <span className="coverage-flag">outside allocation</span>
-                          )}
-                        </td>
-                        <td>
-                          <button
-                            className="btn btn-ghost danger-hover"
-                            aria-label={`Remove fee ${fee.label}`}
-                            onClick={() => removeFee(index)}
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {extras.map((extra, index) => (
-                      <tr key={`extra-${String(index)}-${extra.label}`}>
-                        <td>
-                          {extra.label} <span className="coverage-flag">extra</span>
-                        </td>
-                        <td className="num" title={formatUsdExact(extra.amountUsd)}>
-                          {formatUsd(extra.amountUsd)}
-                        </td>
-                        <td>{extra.period || 'period unspecified'}</td>
-                        <td>
-                          {!inAllocationRange(extra.period ?? '') && (
-                            <span className="coverage-flag">outside allocation</span>
-                          )}
-                        </td>
-                        <td>
-                          <button
-                            className="btn btn-ghost danger-hover"
-                            aria-label={`Remove extra charge ${extra.label}`}
-                            onClick={() => removeExtra(index)}
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <div className="usage-form-grid">
-              <div className="field">
-                <label className="field-label" htmlFor="usage-fee-label">
-                  Fee label
-                </label>
-                <input
-                  id="usage-fee-label"
-                  className="input"
-                  placeholder="e.g. Claude"
-                  value={newFeeLabel}
-                  onChange={(e) => setNewFeeLabel(e.target.value)}
-                />
-              </div>
-              <div className="field field-narrow">
-                <label className="field-label" htmlFor="usage-fee-amount">
-                  Fee amount (USD)
-                </label>
-                <input
-                  id="usage-fee-amount"
-                  className="input"
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={newFeeAmount}
-                  onChange={(e) => setNewFeeAmount(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label className="field-label" htmlFor="usage-fee-period">
-                  Billing period (UTC range)
-                </label>
-                <input
-                  id="usage-fee-period"
-                  className="input"
-                  placeholder="2026-10-01/2026-11-01"
-                  value={newFeePeriod}
-                  onChange={(e) => setNewFeePeriod(e.target.value)}
-                />
-              </div>
-              <div className="field field-action">
-                <span className="field-label" aria-hidden="true">
-                  &nbsp;
-                </span>
-                <button
-                  className="btn"
-                  disabled={newFeeLabel.trim() === '' || newFeeAmount.trim() === ''}
-                  onClick={() => {
-                    const amount = Number(newFeeAmount);
-                    if (!Number.isFinite(amount) || amount < 0) {
-                      setSettingsError('Fee amount must be a finite USD amount >= 0.');
-                      return;
-                    }
-                    if (billingPeriod(newFeePeriod.trim()) === null) {
-                      setSettingsError(
-                        'Billing period must be a valid UTC start/end range (YYYY-MM-DD/YYYY-MM-DD), with end exclusive.',
-                      );
-                      return;
-                    }
-                    setSettingsSaved(false);
-                    setFees([
-                      ...fees,
-                      {
-                        label: newFeeLabel.trim(),
-                        amountUsd: amount,
-                        period: newFeePeriod.trim(),
-                      },
-                    ]);
-                    setNewFeeLabel('');
-                    setNewFeeAmount('');
-                    setNewFeePeriod('');
-                  }}
-                >
-                  Add fee
-                </button>
-              </div>
-            </div>
-            <div className="usage-form-grid">
-              <div className="field">
-                <label className="field-label" htmlFor="usage-extra-label">
-                  Extra charge label
-                </label>
-                <input
-                  id="usage-extra-label"
-                  className="input"
-                  placeholder="e.g. Overage"
-                  value={newExtraLabel}
-                  onChange={(e) => setNewExtraLabel(e.target.value)}
-                />
-              </div>
-              <div className="field field-narrow">
-                <label className="field-label" htmlFor="usage-extra-amount">
-                  Extra amount (USD)
-                </label>
-                <input
-                  id="usage-extra-amount"
-                  className="input"
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={newExtraAmount}
-                  onChange={(e) => setNewExtraAmount(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label className="field-label" htmlFor="usage-extra-period">
-                  Extra billing period (optional)
-                </label>
-                <input
-                  id="usage-extra-period"
-                  className="input"
-                  placeholder="YYYY-MM-DD/YYYY-MM-DD"
-                  value={newExtraPeriod}
-                  onChange={(e) => setNewExtraPeriod(e.target.value)}
-                />
-              </div>
-              <div className="field field-action">
-                <span className="field-label" aria-hidden="true">
-                  &nbsp;
-                </span>
-                <button
-                  className="btn"
-                  disabled={newExtraLabel.trim() === '' || newExtraAmount.trim() === ''}
-                  onClick={() => {
-                    const amount = Number(newExtraAmount);
-                    if (!Number.isFinite(amount) || amount < 0) {
-                      setSettingsError('Extra amount must be a finite USD amount >= 0.');
-                      return;
-                    }
-                    if (
-                      newExtraPeriod.trim() !== '' &&
-                      billingPeriod(newExtraPeriod.trim()) === null
-                    ) {
-                      setSettingsError(
-                        'Extra billing period must be a valid UTC start/end range (YYYY-MM-DD/YYYY-MM-DD), with end exclusive.',
-                      );
-                      return;
-                    }
-                    setSettingsSaved(false);
-                    setExtras([
-                      ...extras,
-                      {
-                        label: newExtraLabel.trim(),
-                        amountUsd: amount,
-                        ...(newExtraPeriod.trim() !== ''
-                          ? { period: newExtraPeriod.trim() }
-                          : {}),
-                      },
-                    ]);
-                    setNewExtraLabel('');
-                    setNewExtraAmount('');
-                    setNewExtraPeriod('');
-                  }}
-                >
-                  Add extra
-                </button>
-              </div>
-            </div>
-            <p className="field-hint">Entered total: {formatUsd(feeTotal)}.</p>
-            <h3>Subscription-cost allocation (optional)</h3>
-            <p className="field-hint">
-              An allocation, not a measurement: declare Orchevia&apos;s share of the full
-              entered billing-period pool. This manual pool is independent of the current
-              history filters for workflow, provider and model; dates select full
-              overlapping billing periods, without prorating. It does not assign a price
-              to filtered attempts or runs.
-            </p>
-            <div className="usage-form-grid usage-allocation-grid">
+            {PLAN_PROVIDERS.map((provider) => {
+              const entry = draft[provider];
+              const label = PLAN_PROVIDER_LABELS[provider];
+              return (
+                <div className="usage-plan-row" key={provider}>
+                  <div className="field">
+                    <label className="field-label" htmlFor={`plan-billing-${provider}`}>
+                      {label}
+                    </label>
+                    <select
+                      id={`plan-billing-${provider}`}
+                      className="input"
+                      value={entry.billing}
+                      onChange={(e) => {
+                        const billing = e.target.value;
+                        setPlanField(provider, {
+                          billing:
+                            billing === 'subscription' || billing === 'api'
+                              ? billing
+                              : '',
+                        });
+                      }}
+                    >
+                      <option value="">Not set</option>
+                      <option value="subscription">Monthly plan</option>
+                      <option value="api">Pay per use (API key)</option>
+                    </select>
+                  </div>
+                  {entry.billing === 'subscription' && (
+                    <>
+                      <div className="field">
+                        <label className="field-label" htmlFor={`plan-name-${provider}`}>
+                          Plan name (optional)
+                        </label>
+                        <input
+                          id={`plan-name-${provider}`}
+                          className="input"
+                          list={`plan-names-${provider}`}
+                          value={entry.name}
+                          placeholder={PLAN_NAME_SUGGESTIONS[provider][0]}
+                          onChange={(e) =>
+                            setPlanField(provider, { name: e.target.value })
+                          }
+                        />
+                        <datalist id={`plan-names-${provider}`}>
+                          {PLAN_NAME_SUGGESTIONS[provider].map((name) => (
+                            <option key={name} value={name} />
+                          ))}
+                        </datalist>
+                      </div>
+                      <div className="field field-narrow">
+                        <label
+                          className="field-label"
+                          htmlFor={`plan-amount-${provider}`}
+                        >
+                          You pay per month (USD)
+                        </label>
+                        <input
+                          id={`plan-amount-${provider}`}
+                          className="input"
+                          type="number"
+                          min={0}
+                          max={MAX_PLAN_MONTHLY_USD}
+                          step="any"
+                          value={entry.amount}
+                          onChange={(e) =>
+                            setPlanField(provider, { amount: e.target.value })
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
+                  {entry.billing === 'api' && (
+                    <p className="field-hint usage-plan-note">
+                      Cost is the API value the CLI reports for each attempt.
+                      {provider === 'codex'
+                        ? ' Codex does not report a dollar figure, so its cost stays unknown.'
+                        : ''}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+            <div className="usage-plan-row">
               <div className="field field-narrow">
                 <label className="field-label" htmlFor="usage-share">
-                  Orchevia share %
+                  Orchevia&apos;s share (%)
                 </label>
                 <input
                   id="usage-share"
@@ -1503,56 +1486,40 @@ export function UsageView(): React.JSX.Element {
                   max={100}
                   step="any"
                   value={share}
-                  placeholder="e.g. 60"
-                  onChange={(e) => setShare(e.target.value)}
+                  placeholder="100"
+                  onChange={(e) => {
+                    setSettingsSaved(false);
+                    setShare(e.target.value);
+                  }}
                 />
               </div>
-              <div className="field">
-                <label className="field-label" htmlFor="usage-method">
-                  Method
-                </label>
-                <select
-                  id="usage-method"
-                  className="input"
-                  value={method}
-                  onChange={(e) => setMethod(e.target.value)}
-                >
-                  <option value="manual">
-                    Declared share of full entered billing periods
-                  </option>
-                </select>
-              </div>
-              <div className="field field-action">
-                <span className="field-label" aria-hidden="true">
-                  &nbsp;
-                </span>
-                <button
-                  className="btn btn-primary"
-                  onClick={saveSettings}
-                  disabled={!settingsDirty || saving}
-                >
-                  {saving ? 'Saving…' : 'Save subscription settings'}
-                </button>
-              </div>
+              <p className="field-hint usage-plan-note">
+                How much of your plan use runs through Orchevia. Blank counts a
+                plan&apos;s whole daily fee on days Orchevia used it; if you also use
+                these CLIs a lot on their own, a lower share keeps their part out of
+                Orchevia&apos;s cost.
+              </p>
             </div>
-            {settingsDirty && (
-              <p className="field-hint" role="status">
-                Unsaved changes — Add/Remove edits are draft until saved.
-              </p>
-            )}
-            {settingsSaved && !settingsDirty && (
-              <p className="field-hint" role="status">
-                Subscription settings saved.
-              </p>
-            )}
-            {allocated !== null && (
-              <p className="field-hint">
-                Allocated to Orchevia-tracked work: {formatUsd(allocated)} ({method},
-                share {share.trim()}% of {formatUsd(allocationPool)} across full entered
-                periods; no prorating). Outside or untracked usage is excluded from this
-                figure.
-              </p>
-            )}
+            <FormError error={planValidation.error} />
+            <div className="usage-plan-actions">
+              <button
+                className="btn btn-primary"
+                onClick={() => planValidation.attempt(savePlans)}
+                disabled={!settingsDirty || saving}
+              >
+                {saving ? 'Saving…' : 'Save plans'}
+              </button>
+              {settingsDirty && (
+                <span className="field-hint" role="status">
+                  Unsaved changes.
+                </span>
+              )}
+              {settingsSaved && !settingsDirty && (
+                <span className="field-hint" role="status">
+                  Plans saved.
+                </span>
+              )}
+            </div>
           </fieldset>
         </section>
         <section aria-label="API-equivalent target">

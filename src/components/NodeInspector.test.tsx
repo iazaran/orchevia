@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { NodeInspector } from './NodeInspector';
 import { useAppStore } from '../store';
@@ -145,6 +145,13 @@ it('keeps an incomplete advanced expression visible while its prior valid edit f
   expect(screen.getByLabelText('Text form (advanced)')).toHaveValue(
     'input.review contains "unfinished',
   );
+  // A half-typed expression stays quiet until the field is left.
+  expect(screen.queryByRole('alert')).toBeNull();
+  fireEvent.blur(text);
+  expect(screen.getByRole('alert')).toBeInTheDocument();
+  expect(text).toHaveAttribute('aria-invalid', 'true');
+  fireEvent.change(text, { target: { value: 'input.review contains "P2"' } });
+  expect(screen.queryByRole('alert')).toBeNull();
   expect(
     (await backend.getWorkflow(stored.id))?.definition.nodes.find(
       (n) => n.id === 'condition',
@@ -303,5 +310,94 @@ it('edits optional session and bounded context settings without blur', async () 
         (n) => n.id === 'agent',
       )?.config.sessionMaxTurns,
     ).toBeUndefined(),
+  );
+});
+
+it("lists only the selected step's own needs, inline", async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Setup');
+  workflow.nodes.push(
+    { id: 'cmd', type: 'command', position: { x: 0, y: 0 }, config: {} },
+    {
+      id: 'other',
+      type: 'command',
+      label: 'Other',
+      position: { x: 0, y: 0 },
+      config: {},
+    },
+  );
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'cmd',
+    selectedEdgeId: null,
+    overlayRunId: null,
+    validation: [
+      {
+        code: 'command-executable',
+        message: 'Command node requires an executable.',
+        severity: 'error',
+        nodeId: 'cmd',
+      },
+      {
+        code: 'command-executable',
+        message: 'Other step message.',
+        severity: 'error',
+        nodeId: 'other',
+      },
+      { code: 'name', message: 'Workflow-wide.', severity: 'error' },
+    ],
+  });
+  render(<NodeInspector />);
+  const status = screen.getByText('To finish this step').closest('.notice');
+  expect(status).toHaveTextContent('Command node requires an executable.');
+  expect(status).not.toHaveTextContent('Other step message.');
+  expect(status).not.toHaveTextContent('Workflow-wide.');
+  // Inline guidance, never an alert while the step is being filled in.
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it("keeps one condition's text error off another condition", () => {
+  __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Two conditions');
+  for (const id of ['first', 'second'])
+    workflow.nodes.push({
+      id,
+      type: 'condition',
+      position: { x: 0, y: 0 },
+      config: {
+        condition: {
+          logic: 'or',
+          clauses: [{ left: 'input.review', op: 'contains', right: 'P1' }],
+        },
+      },
+    });
+  useAppStore.setState({
+    workflows: [
+      {
+        id: workflow.id,
+        name: workflow.name,
+        definition: workflow,
+        createdAt: '2026-10-23T00:00:00Z',
+        updatedAt: '2026-10-23T00:00:00Z',
+      },
+    ],
+    activeWorkflowId: workflow.id,
+    selectedNodeId: 'first',
+    selectedEdgeId: null,
+    overlayRunId: null,
+    validation: [],
+  });
+  render(<NodeInspector />);
+  const text = screen.getByLabelText('Text form (advanced)');
+  fireEvent.change(text, { target: { value: 'input.review contains "unfinished' } });
+  fireEvent.blur(text);
+  expect(screen.getByRole('alert')).toBeInTheDocument();
+  act(() => useAppStore.setState({ selectedNodeId: 'second' }));
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByLabelText('Text form (advanced)')).not.toHaveAttribute(
+    'aria-invalid',
+    'true',
   );
 });

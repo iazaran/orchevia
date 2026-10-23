@@ -501,34 +501,104 @@ textarea {
   border-color: var(--accent);
 }
 
-.validation-bar {
-  position: absolute;
-  bottom: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  pointer-events: none;
+/* Workflow setup status: a quiet count in the canvas toolbar that opens the
+   list of what the workflow still needs; nothing pops up while composing. */
+.setup-status {
+  position: relative;
+  align-self: center;
 }
-
-.validation-item {
-  pointer-events: auto;
-  border-radius: var(--radius-m);
-  padding: 8px 12px;
-  font-size: 12.5px;
+.setup-status > summary {
+  list-style: none;
+  cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg-1);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.setup-status > summary::-webkit-details-marker {
+  display: none;
+}
+.setup-status > summary::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-2);
+}
+.setup-status.has-errors > summary::before {
+  background: var(--warning);
+}
+.setup-status > summary:hover,
+.setup-status[open] > summary {
+  background: var(--bg-2);
+  border-color: var(--accent);
+}
+.setup-status > ul {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(440px, 80vw);
+  max-height: 340px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--bg-1);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-m);
   box-shadow: var(--shadow);
 }
-
-.validation-item.error {
-  border-left: 3px solid var(--danger);
+.setup-issue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-1);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-s);
+  padding: 7px 8px;
 }
-
-.validation-item.warning {
-  border-left: 3px solid var(--warning);
+button.setup-issue {
+  cursor: pointer;
+}
+button.setup-issue:hover,
+button.setup-issue:focus-visible {
+  background: var(--bg-2);
+}
+.setup-issue strong {
+  color: var(--text-0);
+}
+.setup-issue-kind {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-2);
+}
+.setup-issue-kind.error {
+  color: var(--warning);
+}
+.node-setup {
+  margin-bottom: 14px;
+}
+.node-setup ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.btn.btn-inline {
+  padding: 1px 8px;
+  font-size: 12px;
 }
 
 /* Flow nodes */
@@ -1464,33 +1534,267 @@ details[open] > .gen-summary::after {
   margin-top: 6px;
 }
 
-/* Run detail steps: numbered timeline rows with node labels. */
-.run-step {
+/* Run detail: header facts, a report card, then one card per step. Each step
+   keeps its number, status, output and controls inside its own border, with
+   its status colour down the left edge, so nothing reads as belonging to the
+   step above or below. */
+.run-header {
   margin-bottom: 14px;
-  border-left: 2px solid var(--border);
-  padding-left: 12px;
 }
-
+.run-header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.run-header-title h2 {
+  margin: 0;
+}
+.run-header-id {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 32px;
+  margin: 14px 0 8px;
+}
+.run-facts > div {
+  min-width: 0;
+}
+.run-facts dt {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-2);
+}
+.run-facts dd {
+  margin: 3px 0 0;
+  font-size: 14px;
+  color: var(--text-0);
+  font-variant-numeric: tabular-nums;
+}
+.run-facts .fact-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.run-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.run-report {
+  margin-bottom: 16px;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-card));
+}
+.run-report-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.run-report-head h3 {
+  margin: 0;
+}
+.run-report-source {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.run-report-failure {
+  margin: 10px 0 0;
+}
+.run-report .report-preview {
+  margin-top: 10px;
+}
+.run-report-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.report-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 18px;
+  margin: 4px 0 12px;
+}
+.report-fields > div {
+  display: contents;
+}
+.report-fields dt {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.report-fields dd {
+  margin: 0;
+  color: var(--text-0);
+  overflow-wrap: anywhere;
+}
+.report-fields dd.report-field-lines {
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.run-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.run-step {
+  --step-color: var(--border);
+  border: 1px solid var(--border-card);
+  border-left: 4px solid var(--step-color);
+  border-radius: var(--radius-m);
+  background: var(--bg-1);
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+.run-step.step-succeeded,
+.run-step.step-approved {
+  --step-color: var(--success);
+}
+.run-step.step-failed,
+.run-step.step-rejected {
+  --step-color: var(--danger);
+}
+.run-step.step-running {
+  --step-color: var(--accent);
+}
+.run-step.step-paused,
+.run-step.step-guardPaused,
+.run-step.step-retrying {
+  --step-color: var(--warning);
+}
+.run-step:target {
+  box-shadow: 0 0 0 2px var(--accent);
+}
 .run-step-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border-radius: calc(var(--radius-m) - 1px) calc(var(--radius-m) - 1px) 0 0;
+}
+.run-step.step-skipped .run-step-head,
+.run-step.step-cancelled .run-step-head {
+  background: transparent;
+}
+.run-step.step-skipped {
+  opacity: 0.78;
+}
+.run-step-title {
+  font-size: 14px;
+  color: var(--text-0);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.step-index {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 2px solid var(--step-color, var(--border));
+  background: var(--bg-1);
+  color: var(--text-0);
+  font-size: 12.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.step-kind {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.run-step-duration {
+  margin-left: auto;
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.run-step-meta {
+  padding: 8px 12px 0;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.run-step-body {
+  padding: 8px 12px 12px;
+  min-width: 0;
+}
+.run-step-body:empty {
+  display: none;
+}
+.run-step-body > .run-output + .run-output {
+  margin-top: 6px;
+}
+.run-step-playbook {
+  border-top: 1px solid var(--border-soft);
+  padding: 8px 12px;
+  font-size: 12.5px;
+}
+.run-step-playbook summary {
+  cursor: pointer;
+  color: var(--text-1);
+}
+.run-step-playbook-form {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  margin-top: 8px;
 }
-
-.step-index {
+.run-step-playbook-form .select {
+  width: auto;
+}
+.timeline-step {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 4px;
+  margin-right: 8px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-1);
-  color: var(--text-2);
+  border: 1.5px solid var(--border);
+  color: var(--text-0);
   font-size: 11px;
-  font-weight: 700;
-  flex-shrink: 0;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+.timeline-step.step-succeeded,
+.timeline-step.step-approved {
+  border-color: var(--success);
+}
+.timeline-step.step-failed,
+.timeline-step.step-rejected {
+  border-color: var(--danger);
+}
+.timeline-step.step-running {
+  border-color: var(--accent);
+}
+.timeline-step.step-paused,
+.timeline-step.step-guardPaused,
+.timeline-step.step-retrying {
+  border-color: var(--warning);
 }
 
 /* Generator repository context: collapsible grounding section. */
@@ -1925,7 +2229,7 @@ details[open] > .gen-summary::after {
 }
 .timeline-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(100px, 2fr) minmax(120px, 1fr);
+  grid-template-columns: minmax(150px, 1.5fr) minmax(100px, 2fr) minmax(110px, 1fr);
   gap: 12px;
   align-items: center;
   padding: 6px 0;
@@ -2189,7 +2493,7 @@ details[open] > .gen-summary::after {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Subscription forms: label above control, stable alignment, narrow amounts. */
+/* Usage forms: label above control, stable alignment, narrow amounts. */
 .usage-form-grid {
   display: grid;
   grid-template-columns:
@@ -2209,8 +2513,36 @@ details[open] > .gen-summary::after {
 .usage-form-grid .field-action {
   justify-self: end;
 }
-.usage-allocation-grid {
-  grid-template-columns: minmax(130px, 190px) minmax(240px, 1fr) auto;
+/* Your plans: one row per provider, label above each control. */
+.usage-plan-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin: 8px 0;
+}
+.usage-plan-row .field {
+  margin-bottom: 0;
+  min-width: 180px;
+}
+.usage-plan-row .field-narrow {
+  min-width: 150px;
+  max-width: 220px;
+}
+.usage-plan-note {
+  flex: 1 1 260px;
+  margin: 0 0 8px;
+  max-width: 70ch;
+}
+.usage-plan-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.usage-card-primary {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-card));
 }
 .usage-settings-fields {
   border: 0;
@@ -2379,6 +2711,10 @@ details[open] > .gen-summary::after {
 }
 [data-theme='light'] .usage-bar {
   fill: var(--accent-strong);
+}
+[data-theme='light'] .setup-issue-kind.error {
+  /* --warning is tuned for dark surfaces; darken it on light backgrounds. */
+  color: #8a5a00;
 }
 [data-theme='light'] .form-error {
   /* --danger is tuned for dark surfaces; darken it on light backgrounds. */

@@ -115,14 +115,15 @@ estimates are available in collapsed **CLI usage** details on each step; the tim
 any attempt has reported or finished without a report, the empty summary is hidden.
 A missing USD report stays unknown; it is never converted to zero.
 
-Claude's `total_cost_usd` is preserved as `agentUsage.reported_cost_usd`. It is an
-estimated API value, not a subscription charge. Claude documents that its session
-dollar figure is computed from token pricing and is not relevant to billing for Pro
-and Max subscriptions. API users should check their billing console for authoritative
-charges. Orchevia cannot infer subscription limits, remaining five-hour quota, or a
-run's share of a monthly fee from these fields. Check the provider's usage page or
-interactive CLI usage view for those facts; no subscription percentages or dollar
-allocations are invented from elapsed time. Longer histories can increase input
+Claude's `total_cost_usd` is preserved as `agentUsage.reported_cost_usd`. It is the
+**API value**: what pay-as-you-go API pricing would charge for the same tokens, not a
+subscription charge. Claude documents that its session dollar figure is computed from
+token pricing and is not relevant to billing for Pro and Max subscriptions. Codex
+reports tokens but no dollar figure. API users should check their billing console for
+authoritative charges. Orchevia cannot see subscription limits or the remaining
+five-hour quota; check the provider's usage page or interactive CLI usage view for
+those. What it can show is an **estimated cost** on the plans you enter (see Usage &
+costs below). Longer histories can increase input
 cost; caching and compaction depend on the CLI/provider. No savings percentage is
 promised. Browser development uses simulated sessions and reports no token spend;
 its directory normalization cannot resolve filesystem symlinks.
@@ -226,8 +227,8 @@ a bounded panel of agent attempts per UTC day with zero-filled gaps and an
 expandable daily table; daily USD stays a reported subtotal, not proven
 coverage. The filled chart span is capped at 366 days; longer ranges retain all
 actual days with runs in the daily table. Unreported tool/subagent counters stay
-unknown. Subscription settings can retry loading and lock draft controls while
-loading or saving. Workflow names and adapter/model identity are recorded
+unknown. Plan settings can retry loading and lock draft controls while loading
+or saving. Workflow names and adapter/model identity are recorded
 at execution time; legacy rows stay “unknown”, never zero. Fixtures and reused
 outputs contribute no new consumption; duplicate terminal events and
 parent/subagent wrapper rows are not double-counted. Workflow-run counts are
@@ -240,14 +241,27 @@ Existing profiles display their current names; deleted profiles retain their IDs
 and history without a saved identity stays unknown. This replaces the usage panel
 on Agents, which now focuses on configuring profiles.
 
-Three money lanes stay separate: user-entered subscription fees and extras for
-a billing period, CLI-reported API-equivalent estimates with source and
-coverage, and an optional manual fee pool with its declared Orchevia share
-(outside/untracked usage excluded). Full overlapping billing periods remain
-unprorated; periods outside the selected range or without valid dates are not
-allocated. Provider, workflow or model filters do not convert the pool into
-per-run or per-attempt prices. The illustrative
-$120 + $24 example from early feedback is a settings example, not a default or
-a verified price. The API-equivalent target offers estimate ranges with sample
-counts from comparable history, or **Insufficient history** — never fabricated
-rates, and no reverse calculator from tool counts to enforceable dollars.
+**Estimated cost** follows **Your plans**: for Claude Code and Codex you choose
+a monthly plan (with what you are charged each month, tax included, and an
+optional plan name), pay per use, or not set. Orchevia never looks prices up.
+A monthly plan costs its fee divided by the days in that month, for each UTC day
+on which an Orchevia run that used its CLI started (a run is counted on the day it
+started, even if it ends after midnight); on a day with no Orchevia work it costs
+Orchevia nothing. With a workflow or model filter, each day's fee is split by
+agent time against everything that provider ran that day, so filtered
+views add up to the whole. An optional **Orchevia's share** (percent, blank = 100) lowers the figure for people who also use the CLIs heavily on their own.
+Pay per use costs the reported API value (unknown for Codex, which reports no
+dollars). Providers without a plan stay unknown and mark the total partial.
+The overview shows the estimated cost beside the API value and, when both are
+complete, how many times the plan cost that value is; **Cost by provider** lists each provider's plan,
+days used, attempts, estimated cost and API value, and the daily table adds an
+estimated cost column. Each finished run's header shows its own part of the
+day's fee the same way (**Cost on your plans**). For example, a day with
+USD 62.88 of API value on USD 120 + USD 24 monthly plans in a 31-day month
+costs about USD 4.65 when Orchevia was the only user that day.
+
+These figures are an allocation of what you already pay, not a quota meter:
+a plan's limits depend on the provider's own accounting. The API-equivalent
+target offers estimate ranges with sample counts from comparable history, or
+**Insufficient history** — never fabricated rates, and no reverse calculator
+from tool counts to enforceable dollars.

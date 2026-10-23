@@ -861,10 +861,8 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "onboarding.completed",
     "workflow.assistanceProfileId",
     orchevia_core::agents::PERMISSION_DEFAULT_SETTING,
-    "usage.subscriptionFees",
-    "usage.extraCharges",
-    "usage.allocationShare",
-    "usage.allocationMethod",
+    "usage.plans",
+    "usage.planShare",
 ];
 
 /// User-taught model names per adapter ("claude" | "codex" | "custom").
@@ -957,8 +955,8 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     if key == "updates.dismissedVersion" && orchevia_core::updates::parse_version(value).is_none() {
         return Err(format!("'{value}' is not a release version."));
     }
-    // Subscription fee lists are JSON documents; they stay bounded but need
-    // more room than scalar preferences.
+    // The plans document is JSON; it stays bounded but needs more room than
+    // scalar preferences.
     let max_len = if key.starts_with("usage.") { 8000 } else { 200 };
     if value.len() > max_len {
         return Err("Setting value too long.".to_string());
@@ -1915,30 +1913,33 @@ pub fn diagnostics_bundle(state: State<AppState>) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn usage_settings_validate_before_storage_and_preserve_legacy_period_labels() {
+    fn usage_plan_settings_validate_before_storage() {
         let db = orchevia_core::db::SqliteDb::open_in_memory().unwrap();
-        super::set_setting_for_db(&db, "usage.allocationShare", "50").unwrap();
+        super::set_setting_for_db(&db, "usage.planShare", "50").unwrap();
         for value in ["101", "-1", "NaN", "Infinity"] {
-            assert!(super::set_setting_for_db(&db, "usage.allocationShare", value).is_err());
+            assert!(super::set_setting_for_db(&db, "usage.planShare", value).is_err());
         }
         assert_eq!(
-            db.get_setting("usage.allocationShare").unwrap().as_deref(),
+            db.get_setting("usage.planShare").unwrap().as_deref(),
             Some("50")
         );
-        assert!(super::set_setting_for_db(&db, "usage.allocationMethod", "invented").is_err());
-        assert!(super::set_setting_for_db(
-            &db,
-            "usage.subscriptionFees",
-            r#"[{"label":"Fee","amountUsd":-1,"period":"old label"}]"#
-        )
-        .is_err());
-        assert!(super::set_setting_for_db(&db, "usage.extraCharges", "not json").is_err());
-        super::set_setting_for_db(
-            &db,
-            "usage.subscriptionFees",
-            r#"[{"label":"Fee","amountUsd":2,"period":"old label"}]"#,
-        )
-        .unwrap();
+        let plans = r#"{"claude":{"billing":"subscription","monthlyUsd":120,"name":"Max"},"codex":{"billing":"api"}}"#;
+        super::set_setting_for_db(&db, "usage.plans", plans).unwrap();
+        for invalid in [
+            "not json",
+            r#"{"gemini":{"billing":"api"}}"#,
+            r#"{"claude":{"billing":"subscription"}}"#,
+            r#"{"claude":{"billing":"subscription","monthlyUsd":-1}}"#,
+            r#"{"codex":{"billing":"api","monthlyUsd":20}}"#,
+        ] {
+            assert!(super::set_setting_for_db(&db, "usage.plans", invalid).is_err());
+        }
+        assert_eq!(
+            db.get_setting("usage.plans").unwrap().as_deref(),
+            Some(plans)
+        );
+        // The billing-period fee lists these replaced are no longer settings.
+        assert!(super::set_setting_for_db(&db, "usage.subscriptionFees", "[]").is_err());
     }
 
     #[test]

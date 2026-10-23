@@ -104,7 +104,8 @@ repository defaults does not carry edit observations into a new project. Profile
 role changes follow the existing global observation flow.
 
 Runs exposes Save command to playbook only for a successful Command in a
-successful run. It fetches that run's snapshot and latest result again, retains
+successful run, inside that step's card under **Save this command to the project
+playbook…**. It fetches that run's snapshot and latest result again, retains
 argument quoting and working directory, and records the run ID as evidence.
 Process output is never copied. Commands with unresolved node-output variables
 cannot be promoted. Save a useful graph as a user template, then link it from the

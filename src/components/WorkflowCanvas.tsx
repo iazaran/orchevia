@@ -34,6 +34,7 @@ import {
   type WorkflowNode,
 } from '../lib/workflow';
 import { useAppStore } from '../store';
+import { SetupStatus } from './SetupStatus';
 import { OrcheviaFlowNode, type CanvasNodeData } from './FlowNode';
 
 const nodeTypes = { orchevia: OrcheviaFlowNode };
@@ -380,6 +381,15 @@ export function WorkflowCanvas({
     [setValidation],
   );
 
+  // Open with the current setup status (shown quietly in the toolbar); edits
+  // revalidate as they happen.
+  const validatedOnOpen = useRef<string | null>(null);
+  useEffect(() => {
+    if (readOnly || validatedOnOpen.current === workflow.id) return;
+    validatedOnOpen.current = workflow.id;
+    revalidate(workflow);
+  }, [readOnly, revalidate, workflow]);
+
   const onConnect = useCallback(
     (connection: Connection) => {
       if (readOnly) return;
@@ -665,6 +675,7 @@ export function WorkflowCanvas({
         >
           ⤢ Arrange
         </button>
+        {!readOnly && <SetupStatus workflow={workflow} issues={validation} />}
         <span className="field-hint" style={{ alignSelf: 'center' }}>
           {nodes.length > 12 && (
             <>Large graph: pan or use the minimap to follow later steps. </>
