@@ -1212,6 +1212,21 @@ impl SqliteDb {
         Ok(())
     }
 
+    /// Record a skip at a given time: the finish of the step whose routing
+    /// skipped it, so a resumed run replays the skip right after that step.
+    pub fn record_skip_at(&self, run_id: &str, node_id: &str, at: DateTime<Utc>) -> DbResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
+        conn.execute(
+            "INSERT INTO node_results (run_id, node_id, status, stdout, stderr, started_at, finished_at, attempt, duration_ms, structured_json)
+             VALUES (?1, ?2, 'skipped', '', '', ?3, ?3, 1, 0, '{}')",
+            params![run_id, node_id, at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
     pub fn list_node_results(&self, run_id: &str) -> DbResult<Vec<StoredNodeResult>> {
         let conn = self
             .conn

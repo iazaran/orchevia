@@ -40,7 +40,10 @@ page now measures exactly the window height in the browser mock.
 Replay (resume after approval or restart) goes through the same functions. It now
 walks terminal rows by `(finished_at, id)`: a live row keeps the id it got at
 dispatch, so id order could replay a long step's completion (and the loop reset
-it caused) before a skip recorded while it ran. Tests pause and resume across a
+it caused) before a skip recorded while it ran. A skip that routing causes is
+recorded at the causing step's finish time (`RunState::cause_at`,
+`record_skip_at`), so it sorts right after its cause even when another step
+finished before the scheduler routed the first. Tests pause and resume across a
 re-armed pass and across that ordering.
 
 ## 3. Other engine and core fixes

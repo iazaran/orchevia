@@ -286,6 +286,10 @@ struct RunState {
     /// taken. A later visit of a looping source updates its entry instead of
     /// counting as another arrival at the target.
     resolved: HashMap<String, bool>,
+    /// While a live completion is routed: when that step finished. Skips it
+    /// causes are recorded at that time, so resuming replays them right
+    /// after it, before anything that finished later.
+    cause_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Engine {
@@ -1297,6 +1301,14 @@ impl Engine {
                 }
                 continue;
             }
+            // Another step may have finished before this one is routed: date
+            // the skips this routing causes by this step's own finish.
+            state.cause_at = self.db.list_node_results(run_id).ok().and_then(|rows| {
+                rows.iter()
+                    .rev()
+                    .find(|r| r.node_id == node_id && is_terminal_status(&r.status))
+                    .and_then(|r| r.finished_at)
+            });
             let effect = self.apply_completion(
                 &graph,
                 &mut state,
@@ -1307,7 +1319,9 @@ impl Engine {
                     branch,
                     record: true,
                 },
-            )?;
+            );
+            state.cause_at = None;
+            let effect = effect?;
             if let Some(message) = effect.run_failed {
                 // A step that fails after the user cancelled (a git call
                 // cannot be interrupted) leaves the run cancelled. Only a
@@ -1561,7 +1575,10 @@ impl Engine {
             return Ok(());
         }
         if record {
-            self.record_simple(run_id, node_id, "skipped", None, None)?;
+            match state.cause_at {
+                Some(at) => self.db.record_skip_at(run_id, node_id, at)?,
+                None => self.record_simple(run_id, node_id, "skipped", None, None)?,
+            }
         }
         state
             .terminal
@@ -7025,6 +7042,41 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             RunStatus::Succeeded,
             "{rows:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_skip_is_dated_by_the_step_whose_routing_caused_it() {
+        // a fails, so its success edge is not taken and b is skipped. The
+        // skip carries a's finish time (not the moment it was routed), so a
+        // resume replays it right after a.
+        let (db, engine) = harness();
+        let wf = loop_wf(
+            "wf-skip-dated",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                command_node("a", "sh", &["-c", "exit 1"], 100.0),
+                command_node("handle", "echo", &["handled"], 200.0),
+                command_node("b", "echo", &["b"], 200.0),
+                simple_node("end", NodeKind::End, 300.0),
+            ],
+            vec![
+                edge("e0", "start", "a", None),
+                edge("e1", "a", "handle", Some("failure")),
+                edge("e2", "a", "b", None),
+                edge("e3", "handle", "end", None),
+                edge("e4", "b", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-skip-dated").await;
+        let rows = db.list_node_results("run-skip-dated").unwrap();
+        let finished = |id: &str| {
+            rows.iter()
+                .find(|r| r.node_id == id)
+                .and_then(|r| r.finished_at)
+        };
+        assert_eq!(status_of(&db, "run-skip-dated", "b"), "skipped", "{rows:?}");
+        assert!(finished("a").is_some());
+        assert_eq!(finished("b"), finished("a"), "{rows:?}");
     }
 
     #[tokio::test]
