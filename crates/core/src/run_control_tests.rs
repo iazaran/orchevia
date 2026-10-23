@@ -827,3 +827,68 @@ fn usage_summary_counts_agent_attempts_with_execution_identity() {
     assert_eq!(filtered.by_workflow.len(), 1);
     assert_eq!(filtered.by_workflow[0].workflow_name, "Controls");
 }
+
+#[tokio::test]
+async fn reuse_finds_a_branch_result_after_an_earlier_pass_skipped_it() {
+    // x sits on g1's true branch inside a loop: skipped on pass 1, run on
+    // pass 2. Recovering with Reuse must find that run for x's first real
+    // visit, not count the skip as a visit and fail.
+    let db = Arc::new(SqliteDb::open_in_memory().unwrap());
+    let engine = Engine::new(db.clone(), CancellationRegistry::default());
+    let command = |id: &str| json!({"id":id,"type":"command","config":{"executable":"must-never-run-v011","maxVisits":3}});
+    let condition = |id: &str, right: &str| json!({"id":id,"type":"condition","config":{"maxVisits":3,"condition":{"logic":"and","clauses":[{"left":"node.a.output","op":"equals","right":right}]}}});
+    let wf = Workflow::from_json(&json!({"schemaVersion":6,"id":"reuse-loop","name":"Reuse loop",
+        "nodes":[{"id":"s","type":"start"},command("a"),condition("g1","x"),command("x"),command("j"),condition("g2","again"),command("b"),{"id":"e","type":"end"}],
+        "edges":[{"id":"sa","source":"s","target":"a"},{"id":"ag1","source":"a","target":"g1"},
+            {"id":"g1x","source":"g1","target":"x","label":"true"},{"id":"g1j","source":"g1","target":"j","label":"false"},
+            {"id":"xj","source":"x","target":"j"},{"id":"jg2","source":"j","target":"g2"},
+            {"id":"g2a","source":"g2","target":"a","label":"true"},{"id":"g2b","source":"g2","target":"b","label":"false"},
+            {"id":"be","source":"b","target":"e"}]}).to_string()).unwrap();
+    db.upsert_workflow(&wf).unwrap();
+    let fixtures = json!({"dryRun":true,"fixtures":{
+        "a":[{"status":"succeeded","stdout":"again"},{"status":"succeeded","stdout":"x"}],
+        "x":[{"status":"succeeded","stdout":"from-x"}],
+        "j":[{"status":"succeeded"},{"status":"succeeded"}],
+        "b":[{"status":"failed"}]}});
+    engine
+        .start_run_with_options(&wf, "reuse-source", &HashMap::new(), &options(fixtures))
+        .unwrap();
+    engine.execute(wf.clone(), "reuse-source".into()).await;
+    assert_eq!(
+        db.get_run("reuse-source").unwrap().unwrap().status,
+        RunStatus::Failed
+    );
+    let plan = engine.preview_recovery("reuse-source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("x".into(), RecoveryChoice::Reuse),
+        ("j".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    engine
+        .recover_run(
+            "reuse-source",
+            "reuse-child",
+            &choices,
+            &plan.fingerprint,
+            "reuse-request",
+        )
+        .unwrap();
+    engine.execute(wf, "reuse-child".into()).await;
+    let rows = db.list_node_results("reuse-child").unwrap();
+    let x: Vec<(&str, &str)> = rows
+        .iter()
+        .filter(|r| r.node_id == "x")
+        .map(|r| (r.status.as_str(), r.stdout.as_str()))
+        .collect();
+    assert_eq!(
+        x,
+        vec![("skipped", ""), ("succeeded", "from-x")],
+        "{rows:?}"
+    );
+    assert_eq!(
+        db.get_run("reuse-child").unwrap().unwrap().status,
+        RunStatus::Succeeded,
+        "{rows:?}"
+    );
+}

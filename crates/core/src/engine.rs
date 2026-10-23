@@ -1725,9 +1725,11 @@ struct TaskInput {
 type SessionLocks = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
 fn execute_reused_task(db: &SqliteDb, task: &TaskInput) -> TaskOutcome {
+    // Seeds are the source run's succeeded rows, numbered in order, so count
+    // visits the same way: a pass that skipped this step is not a visit.
     let visit = db.list_node_results(&task.run_id).map(|rows| {
         rows.iter()
-            .filter(|r| r.node_id == task.node.id && is_terminal_status(&r.status))
+            .filter(|r| r.node_id == task.node.id && r.status == "succeeded")
             .count() as u32
             + 1
     });
