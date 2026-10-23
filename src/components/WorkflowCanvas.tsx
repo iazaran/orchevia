@@ -29,6 +29,7 @@ import {
   newId,
   nextBranchLabel,
   removeFromWorkflow,
+  sparedAnchors,
   type NodeKind,
   type Workflow,
   type WorkflowEdge,
@@ -731,6 +732,19 @@ export function WorkflowCanvas({
         }}
         onPaneClick={() => {
           selectNode(null);
+        }}
+        // Selecting every End (or Start) at once keeps one, with its edges
+        // unless they were selected too.
+        onBeforeDelete={({ nodes: doomed, edges: doomedEdges }) => {
+          const spared = sparedAnchors(workflow, new Set(doomed.map((n) => n.id)));
+          if (spared.size === 0) return Promise.resolve(true);
+          return Promise.resolve({
+            nodes: doomed.filter((n) => !spared.has(n.id)),
+            edges: doomedEdges.filter(
+              (e) =>
+                e.selected === true || (!spared.has(e.source) && !spared.has(e.target)),
+            ),
+          });
         }}
         // One handler for steps and edges deleted together, so neither
         // update overwrites the other.

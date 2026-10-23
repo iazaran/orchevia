@@ -11,6 +11,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   bypassedEdgeIds,
   removeFromWorkflow,
+  sparedAnchors,
   nextBranchLabel,
   planExecutionOrder,
   setWorkflowDefaults,
@@ -671,5 +672,17 @@ describe('removeFromWorkflow', () => {
     expect(next.nodes[1]?.config).toEqual({ contextRefs: ['b'], contextMaxChars: 2000 });
     const none = removeFromWorkflow(next, new Set(['b']), new Set());
     expect(none.nodes[0]?.config).toEqual({});
+  });
+});
+
+describe('sparedAnchors', () => {
+  it('keeps one End when every End is deleted at once', () => {
+    const wf = createEmptyWorkflow('Two ends');
+    const [start, end] = wf.nodes;
+    if (start === undefined || end === undefined) throw new Error('empty workflow');
+    wf.nodes.push({ ...end, id: 'end-2' });
+    expect([...sparedAnchors(wf, new Set([end.id, 'end-2']))]).toEqual([end.id]);
+    expect(sparedAnchors(wf, new Set(['end-2'])).size).toBe(0);
+    expect([...sparedAnchors(wf, new Set([start.id]))]).toEqual([start.id]);
   });
 });

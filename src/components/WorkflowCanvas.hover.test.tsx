@@ -13,6 +13,10 @@ const { flow } = vi.hoisted(() => ({
       onNodeMouseEnter?: (event: unknown, node: { id: string }) => void;
       onNodeMouseLeave?: () => void;
       onDelete?: (deleted: { nodes: { id: string }[]; edges: { id: string }[] }) => void;
+      onBeforeDelete?: (doomed: {
+        nodes: { id: string }[];
+        edges: { id: string; source: string; target: string; selected?: boolean }[];
+      }) => Promise<boolean | { nodes: { id: string }[]; edges: { id: string }[] }>;
     },
   },
 }));
@@ -25,6 +29,10 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     onNodeMouseEnter?: (event: unknown, node: { id: string }) => void;
     onNodeMouseLeave?: () => void;
     onDelete?: (deleted: { nodes: { id: string }[]; edges: { id: string }[] }) => void;
+    onBeforeDelete?: (doomed: {
+      nodes: { id: string }[];
+      edges: { id: string; source: string; target: string; selected?: boolean }[];
+    }) => Promise<boolean | { nodes: { id: string }[]; edges: { id: string }[] }>;
   }): React.JSX.Element {
     flow.current = props;
     // React Flow puts keyboard focus on a wrapper outside the custom node.
@@ -201,4 +209,25 @@ it('keeps the only Start and End and deletes a step with an edge in one update',
   const review = saved.nodes.find((n) => n.id === 'review');
   expect(review?.config.contextRefs).toBeUndefined();
   expect(review?.config.contextMaxChars).toBeUndefined();
+});
+
+it('keeps one End when both Ends are selected for deletion', async () => {
+  useAppStore.setState({
+    selectedNodeId: null,
+    selectedEdgeId: null,
+    validation: [],
+    overlayResults: [],
+    profiles: [],
+    updateActiveWorkflow: vi.fn(),
+  });
+  const wf = hoverWorkflow();
+  const end = wf.nodes[1];
+  if (end === undefined) throw new Error('missing end');
+  wf.nodes.push({ ...end, id: 'end-2' });
+  render(<WorkflowCanvas workflow={wf} />);
+  const kept = await flow.current?.onBeforeDelete?.({
+    nodes: [{ id: end.id }, { id: 'end-2' }],
+    edges: [{ id: 'e-end', source: 'middle', target: end.id }],
+  });
+  expect(kept).toEqual({ nodes: [{ id: 'end-2' }], edges: [] });
 });

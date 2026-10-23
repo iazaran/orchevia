@@ -1063,6 +1063,23 @@ export function removeFromWorkflow(
 }
 
 /**
+ * Start and End steps a deletion must spare: the toolbar cannot add either
+ * back, so deleting every Start (or every End) at once keeps the first.
+ */
+export function sparedAnchors(
+  workflow: Workflow,
+  doomed: ReadonlySet<string>,
+): Set<string> {
+  const spared = new Set<string>();
+  for (const kind of ['start', 'end'] as const) {
+    const all = workflow.nodes.filter((n) => n.type === kind);
+    const first = all[0];
+    if (first !== undefined && all.every((n) => doomed.has(n.id))) spared.add(first.id);
+  }
+  return spared;
+}
+
+/**
  * Smart-connect: when the user draws S → T, drop edges the new connection
  * makes redundant — an exact duplicate, or a direct P → T line that is now
  * bypassed via P ⇝ S → T (e.g. inserting a node between two linked nodes).
