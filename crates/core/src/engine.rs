@@ -892,8 +892,16 @@ impl Engine {
         }
         // Replay durable history (resume path): same routing as live.
         // Condition branches come from stored rows, so no re-evaluation.
+        // In the order steps finished: a long step's row keeps the id it got
+        // when it started, so id order can put its completion (and a loop
+        // reset it caused) before a skip recorded while it ran.
         let rows = self.db.list_node_results(run_id)?;
-        for row in rows.iter().filter(|r| is_terminal_status(&r.status)) {
+        let mut finished: Vec<&StoredNodeResult> = rows
+            .iter()
+            .filter(|r| is_terminal_status(&r.status))
+            .collect();
+        finished.sort_by(|a, b| a.finished_at.cmp(&b.finished_at).then(a.id.cmp(&b.id)));
+        for row in finished {
             let outcome = outcome_of_status(&row.status);
             // Replaying an upstream skip may already cascade into this node.
             // Its durable row must not resolve the same outgoing join twice.
@@ -1301,7 +1309,15 @@ impl Engine {
                 },
             )?;
             if let Some(message) = effect.run_failed {
-                fail_fast = Some(FailFast::Failure(message));
+                // A step that fails after the user cancelled (a git call
+                // cannot be interrupted) leaves the run cancelled. Only a
+                // cancel sets the flag before fail-fast does.
+                if fail_fast.is_none() && flag.load(Ordering::SeqCst) {
+                    fail_fast = Some(FailFast::Cancelled);
+                }
+                if !matches!(fail_fast, Some(FailFast::Cancelled)) {
+                    fail_fast = Some(FailFast::Failure(message));
+                }
                 // Fail fast: stop siblings promptly; drained below.
                 flag.store(true, Ordering::SeqCst);
             }
@@ -6930,6 +6946,88 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
     }
 
     #[tokio::test]
+    async fn resume_replays_steps_in_the_order_they_finished() {
+        // appr -> work -> gate -true-> fix -> appr (loop). bg fails (handled)
+        // while the slow fix runs, so rescue is skipped after fix started and
+        // re-armed when fix finishes. Resuming at the second approval must
+        // replay that skip before fix's completion, so work's failure on its
+        // second visit still reaches rescue.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut appr = simple_node("appr", NodeKind::Approval, 50.0);
+        appr.config.max_visits = Some(3);
+        let mut fix = command_node("fix", "sh", &["-c", "sleep 1"], 300.0);
+        fix.config.max_visits = Some(2);
+        let gate = Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: "node.work.visits".into(),
+                        op: ConditionOp::Less,
+                        right: "2".into(),
+                    }],
+                }),
+                max_visits: Some(3),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate("gate")
+        };
+        let wf = loop_wf(
+            "wf-replay-order",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                appr,
+                flip_node("work", &dir, false, 100.0),
+                gate,
+                fix,
+                command_node("bg", "sh", &["-c", "sleep 0.2; exit 1"], 100.0),
+                command_node("bgdone", "echo", &["handled"], 200.0),
+                command_node("rescue", "echo", &["rescue"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "appr", None),
+                edge("e1", "appr", "work", None),
+                edge("e2", "work", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "appr", None),
+                edge("e5", "gate", "end", Some("false")),
+                edge("e6", "appr", "bg", None),
+                edge("e7", "bg", "bgdone", Some("failure")),
+                edge("e8", "bg", "rescue", None),
+                edge("e9", "work", "rescue", Some("failure")),
+                edge("e10", "bgdone", "end", None),
+                edge("e11", "rescue", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf.clone(), "run-replay-order").await;
+        for _ in 0..2 {
+            assert_eq!(db.list_runs(10).unwrap()[0].status, RunStatus::Paused);
+            engine
+                .approve_run("run-replay-order", true, None, wf.clone())
+                .await
+                .expect("approve");
+        }
+        let rows = db.list_node_results("run-replay-order").unwrap();
+        assert_eq!(
+            status_of(&db, "run-replay-order", "work"),
+            "failed",
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&db, "run-replay-order", "rescue"),
+            "succeeded",
+            "{rows:?}"
+        );
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_join_after_a_loop_waits_for_its_other_branch() {
         // work loops once; report joins work and a slower lint. The second
         // visit of work must not count as lint's arrival.
@@ -8291,6 +8389,90 @@ mod integration_tests {
             .output()
             .expect("git log");
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "Add b");
+    }
+
+    #[tokio::test]
+    async fn a_git_step_failing_after_a_cancel_leaves_the_run_cancelled() {
+        let Some((dir, root)) = fresh_repo() else {
+            eprintln!("SKIP: git not installed");
+            return;
+        };
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nsleep 1\nexit 1\n").expect("hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        std::fs::write(dir.path().join("b.txt"), "b\n").expect("write");
+        let staged = std::process::Command::new("git")
+            .args(["add", "b.txt"])
+            .current_dir(&root)
+            .status()
+            .expect("git add");
+        assert!(staged.success());
+        let db = Arc::new(SqliteDb::open_in_memory().expect("in-memory db"));
+        let registry = CancellationRegistry::default();
+        let engine = Engine::new(Arc::clone(&db), registry.clone());
+        let canceller = Engine::new(Arc::clone(&db), registry);
+        let wf = linear_git_workflow(
+            vec![
+                Node {
+                    id: "start".into(),
+                    kind: NodeKind::Start,
+                    position: Position::default(),
+                    config: NodeConfig::default(),
+                    label: None,
+                },
+                git_node(
+                    "commit",
+                    GitOp::Commit {
+                        message: "Add b".into(),
+                    },
+                    &root,
+                ),
+                Node {
+                    id: "end".into(),
+                    kind: NodeKind::End,
+                    position: Position::default(),
+                    config: NodeConfig::default(),
+                    label: None,
+                },
+            ],
+            vec![
+                Edge {
+                    id: "e0".into(),
+                    source: "start".into(),
+                    target: "commit".into(),
+                    label: None,
+                },
+                Edge {
+                    id: "e1".into(),
+                    source: "commit".into(),
+                    target: "end".into(),
+                    label: None,
+                },
+            ],
+            "wf-commit-cancel",
+        );
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "run-commit-cancel", &HashMap::new())
+            .expect("start");
+        let cancel = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            canceller.cancel_run("run-commit-cancel").expect("cancel");
+        });
+        engine.execute(wf, "run-commit-cancel".to_string()).await;
+        cancel.await.expect("cancel task");
+        assert_eq!(
+            db.list_runs(10).expect("runs")[0].status,
+            RunStatus::Cancelled
+        );
+        // The step's own row still says what git did.
+        let rows = db.list_node_results("run-commit-cancel").expect("results");
+        let commit = rows.iter().find(|r| r.node_id == "commit").expect("row");
+        assert_eq!(commit.status, "failed", "{rows:?}");
     }
 
     #[tokio::test]
