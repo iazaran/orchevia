@@ -1383,6 +1383,10 @@ describe('mock parity with the desktop backend', () => {
       trusted: true,
       missedPolicy: 'skip',
     });
+    // Each save is kept on its own, without a later unrelated save.
+    expect((await __setMockBackendForTests().listSchedules()).map((s) => s.name)).toEqual(
+      ['Nightly'],
+    );
     const prefs = { ...(await backend.getNotificationPrefs()), onFailure: false };
     await backend.setNotificationPrefs(prefs);
     await backend.saveCustomModels('claude', [' opus ', 'opus', '', 'sonnet']);
@@ -1390,6 +1394,8 @@ describe('mock parity with the desktop backend', () => {
     expect((await reopened.listSchedules()).map((s) => s.name)).toEqual(['Nightly']);
     expect(await reopened.getNotificationPrefs()).toEqual(prefs);
     expect(await reopened.listCustomModels('claude')).toEqual(['opus', 'sonnet']);
+    await reopened.deleteSchedule('s');
+    expect(await __setMockBackendForTests().listSchedules()).toEqual([]);
   });
 
   it('rejects what the desktop backend rejects', async () => {

@@ -2243,11 +2243,14 @@ class MockBackend implements Backend {
     const errors = validateSchedule(schedule);
     if (errors.length > 0) throw new Error(`Invalid schedule: ${errors.join('; ')}`);
     this.schedules.set(schedule.id, schedule);
+    this.persist();
     return { ...schedule };
   }
 
   async deleteSchedule(id: string): Promise<boolean> {
-    return this.schedules.delete(id);
+    const removed = this.schedules.delete(id);
+    this.persist();
+    return removed;
   }
 
   async fireScheduleNow(): Promise<{ runId: string }> {
@@ -2273,6 +2276,7 @@ class MockBackend implements Backend {
     }
     const saved = prepareWatcherSave(watcher, this.watchers.get(watcher.id));
     this.watchers.set(watcher.id, saved);
+    this.persist();
     return { ...saved };
   }
 
@@ -2287,7 +2291,9 @@ class MockBackend implements Backend {
   }
 
   async deleteWatcher(id: string): Promise<boolean> {
-    return this.watchers.delete(id);
+    const removed = this.watchers.delete(id);
+    this.persist();
+    return removed;
   }
 
   async workflowRisks(workflow: Workflow): Promise<RiskCategory[]> {
