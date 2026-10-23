@@ -31,6 +31,7 @@ import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
 import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
+import { LinesTextarea } from './DraftText';
 
 function emptyForm(adapter: AdapterKind): AgentProfile {
   return createDefaultProfile(adapter);
@@ -953,18 +954,12 @@ function ProfileEditor({
         <label className="field-label" htmlFor="prof-args">
           Additional arguments (one per line, no secrets)
         </label>
-        <textarea
+        <LinesTextarea
           id="prof-args"
-          className="textarea"
           rows={2}
-          value={form.extraArgs.join('\n')}
-          onChange={(e) => {
-            set({
-              extraArgs: e.target.value
-                .split('\n')
-                .map((s) => s.trim())
-                .filter((s) => s !== ''),
-            });
+          value={form.extraArgs}
+          onChange={(extraArgs) => {
+            set({ extraArgs });
           }}
           placeholder="--verbose"
         />

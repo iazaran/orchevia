@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDraftText } from './DraftText';
 
 function isDesktop(): boolean {
   return (
@@ -28,6 +29,8 @@ export function DirPicker({
   onPicked?: (path: string) => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  // Callers store the path trimmed; keep a typed space (`My Repo`) visible.
+  const [shown, setDraft] = useDraftText(value, (text) => text.trim());
 
   const browse = (): void => {
     setBusy(true);
@@ -57,8 +60,9 @@ export function DirPicker({
           id={id}
           className="input"
           placeholder={placeholder ?? '/path/to/repo'}
-          value={value}
+          value={shown}
           onChange={(e) => {
+            setDraft(e.target.value);
             onChange(e.target.value);
           }}
         />

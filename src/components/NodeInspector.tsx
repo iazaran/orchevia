@@ -7,6 +7,7 @@ import { profileGrants } from '../lib/permissions';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
 import { ToolRulesField } from './ToolRulesField';
+import { KeyValueTextarea, LinesTextarea } from './DraftText';
 import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
@@ -83,7 +84,7 @@ export function GitEditor({
     if (value.trim() === '') {
       delete config.workingDir;
     } else {
-      config.workingDir = value;
+      config.workingDir = value.trim();
     }
     patchNode(config, node.label);
   };
@@ -146,18 +147,11 @@ export function GitEditor({
       {op.op === 'stage' && (
         <div className="field">
           <label className="field-label">Paths (one per line, explicit)</label>
-          <textarea
-            className="textarea"
+          <LinesTextarea
             rows={2}
-            value={(op.paths ?? []).join('\n')}
-            onChange={(e) => {
-              setOp({
-                ...op,
-                paths: e.target.value
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter((s) => s !== ''),
-              });
+            value={op.paths ?? []}
+            onChange={(paths) => {
+              setOp({ ...op, paths });
             }}
           />
         </div>
@@ -325,7 +319,7 @@ export function GitHubEditor({
           if (v.trim() === '') {
             delete config.workingDir;
           } else {
-            config.workingDir = v;
+            config.workingDir = v.trim();
           }
           patchNode(config, node.label);
         }}
@@ -532,20 +526,12 @@ export function McpNodeEditor({
         <label className="field-label">
           Arguments (one KEY=value per line, values support {'{{…}}'})
         </label>
-        <textarea
-          className="textarea"
+        <KeyValueTextarea
           rows={3}
           placeholder="key=DEV-1234"
-          value={Object.entries(node.config.mcpArgs ?? {})
-            .map(([k, v]) => `${k}=${v}`)
-            .join('\n')}
-          onChange={(e) => {
-            const args: Record<string, string> = {};
-            for (const line of e.target.value.split('\n')) {
-              const at = line.indexOf('=');
-              if (at > 0) args[line.slice(0, at).trim()] = line.slice(at + 1).trim();
-            }
-            patchNode({ ...node.config, mcpArgs: args }, node.label);
+          value={node.config.mcpArgs ?? {}}
+          onChange={(mcpArgs) => {
+            patchNode({ ...node.config, mcpArgs }, node.label);
           }}
         />
         <span className="field-hint">
@@ -1211,22 +1197,12 @@ export function NodeInspector(): React.JSX.Element | null {
             <label className="field-label" htmlFor="node-args">
               Arguments (one per line)
             </label>
-            <textarea
+            <LinesTextarea
               id="node-args"
-              className="textarea"
               rows={4}
-              value={(node.config.args ?? []).join('\n')}
-              onChange={(e) => {
-                patch(
-                  {
-                    ...node.config,
-                    args: e.target.value
-                      .split('\n')
-                      .map((s) => s.trim())
-                      .filter((s) => s !== ''),
-                  },
-                  node.label,
-                );
+              value={node.config.args ?? []}
+              onChange={(args) => {
+                patch({ ...node.config, args }, node.label);
               }}
               onBlur={() => {
                 refreshPreview();
