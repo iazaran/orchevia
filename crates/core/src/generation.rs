@@ -562,9 +562,10 @@ pub struct CompiledPreview {
     pub setup_needed: Vec<String>,
     /// Agent roles with no profile mapping — the UI can create them on accept.
     pub unmapped_roles: Vec<String>,
-    /// Errors (code, step) the user's workflow already had before assistance
-    /// (unfinished steps): reported, but they do not block accepting it.
-    pub carried_over: Vec<(String, Option<String>)>,
+    /// Errors (code, step, message) the user's workflow already had before
+    /// assistance (unfinished steps): reported, but they do not block
+    /// accepting it. The message tells two problems of one kind apart.
+    pub carried_over: Vec<(String, Option<String>, String)>,
 }
 
 impl CompiledPreview {
@@ -576,10 +577,9 @@ impl CompiledPreview {
             .iter()
             .filter(|i| {
                 is_blocking_issue(i)
-                    && !self
-                        .carried_over
-                        .iter()
-                        .any(|(code, node)| *code == i.code && *node == i.node_id)
+                    && !self.carried_over.iter().any(|(code, node, message)| {
+                        *code == i.code && *node == i.node_id && *message == i.message
+                    })
             })
             .map(|i| i.message.clone())
             .collect();
@@ -1079,7 +1079,7 @@ pub fn compile_assistance_proposal(
     preview.carried_over = validate_workflow(base)
         .into_iter()
         .filter(is_blocking_issue)
-        .map(|issue| (issue.code, issue.node_id))
+        .map(|issue| (issue.code, issue.node_id, issue.message))
         .collect();
     preview.unmapped_roles.retain(|role| {
         preview.workflow.nodes.iter().any(|n| {
@@ -1460,6 +1460,25 @@ mod tests {
             compile_assistance_proposal(&broken, &base, AssistanceMode::Optimize, &role_map(), &[])
                 .unwrap();
         assert!(!preview.blocking_errors().is_empty());
+        // So does a second problem of the same kind on an unfinished step.
+        let mut base = compile_proposal(&proposal, &role_map(), "saved", None)
+            .unwrap()
+            .workflow;
+        base.nodes[1].config.prompt = Some("Plan {{input.missing}}".into());
+        let mut worse = proposal.clone();
+        worse.nodes[1].config.prompt =
+            Some("Plan {{input.missing}} and {{node.nonexistent.output}}".into());
+        let preview =
+            compile_assistance_proposal(&worse, &base, AssistanceMode::Optimize, &role_map(), &[])
+                .unwrap();
+        assert!(
+            preview
+                .blocking_errors()
+                .iter()
+                .any(|e| e.contains("nonexistent")),
+            "{:?}",
+            preview.blocking_errors()
+        );
     }
 
     #[test]
