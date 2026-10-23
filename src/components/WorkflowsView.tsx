@@ -82,8 +82,8 @@ export function WorkflowsView(): React.JSX.Element {
   const refreshRuns = useAppStore((s) => s.refreshRuns);
   const setView = useAppStore((s) => s.setView);
   const selectRun = useAppStore((s) => s.selectRun);
-  const validation = useAppStore((s) => s.validation);
   const setValidation = useAppStore((s) => s.setValidation);
+  const selectNode = useAppStore((s) => s.selectNode);
   const profiles = useAppStore((s) => s.profiles);
   const overlayRunId = useAppStore((s) => s.overlayRunId);
   const overlayRun = useAppStore((s) => s.runs.find((run) => run.id === s.overlayRunId));
@@ -109,7 +109,6 @@ export function WorkflowsView(): React.JSX.Element {
   const [limitsOpen, setLimitsOpen] = useState(false);
   // Dismissing the declared-tools notice hides it for that workflow this session.
   const [grantNoticeHiddenFor, setGrantNoticeHiddenFor] = useState<string | null>(null);
-  const [dismissedValidation, setDismissedValidation] = useState<string | null>(null);
   // Previously entered input values, kept per workflow so reopening the
   // start form restores them and switching workflows never leaks them.
   const [inputState, setInputState] = useState<{
@@ -224,10 +223,6 @@ export function WorkflowsView(): React.JSX.Element {
     };
   }, [generating]);
   const refreshProfiles = useAppStore((s) => s.refreshProfiles);
-  const activeId = active?.id;
-  const validationKey = validation.map((i) => i.code + (i.nodeId ?? '')).join('|');
-  const validationIdentity = JSON.stringify([activeId, validationKey]);
-  const validationHidden = dismissedValidation === validationIdentity;
 
   const { inputs: declaredInputs, problems: inputProblems } =
     parseInputDeclarations(goalInputs);
@@ -933,6 +928,10 @@ export function WorkflowsView(): React.JSX.Element {
           }}
           onClose={() => setStartMode(null)}
           onStart={startFromDialog}
+          onShowNode={(nodeId) => {
+            setStartMode(null);
+            selectNode(nodeId);
+          }}
         />
       )}
       {limitsOpen && active !== null && (
@@ -1833,22 +1832,6 @@ export function WorkflowsView(): React.JSX.Element {
             </div>
           </div>
         </Modal>
-      )}
-      {validation.length > 0 && active !== null && !validationHidden && (
-        <Notice
-          variant={
-            validation.some((issue) => issue.severity === 'error') ? 'error' : 'warn'
-          }
-          dismissLabel="Dismiss validation messages"
-          onDismiss={() => setDismissedValidation(validationIdentity)}
-        >
-          {validation.slice(0, 4).map((issue) => (
-            <div key={issue.code + (issue.nodeId ?? '')}>
-              <strong>{issue.severity === 'error' ? 'Error' : 'Warning'}:</strong>{' '}
-              {issue.message}
-            </div>
-          ))}
-        </Notice>
       )}
     </>
   );

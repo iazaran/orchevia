@@ -501,34 +501,104 @@ textarea {
   border-color: var(--accent);
 }
 
-.validation-bar {
-  position: absolute;
-  bottom: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  pointer-events: none;
+/* Workflow setup status: a quiet count in the canvas toolbar that opens the
+   list of what the workflow still needs; nothing pops up while composing. */
+.setup-status {
+  position: relative;
+  align-self: center;
 }
-
-.validation-item {
-  pointer-events: auto;
-  border-radius: var(--radius-m);
-  padding: 8px 12px;
-  font-size: 12.5px;
+.setup-status > summary {
+  list-style: none;
+  cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg-1);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.setup-status > summary::-webkit-details-marker {
+  display: none;
+}
+.setup-status > summary::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-2);
+}
+.setup-status.has-errors > summary::before {
+  background: var(--warning);
+}
+.setup-status > summary:hover,
+.setup-status[open] > summary {
+  background: var(--bg-2);
+  border-color: var(--accent);
+}
+.setup-status > ul {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(440px, 80vw);
+  max-height: 340px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--bg-1);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-m);
   box-shadow: var(--shadow);
 }
-
-.validation-item.error {
-  border-left: 3px solid var(--danger);
+.setup-issue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-1);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-s);
+  padding: 7px 8px;
 }
-
-.validation-item.warning {
-  border-left: 3px solid var(--warning);
+button.setup-issue {
+  cursor: pointer;
+}
+button.setup-issue:hover,
+button.setup-issue:focus-visible {
+  background: var(--bg-2);
+}
+.setup-issue strong {
+  color: var(--text-0);
+}
+.setup-issue-kind {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-2);
+}
+.setup-issue-kind.error {
+  color: var(--warning);
+}
+.node-setup {
+  margin-bottom: 14px;
+}
+.node-setup ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.btn.btn-inline {
+  padding: 1px 8px;
+  font-size: 12px;
 }
 
 /* Flow nodes */
@@ -2379,6 +2449,10 @@ details[open] > .gen-summary::after {
 }
 [data-theme='light'] .usage-bar {
   fill: var(--accent-strong);
+}
+[data-theme='light'] .setup-issue-kind.error {
+  /* --warning is tuned for dark surfaces; darken it on light backgrounds. */
+  color: #8a5a00;
 }
 [data-theme='light'] .form-error {
   /* --danger is tuned for dark surfaces; darken it on light backgrounds. */

@@ -29,6 +29,7 @@ import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
+import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 
 function emptyForm(adapter: AdapterKind): AgentProfile {
@@ -655,7 +656,7 @@ function ProfileEditor({
       active = false;
     };
   }, [form.adapter, skillDirectory]);
-  const errors = validateProfile(form);
+  const validation = useSubmitValidation(validateProfile(form));
   const suggestions = mergeModelSuggestions(
     MODEL_PRESETS[form.adapter],
     customModels[form.adapter],
@@ -1022,16 +1023,11 @@ function ProfileEditor({
           />
         </div>
       </div>
-      {errors.length > 0 && (
-        <Notice variant="error" style={{ marginBottom: 12 }}>
-          {errors[0]}
-        </Notice>
-      )}
+      <FormError error={validation.error} />
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           className="btn btn-primary"
-          disabled={errors.length > 0}
-          onClick={() => onSave(form)}
+          onClick={() => validation.attempt(() => onSave(form))}
         >
           Save profile
         </button>

@@ -26,6 +26,7 @@ import { useAppStore } from '../store';
 import { CloseButton } from './CloseButton';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
+import { FormError, useSubmitValidation } from './FormValidation';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
 import type { DesktopInfo } from '../lib/updates';
@@ -730,7 +731,7 @@ function ScheduleEditor({
   const workflows = useAppStore((s) => s.workflows);
   const [form, setForm] = useState<Schedule>({ ...initial });
   const [preview, setPreview] = useState<string | null>(null);
-  const errors = validateScheduleForm(form);
+  const validation = useSubmitValidation(validateScheduleForm(form));
   const set = (patch: Partial<Schedule>): void => {
     setForm((f) => ({ ...f, ...patch }));
   };
@@ -849,16 +850,11 @@ function ScheduleEditor({
           </div>
         )}
       </div>
-      {errors.length > 0 && (
-        <Notice variant="error" style={{ marginBottom: 12 }}>
-          {errors[0]}
-        </Notice>
-      )}
+      <FormError error={validation.error} />
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           className="btn btn-primary"
-          disabled={errors.length > 0}
-          onClick={() => onSave(form)}
+          onClick={() => validation.attempt(() => onSave(form))}
         >
           Save schedule
         </button>
@@ -1076,10 +1072,10 @@ function WatcherEditor({
       clearTimeout(timer);
     };
   }, [form, scopeKey]);
-  const saveErrors = [
+  const validation = useSubmitValidation([
     ...errors,
     ...(scopeResult?.key === scopeKey ? scopeResult.issues : []),
-  ];
+  ]);
   return (
     <>
       <h3 style={{ marginTop: 0 }}>Watcher</h3>
@@ -1193,16 +1189,12 @@ function WatcherEditor({
         Enabling queues a check immediately. Later checks use the interval after the last
         check, including quiet checks; they do not align to wall-clock quarter-hours.
       </p>
-      {saveErrors.length > 0 && (
-        <Notice variant="error" style={{ marginBottom: 12 }}>
-          {saveErrors[0]}
-        </Notice>
-      )}
+      <FormError error={validation.error} />
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           className="btn btn-primary"
-          disabled={saveErrors.length > 0 || checkingScope}
-          onClick={() => onSave(form)}
+          disabled={checkingScope}
+          onClick={() => validation.attempt(() => onSave(form))}
         >
           Save watcher
         </button>

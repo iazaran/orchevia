@@ -137,7 +137,11 @@ in this stack. Dismissing a popup does not mark its Inbox record read, and exist
 Inbox history is not replayed as popups when the app opens.
 
 Structured workflow previews, historical run error details and reference help stay
-with their relevant content; action feedback and validation messages use the stack.
+with their relevant content; action feedback uses the stack. Validation waits until
+you ask for something: a form names what is missing next to its Save button after
+the first Save, and the workflow editor keeps what a workflow still needs in a quiet
+count in the canvas toolbar (each entry selects its step), in the selected step's
+inspector, and in the Start dialog when you press Run.
 
 ## Keep related AI work efficient
 

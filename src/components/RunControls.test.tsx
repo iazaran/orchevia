@@ -136,7 +136,9 @@ it('prevents duplicate starts while the first start is still busy', async () => 
   const button = screen.getByRole('button', { name: 'Start run' });
   fireEvent.click(button);
   fireEvent.click(button);
-  expect(start).toHaveBeenCalledTimes(1);
+  expect(button).toBeDisabled();
+  // Start follows the setup check; the second click never queues another.
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
   expect(button).toBeDisabled();
   release();
   await waitFor(() => expect(close).toHaveBeenCalled());
@@ -476,4 +478,34 @@ it('keeps the question and its error when a profile cannot be switched', async (
   expect(useAppStore.getState().agentPermissionDefault).toBeNull();
   expect((await backend.listAgentProfiles())[0]?.permissionLevel).toBe('allowedTools');
   vi.restoreAllMocks();
+});
+
+it('names unfinished steps when Start is pressed and links to each', async () => {
+  __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Unfinished');
+  workflow.nodes.splice(1, 0, {
+    id: 'tests',
+    type: 'command',
+    label: 'Run tests',
+    position: { x: 0, y: 0 },
+    config: {},
+  });
+  const start = vi.fn();
+  const show = vi.fn();
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={start}
+      onClose={() => undefined}
+      onShowNode={show}
+    />,
+  );
+  expect(screen.queryByRole('alert')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('Run tests: Command node requires an executable.');
+  expect(start).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Show step' }));
+  expect(show).toHaveBeenCalledWith('tests');
 });

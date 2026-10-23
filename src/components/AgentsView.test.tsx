@@ -65,7 +65,13 @@ describe('agent profile permissions', () => {
       'now CLI settings, not chosen yet',
     );
     await user.selectOptions(level, 'allowedTools');
-    expect(screen.getByRole('button', { name: 'Save profile' })).toBeDisabled();
+    // Nothing complains before the first Save; that Save names the missing list.
+    expect(screen.queryByRole('alert')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Allowed tools needs at least one tool.',
+    );
+    expect(await backend.listAgentProfiles()).toEqual([]);
     await user.type(
       screen.getByLabelText('Allowed tools (one per line)'),
       'mcp__jira{Enter}Bash(git status *)',

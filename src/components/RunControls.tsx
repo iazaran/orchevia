@@ -17,7 +17,9 @@ import {
   type UsagePause,
 } from '../lib/run-controls';
 import {
+  issueNodeLabel,
   validateWorkflowLimits,
+  type ValidationIssue,
   type Workflow,
   type WorkflowLimits,
 } from '../lib/workflow';
@@ -36,6 +38,7 @@ export function StartRunDialog({
   onInputsChange,
   onStart,
   onClose,
+  onShowNode,
 }: {
   workflow: Workflow;
   initialDryRun: boolean;
@@ -43,6 +46,8 @@ export function StartRunDialog({
   onInputsChange?: (values: Record<string, string>) => void;
   onStart: (inputs: Record<string, string>, options: RunOptions) => Promise<void>;
   onClose: () => void;
+  /** Close the dialog and select a step that still needs setup. */
+  onShowNode?: (nodeId: string) => void;
 }): React.JSX.Element {
   const [inputs, setInputs] = useState<Record<string, string>>(() => {
     // Declared defaults first, then previously entered values for this
@@ -74,6 +79,7 @@ export function StartRunDialog({
   const [spend, setSpend] = useState('');
   const [ignoreSaved, setIgnoreSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setupIssues, setSetupIssues] = useState<ValidationIssue[]>([]);
   const [busy, setBusy] = useState(false);
   const saved = resolveLimits(workflow.limits, {});
   const setInput = (name: string, value: string): void => {
@@ -87,7 +93,16 @@ export function StartRunDialog({
     if (busy) return;
     setBusy(true);
     setError(null);
+    setSetupIssues([]);
     void (async () => {
+      // Pressing Start is when unfinished steps are named, each with a way to it.
+      const blocking = (await getBackend().validateWorkflow(workflow)).filter(
+        (issue) => issue.severity === 'error',
+      );
+      if (blocking.length > 0) {
+        setSetupIssues(blocking);
+        return;
+      }
       for (const input of workflow.inputs ?? [])
         if (input.required && !inputs[input.name]?.trim())
           throw new Error(`Input '${input.name}' is required.`);
@@ -321,8 +336,39 @@ export function StartRunDialog({
           </label>
         </details>
       )}
+      {setupIssues.length > 0 && (
+        <Notice inline variant="error" role="alert" className="node-setup">
+          <strong>
+            Finish{' '}
+            {setupIssues.length === 1 ? 'this' : `these ${String(setupIssues.length)}`}{' '}
+            before running:
+          </strong>
+          <ul>
+            {setupIssues.map((issue, index) => {
+              const label = issueNodeLabel(workflow, issue);
+              return (
+                <li key={`${issue.code}-${issue.nodeId ?? ''}-${String(index)}`}>
+                  {label !== null && <strong>{label}: </strong>}
+                  {issue.message}
+                  {label !== null && issue.nodeId !== undefined && onShowNode && (
+                    <>
+                      {' '}
+                      <button
+                        className="btn btn-ghost btn-inline"
+                        onClick={() => onShowNode(issue.nodeId ?? '')}
+                      >
+                        Show step
+                      </button>
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </Notice>
+      )}
       {error && (
-        <Notice variant="error" onDismiss={() => setError(null)}>
+        <Notice inline variant="error" onDismiss={() => setError(null)}>
           {error}
         </Notice>
       )}

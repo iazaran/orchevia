@@ -564,7 +564,9 @@ export function ConditionEditor({
   nodeId: string;
 }): React.JSX.Element {
   const updateActiveWorkflow = useAppStore((s) => s.updateActiveWorkflow);
-  const [textError, setTextError, , textErrorEvent] = useNoticeMessage('error');
+  const [textError, setTextError] = useState<string | null>(null);
+  // A half-typed expression is not an error yet: it shows once the field is left.
+  const [textErrorShown, setTextErrorShown] = useState(false);
   const [textDraft, setTextDraft] = useState<{
     condition: string;
     text: string;
@@ -699,8 +701,22 @@ export function ConditionEditor({
                   }
                 })()
           }
+          aria-invalid={
+            textErrorShown &&
+            textError !== null &&
+            textDraft?.condition === JSON.stringify(condition)
+          }
+          aria-describedby={
+            textErrorShown &&
+            textError !== null &&
+            textDraft?.condition === JSON.stringify(condition)
+              ? `cond-text-error-${nodeId}`
+              : undefined
+          }
+          onBlur={() => setTextErrorShown(true)}
           onChange={(e) => {
             const text = e.target.value;
+            setTextErrorShown(false);
             try {
               const next = parseCondition(text);
               setTextDraft({ condition: JSON.stringify(next), text });
@@ -712,11 +728,13 @@ export function ConditionEditor({
             }
           }}
         />
-        {textError !== null && (
-          <Notice variant="error" eventId={textErrorEvent}>
-            {textError}
-          </Notice>
-        )}
+        {textErrorShown &&
+          textError !== null &&
+          textDraft?.condition === JSON.stringify(condition) && (
+            <p className="form-error" role="alert" id={`cond-text-error-${nodeId}`}>
+              {textError}
+            </p>
+          )}
         <span className="field-hint">
           Outgoing edges need <code>true</code> and <code>false</code> labels — click an
           edge on the canvas to set them.
@@ -863,6 +881,11 @@ export function NodeInspector(): React.JSX.Element | null {
 
   const workflow = workflows.find((w) => w.id === activeWorkflowId)?.definition ?? null;
   const node = workflow?.nodes.find((n) => n.id === selectedNodeId) ?? null;
+  const validation = useAppStore((s) => s.validation);
+  // Only the selected step's own needs: the user is at its fields now.
+  const nodeIssues = validation.filter(
+    (issue) => node !== null && issue.nodeId === node.id && issue.severity === 'error',
+  );
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const selectEdge = useAppStore((s) => s.selectEdge);
   const edge = workflow?.edges.find((e) => e.id === selectedEdgeId) ?? null;
@@ -1136,6 +1159,16 @@ export function NodeInspector(): React.JSX.Element | null {
     <aside className="inspector" aria-label="Node inspector">
       <h3 style={{ marginTop: 0 }}>{meta.label}</h3>
       <p className="field-hint">{meta.description}</p>
+      {nodeIssues.length > 0 && (
+        <Notice inline className="node-setup">
+          <strong>To finish this step</strong>
+          <ul>
+            {nodeIssues.map((issue, index) => (
+              <li key={`${issue.code}-${String(index)}`}>{issue.message}</li>
+            ))}
+          </ul>
+        </Notice>
+      )}
 
       <div className="field">
         <label className="field-label" htmlFor="node-label">
@@ -1653,7 +1686,7 @@ export function NodeInspector(): React.JSX.Element | null {
       )}
 
       {node.type === 'condition' && (
-        <ConditionEditor workflow={workflow} nodeId={node.id} />
+        <ConditionEditor key={node.id} workflow={workflow} nodeId={node.id} />
       )}
 
       {node.type === 'git' && <GitEditor workflow={workflow} nodeId={node.id} />}
