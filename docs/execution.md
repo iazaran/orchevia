@@ -98,6 +98,13 @@ usual. When several reviewers feed the condition, loop the fix back to all of th
 so none keeps a stale finding. Side nodes off the cycle path run once (documented limitation: put
 per-iteration work on the cycle with its own bound).
 
+Each pass decides the steps after the loop again (since 0.1.23). A step the
+previous pass skipped downstream of the loop, such as a failure route that pass
+did not take or the steps after a condition a failure skipped, runs if the next
+pass takes it. Each edge counts once per pass, so a step's second visit is not the
+arrival of another branch at a join after the loop. A step that fails when its only
+failure route already ran fails the run.
+
 `node.<id>.visits` exposes completed visit counts for loop-exit conditions.
 
 ## Parallelism
