@@ -171,30 +171,39 @@ impl OkDenied {
 
 /// Authentication status without exposing tokens.
 pub fn auth_status(runner: &GhRunner) -> AuthStatus {
-    match runner.run(&std::env::temp_dir().to_string_lossy(), &["auth", "status"]) {
-        Ok(out) => {
-            // Typical: "Logged in to github.com account alice (keyring)".
-            let user = out
-                .lines()
-                .find_map(|line| {
-                    let lower = line.to_ascii_lowercase();
-                    let at = lower.find("account ")?;
-                    line[at + "account ".len()..]
-                        .split_whitespace()
-                        .next()
-                        .map(str::to_string)
-                })
-                .filter(|u| !u.is_empty() && u.len() <= 100);
-            AuthStatus {
-                authenticated: true,
-                user,
-            }
-        }
+    match runner.run_result(&std::env::temp_dir().to_string_lossy(), &["auth", "status"]) {
+        // Older gh prints the status on stderr.
+        Ok(result) if result.exit_code == Some(0) => AuthStatus {
+            authenticated: true,
+            user: auth_user(&format!("{}\n{}", result.stdout, result.stderr)),
+        },
+        Ok(_) => AuthStatus {
+            authenticated: false,
+            user: None,
+        },
         Err(_) => AuthStatus {
             authenticated: false,
             user: None,
         },
     }
+}
+
+/// The account name in `gh auth status` output: "Logged in to github.com
+/// account alice (keyring)", or "… as alice (oauth_token)" from older gh.
+fn auth_user(out: &str) -> Option<String> {
+    out.lines()
+        .find_map(|line| {
+            // ASCII lowercasing keeps byte offsets, so `at` indexes `line`.
+            let lower = line.to_ascii_lowercase();
+            let (at, marker) = ["account ", " as "]
+                .iter()
+                .find_map(|marker| lower.find(marker).map(|at| (at, marker.len())))?;
+            line[at + marker..]
+                .split_whitespace()
+                .next()
+                .map(str::to_string)
+        })
+        .filter(|u| !u.is_empty() && u.len() <= 100)
 }
 
 pub fn repo_identity(runner: &GhRunner, cwd: &str) -> Result<RepoIdentity, String> {
@@ -687,6 +696,20 @@ exit 1
         let status = auth_status(&runner);
         assert!(status.authenticated);
         assert_eq!(status.user.as_deref(), Some("fixture-user"));
+    }
+
+    #[test]
+    fn auth_user_reads_current_and_older_gh_output() {
+        assert_eq!(
+            auth_user("github.com\n  ✓ Logged in to github.com account alice (keyring)\n")
+                .as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            auth_user("github.com\n  ✓ Logged in to github.com as bob (oauth_token)\n").as_deref(),
+            Some("bob")
+        );
+        assert_eq!(auth_user("github.com\n  ✓ Token scopes: repo\n"), None);
     }
 
     #[test]
