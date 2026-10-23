@@ -184,7 +184,8 @@ export function installSteps(desktop: DesktopInfo | null, assetName?: string): s
     case 'appimage':
       return `Quit Orchevia, replace your current AppImage with ${file} and make it executable (chmod +x).`;
     case 'app':
-      return `Quit Orchevia, open ${file} and drag Orchevia into Applications, replacing the old copy.`;
+      // Each download is quarantined again, and the build is not notarized.
+      return `Quit Orchevia, open ${file} and drag Orchevia into Applications, replacing the old copy. If macOS blocks the first launch, close the warning and choose Open Anyway in System Settings → Privacy & Security (System Preferences → Security & Privacy on macOS 12 and earlier).`;
     default:
       return 'Download the installer for your system from the release page and install it over the current version.';
   }

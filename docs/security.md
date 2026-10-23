@@ -169,7 +169,8 @@ registry release; provenance and removal criteria are in
 - A malicious workflow file could include destructive commands; review before ▶ Run.
 - `workingDir` is user-configured; path traversal inside a repo is the user's own
   filesystem — no privilege boundary is crossed, but destructive commands still apply.
-- Unsigned macOS builds (see README) rely on user Gatekeeper bypass; verify checksums.
+- macOS builds are ad-hoc signed, not notarized (see README): users approve the
+  first launch with Open Anyway; verify checksums.
 
 ## Reporting
 

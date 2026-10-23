@@ -33,6 +33,16 @@ describe('public documentation', () => {
     expect(readme).toContain('shasum -a 256 -c SHA256SUMS --ignore-missing');
   });
 
+  it('gives macOS first-launch steps that work without notarization', () => {
+    // macOS 15 dropped right-click → Open; Open Anyway or the xattr command remain.
+    const install = required(page.querySelector('#install'), '#install');
+    for (const text of [install.textContent, readme]) {
+      expect(text).toContain('Open Anyway');
+      expect(text).toContain('xattr -dr com.apple.quarantine /Applications/Orchevia.app');
+      expect(text).not.toMatch(/right-click/i);
+    }
+  });
+
   it('no longer describes the repository or downloads as private', () => {
     for (const text of [page.body.textContent, readme]) {
       expect(text).not.toMatch(/private for now|public soon|repository access/i);

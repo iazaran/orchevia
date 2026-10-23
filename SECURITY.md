@@ -38,7 +38,9 @@ Orchevia executes local commands **on your behalf**. The design principles:
 
 ## Known limitations (honest)
 
-- macOS builds are currently **unsigned** (Gatekeeper friction documented in README).
+- macOS builds are ad-hoc signed but **not notarized**, so the first launch needs
+  **Open Anyway** (documented in README). Each release refuses an app that is not
+  signed as a whole bundle and launches the DMG's copy before publishing.
 - Approval gates pause durably, but a run interrupted by a crash mid-command is marked
   failed on next launch rather than resumed mid-command — resuming arbitrary external
   processes automatically would be unsafe.
