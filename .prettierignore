@@ -6,3 +6,6 @@ crates/*/target
 implementation-plan
 pnpm-lock.yaml
 src-tauri/gen
+.claude/worktrees
+# Preserve third-party source formatting; local backport notes are checked.
+vendor/glib

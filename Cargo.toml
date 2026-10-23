@@ -1,3 +1,13 @@
 [workspace]
 members = ["src-tauri", "crates/core"]
+exclude = ["vendor/glib"]
 resolver = "2"
+
+# GTK3 requires glib 0.18; this copy backports gtk-rs/gtk-rs-core#1343.
+# Provenance and removal criteria: vendor/README.md.
+[patch.crates-io]
+glib = { path = "vendor/glib" }
+
+# The advisory only reproduces reliably when the glib dependency is optimized.
+[profile.test.package.glib]
+opt-level = 2

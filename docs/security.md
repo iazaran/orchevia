@@ -3,6 +3,27 @@
 Orchevia runs local commands on your behalf. This document states the guarantees,
 the boundaries, and the limits of the current application.
 
+## glib string iterator backport
+
+Tauri's Linux GTK3/WebKitGTK dependency chain requires glib 0.18. The published
+0.18.5 source is affected by
+[RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html), fixed
+upstream in glib 0.20.0. Those binding generations are incompatible, so adding a
+direct 0.20 dependency would leave the affected 0.18 dependency in the build.
+
+The workspace uses `vendor/glib` through `[patch.crates-io]` to apply the exact
+[upstream fix](https://github.com/gtk-rs/gtk-rs-core/pull/1343) to 0.18.5. It makes
+the C output pointer mutable and passes `&mut p`; GTK APIs and dependency ranges
+stay unchanged. An optimized Linux regression test exercises string iteration in
+both directions, skipping, the final value, empty arrays and UTF-8 values.
+
+This is a source backport, not a new published glib release. Version-based tools
+may continue to report 0.18.5; neither alert dismissal nor disappearance proves
+the fix. Check the resolved source and the regression test. The local copy is
+maintained by this project until it can be replaced with a compatible fixed
+registry release; provenance and removal criteria are in
+[vendor/README.md](../vendor/README.md). No advisory is ignored or dismissed.
+
 ## Guarantees
 
 1. **Explicit execution.** Workflows run only via ▶ Run / approve-resume. Opening,

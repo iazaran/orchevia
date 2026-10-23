@@ -22,6 +22,9 @@ uuid = { version = "1", features = ["v4"] }
 orchevia-core = { path = "../crates/core" }
 tauri-plugin-single-instance = "2"
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+glib = "0.18"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
