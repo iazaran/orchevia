@@ -2600,16 +2600,8 @@ async fn execute_git_task(
     let started = Instant::now();
     let blocking = tokio::task::spawn_blocking(move || do_git_op(&op, &root)).await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
-        let _ = db.record_node_result(NewNodeResult::simple(
-            &task.run_id,
-            node_id,
-            "cancelled",
-            None,
-            Some("Cancelled by user."),
-        ));
-        return TaskOutcome::Cancelled;
-    }
+    // The call cannot be interrupted, so it finished: record what it did even
+    // when the run was cancelled or failed fast meanwhile.
     match blocking {
         Ok(outcome) => {
             record_integration_result(db, &task.run_id, node_id, duration_ms, outcome, "git")
@@ -2803,16 +2795,8 @@ async fn execute_github_task(
     let started = Instant::now();
     let blocking = tokio::task::spawn_blocking(move || do_github_op(&op, &root, timeout)).await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
-        let _ = db.record_node_result(NewNodeResult::simple(
-            &task.run_id,
-            node_id,
-            "cancelled",
-            None,
-            Some("Cancelled by user."),
-        ));
-        return TaskOutcome::Cancelled;
-    }
+    // The call cannot be interrupted, so it finished: record what it did even
+    // when the run was cancelled or failed fast meanwhile.
     match blocking {
         Ok(outcome) => {
             record_integration_result(db, &task.run_id, node_id, duration_ms, outcome, "gh")
@@ -3140,7 +3124,8 @@ async fn execute_ticket_task(
     })
     .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
+    // A cancel interrupts the call; one that finished first keeps its result.
+    if flag.load(Ordering::SeqCst) && !matches!(blocking, Ok(Ok(_))) {
         let _ = db.record_node_result(NewNodeResult::simple(
             &task.run_id,
             node_id,
@@ -3283,7 +3268,8 @@ async fn execute_mcp_task(
     })
     .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if flag.load(Ordering::SeqCst) {
+    // A cancel interrupts the call; one that finished first keeps its result.
+    if flag.load(Ordering::SeqCst) && !matches!(blocking, Ok(Ok(_))) {
         let _ = db.record_node_result(NewNodeResult::simple(
             &task.run_id,
             node_id,
@@ -8087,6 +8073,91 @@ mod integration_tests {
         let db = Arc::new(SqliteDb::open_in_memory().expect("in-memory db"));
         let engine = Engine::new(Arc::clone(&db), CancellationRegistry::default());
         (db, engine)
+    }
+
+    #[tokio::test]
+    async fn a_finished_git_commit_keeps_its_result_when_a_parallel_step_fails() {
+        // boom fails while the commit (slowed by a pre-commit hook) runs. A
+        // git call cannot be interrupted, so the commit happened: its row
+        // must say so instead of "cancelled".
+        let Some((dir, root)) = fresh_repo() else {
+            eprintln!("SKIP: git not installed");
+            return;
+        };
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nsleep 1\n").expect("hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        std::fs::write(dir.path().join("b.txt"), "b\n").expect("write");
+        let staged = std::process::Command::new("git")
+            .args(["add", "b.txt"])
+            .current_dir(&root)
+            .status()
+            .expect("git add");
+        assert!(staged.success());
+        let (db, engine) = harness();
+        let node = |id: &str, kind: NodeKind, config: NodeConfig| Node {
+            id: id.into(),
+            kind,
+            position: Position::default(),
+            config,
+            label: None,
+        };
+        let link = |id: &str, source: &str, target: &str| Edge {
+            id: id.into(),
+            source: source.into(),
+            target: target.into(),
+            label: None,
+        };
+        let wf = linear_git_workflow(
+            vec![
+                node("start", NodeKind::Start, NodeConfig::default()),
+                git_node(
+                    "commit",
+                    GitOp::Commit {
+                        message: "Add b".into(),
+                    },
+                    &root,
+                ),
+                node(
+                    "boom",
+                    NodeKind::Command,
+                    NodeConfig {
+                        executable: Some("sh".into()),
+                        args: vec!["-c".into(), "exit 1".into()],
+                        ..NodeConfig::default()
+                    },
+                ),
+                node("end", NodeKind::End, NodeConfig::default()),
+            ],
+            vec![
+                link("e0", "start", "commit"),
+                link("e1", "start", "boom"),
+                link("e2", "commit", "end"),
+                link("e3", "boom", "end"),
+            ],
+            "wf-commit-failfast",
+        );
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "run-commit-failfast", &HashMap::new())
+            .expect("start");
+        engine.execute(wf, "run-commit-failfast".to_string()).await;
+        assert_eq!(db.list_runs(10).expect("runs")[0].status, RunStatus::Failed);
+        let rows = db
+            .list_node_results("run-commit-failfast")
+            .expect("results");
+        let commit = rows.iter().find(|r| r.node_id == "commit").expect("row");
+        assert_eq!(commit.status, "succeeded", "{rows:?}");
+        let log = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(&root)
+            .output()
+            .expect("git log");
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "Add b");
     }
 
     #[tokio::test]
