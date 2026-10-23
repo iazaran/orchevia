@@ -555,10 +555,14 @@ pub fn create_pr(
     let argv = preview_create_pr(request);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let _out = runner.run(cwd, &refs)?;
-    // Re-read the PR for the head branch to return normalized details.
+    // Re-read the PR for the head branch to return normalized details. A
+    // fork head (`owner:branch`) is listed by its branch alone; branch names
+    // cannot contain ':'.
+    let head = request.head.trim();
+    let branch = head.rsplit_once(':').map_or(head, |(_, branch)| branch);
     let prs = list_prs(runner, cwd, "open")?;
     prs.into_iter()
-        .find(|pr| pr.head_branch == request.head)
+        .find(|pr| pr.head_branch == branch)
         .ok_or_else(|| "PR created but could not be read back.".to_string())
 }
 
@@ -750,6 +754,14 @@ exit 1
         assert!(preview.contains(&"--draft".to_string()));
         let created = create_pr(&runner, &cwd(&dir), &request).expect("create");
         assert_eq!(created.number, 7);
+        let fork = CreatePrRequest {
+            head: "contributor:fix-cart".into(),
+            ..request
+        };
+        assert_eq!(
+            create_pr(&runner, &cwd(&dir), &fork).expect("fork").number,
+            7
+        );
         assert!(post_comment(&runner, &cwd(&dir), 7, "hello").is_ok());
         assert!(post_comment(&runner, &cwd(&dir), 7, "   ").is_err());
     }
