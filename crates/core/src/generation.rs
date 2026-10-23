@@ -245,6 +245,27 @@ pub fn compile_proposal_with_profiles(
     defaults: Option<crate::workflow::WorkflowDefaults>,
     profiles: &[crate::agents::AgentProfile],
 ) -> Result<CompiledPreview, String> {
+    compile_proposal_inner(
+        proposal,
+        role_map,
+        workflow_id,
+        defaults,
+        profiles,
+        &std::collections::HashSet::new(),
+    )
+}
+
+/// `saved` names steps that already exist in the user's workflow: they may
+/// still be unfinished (v0.1.22 saves those), so generation-only "required"
+/// checks do not reject them; workflow validation reports them instead.
+fn compile_proposal_inner(
+    proposal: &GenerationProposal,
+    role_map: &HashMap<String, String>,
+    workflow_id: &str,
+    defaults: Option<crate::workflow::WorkflowDefaults>,
+    profiles: &[crate::agents::AgentProfile],
+    saved: &std::collections::HashSet<String>,
+) -> Result<CompiledPreview, String> {
     if proposal.name.trim().is_empty() {
         return Err("Proposal needs a workflow name.".to_string());
     }
@@ -296,7 +317,13 @@ pub fn compile_proposal_with_profiles(
             pn.label.clone()
         };
         let mut repairs: Vec<String> = Vec::new();
-        let (kind, mut config) = compile_node_config(&kind, &pn.config, &label, &mut repairs)?;
+        let (kind, mut config) = compile_node_config(
+            &kind,
+            &pn.config,
+            &label,
+            &mut repairs,
+            saved.contains(&pn.key),
+        )?;
         if let Some(name) = pn.config.profile_name.as_deref() {
             if kind != NodeKind::Agent {
                 return Err("profileName is only valid on Agent nodes.".into());
@@ -427,6 +454,7 @@ pub fn compile_proposal_with_profiles(
         repairs: all_repairs,
         setup_needed,
         unmapped_roles,
+        carried_over: Vec::new(),
     })
 }
 
@@ -534,6 +562,9 @@ pub struct CompiledPreview {
     pub setup_needed: Vec<String>,
     /// Agent roles with no profile mapping — the UI can create them on accept.
     pub unmapped_roles: Vec<String>,
+    /// Errors (code, step) the user's workflow already had before assistance
+    /// (unfinished steps): reported, but they do not block accepting it.
+    pub carried_over: Vec<(String, Option<String>)>,
 }
 
 impl CompiledPreview {
@@ -544,14 +575,24 @@ impl CompiledPreview {
             .issues
             .iter()
             .filter(|i| {
-                i.severity == crate::workflow::ValidationSeverity::Error
-                    && !SETUP_ISSUE_CODES.contains(&i.code.as_str())
+                is_blocking_issue(i)
+                    && !self
+                        .carried_over
+                        .iter()
+                        .any(|(code, node)| *code == i.code && *node == i.node_id)
             })
             .map(|i| i.message.clone())
             .collect();
         out.extend(self.unavailable.clone());
         out
     }
+}
+
+/// A validation error that blocks accepting a preview (setup codes become a
+/// checklist instead).
+fn is_blocking_issue(issue: &ValidationIssue) -> bool {
+    issue.severity == crate::workflow::ValidationSeverity::Error
+        && !SETUP_ISSUE_CODES.contains(&issue.code.as_str())
 }
 
 fn parse_node_kind(kind: &str) -> Result<NodeKind, String> {
@@ -579,6 +620,7 @@ fn compile_node_config(
     config: &ProposalNodeConfig,
     label: &str,
     repairs: &mut Vec<String>,
+    saved: bool,
 ) -> Result<(NodeKind, NodeConfig), String> {
     let mut out = NodeConfig::default();
     let args = config.args.as_deref().unwrap_or_default();
@@ -610,9 +652,13 @@ fn compile_node_config(
             // the executable allowlist below blocks shell-like values.
             let exe = config.executable.as_deref().unwrap_or("").trim();
             if exe.is_empty() {
-                return Err(format!(
-                    "Command node '{label}' needs config.executable; supply a concrete local tool."
-                ));
+                if !saved {
+                    return Err(format!(
+                        "Command node '{label}' needs config.executable; supply a concrete local tool."
+                    ));
+                }
+                out.args = args.to_vec();
+                out.working_dir = config.working_dir.clone();
             } else {
                 if exe.contains('/') || exe.contains('\\') || exe.starts_with('-') {
                     return Err(format!(
@@ -691,66 +737,74 @@ fn compile_node_config(
         }
         NodeKind::Agent => {
             let role = config.role.as_deref().unwrap_or("").trim();
-            if role.is_empty() {
+            if role.is_empty() && !saved {
                 return Err(
                     "Agent node needs a role (planning, implementation, fastReview, deepReview)."
                         .to_string(),
                 );
             }
-            if !is_known_role(role) {
+            if !is_known_role(role) && !saved {
                 return Err(format!("Unknown agent role '{role}'."));
             }
-            out.agent_role = Some(role.to_string());
+            if !role.is_empty() {
+                out.agent_role = Some(role.to_string());
+            }
             let prompt = config.prompt.as_deref().unwrap_or("").trim();
-            if prompt.is_empty() {
+            if prompt.is_empty() && !saved {
                 return Err("Agent node needs a prompt.".to_string());
             }
-            if prompt.len() > 20_000 {
+            if prompt.len() > 20_000 && !saved {
                 return Err("Agent prompt is too long (max 20000 chars).".to_string());
             }
-            out.prompt = Some(prompt.to_string());
+            if !prompt.is_empty() {
+                out.prompt = Some(prompt.to_string());
+            }
             out.session_group = config.session_group.clone();
             out.session_max_turns = config.session_max_turns;
             out.context_refs = config.context_refs.clone().unwrap_or_default();
             out.context_max_chars = config.context_max_chars;
             out.working_dir = config.working_dir.clone();
         }
-        NodeKind::Condition => {
-            let condition = config
-                .condition
-                .as_ref()
-                .ok_or_else(|| "Condition node needs a condition.".to_string())?;
-            if condition.clauses.is_empty() {
+        NodeKind::Condition => match config.condition.as_ref() {
+            None if saved => {}
+            None => return Err("Condition node needs a condition.".to_string()),
+            Some(condition) if condition.clauses.is_empty() && !saved => {
                 return Err("Condition needs at least one clause.".to_string());
             }
-            out.condition = Some(condition.clone());
-        }
+            Some(condition) => out.condition = Some(condition.clone()),
+        },
         NodeKind::Approval => {
             out.message = config.message.clone();
         }
         NodeKind::Git => {
-            out.git_op = Some(config.git_op.clone().ok_or_else(|| {
-                format!("Git node '{label}' needs config.gitOp; choose a supported operation.")
-            })?);
+            out.git_op = config.git_op.clone();
+            if out.git_op.is_none() && !saved {
+                return Err(format!(
+                    "Git node '{label}' needs config.gitOp; choose a supported operation."
+                ));
+            }
             out.working_dir = config.working_dir.clone();
         }
         NodeKind::GitHub => {
-            out.github_op = Some(config.github_op.clone().ok_or_else(|| {
-                format!(
+            out.github_op = config.github_op.clone();
+            if out.github_op.is_none() && !saved {
+                return Err(format!(
                     "GitHub node '{label}' needs config.githubOp; choose a supported operation."
-                )
-            })?);
+                ));
+            }
             out.working_dir = config.working_dir.clone();
         }
         NodeKind::Ticket => {
             let key = config.ticket_key.as_deref().unwrap_or("").trim();
-            if key.is_empty() {
+            if key.is_empty() && !saved {
                 return Err(
                     "Ticket nodes need a ticketKey; add the node explicitly after preview."
                         .to_string(),
                 );
             }
-            out.ticket_key = Some(key.to_string());
+            if !key.is_empty() {
+                out.ticket_key = Some(key.to_string());
+            }
             out.working_dir = config.working_dir.clone();
             repairs.push(format!(
                 "'{label}': ticket node kept — pick the MCP server in the inspector."
@@ -758,7 +812,7 @@ fn compile_node_config(
         }
         NodeKind::Mcp => {
             let tool = config.mcp_tool.as_deref().unwrap_or("").trim();
-            if tool.is_empty() {
+            if tool.is_empty() && !saved {
                 return Err(
                     "MCP nodes need an mcpTool; add the node explicitly after preview.".to_string(),
                 );
@@ -776,7 +830,9 @@ fn compile_node_config(
                     "'{label}': stripped Claude-style prefix to MCP tool '{stripped}' — verify it in Environment → List tools."
                 ));
             }
-            out.mcp_tool = Some(stripped.to_string());
+            if !stripped.is_empty() {
+                out.mcp_tool = Some(stripped.to_string());
+            }
             out.mcp_args = config.mcp_args.clone();
             repairs.push(format!(
                 "'{label}': MCP node kept — pick the server and verify tool arguments in the inspector."
@@ -899,8 +955,13 @@ pub fn compile_assistance_proposal(
             required: i.required,
         })
         .collect();
+    // An Optimize proposal that leaves out `edges` keeps the saved graph
+    // rather than disconnecting every step.
+    let keep_edges = mode == AssistanceMode::Arrange || proposal.edges.is_empty();
     if mode == AssistanceMode::Arrange {
         effective.name = base.name.clone();
+    }
+    if keep_edges {
         effective.edges = base
             .edges
             .iter()
@@ -911,12 +972,15 @@ pub fn compile_assistance_proposal(
             })
             .collect();
     }
-    let mut preview = compile_proposal_with_profiles(
+    let saved: std::collections::HashSet<String> =
+        base.nodes.iter().map(|n| n.id.clone()).collect();
+    let mut preview = compile_proposal_inner(
         &effective,
         role_map,
         &base.id,
         base.defaults.clone(),
         profiles,
+        &saved,
     )?;
     for node in &mut preview.workflow.nodes {
         if let Some(position) = proposal
@@ -984,6 +1048,7 @@ pub fn compile_assistance_proposal(
                 // an omitted generated field must not erase them.
                 node.config.max_tool_calls = old.config.max_tool_calls;
                 node.config.max_subagents = old.config.max_subagents;
+                node.config.required_tools = old.config.required_tools.clone();
                 if let Some(mut retry) = old.config.retry.clone() {
                     if let Some(attempts) = patch.config.max_attempts {
                         retry.max_attempts = attempts;
@@ -1001,12 +1066,21 @@ pub fn compile_assistance_proposal(
     }
     if mode == AssistanceMode::Arrange {
         preview.workflow.inputs = base.inputs.clone();
+    }
+    if keep_edges {
         preview.workflow.edges = base.edges.clone();
     }
     // Workflow limits are user-side settings, never proposal content: an
     // omitted generated field must not erase the existing budget.
     preview.workflow.limits = base.limits.clone();
     preview.issues = validate_workflow(&preview.workflow);
+    // Steps the user had not finished yet stay unfinished; that alone must not
+    // block accepting the result.
+    preview.carried_over = validate_workflow(base)
+        .into_iter()
+        .filter(is_blocking_issue)
+        .map(|issue| (issue.code, issue.node_id))
+        .collect();
     preview.unmapped_roles.retain(|role| {
         preview.workflow.nodes.iter().any(|n| {
             n.config.agent_role.as_deref() == Some(role) && n.config.agent_profile_id.is_none()
@@ -1325,9 +1399,10 @@ mod tests {
     fn assistance_preserves_cost_controls_and_can_clear_handoffs() {
         let mut proposal = parse_proposal(r#"{"name":"Context","nodes":[{"key":"start","type":"start"},{"key":"work","type":"agent","config":{"role":"implementation","prompt":"Work","sessionGroup":"dev","sessionMaxTurns":3,"contextRefs":["start"],"contextMaxChars":1000}},{"key":"end","type":"end"}],"edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]}"#).unwrap();
         let roles = HashMap::from([("implementation".into(), "p".into())]);
-        let base = compile_proposal(&proposal, &roles, "w", None)
+        let mut base = compile_proposal(&proposal, &roles, "w", None)
             .unwrap()
             .workflow;
+        base.nodes[1].config.required_tools = vec!["Edit".into(), "Write".into()];
         proposal.nodes[1].config = ProposalNodeConfig::default();
         let kept =
             compile_assistance_proposal(&proposal, &base, AssistanceMode::Optimize, &roles, &[])
@@ -1345,6 +1420,61 @@ mod tests {
             .any(|i| i.code == "agent-context-limit-invalid"));
     }
     use super::*;
+
+    #[test]
+    fn assistance_accepts_a_workflow_with_unfinished_steps() {
+        // v0.1.22 saves workflows whose steps are not finished yet. Arrange
+        // and Optimize must not reject them, and the unfinished step alone
+        // must not block accepting the result.
+        let proposal = parse_proposal(PROPOSAL).unwrap();
+        let mut base = compile_proposal(&proposal, &role_map(), "saved", None)
+            .unwrap()
+            .workflow;
+        base.nodes[1].config.prompt = None;
+        let unfinished = |preview: &CompiledPreview| {
+            preview
+                .issues
+                .iter()
+                .any(|i| i.node_id.as_deref() == Some(base.nodes[1].id.as_str()))
+        };
+        // The assistant moves the step and leaves its prompt out.
+        let mut moved = proposal.clone();
+        moved.nodes[1].position = Some(Position { x: 400.0, y: 40.0 });
+        moved.nodes[1].config.prompt = None;
+        for mode in [AssistanceMode::Arrange, AssistanceMode::Optimize] {
+            let preview = compile_assistance_proposal(&moved, &base, mode, &role_map(), &[])
+                .unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+            assert_eq!(preview.workflow.nodes[1].config.prompt, None, "{mode:?}");
+            assert!(unfinished(&preview), "{mode:?} still reports the step");
+            assert!(
+                preview.blocking_errors().is_empty(),
+                "{mode:?}: {:?}",
+                preview.blocking_errors()
+            );
+        }
+        // A new problem the proposal introduces still blocks: here it blanks
+        // the finished Implement step's prompt.
+        let mut broken = proposal.clone();
+        broken.nodes[3].config.prompt = Some(" ".into());
+        let preview =
+            compile_assistance_proposal(&broken, &base, AssistanceMode::Optimize, &role_map(), &[])
+                .unwrap();
+        assert!(!preview.blocking_errors().is_empty());
+    }
+
+    #[test]
+    fn optimize_without_edges_keeps_the_saved_graph() {
+        let proposal = parse_proposal(PROPOSAL).unwrap();
+        let base = compile_proposal(&proposal, &role_map(), "saved", None)
+            .unwrap()
+            .workflow;
+        let mut edit = proposal.clone();
+        edit.edges.clear();
+        let preview =
+            compile_assistance_proposal(&edit, &base, AssistanceMode::Optimize, &role_map(), &[])
+                .unwrap();
+        assert_eq!(preview.workflow.edges, base.edges);
+    }
 
     #[test]
     fn assistance_preserves_machine_bindings_and_layout_only_behavior() {
