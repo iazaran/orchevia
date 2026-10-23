@@ -67,7 +67,12 @@ import {
   type AdapterKind,
 } from './agents';
 import { evalCondition } from './conditions';
-import type { GitHubState, McpServerConfig, McpToolInfo } from './integrations';
+import {
+  validateMcpServer,
+  type GitHubState,
+  type McpServerConfig,
+  type McpToolInfo,
+} from './integrations';
 import type {
   EditObservation,
   GenerationPreview,
@@ -649,6 +654,7 @@ class MockBackend implements Backend {
   private mcpServers = new Map<string, McpServerConfig>();
   private schedules = new Map<string, Schedule>();
   private watchers = new Map<string, Watcher>();
+  private notificationPrefs: NotificationPrefs | null = null;
   private counter = 1;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -709,6 +715,9 @@ class MockBackend implements Backend {
         templates?: WorkflowTemplate[];
         preferences?: Preference[];
         observations?: [string, number][];
+        schedules?: Schedule[];
+        watchers?: Watcher[];
+        notificationPrefs?: NotificationPrefs;
       };
       this.runs = data.runs ?? [];
       this.results = new Map(data.results ?? []);
@@ -741,6 +750,9 @@ class MockBackend implements Backend {
       for (const p of data.profiles ?? []) this.profiles.set(p.id, p);
       for (const [key, value] of data.settings ?? []) this.settings.set(key, value);
       for (const s of data.mcpServers ?? []) this.mcpServers.set(s.id, s);
+      for (const s of data.schedules ?? []) this.schedules.set(s.id, s);
+      for (const w of data.watchers ?? []) this.watchers.set(w.id, w);
+      this.notificationPrefs = data.notificationPrefs ?? null;
     } catch {
       // Corrupt dev storage: start fresh.
     }
@@ -764,6 +776,11 @@ class MockBackend implements Backend {
           profiles: [...this.profiles.values()],
           settings: [...this.settings.entries()],
           mcpServers: [...this.mcpServers.values()],
+          schedules: [...this.schedules.values()],
+          watchers: [...this.watchers.values()],
+          ...(this.notificationPrefs === null
+            ? {}
+            : { notificationPrefs: this.notificationPrefs }),
         }),
       );
     } catch {
@@ -2047,8 +2064,14 @@ class MockBackend implements Backend {
     if (stored === undefined) throw new Error(`Unknown Agent Profile '${profileId}'.`);
     const profile = withAppDefault(stored, this.permissionDefault());
     const exe = effectiveExecutable(profile);
-    const effectivePrompt = composeSkillPrompt(profile, promptTemplate);
-    if (promptTemplate.trim() === '') throw new Error('Prompt must not be empty.');
+    // Like commands.rs: a prompt that is not written yet still previews the
+    // command, with a placeholder in its place.
+    const effectivePrompt = composeSkillPrompt(
+      profile,
+      promptTemplate.trim() === ''
+        ? 'prompt preview (unresolved variables shown verbatim)'
+        : promptTemplate,
+    );
     // Mirrors agents.rs build_agent_command: Claude/Codex read the prompt from
     // stdin, structured unless the profile's own arguments pick a format.
     const structured =
@@ -2111,17 +2134,41 @@ class MockBackend implements Backend {
     return [];
   }
 
-  private customModels = new Map<string, string[]>();
+  // Mirrors commands.rs custom_models_key/parse_custom_models: stored as a
+  // setting, so the lists survive a reload.
+  private customModelsKey(adapter: string): string {
+    const name = adapter.trim().toLowerCase();
+    if (!['claude', 'codex', 'custom'].includes(name))
+      throw new Error('Unknown adapter.');
+    return `models.custom.${name}`;
+  }
+
+  private cleanCustomModels(models: string[]): string[] {
+    if (models.length > 50) throw new Error('At most 50 custom models per adapter.');
+    const cleaned: string[] = [];
+    for (const model of models) {
+      const name = model.trim();
+      if (name === '') continue;
+      // Rust counts bytes.
+      if (new TextEncoder().encode(name).length > 120)
+        throw new Error('Model names must be at most 120 characters.');
+      if (!cleaned.includes(name)) cleaned.push(name);
+    }
+    return cleaned;
+  }
 
   async listCustomModels(adapter: string): Promise<string[]> {
-    return [...(this.customModels.get(adapter) ?? [])];
+    const stored = this.settings.get(this.customModelsKey(adapter));
+    return stored === undefined
+      ? []
+      : this.cleanCustomModels(JSON.parse(stored) as string[]);
   }
 
   async saveCustomModels(adapter: string, models: string[]): Promise<string[]> {
-    const cleaned = [
-      ...new Set(models.map((m) => m.trim()).filter((m) => m !== '')),
-    ].slice(0, 50);
-    this.customModels.set(adapter, cleaned);
+    const key = this.customModelsKey(adapter);
+    const cleaned = this.cleanCustomModels(models);
+    this.settings.set(key, JSON.stringify(cleaned));
+    this.persist();
     return cleaned;
   }
 
@@ -2138,6 +2185,9 @@ class MockBackend implements Backend {
   }
 
   async saveMcpServer(server: McpServerConfig): Promise<McpServerConfig> {
+    // Like db.rs upsert_mcp_server.
+    const errors = validateMcpServer(server);
+    if (errors.length > 0) throw new Error(`Invalid MCP server: ${errors.join('; ')}`);
     this.mcpServers.set(server.id, server);
     this.persist();
     return server;
@@ -2258,15 +2308,20 @@ class MockBackend implements Backend {
 
   async getNotificationPrefs(): Promise<NotificationPrefs> {
     return {
-      onApproval: true,
-      onFailure: true,
-      onActionableFindings: true,
-      onScheduledSuccess: false,
-      onFeedbackNeedsAction: true,
+      ...(this.notificationPrefs ?? {
+        onApproval: true,
+        onFailure: true,
+        onActionableFindings: true,
+        onScheduledSuccess: false,
+        onFeedbackNeedsAction: true,
+      }),
     };
   }
 
-  async setNotificationPrefs(): Promise<void> {}
+  async setNotificationPrefs(prefs: NotificationPrefs): Promise<void> {
+    this.notificationPrefs = { ...prefs };
+    this.persist();
+  }
 
   async getSetting(key: string): Promise<string | null> {
     this.validateSettingKey(key);
