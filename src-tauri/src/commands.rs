@@ -1671,22 +1671,15 @@ pub fn mark_generation_status(
     if !["proposed", "accepted", "discarded", "failed"].contains(&status.as_str()) {
         return Err("Unknown generation status.".to_string());
     }
-    // Generations are append-only history; status flips via re-record.
-    let generations = state.db.list_generations(500).map_err(|e| e.to_string())?;
-    let generation = generations
-        .into_iter()
-        .find(|g| g.id == id)
-        .ok_or_else(|| format!("Unknown generation '{id}'."))?;
-    state
+    if state
         .db
-        .record_generation(
-            &id,
-            &generation.goal,
-            &generation.generator_profile,
-            &generation.proposal_json,
-            &status,
-        )
-        .map_err(|e| e.to_string())
+        .update_generation_status(&id, &status)
+        .map_err(|e| e.to_string())?
+    {
+        Ok(())
+    } else {
+        Err(format!("Unknown generation '{id}'."))
+    }
 }
 
 #[tauri::command]

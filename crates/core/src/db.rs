@@ -2036,6 +2036,19 @@ impl SqliteDb {
         Ok(())
     }
 
+    /// Change a recorded generation's status. Returns false for an unknown id.
+    pub fn update_generation_status(&self, id: &str, status: &str) -> DbResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
+        let changed = conn.execute(
+            "UPDATE generations SET status = ?2 WHERE id = ?1",
+            params![id, status],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn list_generations(&self, limit: i64) -> DbResult<Vec<StoredGeneration>> {
         let conn = self
             .conn
@@ -2156,6 +2169,18 @@ pub struct StoredGeneration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_status_changes_in_place() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        db.record_generation("g1", "goal", "p", "{}", "proposed")
+            .unwrap();
+        assert!(db.update_generation_status("g1", "accepted").unwrap());
+        assert!(!db.update_generation_status("missing", "accepted").unwrap());
+        let generations = db.list_generations(10).unwrap();
+        assert_eq!(generations.len(), 1);
+        assert_eq!(generations[0].status, "accepted");
+    }
     use crate::workflow::{Edge, Node, NodeConfig, NodeKind, Position, CURRENT_SCHEMA_VERSION};
 
     #[test]
