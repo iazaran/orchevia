@@ -24,13 +24,14 @@ All notable changes are recorded here, following
     after the loop, which then started early and read that branch's partial
     output.
 
-  A step that fails when its only failure route already ran now fails the run.
+  A step that fails when its only failure route already ran now fails the run, and
+  resuming a paused run replays its history in the order steps finished.
 
 - **Steps that finished keep their result.** A Git or GitHub step that was
   already running when a parallel step failed, or the run was cancelled, was
   recorded as cancelled though the commit or PR existed (and recovery offered to
   repeat it). Ticket and MCP steps record cancelled only when the stop interrupted
-  the call.
+  the call, and a step that fails after you cancel leaves the run cancelled.
 - **Retries and timeouts.** A run paused at its agent-attempt budget between
   retries started the retries over when continued (a policy of three ran four).
   A command that filled its error output before timing out lost the "timed out
@@ -75,8 +76,8 @@ All notable changes are recorded here, following
   "Preview next runs" clears when the timezone changes, and a huge cron step no
   longer wraps around to every minute.
 - **Git and GitHub.** Relative and `~/` worktree paths resolve inside the
-  repository and the home folder, as git does. A PR opened from a fork head
-  (`owner:branch`) is read back. The GitHub status names the account for older
+  repository and the home folder, as git does. A new PR is read back by the URL gh
+  prints, so one opened from a fork head (`owner:branch`) no longer fails. The GitHub status names the account for older
   `gh` versions too, and never as "null".
 - **The window stays responsive** while gh, branch detection, Usage & costs and the
   diagnostics bundle work; they no longer run on the window's main thread.

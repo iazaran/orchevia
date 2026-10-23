@@ -37,14 +37,18 @@ page now measures exactly the window height in the browser mock.
   failed and its failure route already ran").
 - `release_waiting_exits` resolves the specific unresolved edges.
 
-Replay (resume after approval or restart) goes through the same functions; a test
-pauses and resumes across a re-armed pass.
+Replay (resume after approval or restart) goes through the same functions. It now
+walks terminal rows by `(finished_at, id)`: a live row keeps the id it got at
+dispatch, so id order could replay a long step's completion (and the loop reset
+it caused) before a skip recorded while it ran. Tests pause and resume across a
+re-armed pass and across that ordering.
 
 ## 3. Other engine and core fixes
 
 - **Fail-fast results.** The Git and GitHub calls cannot be interrupted, so their
   result is always recorded. Ticket and MCP record `cancelled` only when the call
-  did not succeed. Tested with a commit slowed by a `pre-commit` hook.
+  did not succeed. A run-failing result that arrives after a user cancel keeps the
+  run Cancelled. Tested with a commit slowed by a `pre-commit` hook.
 - **Retries after a usage pause** start after this visit's `retrying` rows
   (`attempts_used_this_visit`).
 - **Timeout reasons** are appended after output truncation.
@@ -55,13 +59,14 @@ pauses and resumes across a re-armed pass.
   `approve_run` spawns the continuation instead of awaiting the whole run.
 - **Assistance.** `compile_proposal_inner` takes the saved step ids and skips the
   generator-only "required" checks for them. `CompiledPreview::carried_over`
-  (code, step) excludes errors the base workflow already had from
+  (code, step, message) excludes errors the base workflow already had from
   `blocking_errors`. Optimize restores `required_tools` and keeps the base edges
   when the proposal sends none.
 - **Generations.** `update_generation_status` replaces the re-insert that always
   hit the primary key.
 - **Git/GitHub.** `worktree_path` resolves relative paths against the repository
-  and `~/` against `HOME`. `create_pr` compares the branch part of `owner:branch`.
+  and `~/` against `HOME`. `create_pr` reads the PR back by the number in the URL
+  `gh pr create` prints, falling back to the branch part of `owner:branch`.
   `auth_status` reads stdout and stderr and both phrasings ("account x", "as x").
   `GitHubState` omits absent fields.
 - **Cron.** Steps use `checked_add`.
@@ -79,13 +84,14 @@ pauses and resumes across a re-armed pass.
 - Runs: running and paused runs read "so far". A paused row's `error` (the
   approval prompt) renders as a hint, and a decided pause reads "waited". The run
   list checks every 10 s while idle. Note, "Copied" and playbook choices are keyed
-  by run. Workflow names fall back to the run snapshot. `stepLabel` and
+  by run. Workflow names fall back to each run's saved workflow. `stepLabel` and
   `timelineBarStatus` live in `run-report.ts`.
 - Dialogs: `ConfirmHost` renders last, alert dialogs stack at z-index 60, the
   backdrop closes only on a press that starts on it, the opener is read during the
   first render, and a replaced confirmation resolves `false`.
 - Editor: one `onDelete` handler with `removeFromWorkflow` (drops references), the
-  only Start/End are `deletable: false`, input rows are keyed by position with a
+  only Start/End are `deletable: false` and `onBeforeDelete` spares one when every
+  Start or End is selected (`sparedAnchors`), input rows are keyed by position with a
   unique new name, and number fields accept only whole numbers.
 - Schedules: whole-number checks, and the preview clears on a timezone change.
 - Mock backend: persists schedules, watchers, notification prefs and custom models
