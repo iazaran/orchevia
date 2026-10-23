@@ -6,18 +6,37 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-10-23
+
 ### Fixed
 
+- **macOS: "Orchevia.app is damaged and can't be opened."** The DMGs held an app
+  whose only signature was the one the linker adds to the executable, with nothing
+  over the bundle. On Apple Silicon, macOS reports a downloaded copy of such an app
+  as damaged and offers only the Trash. The app is now signed as a whole bundle
+  (ad-hoc; it is still not notarized), so the first launch asks for **Open Anyway**
+  in System Settings → Privacy & Security instead (System Preferences → Security &
+  Privacy on macOS 12 and earlier). A copy of v0.1.20 or earlier
+  opens after `xattr -dr com.apple.quarantine /Applications/Orchevia.app`.
 - Backport the upstream glib string-iterator safety fix (RUSTSEC-2024-0429) to
   the GTK-compatible 0.18.5 dependency, with an optimized Linux regression test.
 
 ### Changed
 
+- The macOS first-launch steps in the README, the website, the release notes and
+  **Environment → Updates** describe **Open Anyway**. macOS 15 dropped the old
+  right-click → Open shortcut.
 - Re-enable monthly grouped npm and Cargo patch PRs from Dependabot while
   retaining compatible version ranges and independent security updates.
+- Dependencies refreshed within their declared ranges.
 
 ### Added
 
+- **macOS release checks.** Before anything is published, the release refuses a
+  macOS app that is not signed as a whole bundle, checks that the DMG holds the
+  same signed app, and launches the DMG's copy until it opens its database (the
+  Intel build under Rosetta). Pull requests that change packaging run the same
+  build and checks on an Apple Silicon runner (**Desktop macOS**).
 - **apt repository.** Debian and Ubuntu users can add the signed repository at
   `https://iazaran.github.io/orchevia/apt` and get new versions with
   `sudo apt upgrade` (see the README). It holds the newest three releases and is
@@ -794,7 +813,9 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/iazaran/orchevia/compare/v0.1.20...v0.1.21
+[0.1.20]: https://github.com/iazaran/orchevia/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/iazaran/orchevia/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/iazaran/orchevia/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/iazaran/orchevia/compare/v0.1.16...v0.1.17
