@@ -22,6 +22,7 @@ jobs:
       rust: ${{ steps.paths.outputs.rust }}
       desktop: ${{ steps.paths.outputs.desktop }}
       workflows: ${{ steps.paths.outputs.workflows }}
+      macos: ${{ steps.paths.outputs.macos }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -122,9 +123,33 @@ jobs:
       # A preceding cargo check duplicates dependency compilation in another profile.
       - run: cargo test -p orchevia --locked --all-targets
 
+  # Package Apple Silicon like the release and run its checks, so a change that
+  # breaks the signed bundle fails here instead of on the tag.
+  macos:
+    name: Desktop macOS (package · signature · launch)
+    needs: [changes]
+    if: needs.changes.outputs.macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build --ci --bundles app,dmg --target aarch64-apple-darwin -- --locked
+      - run: bash scripts/verify-macos-app.sh target/aarch64-apple-darwin/release/bundle --launch
+
   result:
     name: CI result
-    needs: [changes, frontend, rust, desktop]
+    needs: [changes, frontend, rust, desktop, macos]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -134,13 +159,16 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           RUST_RESULT: ${{ needs.rust.result }}
           DESKTOP_RESULT: ${{ needs.desktop.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
           RUST_CHANGED: ${{ needs.changes.outputs.rust }}
           DESKTOP_CHANGED: ${{ needs.changes.outputs.desktop }}
+          MACOS_CHANGED: ${{ needs.changes.outputs.macos }}
         run: |
           test "$CHANGES_RESULT" = success
           test "$FRONTEND_RESULT" = success
           test "$RUST_CHANGED" = true || test "$RUST_CHANGED" = false
           test "$DESKTOP_CHANGED" = true || test "$DESKTOP_CHANGED" = false
+          test "$MACOS_CHANGED" = true || test "$MACOS_CHANGED" = false
           if [ "$RUST_CHANGED" = true ]; then
             test "$RUST_RESULT" = success
           else
@@ -150,4 +178,9 @@ jobs:
             test "$DESKTOP_RESULT" = success
           else
             test "$DESKTOP_RESULT" = skipped
+          fi
+          if [ "$MACOS_CHANGED" = true ]; then
+            test "$MACOS_RESULT" = success
+          else
+            test "$MACOS_RESULT" = skipped
           fi

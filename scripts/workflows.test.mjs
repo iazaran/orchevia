@@ -36,8 +36,10 @@ const passing = {
   FRONTEND_RESULT: 'success',
   RUST_RESULT: 'success',
   DESKTOP_RESULT: 'success',
+  MACOS_RESULT: 'success',
   RUST_CHANGED: 'true',
   DESKTOP_CHANGED: 'true',
+  MACOS_CHANGED: 'true',
 };
 
 test('required result accepts intentional skips and rejects failures, cancellations, and missing gates', () => {
@@ -48,8 +50,10 @@ test('required result accepts intentional skips and rejects failures, cancellati
         ...passing,
         RUST_CHANGED: 'false',
         DESKTOP_CHANGED: 'false',
+        MACOS_CHANGED: 'false',
         RUST_RESULT: 'skipped',
         DESKTOP_RESULT: 'skipped',
+        MACOS_RESULT: 'skipped',
       },
     }).status,
     0,
@@ -59,6 +63,7 @@ test('required result accepts intentional skips and rejects failures, cancellati
     'FRONTEND_RESULT',
     'RUST_RESULT',
     'DESKTOP_RESULT',
+    'MACOS_RESULT',
   ]) {
     for (const value of ['failure', 'cancelled', 'skipped'])
       assert.notEqual(
@@ -69,6 +74,11 @@ test('required result accepts intentional skips and rejects failures, cancellati
   }
   assert.notEqual(
     execute(result, { env: { ...passing, RUST_CHANGED: '', RUST_RESULT: 'skipped' } })
+      .status,
+    0,
+  );
+  assert.notEqual(
+    execute(result, { env: { ...passing, MACOS_CHANGED: '', MACOS_RESULT: 'skipped' } })
       .status,
     0,
   );
@@ -219,4 +229,26 @@ test('macOS release builds keep the .app that staging inspects, for the right ta
   // Requesting `dmg` alone makes Tauri delete the .app after packaging.
   for (const entry of mac)
     assert.deepEqual(entry.bundles.split(',').sort(), ['app', 'dmg']);
+});
+
+test('macOS apps are signed as a whole and checked before they ship', () => {
+  // The linker's signature alone makes a downloaded app "damaged" (v0.1.20).
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+  assert.equal(config.bundle.macOS.signingIdentity, '-');
+  const release = readFileSync('.github/workflows/release.yml', 'utf8');
+  const verify = release.indexOf('- name: Verify the macOS app');
+  assert.ok(verify > release.indexOf('- name: Build and package'));
+  assert.ok(verify < release.indexOf('- name: Stage artifacts'));
+  assert.match(
+    release.slice(verify, release.indexOf('- name: Stage artifacts')),
+    /if: runner\.os == 'macOS'\n[\s\S]*\n\s+run: bash scripts\/verify-macos-app\.sh "target\/\$RELEASE_TARGET\/release\/bundle" --launch\n/,
+  );
+  // The notes give steps that still work on macOS 15 and later.
+  assert.match(release, /\*\*Open Anyway\*\*/);
+  assert.doesNotMatch(release, /right-click/i);
+  // Pull requests that touch packaging run the same checks on Apple Silicon.
+  assert.match(
+    readFileSync('.github/workflows/ci.yml', 'utf8'),
+    /if: needs\.changes\.outputs\.macos == 'true'\n\s+runs-on: macos-15\n[\s\S]*?run: bash scripts\/verify-macos-app\.sh target\/aarch64-apple-darwin\/release\/bundle --launch\n/,
+  );
 });

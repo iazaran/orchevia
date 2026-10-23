@@ -9,6 +9,7 @@ export function classifyChanges(paths) {
     desktop: false,
     site: false,
     workflows: false,
+    macos: false,
   };
   for (const path of paths) {
     if (
@@ -20,12 +21,24 @@ export function classifyChanges(paths) {
       changes.site = true;
       if (!path.startsWith('docs/')) changes.workflows = true;
     } else if (
-      ['.github/workflows/ci.yml', '.github/workflows/release.yml'].includes(path)
+      [
+        '.github/workflows/ci.yml',
+        '.github/workflows/release.yml',
+        'scripts/verify-macos-app.sh',
+      ].includes(path)
     ) {
-      // Lint workflows and exercise delivery scripts without recompiling unchanged source.
-      changes.workflows = true;
+      // Lint workflows and exercise delivery scripts without recompiling unchanged
+      // source, but package for macOS: both workflows build and verify the DMG.
+      changes.workflows = changes.macos = true;
     } else if (path.startsWith('crates/') || path.startsWith('src-tauri/')) {
       changes.rust = changes.desktop = true;
+      // Configuration, icons and manifests shape the signed bundle; Rust source does not.
+      if (
+        path.startsWith('src-tauri/') &&
+        !path.startsWith('src-tauri/src/') &&
+        !path.startsWith('src-tauri/tests/')
+      )
+        changes.macos = true;
     } else if (
       path.startsWith('src/') ||
       path.startsWith('public/') ||
@@ -48,7 +61,7 @@ export function classifyChanges(paths) {
     } else {
       // Locks, build inputs, new workflows, and unfamiliar files fail safe.
       changes.frontend = changes.rust = changes.desktop = true;
-      changes.workflows = true;
+      changes.workflows = changes.macos = true;
     }
   }
   return changes;
