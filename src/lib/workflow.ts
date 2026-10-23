@@ -1018,6 +1018,51 @@ export function nextBranchLabel(existing: (string | undefined)[]): 'true' | 'fal
 }
 
 /**
+ * Delete steps and edges together: a step's edges go with it, and the steps
+ * that remain stop referring to it (handoff context and input refs), so no
+ * stale id is left that the inspector cannot show or clear.
+ */
+export function removeFromWorkflow(
+  workflow: Workflow,
+  nodeIds: ReadonlySet<string>,
+  edgeIds: ReadonlySet<string>,
+): Workflow {
+  if (nodeIds.size === 0 && edgeIds.size === 0) return workflow;
+  const keep = (id: string): boolean => !nodeIds.has(id);
+  return {
+    ...workflow,
+    nodes: workflow.nodes
+      .filter((n) => keep(n.id))
+      .map((n) => {
+        const contextRefs = n.config.contextRefs;
+        const inputRefs = n.config.inputRefs;
+        const staleContext = contextRefs?.some((id) => !keep(id)) === true;
+        const staleInputs = inputRefs?.some((id) => !keep(id)) === true;
+        if (!staleContext && !staleInputs) return n;
+        const config = { ...n.config };
+        if (staleContext) {
+          const kept = contextRefs.filter(keep);
+          if (kept.length > 0) {
+            config.contextRefs = kept;
+          } else {
+            delete config.contextRefs;
+            delete config.contextMaxChars;
+          }
+        }
+        if (staleInputs) {
+          const kept = inputRefs.filter(keep);
+          if (kept.length > 0) config.inputRefs = kept;
+          else delete config.inputRefs;
+        }
+        return { ...n, config };
+      }),
+    edges: workflow.edges.filter(
+      (e) => !edgeIds.has(e.id) && keep(e.source) && keep(e.target),
+    ),
+  };
+}
+
+/**
  * Smart-connect: when the user draws S → T, drop edges the new connection
  * makes redundant — an exact duplicate, or a direct P → T line that is now
  * bypassed via P ⇝ S → T (e.g. inserting a node between two linked nodes).

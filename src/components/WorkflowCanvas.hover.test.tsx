@@ -12,7 +12,7 @@ const { flow } = vi.hoisted(() => ({
       edges: Edge[];
       onNodeMouseEnter?: (event: unknown, node: { id: string }) => void;
       onNodeMouseLeave?: () => void;
-      onNodesDelete?: (deleted: { id: string }[]) => void;
+      onDelete?: (deleted: { nodes: { id: string }[]; edges: { id: string }[] }) => void;
     },
   },
 }));
@@ -24,7 +24,7 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     edges: Edge[];
     onNodeMouseEnter?: (event: unknown, node: { id: string }) => void;
     onNodeMouseLeave?: () => void;
-    onNodesDelete?: (deleted: { id: string }[]) => void;
+    onDelete?: (deleted: { nodes: { id: string }[]; edges: { id: string }[] }) => void;
   }): React.JSX.Element {
     flow.current = props;
     // React Flow puts keyboard focus on a wrapper outside the custom node.
@@ -127,7 +127,7 @@ it('clears a stale hover after the hovered node is deleted', () => {
   render(<WorkflowCanvas workflow={wf} />);
   act(() => flow.current?.onNodeMouseEnter?.({}, { id: 'middle' }));
   expect(edges().filter((e) => e.className === 'edge-connected')).toHaveLength(2);
-  act(() => flow.current?.onNodesDelete?.([{ id: 'middle' }]));
+  act(() => flow.current?.onDelete?.({ nodes: [{ id: 'middle' }], edges: [] }));
   expect(edges().filter((e) => e.className === 'edge-connected')).toHaveLength(0);
 });
 
@@ -161,3 +161,44 @@ it.each([false, true])(
     expect(edges().filter((e) => e.className === 'edge-connected')).toHaveLength(0);
   },
 );
+
+it('keeps the only Start and End and deletes a step with an edge in one update', () => {
+  const update = vi.fn();
+  useAppStore.setState({
+    selectedNodeId: null,
+    selectedEdgeId: null,
+    validation: [],
+    overlayResults: [],
+    profiles: [],
+    updateActiveWorkflow: update,
+  });
+  const wf = hoverWorkflow();
+  wf.nodes.push({
+    id: 'review',
+    type: 'agent',
+    label: 'Review',
+    position: { x: 200, y: 300 },
+    config: { prompt: 'Review', contextRefs: ['middle'], contextMaxChars: 4000 },
+  });
+  wf.edges.push({ id: 'e-review', source: wf.nodes[0]?.id ?? '', target: 'review' });
+  render(<WorkflowCanvas workflow={wf} />);
+  const deletable = Object.fromEntries(
+    (flow.current?.nodes ?? []).map((node) => [node.id, node.deletable]),
+  );
+  const [start, end] = wf.nodes;
+  expect(deletable[start?.id ?? '']).toBe(false);
+  expect(deletable[end?.id ?? '']).toBe(false);
+  expect(deletable.middle).toBe(true);
+  // A step and an unrelated edge selected together both go, and the step
+  // that read the deleted one's context forgets it.
+  act(() =>
+    flow.current?.onDelete?.({ nodes: [{ id: 'middle' }], edges: [{ id: 'e-review' }] }),
+  );
+  expect(update).toHaveBeenCalledTimes(1);
+  const saved = update.mock.calls[0]?.[0] as typeof wf;
+  expect(saved.nodes.map((n) => n.id)).not.toContain('middle');
+  expect(saved.edges).toEqual([]);
+  const review = saved.nodes.find((n) => n.id === 'review');
+  expect(review?.config.contextRefs).toBeUndefined();
+  expect(review?.config.contextMaxChars).toBeUndefined();
+});

@@ -10,6 +10,7 @@ import {
   createSampleWorkflow,
   CURRENT_SCHEMA_VERSION,
   bypassedEdgeIds,
+  removeFromWorkflow,
   nextBranchLabel,
   planExecutionOrder,
   setWorkflowDefaults,
@@ -641,4 +642,34 @@ it('samples re-review with both reviewers and confirm before posting findings', 
       .filter((i) => i.severity === 'error')
       .map((i) => i.code),
   ).toEqual(['git-dir-required', 'git-dir-required', 'git-dir-required']);
+});
+
+describe('removeFromWorkflow', () => {
+  const node = (id: string, config: WorkflowNode['config'] = {}): WorkflowNode => ({
+    id,
+    type: 'agent',
+    position: { x: 0, y: 0 },
+    config,
+  });
+
+  it('drops the steps, their edges and every reference to them', () => {
+    const wf: Workflow = {
+      ...createEmptyWorkflow('Refs'),
+      nodes: [
+        node('a'),
+        node('b'),
+        node('c', { contextRefs: ['a', 'b'], contextMaxChars: 2000, inputRefs: ['a'] }),
+      ],
+      edges: [
+        { id: 'ab', source: 'a', target: 'b' },
+        { id: 'bc', source: 'b', target: 'c' },
+      ],
+    };
+    const next = removeFromWorkflow(wf, new Set(['a']), new Set(['bc']));
+    expect(next.nodes.map((n) => n.id)).toEqual(['b', 'c']);
+    expect(next.edges).toEqual([]);
+    expect(next.nodes[1]?.config).toEqual({ contextRefs: ['b'], contextMaxChars: 2000 });
+    const none = removeFromWorkflow(next, new Set(['b']), new Set());
+    expect(none.nodes[0]?.config).toEqual({});
+  });
 });

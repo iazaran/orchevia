@@ -28,6 +28,7 @@ import {
   bypassedEdgeIds,
   newId,
   nextBranchLabel,
+  removeFromWorkflow,
   type NodeKind,
   type Workflow,
   type WorkflowEdge,
@@ -116,10 +117,19 @@ function toFlowNodes(
   overlay: Record<string, string>,
   issues: Record<string, 'error' | 'warning'>,
 ): Node<CanvasNodeData>[] {
+  const count = (kind: NodeKind): number =>
+    wf.nodes.filter((n) => n.type === kind).length;
+  const starts = count('start');
+  const ends = count('end');
   return wf.nodes.map((n: WorkflowNode) => ({
     id: n.id,
     type: 'orchevia',
     position: n.position,
+    // The toolbar cannot add Start or End, so the only one stays.
+    deletable: !(
+      (n.type === 'start' && starts === 1) ||
+      (n.type === 'end' && ends === 1)
+    ),
     data: {
       label: n.label ?? NODE_KIND_META[n.type].label,
       kind: n.type,
@@ -722,14 +732,16 @@ export function WorkflowCanvas({
         onPaneClick={() => {
           selectNode(null);
         }}
-        onNodesDelete={(deleted) => {
+        // One handler for steps and edges deleted together, so neither
+        // update overwrites the other.
+        onDelete={({ nodes: deletedNodes, edges: deletedEdges }) => {
           if (readOnly) return;
-          const ids = new Set(deleted.map((d) => d.id));
-          const updated: Workflow = {
-            ...workflow,
-            nodes: workflow.nodes.filter((n) => !ids.has(n.id)),
-            edges: workflow.edges.filter((e) => !ids.has(e.source) && !ids.has(e.target)),
-          };
+          const ids = new Set(deletedNodes.map((d) => d.id));
+          const updated = removeFromWorkflow(
+            workflow,
+            ids,
+            new Set(deletedEdges.map((d) => d.id)),
+          );
           updateActiveWorkflow(updated);
           revalidate(updated);
           if (selectedNodeId !== null && ids.has(selectedNodeId)) selectNode(null);
@@ -740,16 +752,6 @@ export function WorkflowCanvas({
           setFocusedNodeId((current) =>
             current !== null && ids.has(current) ? null : current,
           );
-        }}
-        onEdgesDelete={(deleted) => {
-          if (readOnly) return;
-          const ids = new Set(deleted.map((d) => d.id));
-          const updated: Workflow = {
-            ...workflow,
-            edges: workflow.edges.filter((e) => !ids.has(e.id)),
-          };
-          updateActiveWorkflow(updated);
-          revalidate(updated);
         }}
         onNodeDragStop={(_, node, movedNodes) => {
           if (readOnly) return;
