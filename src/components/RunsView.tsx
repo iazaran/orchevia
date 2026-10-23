@@ -664,8 +664,35 @@ export function RunsView(): React.JSX.Element {
 
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
 
+  // A run of a deleted workflow is named from the workflow saved with it,
+  // looked up once per run.
+  const [savedNames, setSavedNames] = useState<Record<string, string>>({});
+  const requestedNames = useRef(new Set<string>());
+  useEffect(() => {
+    const known = new Set(workflows.map((w) => w.id));
+    for (const run of runs) {
+      // The selected run's saved workflow is loaded already (runWorkflow).
+      if (
+        known.has(run.workflowId) ||
+        run.id === activeRunId ||
+        requestedNames.current.has(run.id)
+      )
+        continue;
+      requestedNames.current.add(run.id);
+      void getBackend()
+        .getRunWorkflow(run.id)
+        .then((workflow) => {
+          if (workflow !== null && mounted.current)
+            setSavedNames((names) => ({ ...names, [run.id]: workflow.name }));
+        })
+        .catch(() => {
+          // The id stays as the title.
+        });
+    }
+  }, [runs, workflows, activeRunId]);
   const runWorkflowName = (run: StoredRun): string =>
     workflows.find((w) => w.id === run.workflowId)?.name ??
+    savedNames[run.id] ??
     (run.id === activeRunId ? runWorkflow?.name : undefined) ??
     run.workflowId;
 

@@ -1379,7 +1379,8 @@ it('shows a run started in the background while nothing else runs', async () => 
 it('titles a run of a deleted workflow with the name saved in the run', async () => {
   const backend = __setMockBackendForTests();
   const run = { ...liveRun('orphan', 'succeeded'), workflowId: 'wf-gone' };
-  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  const other = { ...liveRun('orphan-2', 'failed'), workflowId: 'wf-gone' };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run, other]);
   vi.spyOn(backend, 'getRunResults').mockResolvedValue([]);
   vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
   vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
@@ -1390,7 +1391,7 @@ it('titles a run of a deleted workflow with the name saved in the run', async ()
     edges: [],
   });
   useAppStore.setState({
-    runs: [run],
+    runs: [run, other],
     activeRunId: run.id,
     runResults: { [run.id]: [] },
     workflows: [],
@@ -1400,5 +1401,8 @@ it('titles a run of a deleted workflow with the name saved in the run', async ()
   expect(
     await screen.findByRole('heading', { name: 'Nightly checks' }),
   ).toBeInTheDocument();
-  expect(screen.queryByText('wf-gone')).toBeNull();
+  // The list names every run of it, not only the selected one.
+  await waitFor(() => expect(screen.queryByText('wf-gone')).toBeNull());
+  // The header and both list rows.
+  expect(screen.getAllByText('Nightly checks')).toHaveLength(3);
 });
