@@ -2259,7 +2259,7 @@ details[open] > .gen-summary::after {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Subscription forms: label above control, stable alignment, narrow amounts. */
+/* Usage forms: label above control, stable alignment, narrow amounts. */
 .usage-form-grid {
   display: grid;
   grid-template-columns:
@@ -2279,8 +2279,36 @@ details[open] > .gen-summary::after {
 .usage-form-grid .field-action {
   justify-self: end;
 }
-.usage-allocation-grid {
-  grid-template-columns: minmax(130px, 190px) minmax(240px, 1fr) auto;
+/* Your plans: one row per provider, label above each control. */
+.usage-plan-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin: 8px 0;
+}
+.usage-plan-row .field {
+  margin-bottom: 0;
+  min-width: 180px;
+}
+.usage-plan-row .field-narrow {
+  min-width: 150px;
+  max-width: 220px;
+}
+.usage-plan-note {
+  flex: 1 1 260px;
+  margin: 0 0 8px;
+  max-width: 70ch;
+}
+.usage-plan-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.usage-card-primary {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-card));
 }
 .usage-settings-fields {
   border: 0;

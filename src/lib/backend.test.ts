@@ -312,26 +312,99 @@ it('rejects ordinary live mock starts with structural validation errors', async 
 it('rejects invalid usage settings without overwriting saved values', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();
-  await backend.setSetting('usage.allocationShare', '50');
+  await backend.setSetting('usage.planShare', '50');
   for (const value of ['101', '-1', 'NaN', 'Infinity']) {
-    await expect(backend.setSetting('usage.allocationShare', value)).rejects.toThrow();
+    await expect(backend.setSetting('usage.planShare', value)).rejects.toThrow();
   }
-  expect(await backend.getSetting('usage.allocationShare')).toBe('50');
-  await expect(
-    backend.setSetting('usage.allocationMethod', 'invented'),
-  ).rejects.toThrow();
-  await expect(
-    backend.setSetting(
-      'usage.subscriptionFees',
-      '[{"label":"Fee","amountUsd":-1,"period":"old label"}]',
-    ),
-  ).rejects.toThrow();
-  await expect(backend.setSetting('usage.extraCharges', 'not json')).rejects.toThrow();
-  await backend.setSetting(
-    'usage.subscriptionFees',
-    '[{"label":"Fee","amountUsd":2,"period":"old label"}]',
+  expect(await backend.getSetting('usage.planShare')).toBe('50');
+  const plans = '{"claude":{"billing":"subscription","monthlyUsd":120,"name":"Max"}}';
+  await backend.setSetting('usage.plans', plans);
+  for (const value of [
+    'not json',
+    '{"gemini":{"billing":"api"}}',
+    '{"claude":{"billing":"subscription"}}',
+    '{"codex":{"billing":"api","monthlyUsd":20}}',
+  ])
+    await expect(backend.setSetting('usage.plans', value)).rejects.toThrow();
+  expect(await backend.getSetting('usage.plans')).toBe(plans);
+  // The billing-period fee lists the plans replaced are no longer settings.
+  await expect(backend.setSetting('usage.subscriptionFees', '[]')).rejects.toThrow(
+    'not user-configurable',
   );
-  expect(await backend.getSetting('usage.subscriptionFees')).toContain('old label');
+});
+
+it('keeps each provider-day whole when a run or workflow filter narrows the summary', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const first = await backend.saveWorkflow(createEmptyWorkflow('First'));
+  const second = await backend.saveWorkflow(createEmptyWorkflow('Second'));
+  const one = await backend.runWorkflow(first.id, {});
+  const two = await backend.runWorkflow(second.id, {});
+  for (const { runId } of [one, two])
+    await vi.waitFor(async () =>
+      expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+    );
+  const internals = backend as unknown as {
+    results: Map<string, StoredNodeResult[]>;
+  };
+  const agentRow = (runId: string, id: number, durationMs: number): StoredNodeResult => ({
+    id,
+    runId,
+    nodeId: 'agent',
+    status: 'succeeded',
+    stdout: '',
+    stderr: '',
+    startedAt: new Date().toISOString(),
+    attempt: 1,
+    durationMs,
+    structuredJson: JSON.stringify({
+      agentUsage: { adapter: 'claude', model: 'm', reported_cost_usd: 1 },
+    }),
+  });
+  internals.results.set(one.runId, [agentRow(one.runId, 9001, 3000)]);
+  internals.results.set(two.runId, [agentRow(two.runId, 9002, 1000)]);
+  const run = await backend.usageSummary({ runIds: [one.runId] });
+  expect(run.totals.runs).toBe(1);
+  expect(run.providerDays).toHaveLength(1);
+  expect(run.providerDays[0]).toMatchObject({
+    adapter: 'claude',
+    agentAttempts: 1,
+    durationMs: 3000,
+    reportedUsd: 1,
+    allAgentAttempts: 2,
+    allDurationMs: 4000,
+  });
+  const workflow = await backend.usageSummary({ workflowIds: [second.id] });
+  expect(workflow.providerDays[0]).toMatchObject({
+    durationMs: 1000,
+    allDurationMs: 4000,
+  });
+});
+
+it('counts a reused dry-run command once, as reuse, like the core', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = await backend.saveWorkflow(createEmptyWorkflow('Markers'));
+  const { runId } = await backend.runWorkflow(workflow.id, {});
+  await vi.waitFor(async () =>
+    expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+  );
+  const internals = backend as unknown as { results: Map<string, StoredNodeResult[]> };
+  internals.results.set(runId, [
+    {
+      id: 9100,
+      runId,
+      nodeId: 'cmd',
+      status: 'succeeded',
+      stdout: '',
+      stderr: '',
+      startedAt: new Date().toISOString(),
+      structuredJson: JSON.stringify({ reusedFrom: 'old-run', simulated: true }),
+    },
+  ]);
+  const summary = await backend.usageSummary({});
+  expect(summary.totals.reusedResults).toBe(1);
+  expect(summary.totals.simulatedResults).toBe(0);
 });
 
 describe('mock backend (browser dev)', () => {

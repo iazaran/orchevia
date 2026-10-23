@@ -714,7 +714,7 @@ it('keeps unverified plain-text dollar hints inside collapsed usage details', as
   expect(details).not.toBeNull();
   expect(details).not.toHaveAttribute('open');
   expect(details).toHaveTextContent('Unverified text hints');
-  expect(details).toHaveTextContent('not your subscription bill');
+  expect(details).toHaveTextContent('On a monthly plan you pay the plan fee instead');
 });
 
 it('shows refused tool calls and adds the suggested rules to the profile', async () => {

@@ -215,6 +215,9 @@ pub struct UsageFilter {
     pub adapters: Vec<String>,
     #[serde(default)]
     pub models: Vec<String>,
+    /// Only these runs (the Runs view asks for one run's part of its day).
+    #[serde(default)]
+    pub run_ids: Vec<String>,
     #[serde(default)]
     pub timezone: Option<String>,
 }
@@ -333,6 +336,26 @@ pub struct UsageTotals {
     pub coverage: UsageCoverage,
 }
 
+/// Agent work per UTC day (the day each run started) and provider, so a
+/// monthly plan's fee can be spread over the days it was used.
+/// `agent_attempts`, `duration_ms` and the reported USD follow every filter.
+/// The `all_*` fields count every dispatched attempt of that provider on that
+/// day, whatever the workflow, run or model filters, so a filtered view gets its
+/// part of the day's fee rather than all of it. They only see runs inside the
+/// requested `from`/`to`, so callers ask for whole UTC days.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProviderDay {
+    pub day: String,
+    pub adapter: String,
+    pub agent_attempts: u32,
+    pub duration_ms: u64,
+    pub reported_usd: f64,
+    pub reported_usd_attempts: u32,
+    pub all_agent_attempts: u32,
+    pub all_duration_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
@@ -352,6 +375,9 @@ pub struct UsageSummary {
     /// for comparable-history estimate ranges. Never a forecast by itself.
     #[serde(default)]
     pub recent_attempt_usd: Vec<f64>,
+    /// Filtered attempts per UTC day and provider (see [`UsageProviderDay`]).
+    #[serde(default)]
+    pub provider_days: Vec<UsageProviderDay>,
 }
 
 /// Cap for shipped USD samples: enough for quartile ranges, bounded for IPC.
@@ -408,11 +434,9 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
     let mut workflows: HashMap<String, UsageWorkflowRow> = HashMap::new();
     let mut models: HashMap<(String, String), UsageModelRow> = HashMap::new();
     let mut profiles: HashMap<Option<String>, UsageProfileRow> = HashMap::new();
+    let mut provider_days: HashMap<(String, String), UsageProviderDay> = HashMap::new();
     let mut scanned = 0u32;
     for run in &runs {
-        if !filter.workflow_ids.is_empty() && !filter.workflow_ids.contains(&run.workflow_id) {
-            continue;
-        }
         if let Some(from) = from {
             if run.started_at < from {
                 continue;
@@ -423,7 +447,16 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                 continue;
             }
         }
+        // Runs outside the workflow and run filters still add to each
+        // provider-day's total agent time, which splits a plan's daily fee.
+        let in_scope = (filter.workflow_ids.is_empty()
+            || filter.workflow_ids.contains(&run.workflow_id))
+            && (filter.run_ids.is_empty() || filter.run_ids.contains(&run.id));
         let dry = run.execution.options.dry_run;
+        if dry && !in_scope {
+            continue;
+        }
+        let day = run.started_at.format("%Y-%m-%d").to_string();
         let snapshot = db.get_run_snapshot(&run.id).ok().flatten();
         let snapshot_name = snapshot
             .as_ref()
@@ -472,6 +505,9 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
         let mut run_out = 0u64;
         for row in &rows {
             if !is_agent_result(row, &agent_ids) {
+                if !in_scope {
+                    continue;
+                }
                 // Reused non-agent outputs still count as reuse evidence.
                 let meta = metadata(row);
                 if meta.get("reusedFrom").is_some() {
@@ -485,11 +521,11 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
             let simulated = meta.get("simulated") == Some(&serde_json::Value::Bool(true));
             let reused = meta.get("reusedFrom").is_some();
             if simulated {
-                summary.totals.simulated_results += 1;
+                summary.totals.simulated_results += u32::from(in_scope);
                 continue;
             }
             if reused {
-                summary.totals.reused_results += 1;
+                summary.totals.reused_results += u32::from(in_scope);
                 continue;
             }
             if dry
@@ -511,12 +547,23 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or("unknown")
                 .to_string();
-            if !filter.adapters.is_empty() && !filter.adapters.contains(&adapter) {
+            let provider_day = provider_days
+                .entry((day.clone(), adapter.clone()))
+                .or_insert_with(|| UsageProviderDay {
+                    day: day.clone(),
+                    adapter: adapter.clone(),
+                    ..UsageProviderDay::default()
+                });
+            provider_day.all_agent_attempts += 1;
+            provider_day.all_duration_ms += row.duration_ms;
+            if !in_scope
+                || (!filter.adapters.is_empty() && !filter.adapters.contains(&adapter))
+                || (!filter.models.is_empty() && !filter.models.contains(&model))
+            {
                 continue;
             }
-            if !filter.models.is_empty() && !filter.models.contains(&model) {
-                continue;
-            }
+            provider_day.agent_attempts += 1;
+            provider_day.duration_ms += row.duration_ms;
             run_attempts += 1;
             let input = meta_count(&meta, "input_tokens");
             let output = meta_count(&meta, "output_tokens");
@@ -559,6 +606,8 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
                 .and_then(serde_json::Value::as_f64)
                 .filter(|n| n.is_finite() && *n >= 0.0);
             if let Some(cost) = cost {
+                provider_day.reported_usd += cost;
+                provider_day.reported_usd_attempts += 1;
                 run_usd += cost;
                 summary.totals.reported_usd += cost;
                 summary.totals.reported_usd_attempts += 1;
@@ -623,6 +672,9 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
             entry.observed_tool_calls += tools.unwrap_or(0);
             entry.observed_subagents += subs.unwrap_or(0);
         }
+        if !in_scope {
+            continue;
+        }
         scanned += 1;
         if dry || (run_attempts == 0 && (!filter.adapters.is_empty() || !filter.models.is_empty()))
         {
@@ -632,7 +684,6 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
         summary.totals.agent_attempts += run_attempts;
         summary.totals.input_tokens += run_in;
         summary.totals.output_tokens += run_out;
-        let day = run.started_at.format("%Y-%m-%d").to_string();
         let day_entry = days.entry(day.clone()).or_insert_with(|| UsageDay {
             day,
             ..UsageDay::default()
@@ -681,40 +732,75 @@ pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary
             .then_with(|| a.profile_id.cmp(&b.profile_id))
     });
     summary.by_profile = profile_list;
+    let mut provider_list: Vec<UsageProviderDay> = provider_days
+        .into_values()
+        .filter(|entry| entry.agent_attempts > 0)
+        .collect();
+    provider_list.sort_by(|a, b| a.day.cmp(&b.day).then_with(|| a.adapter.cmp(&b.adapter)));
+    summary.provider_days = provider_list;
     summary.runs_scanned = scanned;
     Ok(summary)
 }
 
-// -- Subscription vs estimate separation -------------------------------------
+// -- Plans: what the user pays, kept apart from CLI-reported API value -------
 
-/// User-entered subscription fee for a billing period. Illustrative settings
-/// only — never defaults, never verified provider prices.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SubscriptionFee {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub amount_usd: f64,
-    /// e.g. "2026-10-01/2026-11-01"; free text, shown verbatim.
-    #[serde(default)]
-    pub period: String,
-}
+/// Providers a plan can be entered for (the adapters that report usage).
+pub const PLAN_PROVIDERS: [&str; 2] = ["claude", "codex"];
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExtraCharge {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub amount_usd: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period: Option<String>,
+/// Upper bound for an entered monthly amount; anything above is a typo.
+pub const MAX_PLAN_MONTHLY_USD: f64 = 100_000.0;
+
+/// `usage.plans`: `{ "<provider>": { "billing": "subscription" | "api",
+/// "monthlyUsd"?: number, "name"?: string } }`. A monthly plan's fee is spread
+/// over the days its provider was used; pay-per-use billing costs the API
+/// value the CLI reports. Entered by the user, never a looked-up price.
+pub fn validate_plans(value: &str) -> Result<(), String> {
+    let plans: serde_json::Map<String, serde_json::Value> = serde_json::from_str(value)
+        .map_err(|_| "Plans must be a JSON object keyed by provider.".to_string())?;
+    for (provider, plan) in &plans {
+        if !PLAN_PROVIDERS.contains(&provider.as_str()) {
+            return Err(format!("Unknown plan provider '{provider}'."));
+        }
+        let Some(plan) = plan.as_object() else {
+            return Err("Each plan must be an object.".into());
+        };
+        if plan
+            .keys()
+            .any(|key| !["billing", "monthlyUsd", "name"].contains(&key.as_str()))
+        {
+            return Err("Plans hold only billing, monthlyUsd and name.".into());
+        }
+        match plan.get("billing").and_then(serde_json::Value::as_str) {
+            Some("subscription") => {
+                let amount = plan.get("monthlyUsd").and_then(serde_json::Value::as_f64);
+                if !amount
+                    .is_some_and(|n| n.is_finite() && (0.0..=MAX_PLAN_MONTHLY_USD).contains(&n))
+                {
+                    return Err(
+                        "A monthly plan needs its monthly USD amount, from 0 to 100000.".into(),
+                    );
+                }
+            }
+            Some("api") => {
+                if plan.contains_key("monthlyUsd") {
+                    return Err("Pay-per-use billing has no monthly amount.".into());
+                }
+            }
+            _ => return Err("Plan billing must be 'subscription' or 'api'.".into()),
+        }
+        if plan
+            .get("name")
+            .is_some_and(|name| !name.as_str().is_some_and(|text| text.len() <= 80))
+        {
+            return Err("A plan name is text of at most 80 bytes.".into());
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_usage_setting(key: &str, value: &str) -> Result<(), String> {
     match key {
-        "usage.allocationShare" => {
+        "usage.planShare" => {
             let text = value.trim();
             if text.is_empty() {
                 return Ok(());
@@ -727,43 +813,11 @@ pub fn validate_usage_setting(key: &str, value: &str) -> Result<(), String> {
                     .parse::<f64>()
                     .is_ok_and(|n| n.is_finite() && (0.0..=100.0).contains(&n))
             {
-                return Err("Orchevia share must be a finite percentage from 0 to 100.".into());
+                return Err("Orchevia's share must be a percentage from 0 to 100.".into());
             }
         }
-        "usage.allocationMethod" if !["manual", "proportional", "even"].contains(&value) => {
-            return Err("Unknown allocation method.".into());
-        }
-        "usage.subscriptionFees" | "usage.extraCharges" => {
-            let entries: Vec<serde_json::Value> = serde_json::from_str(value)
-                .map_err(|_| "Fee list must be a JSON array.".to_string())?;
-            if entries.len() > 100 {
-                return Err("Fee list must be a JSON array with at most 100 entries.".into());
-            }
-            for entry in entries {
-                let label = entry.get("label").and_then(serde_json::Value::as_str);
-                let amount = entry.get("amountUsd").and_then(serde_json::Value::as_f64);
-                let period = entry.get("period");
-                if !label.is_some_and(|s| !s.trim().is_empty() && s.len() <= 200)
-                    || !amount.is_some_and(|n| n.is_finite() && n >= 0.0)
-                    || (key == "usage.subscriptionFees" && period.is_none())
-                    || period.is_some_and(|p| !p.as_str().is_some_and(|s| s.len() <= 120))
-                {
-                    return Err("Fees require a label, a finite nonnegative USD amount and a bounded period label.".into());
-                }
-            }
-        }
+        "usage.plans" => validate_plans(value)?,
         _ => {}
-    }
-    Ok(())
-}
-
-pub fn validate_money_entries(label: &str, entries: &[(String, f64)]) -> Result<(), String> {
-    for (name, amount) in entries {
-        if !amount.is_finite() || *amount < 0.0 {
-            return Err(format!(
-                "{label} '{name}' must be a finite USD amount >= 0."
-            ));
-        }
     }
     Ok(())
 }
@@ -936,6 +990,166 @@ mod tests {
             .runs,
             0
         );
+    }
+
+    fn timed_row(db: &SqliteDb, run: &str, duration_ms: u64, usage: serde_json::Value) {
+        db.record_node_result(crate::db::NewNodeResult {
+            structured_json: &serde_json::json!({"agentUsage": usage}).to_string(),
+            duration_ms,
+            ..crate::db::NewNodeResult::simple(run, "a", "succeeded", Some(0), None)
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn provider_days_keep_the_whole_day_for_splitting_a_plan_fee() {
+        let db = analytics_db();
+        let mut other = db.get_run_snapshot("r").unwrap().unwrap();
+        other.id = "other".into();
+        db.upsert_workflow(&other).unwrap();
+        db.create_run_with_workflow("r2", &other, &HashMap::new())
+            .unwrap();
+        let claude = serde_json::json!({"adapter":"claude","model":"m","reported_cost_usd":3});
+        timed_row(&db, "r", 3_000, claude.clone());
+        timed_row(&db, "r2", 1_000, claude);
+        timed_row(
+            &db,
+            "r2",
+            5_000,
+            serde_json::json!({"adapter":"codex","model":"c"}),
+        );
+
+        let all = usage_summary(&db, &UsageFilter::default()).unwrap();
+        let claude_day = all
+            .provider_days
+            .iter()
+            .find(|d| d.adapter == "claude")
+            .unwrap();
+        assert_eq!(claude_day.agent_attempts, 2);
+        assert_eq!(claude_day.duration_ms, 4_000);
+        assert_eq!(claude_day.all_duration_ms, 4_000);
+        assert_eq!(claude_day.reported_usd, 6.0);
+        assert_eq!(claude_day.reported_usd_attempts, 2);
+        assert_eq!(all.provider_days.len(), 2);
+
+        // A workflow filter keeps the day's totals, so its share is 3 of 4 s.
+        let filtered = usage_summary(
+            &db,
+            &UsageFilter {
+                workflow_ids: vec!["analytics".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(filtered.totals.runs, 1);
+        assert_eq!(filtered.runs_scanned, 1);
+        assert_eq!(filtered.provider_days.len(), 1, "codex ran only in r2");
+        let part = &filtered.provider_days[0];
+        assert_eq!((part.duration_ms, part.all_duration_ms), (3_000, 4_000));
+        assert_eq!(part.day, claude_day.day);
+
+        // So does a single run, as the Runs view asks for it.
+        let run = usage_summary(
+            &db,
+            &UsageFilter {
+                run_ids: vec!["r2".into()],
+                adapters: vec!["codex".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(run.provider_days.len(), 1);
+        assert_eq!(run.provider_days[0].adapter, "codex");
+        assert_eq!(run.provider_days[0].duration_ms, 5_000);
+        assert_eq!(run.provider_days[0].all_duration_ms, 5_000);
+        assert_eq!(run.totals.agent_attempts, 1);
+    }
+
+    #[test]
+    fn provider_days_leave_out_simulated_reused_and_dry_work() {
+        let db = analytics_db();
+        let claude = serde_json::json!({"adapter":"claude","model":"m"});
+        timed_row(&db, "r", 2_000, claude.clone());
+        for marker in [
+            serde_json::json!({"agentUsage": claude.clone(), "simulated": true}),
+            serde_json::json!({"agentUsage": claude.clone(), "reusedFrom": "old-run"}),
+        ] {
+            db.record_node_result(crate::db::NewNodeResult {
+                structured_json: &marker.to_string(),
+                duration_ms: 9_000,
+                ..crate::db::NewNodeResult::simple("r", "a", "succeeded", Some(0), None)
+            })
+            .unwrap();
+        }
+        let workflow = db.get_run_snapshot("r").unwrap().unwrap();
+        db.create_run_with_execution(
+            "dry",
+            &workflow,
+            &HashMap::new(),
+            &crate::run_controls::RunExecution {
+                options: RunOptions {
+                    dry_run: true,
+                    ..RunOptions::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        timed_row(&db, "dry", 7_000, claude);
+        let summary = usage_summary(&db, &UsageFilter::default()).unwrap();
+        assert_eq!(summary.provider_days.len(), 1);
+        let day = &summary.provider_days[0];
+        assert_eq!((day.agent_attempts, day.duration_ms), (1, 2_000));
+        assert_eq!((day.all_agent_attempts, day.all_duration_ms), (1, 2_000));
+    }
+
+    #[test]
+    fn plans_validate_billing_amount_and_provider() {
+        validate_plans(
+            r#"{"claude":{"billing":"subscription","monthlyUsd":120,"name":"Max 5x"},"codex":{"billing":"api"}}"#,
+        )
+        .unwrap();
+        validate_plans("{}").unwrap();
+        for (value, message) in [
+            ("[]", "JSON object"),
+            (r#"{"gemini":{"billing":"api"}}"#, "Unknown plan provider"),
+            (r#"{"claude":"max"}"#, "must be an object"),
+            (r#"{"claude":{"billing":"monthly"}}"#, "billing must be"),
+            (
+                r#"{"claude":{"billing":"subscription"}}"#,
+                "monthly USD amount",
+            ),
+            (
+                r#"{"claude":{"billing":"subscription","monthlyUsd":100001}}"#,
+                "monthly USD amount",
+            ),
+            (
+                r#"{"codex":{"billing":"api","monthlyUsd":0}}"#,
+                "no monthly amount",
+            ),
+            (
+                r#"{"codex":{"billing":"api","seats":2}}"#,
+                "only billing, monthlyUsd and name",
+            ),
+            (
+                r#"{"codex":{"billing":"api","name":7}}"#,
+                "at most 80 bytes",
+            ),
+        ] {
+            let error = validate_plans(value).unwrap_err();
+            assert!(error.contains(message), "{value}: {error}");
+        }
+        // Providers are checked in sorted order, like the TypeScript mirror.
+        assert_eq!(
+            validate_plans(
+                r#"{"codex":{"billing":"subscription"},"claude":{"billing":"api","monthlyUsd":0}}"#
+            )
+            .unwrap_err(),
+            "Pay-per-use billing has no monthly amount."
+        );
+        assert!(validate_usage_setting("usage.planShare", "").is_ok());
+        assert!(validate_usage_setting("usage.planShare", "62.5").is_ok());
+        assert!(validate_usage_setting("usage.planShare", "1e2").is_err());
     }
 
     #[test]

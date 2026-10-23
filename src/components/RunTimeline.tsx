@@ -44,7 +44,7 @@ export function RunTimeline({
           <p className="field-hint">{CLI_COST_EXPLANATION}</p>
           <p className="field-hint">
             {spend.reportedAttempts > 0
-              ? `Estimated API value: USD ${spend.reportedUsd.toFixed(4)}`
+              ? `API value: USD ${spend.reportedUsd.toFixed(4)}`
               : 'No dollar estimate reported'}{' '}
             · {spend.reportedAttempts} reported attempt
             {spend.reportedAttempts === 1 ? '' : 's'} · {spend.unknownAttempts} attempt

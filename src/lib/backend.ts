@@ -119,7 +119,7 @@ import {
   validateWorkflowLocal,
   MAX_ATTEMPTS_LIMIT,
 } from './workflow';
-import type { UsageFilter, UsageSummary } from './usage';
+import type { UsageFilter, UsageProviderDay, UsageSummary } from './usage';
 import {
   emptyUsageSummary,
   emptyUsageCoverage,
@@ -1532,16 +1532,22 @@ class MockBackend implements Backend {
     const workflows = new Map<string, (typeof summary.byWorkflow)[number]>();
     const models = new Map<string, (typeof summary.byModel)[number]>();
     const profiles = new Map<string | null, (typeof summary.byProfile)[number]>();
+    const providerDays = new Map<string, UsageProviderDay>();
     let scanned = 0;
     for (const run of this.runs) {
-      if (
-        (applied.workflowIds?.length ?? 0) > 0 &&
-        !applied.workflowIds?.includes(run.workflowId)
-      )
-        continue;
       const started = Date.parse(run.startedAt);
       if (fromTime !== undefined && started < fromTime) continue;
       if (toTime !== undefined && started >= toTime) continue;
+      // Runs outside the workflow and run filters still add to each
+      // provider-day's total agent time, which splits a plan's daily fee.
+      const inScope =
+        ((applied.workflowIds?.length ?? 0) === 0 ||
+          applied.workflowIds?.includes(run.workflowId) === true) &&
+        ((applied.runIds?.length ?? 0) === 0 ||
+          applied.runIds?.includes(run.id) === true);
+      const dry = run.execution?.options.dryRun === true;
+      if (dry && !inScope) continue;
+      const day = new Date(started).toISOString().slice(0, 10);
       const snapshot = this.runWorkflows.get(run.id);
       const workflowName = snapshot?.name ?? run.workflowId;
       const agentIds = new Set(
@@ -1567,21 +1573,27 @@ class MockBackend implements Backend {
         const meta = resultMetadata(row);
         const simulated = meta.simulated === true;
         const reused = meta.reusedFrom !== undefined;
-        if (simulated) {
-          summary.totals.simulatedResults += 1;
-          continue;
-        }
-        if (reused) {
-          summary.totals.reusedResults += 1;
-          continue;
-        }
         const isAgent =
           agentIds.has(row.nodeId) ||
           meta.agentUsage !== undefined ||
           meta.agentSession !== undefined;
-        if (!isAgent) continue;
+        // Same precedence as the core: a non-agent row counts as reused before
+        // simulated; an agent row counts as simulated first.
+        if (!isAgent) {
+          if (inScope && reused) summary.totals.reusedResults += 1;
+          else if (inScope && simulated) summary.totals.simulatedResults += 1;
+          continue;
+        }
+        if (simulated) {
+          if (inScope) summary.totals.simulatedResults += 1;
+          continue;
+        }
+        if (reused) {
+          if (inScope) summary.totals.reusedResults += 1;
+          continue;
+        }
         if (
-          run.execution?.options.dryRun === true ||
+          dry ||
           !['running', 'succeeded', 'failed', 'cancelled', 'retrying'].includes(
             row.status,
           ) ||
@@ -1604,10 +1616,28 @@ class MockBackend implements Backend {
           typeof modelValue === 'string' && modelValue.trim() !== ''
             ? modelValue
             : 'unknown';
-        if ((applied.adapters?.length ?? 0) > 0 && !applied.adapters?.includes(adapter))
+        const providerKey = `${day}::${adapter}`;
+        const providerDay = providerDays.get(providerKey) ?? {
+          day,
+          adapter,
+          agentAttempts: 0,
+          durationMs: 0,
+          reportedUsd: 0,
+          reportedUsdAttempts: 0,
+          allAgentAttempts: 0,
+          allDurationMs: 0,
+        };
+        providerDays.set(providerKey, providerDay);
+        providerDay.allAgentAttempts += 1;
+        providerDay.allDurationMs += row.durationMs ?? 0;
+        if (
+          !inScope ||
+          ((applied.adapters?.length ?? 0) > 0 && !applied.adapters?.includes(adapter)) ||
+          ((applied.models?.length ?? 0) > 0 && !applied.models?.includes(model))
+        )
           continue;
-        if ((applied.models?.length ?? 0) > 0 && !applied.models?.includes(model))
-          continue;
+        providerDay.agentAttempts += 1;
+        providerDay.durationMs += row.durationMs ?? 0;
         runAttempts += 1;
         const metrics = measuredUsage(usage, adapter);
         runIn += metrics.inputTokens;
@@ -1626,6 +1656,8 @@ class MockBackend implements Backend {
           summary.totals.unknownUsdAttempts += 1;
           runUnknown += 1;
         } else {
+          providerDay.reportedUsd += cost;
+          providerDay.reportedUsdAttempts += 1;
           summary.totals.reportedUsd += cost;
           summary.totals.reportedUsdAttempts += 1;
           runUsd += cost;
@@ -1701,9 +1733,10 @@ class MockBackend implements Backend {
           entry.observedSubagents += subs;
         }
       }
+      if (!inScope) continue;
       scanned += 1;
       if (
-        run.execution?.options.dryRun === true ||
+        dry ||
         (runAttempts === 0 &&
           ((applied.adapters?.length ?? 0) > 0 || (applied.models?.length ?? 0) > 0))
       )
@@ -1712,7 +1745,6 @@ class MockBackend implements Backend {
       summary.totals.agentAttempts += runAttempts;
       summary.totals.inputTokens += runIn;
       summary.totals.outputTokens += runOut;
-      const day = new Date(started).toISOString().slice(0, 10);
       const dayEntry =
         days.get(day) ??
         days
@@ -1780,6 +1812,19 @@ class MockBackend implements Backend {
                 ? -1
                 : 1),
     );
+    summary.providerDays = [...providerDays.values()]
+      .filter((entry) => entry.agentAttempts > 0)
+      .sort((a, b) =>
+        a.day === b.day
+          ? a.adapter < b.adapter
+            ? -1
+            : a.adapter > b.adapter
+              ? 1
+              : 0
+          : a.day < b.day
+            ? -1
+            : 1,
+      );
     summary.runsScanned = scanned;
     return summary;
   }
@@ -2236,10 +2281,8 @@ class MockBackend implements Backend {
         'onboarding.completed',
         'workflow.assistanceProfileId',
         PERMISSION_DEFAULT_SETTING,
-        'usage.subscriptionFees',
-        'usage.extraCharges',
-        'usage.allocationShare',
-        'usage.allocationMethod',
+        'usage.plans',
+        'usage.planShare',
       ].includes(key)
     )
       throw new Error(`Setting '${key}' is not user-configurable.`);
