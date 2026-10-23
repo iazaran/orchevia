@@ -1667,8 +1667,27 @@ impl Engine {
         expected_approval_id: Option<i64>,
         workflow: Workflow,
     ) -> Result<(), EngineError> {
-        let workflow = self.db.get_run_workflow(run_id)?.unwrap_or(workflow);
+        if let Some(workflow) =
+            self.claim_approval(run_id, approved, note, expected_approval_id, workflow)?
+        {
+            self.execute(workflow, run_id.to_string()).await;
+        }
+        Ok(())
+    }
 
+    /// Record an approval decision. Returns the workflow to continue the run
+    /// with when it was approved; the caller runs it (in the background for
+    /// the app, so the decision returns at once instead of when the run
+    /// ends).
+    pub fn claim_approval(
+        &self,
+        run_id: &str,
+        approved: bool,
+        note: Option<&str>,
+        expected_approval_id: Option<i64>,
+        workflow: Workflow,
+    ) -> Result<Option<Workflow>, EngineError> {
+        let workflow = self.db.get_run_workflow(run_id)?.unwrap_or(workflow);
         if !self.cancel.decide_paused_run(
             &self.db,
             run_id,
@@ -1678,10 +1697,7 @@ impl Engine {
         )? {
             return Err(EngineError::NotPaused(run_id.to_string()));
         }
-        if approved {
-            self.execute(workflow, run_id.to_string()).await;
-        }
-        Ok(())
+        Ok(approved.then_some(workflow))
     }
 }
 
@@ -4915,6 +4931,42 @@ mod tests {
         assert_eq!(final_row.status, "succeeded");
         assert_eq!(final_row.stdout, "earlylate");
         assert!(final_row.finished_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn claiming_an_approval_returns_before_the_run_continues() {
+        let (db, engine) = harness();
+        let wf = vertical_slice();
+        db.upsert_workflow(&wf).expect("upsert");
+        for (run_id, approved) in [("claim-yes", true), ("claim-no", false)] {
+            engine
+                .start_run(&wf, run_id, &empty_inputs())
+                .expect("start");
+            engine.execute(wf.clone(), run_id.to_string()).await;
+            assert_eq!(
+                db.get_run(run_id).unwrap().unwrap().status,
+                RunStatus::Paused
+            );
+            let resumed = engine
+                .claim_approval(run_id, approved, Some("ok"), None, wf.clone())
+                .expect("claim");
+            assert_eq!(resumed.is_some(), approved, "{run_id}");
+            // A decision is recorded once.
+            assert!(engine
+                .claim_approval(run_id, approved, None, None, wf.clone())
+                .is_err());
+            if let Some(workflow) = resumed {
+                engine.execute(workflow, run_id.to_string()).await;
+            }
+        }
+        assert_eq!(
+            db.get_run("claim-yes").unwrap().unwrap().status,
+            RunStatus::Succeeded
+        );
+        assert_eq!(
+            db.get_run("claim-no").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
     }
 
     #[tokio::test]
