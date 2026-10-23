@@ -958,6 +958,11 @@ input[type='radio'] {
   padding: 16px;
 }
 
+/* A confirmation always opens over the dialog that asked for it. */
+.modal-backdrop[role='alertdialog'] {
+  z-index: 60;
+}
+
 .modal-card {
   position: relative;
   max-width: 720px;

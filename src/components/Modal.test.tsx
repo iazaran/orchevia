@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Notice } from './Notice';
 import { Modal } from './Modal';
+import { ConfirmHost, confirmDialog } from './ConfirmDialog';
 
 describe('notice banner', () => {
   it('renders variants with dismiss', async () => {
@@ -111,4 +112,57 @@ it('allows keyboard access to message dismiss buttons above a modal', async () =
   expect(screen.getByRole('button', { name: 'Dismiss message' })).toHaveFocus();
   await user.tab();
   expect(screen.getByLabelText('Name')).toHaveFocus();
+});
+
+describe('dismissing and confirming', () => {
+  it('closes on a backdrop click but not when a drag ends outside the card', async () => {
+    const user = userEvent.setup();
+    const onBackdrop = vi.fn();
+    render(
+      <Modal label="Editor" onBackdrop={onBackdrop}>
+        <input aria-label="Name" defaultValue="Nightly checks" />
+      </Modal>,
+    );
+    const backdrop = screen.getByRole('dialog', { name: 'Editor' });
+    // Select text in the field and let go outside the card.
+    await user.pointer([
+      { keys: '[MouseLeft>]', target: screen.getByLabelText('Name') },
+      { target: backdrop },
+      { keys: '[/MouseLeft]' },
+    ]);
+    expect(onBackdrop).not.toHaveBeenCalled();
+    await user.click(backdrop);
+    expect(onBackdrop).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns focus to the button that asked for a confirmation', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button
+          onClick={() => void confirmDialog({ title: 'Delete it?', message: 'Sure?' })}
+        >
+          Delete
+        </button>
+        <ConfirmHost />
+      </>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(screen.getByRole('alertdialog')).toContainElement(
+      document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    );
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveFocus();
+  });
+
+  it('cancels an open confirmation that a newer one replaces', async () => {
+    render(<ConfirmHost />);
+    let first: Promise<boolean> = Promise.resolve(true);
+    act(() => {
+      first = confirmDialog({ title: 'First?', message: '' });
+      void confirmDialog({ title: 'Second?', message: '' });
+    });
+    await expect(first).resolves.toBe(false);
+    expect(screen.getByRole('alertdialog', { name: 'Second?' })).toBeInTheDocument();
+  });
 });

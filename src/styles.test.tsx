@@ -84,3 +84,19 @@ it('keeps hidden timeline labels inside the timeline on a long run', () => {
     expect(containingBlock(label)).toBe(container.querySelector('.timeline-rows'));
   }
 });
+
+it('stacks a confirmation above the dialog that asked for it', () => {
+  const { container } = render(
+    <>
+      <div className="modal-backdrop" role="dialog" />
+      <div className="modal-backdrop" role="alertdialog" />
+    </>,
+  );
+  const [dialog, confirm] = container.querySelectorAll('.modal-backdrop');
+  expect(dialog).toBeDefined();
+  expect(confirm).toBeDefined();
+  if (dialog === undefined || confirm === undefined) return;
+  expect(Number(getComputedStyle(confirm).zIndex)).toBeGreaterThan(
+    Number(getComputedStyle(dialog).zIndex),
+  );
+});

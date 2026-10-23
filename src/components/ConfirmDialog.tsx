@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
 
 export interface ConfirmOptions {
@@ -31,19 +31,27 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
 
 export function ConfirmHost(): React.JSX.Element | null {
   const [pending, setPending] = useState<Pending | null>(null);
+  const current = useRef<Pending | null>(null);
 
   useEffect(() => {
     requestHandler = (opts, resolve) => {
-      setPending({ opts, resolve });
+      // A newer question replaces an open one, which counts as cancelled so
+      // its caller does not wait forever.
+      current.current?.resolve(false);
+      current.current = { opts, resolve };
+      setPending(current.current);
     };
     return () => {
       requestHandler = null;
+      current.current?.resolve(false);
+      current.current = null;
     };
   }, []);
 
   if (pending === null) return null;
   const close = (v: boolean): void => {
     pending.resolve(v);
+    current.current = null;
     setPending(null);
   };
   const { opts } = pending;

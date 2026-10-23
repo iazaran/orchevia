@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { CloseButton } from './CloseButton';
 
 /**
@@ -29,6 +29,12 @@ export function Modal({
   children: ReactNode;
 }): React.JSX.Element {
   const backdrop = useRef<HTMLDivElement>(null);
+  // Read during the first render: by the time effects run, an autoFocus
+  // inside the dialog has already moved focus away from the opener.
+  const [opener] = useState(() => document.activeElement);
+  // Only a press that starts on the backdrop closes: selecting text in a
+  // field and letting go outside the card must not.
+  const pressedBackdrop = useRef(false);
   const close = useRef({ onClose, closeDisabled });
   useEffect(() => {
     close.current = { onClose, closeDisabled };
@@ -36,7 +42,6 @@ export function Modal({
   useEffect(() => {
     const dialog = backdrop.current;
     if (dialog === null) return;
-    const opener = document.activeElement;
     const focusable = (): HTMLElement[] =>
       [
         ...dialog.querySelectorAll<HTMLElement>(
@@ -86,7 +91,7 @@ export function Modal({
       document.removeEventListener('keydown', onKeyDown);
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
-  }, []);
+  }, [opener]);
   return (
     <div
       ref={backdrop}
@@ -95,7 +100,15 @@ export function Modal({
       role={role ?? 'dialog'}
       aria-modal="true"
       aria-label={label}
-      onClick={onBackdrop}
+      onMouseDown={(event) => {
+        pressedBackdrop.current = event.target === event.currentTarget;
+      }}
+      onClick={(event) => {
+        const fromBackdrop =
+          pressedBackdrop.current && event.target === event.currentTarget;
+        pressedBackdrop.current = false;
+        if (fromBackdrop) onBackdrop?.();
+      }}
     >
       <section
         className="modal-card"
