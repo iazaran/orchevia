@@ -64,3 +64,8 @@ describe('rendering round-trips every value', () => {
     expect(parseCondition('input.a == "or" or input.b == and2').clauses).toHaveLength(2);
   });
 });
+
+it('reads not contains like the core does', () => {
+  expect(parseCondition('input.a not contains "P0"').clauses[0]?.op).toBe('notContains');
+  expect(() => parseCondition('input.a "not" "contains" x')).toThrow();
+});

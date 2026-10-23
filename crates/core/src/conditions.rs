@@ -27,8 +27,20 @@ pub fn parse_condition(text: &str) -> Result<ConditionConfig, String> {
     let mut clauses = Vec::new();
     let mut logic: Option<ConditionLogic> = None;
     let mut current: Vec<String> = Vec::new();
-    for (token, quoted) in tokens {
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some((token, quoted)) = tokens.next() {
         let lower = token.to_ascii_lowercase();
+        // The two-word `not contains` operator, as the TypeScript parser reads it.
+        if !quoted
+            && lower == "not"
+            && tokens
+                .peek()
+                .is_some_and(|(next, q)| !q && next.eq_ignore_ascii_case("contains"))
+        {
+            tokens.next();
+            current.push("not contains".to_string());
+            continue;
+        }
         if !quoted && (lower == "and" || lower == "or") {
             if current.is_empty() {
                 return Err("Condition has a dangling 'and'/'or'.".to_string());
@@ -271,6 +283,11 @@ mod tests {
         }
         let joined = parse_condition(r#"input.a == "or" or input.b == and2"#).unwrap();
         assert_eq!(joined.clauses.len(), 2);
+        // Both sides read the two-word operator, and neither reads it quoted
+        // as two values.
+        let not = parse_condition(r#"input.a not contains "P0""#).unwrap();
+        assert_eq!(not.clauses[0].op, ConditionOp::NotContains);
+        assert!(parse_condition(r#"input.a "not" "contains" x"#).is_err());
     }
 
     #[test]
