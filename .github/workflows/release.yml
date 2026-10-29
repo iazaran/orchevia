@@ -106,6 +106,11 @@ jobs:
         run: |
           updater=()
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            # The bundler needs the public key too, and copies verify with it.
+            if ! node -e 'process.exit(require("./src-tauri/tauri.conf.json").plugins?.updater?.pubkey?.trim() ? 0 : 1)'; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY is set, but src-tauri/tauri.conf.json has no plugins.updater.pubkey. Add the matching public key or remove the secret."
+              exit 1
+            fi
             updater=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
           fi
           pnpm tauri build --ci --verbose --bundles "$RELEASE_BUNDLES" ${RELEASE_TARGET:+--target "$RELEASE_TARGET"} "${updater[@]}" -- --locked 2>&1 | tee build.log

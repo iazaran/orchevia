@@ -157,6 +157,52 @@ test('signed update files publish only as a complete set', () => {
   }
 });
 
+test('signing without the public key of the app stops before building', () => {
+  const build = runBlock(
+    '.github/workflows/release.yml',
+    'Build and package (capture bundler stdout and stderr)',
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'orchevia-build-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  mkdirSync(join(dir, 'src-tauri'));
+  // A stand-in pnpm records the arguments the real build would get.
+  writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\nprintf "%s\\n" "$@" > args\n', {
+    mode: 0o755,
+  });
+  const run = (pubkey, key) => {
+    writeFileSync(
+      join(dir, 'src-tauri/tauri.conf.json'),
+      JSON.stringify({ plugins: { updater: { pubkey } } }),
+    );
+    rmSync(join(dir, 'args'), { force: true });
+    return execute(build, {
+      cwd: dir,
+      env: {
+        PATH: `${bin}:${String(process.env.PATH)}`,
+        RELEASE_BUNDLES: 'deb,appimage',
+        RELEASE_TARGET: '',
+        TAURI_SIGNING_PRIVATE_KEY: key,
+      },
+    });
+  };
+  try {
+    let result = run('', 'secret');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /no plugins\.updater\.pubkey/);
+    assert.equal(run('', '').status, 0);
+    assert.doesNotMatch(
+      readFileSync(join(dir, 'args'), 'utf8'),
+      /createUpdaterArtifacts/,
+    );
+    result = run('cHVibGlj', 'secret');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(join(dir, 'args'), 'utf8'), /createUpdaterArtifacts":true/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 const stage = runBlock('.github/workflows/release.yml', 'Stage artifacts');
 
 function stagingFixture() {
