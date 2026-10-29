@@ -200,7 +200,9 @@ describe('loop exits in the browser replay (parity with the engine)', () => {
         step(id + 2, 'gate', 'succeeded', 'true'),
       );
     }
-    expect(replayGraph(loop, rows).error).toBe("Loop limit exceeded at 'fix'.");
+    expect(replayGraph(loop, rows).error).toBe(
+      "Loop limit exceeded at 'fix' (max 2 visits).",
+    );
   });
 
   it('releases the waiting exit when the loop ends by a failure route', () => {

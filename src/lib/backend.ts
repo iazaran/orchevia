@@ -1108,7 +1108,9 @@ class MockBackend implements Backend {
             node.config.condition,
             mockVariables(workflow, results, run.inputs ?? {}),
           );
-        this.pushResult(runId, nodeId, 'succeeded', String(outcome));
+        // Like the engine's condition rows: the branch is also structured.
+        const row = this.pushResult(runId, nodeId, 'succeeded', String(outcome));
+        row.structuredJson = JSON.stringify({ branch: String(outcome) });
         continue;
       }
       if (
