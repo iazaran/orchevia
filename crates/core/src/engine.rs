@@ -2356,6 +2356,16 @@ fn command_invocation(
         .filter(|home| home.is_absolute());
     let path =
         crate::workflow::resolve_script_file(script, command_working_dir(task), home.as_deref())?;
+    // A relative working folder leaves the path relative too, but the
+    // interpreter starts inside that folder: anchor it where the app runs, as
+    // the process's own working folder is.
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .map_err(|e| format!("Cannot resolve script file {}: {e}", path.display()))?
+    };
     if check_file {
         check_script_file(&path)?;
     }
@@ -2378,6 +2388,8 @@ fn check_script_file(path: &std::path::Path) -> Result<(), String> {
         }
         Err(error) => Err(format!("Cannot read script file {shown}: {error}")),
         Ok(meta) if meta.is_dir() => Err(format!("Script file is a folder: {shown}")),
+        // Opening a pipe or device can block before any timeout applies.
+        Ok(meta) if !meta.is_file() => Err(format!("Script file is not a regular file: {shown}")),
         Ok(_) => std::fs::File::open(path)
             .map(drop)
             .map_err(|error| format!("Cannot read script file {shown}: {error}")),
@@ -8409,6 +8421,59 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         let row = rows.iter().find(|r| r.node_id == "script").unwrap();
         assert!(
             row.error.as_deref().unwrap_or("").contains("is a folder"),
+            "{row:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_script_under_a_relative_working_folder_is_found_once() {
+        let cwd = std::env::current_dir().unwrap();
+        let repo = tempfile::tempdir_in(&cwd).unwrap();
+        let relative = repo.path().strip_prefix(&cwd).unwrap().to_owned();
+        std::fs::write(repo.path().join("ci.sh"), "printf ran\n").unwrap();
+        let mut script = command_node("script", "", &[], 100.0);
+        script.config.executable = None;
+        script.config.script_file = Some("ci.sh".into());
+        script.config.working_dir = Some(relative.to_string_lossy().into_owned());
+        let wf = script_workflow(repo.path(), script);
+        let (db, engine) = harness();
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "relative", &empty_inputs()).unwrap();
+        engine.execute(wf, "relative".into()).await;
+        let rows = db.list_node_results("relative").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "script").unwrap();
+        assert_eq!(row.status, "succeeded", "{row:?}");
+        assert_eq!(row.stdout.trim_end(), "ran");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pipe_is_refused_as_a_script_instead_of_blocking() {
+        let repo = tempfile::tempdir().unwrap();
+        let fifo = repo.path().join("ci.sh");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let mut script = command_node("script", "", &[], 100.0);
+        script.config.executable = None;
+        script.config.script_file = Some("ci.sh".into());
+        script.config.timeout_secs = Some(1);
+        let wf = script_workflow(repo.path(), script);
+        let (db, engine) = harness();
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "fifo", &empty_inputs()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), engine.execute(wf, "fifo".into()))
+            .await
+            .expect("a pipe with no writer must not hang the step");
+        let rows = db.list_node_results("fifo").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "script").unwrap();
+        assert!(
+            row.error
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Script file is not a regular file"),
             "{row:?}"
         );
     }
