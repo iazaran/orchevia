@@ -1265,6 +1265,13 @@ export function RunsView(): React.JSX.Element {
                       node === null
                         ? null
                         : playbookField({ id: r.nodeId, label: node.label });
+                    // The exact program and arguments a Command step ran (or, in a
+                    // dry run, would have run), as the engine recorded them.
+                    const recordedCommand = resultMetadata(r).command;
+                    const ranCommand =
+                      node?.type === 'command' && typeof recordedCommand === 'string'
+                        ? recordedCommand
+                        : null;
                     const playbook =
                       activeRun.status === 'succeeded' &&
                       node?.type === 'command' &&
@@ -1335,6 +1342,19 @@ export function RunsView(): React.JSX.Element {
                           </div>
                         )}
                         <div className="run-step-body">
+                          {ranCommand !== null && (
+                            <p
+                              className="run-step-command"
+                              title="Program and arguments exactly as passed (no shell)"
+                            >
+                              <span className="field-hint">
+                                {activeRun.execution?.options.dryRun
+                                  ? 'Would run'
+                                  : 'Ran'}
+                              </span>{' '}
+                              <code>{ranCommand}</code>
+                            </p>
+                          )}
                           {r.error !== undefined &&
                             r.error !== '' &&
                             (r.status === 'paused' ? (

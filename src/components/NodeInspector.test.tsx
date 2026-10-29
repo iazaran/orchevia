@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { NodeInspector } from './NodeInspector';
 import { useAppStore } from '../store';
 import { __setMockBackendForTests } from '../lib/backend';
-import { createEmptyWorkflow } from '../lib/workflow';
+import { createEmptyWorkflow, type NodeConfig } from '../lib/workflow';
 import { createDefaultProfile } from '../lib/agents';
 
 afterEach(() => vi.restoreAllMocks());
@@ -467,4 +467,86 @@ it('stores only whole numbers from number fields', async () => {
   }
   fireEvent.change(timeout, { target: { value: '' } });
   expect(saved()).toBeUndefined();
+});
+
+it('switches a Command step between a command and a script file without losing anything', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Script step');
+  workflow.defaults = { repoDir: '/repo' };
+  workflow.nodes.push({
+    id: 'command',
+    type: 'command',
+    position: { x: 0, y: 0 },
+    config: { executable: 'bash', args: ['scripts/ci.sh', '--fast'] },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'command',
+    selectedEdgeId: null,
+    overlayRunId: null,
+  });
+  const config = (): NodeConfig | undefined =>
+    useAppStore
+      .getState()
+      .workflows.find((w) => w.id === stored.id)
+      ?.definition.nodes.find((n) => n.id === 'command')?.config;
+  render(<NodeInspector />);
+  fireEvent.click(screen.getByRole('radio', { name: 'Script file' }));
+  // The interpreter's file becomes the script; its flags stay arguments.
+  expect(config()).toEqual({
+    executable: 'bash',
+    scriptFile: 'scripts/ci.sh',
+    args: ['--fast'],
+  });
+  expect(screen.getByLabelText('Script path')).toHaveValue('scripts/ci.sh');
+  expect(screen.getByLabelText('Run with')).toHaveValue('bash');
+  // The preview shows the real argv, resolved against the workflow folder.
+  expect(await screen.findByText('bash /repo/scripts/ci.sh --fast')).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Run with'), { target: { value: '' } });
+  fireEvent.change(screen.getByLabelText('Script path'), {
+    target: { value: 'tools/check.sh' },
+  });
+  expect(config()).toEqual({ scriptFile: 'tools/check.sh', args: ['--fast'] });
+  expect(await screen.findByText('bash /repo/tools/check.sh --fast')).toBeInTheDocument();
+  // Back to a command: the same file still runs, as bash's first argument.
+  fireEvent.click(screen.getByRole('radio', { name: 'Command' }));
+  expect(config()).toEqual({ executable: 'bash', args: ['tools/check.sh', '--fast'] });
+  expect(screen.getByLabelText('Executable')).toHaveValue('bash');
+});
+
+it('keeps a non-interpreter command intact when switching to a script file', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Script step');
+  workflow.nodes.push({
+    id: 'command',
+    type: 'command',
+    position: { x: 0, y: 0 },
+    config: { executable: 'npm', args: ['test'] },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'command',
+    selectedEdgeId: null,
+    overlayRunId: null,
+  });
+  render(<NodeInspector />);
+  fireEvent.click(screen.getByRole('radio', { name: 'Script file' }));
+  const node = useAppStore
+    .getState()
+    .workflows.find((w) => w.id === stored.id)
+    ?.definition.nodes.find((n) => n.id === 'command');
+  expect(node?.config).toEqual({ executable: 'npm', args: ['test'], scriptFile: '' });
+  // Script mode with no path yet is a visible step to finish, not a silent default.
+  expect(await screen.findByText('Choose the script file this step runs.')).toBeVisible();
+  fireEvent.click(screen.getByRole('radio', { name: 'Command' }));
+  expect(
+    useAppStore
+      .getState()
+      .workflows.find((w) => w.id === stored.id)
+      ?.definition.nodes.find((n) => n.id === 'command')?.config,
+  ).toEqual({ executable: 'npm', args: ['test'] });
 });

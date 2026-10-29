@@ -1754,6 +1754,14 @@ details[open] > .gen-summary::after {
   padding: 8px 12px 12px;
   min-width: 0;
 }
+.run-step-command {
+  margin: 0 0 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.run-step-command code {
+  font-family: var(--font-mono);
+}
 .run-step-body:empty {
   display: none;
 }
@@ -2823,6 +2831,19 @@ details[open] > .gen-summary::after {
 .access-options {
   display: grid;
   gap: 8px;
+}
+/* Command step: "Command" or "Script file", side by side. */
+.command-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.command-mode .access-option {
+  padding: 6px 10px;
+  align-items: center;
+}
+.command-mode .access-option input {
+  margin-top: 0;
 }
 .access-option {
   display: flex;

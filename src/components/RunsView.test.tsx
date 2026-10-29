@@ -219,6 +219,59 @@ it('offers the playbook only for test, lint and build steps, preselecting the fi
   expect(context.text).toMatch(/lint[^\n]*make lint/i);
 });
 
+it('shows the argv a script step ran and promotes the command that runs it', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  workflow.defaults = { repoDir: '/project' };
+  workflow.nodes.push({
+    id: 'script',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 0 },
+    config: { scriptFile: 'scripts/test.sh', args: ['--all'] },
+  });
+  const run = {
+    id: 'script-run',
+    workflowId: workflow.id,
+    status: 'succeeded' as const,
+    startedAt: new Date().toISOString(),
+    inputs: {},
+  };
+  const result = {
+    id: 1,
+    runId: run.id,
+    nodeId: 'script',
+    status: 'succeeded',
+    stdout: 'ok',
+    stderr: '',
+    startedAt: run.startedAt,
+    structuredJson: JSON.stringify({ command: 'bash /project/scripts/test.sh --all' }),
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([result]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [result] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const ran = await screen.findByText('bash /project/scripts/test.sh --all');
+  expect(ran.closest('.run-step-command')).toHaveTextContent(/^Ran/);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Save this command to the project playbook…'));
+  await user.click(screen.getByRole('button', { name: 'Save command to playbook' }));
+  expect(await screen.findByText(/Saved verified command/)).toBeInTheDocument();
+  // The playbook keeps the portable, repository-relative command.
+  const context = await backend.getProjectMemoryContext('/project');
+  expect(context.text).toContain('bash scripts/test.sh --all');
+});
+
 it('refreshes on every Runs entry and preserves the selected run with current results', async () => {
   const backend = __setMockBackendForTests();
   const oldRun = {
