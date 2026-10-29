@@ -485,7 +485,8 @@ while IFS= read -r line; do
       ;;
     *'"method":"tools/call"'*)
       n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"{\"key\":\"DEV-1234\",\"summary\":\"Cart bug\"}"}],"isError":false}}\n' "$n"
+      # As an argument, not the format: macOS sh (bash) would turn \" into ".
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$n"',"result":{"content":[{"type":"text","text":"{\"key\":\"DEV-1234\",\"summary\":\"Cart bug\"}"}],"isError":false}}'
       ;;
     *) ;;
   esac
