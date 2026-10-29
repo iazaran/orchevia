@@ -85,7 +85,7 @@ left from that run.
   the new version. The release's `latest.json` lists the AppImage and both macOS
   bundles; the signatures were verified before publication.
 - A release built without the signing secret has no `latest.json`: **Install and
-  restart** says it could not fetch the update, and the download link still works.
+  restart** is not offered, and the download steps show instead.
 - `.deb`: `sudo apt update && sudo apt upgrade` from the signed apt repository.
 
 Workflows, runs and settings are all still there afterwards.
