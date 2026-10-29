@@ -1017,11 +1017,11 @@ export function WorkflowsView(): React.JSX.Element {
           maxWidth={780}
         >
           <div>
-            <h3 style={{ marginTop: 0, paddingRight: 40 }}>
+            <h2 style={{ marginTop: 0, paddingRight: 40, fontSize: '1.17em' }}>
               {assistanceBase === null
                 ? 'Generate workflow'
                 : `Assist: ${assistanceBase.name}`}
-            </h3>
+            </h2>
             {assistanceBase !== null && (
               <div className="field">
                 <label className="field-label" htmlFor="assistance-mode">
@@ -1520,7 +1520,7 @@ export function WorkflowsView(): React.JSX.Element {
           }}
         >
           <div>
-            <h3 style={{ marginTop: 0 }}>Sample workflows</h3>
+            <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>Sample workflows</h2>
             <p className="field-hint">
               Starting points that use your Agent Profiles — created as editable copies,
               never run automatically. For full flows (ticket → draft PR), see Templates.

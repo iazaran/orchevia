@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import { ADAPTER_LABELS, referencedVariables } from '../lib/agents';
 import { parseCondition, renderCondition, type ConditionOp } from '../lib/conditions';
@@ -157,8 +157,11 @@ export function GitEditor({
       )}
       {op.op === 'stage' && (
         <div className="field">
-          <label className="field-label">Paths (one per line, explicit)</label>
+          <label className="field-label" htmlFor={`git-paths-${nodeId}`}>
+            Paths (one per line, explicit)
+          </label>
           <LinesTextarea
+            id={`git-paths-${nodeId}`}
             rows={2}
             value={op.paths ?? []}
             onChange={(paths) => {
@@ -248,11 +251,15 @@ function GitTextField({
   onChange: (v: string) => void;
   textarea?: boolean;
 }): React.JSX.Element {
+  const id = useId();
   return (
     <div className="field">
-      <span className="field-label">{label}</span>
+      <label className="field-label" htmlFor={id}>
+        {label}
+      </label>
       {textarea === true ? (
         <textarea
+          id={id}
           className="textarea"
           rows={2}
           placeholder={placeholder}
@@ -263,6 +270,7 @@ function GitTextField({
         />
       ) : (
         <input
+          id={id}
           className="input"
           placeholder={placeholder}
           value={value}
@@ -542,10 +550,11 @@ export function McpNodeEditor({
         onChange={(mcpTool) => patchNode({ ...node.config, mcpTool }, node.label)}
       />
       <div className="field">
-        <label className="field-label">
+        <label className="field-label" htmlFor={`mcp-args-${nodeId}`}>
           Arguments (one KEY=value per line, values support {'{{…}}'})
         </label>
         <KeyValueTextarea
+          id={`mcp-args-${nodeId}`}
           rows={3}
           placeholder="key=DEV-1234"
           value={node.config.mcpArgs ?? {}}
@@ -903,7 +912,7 @@ export function NodeInspector(): React.JSX.Element | null {
     const sourceKind = workflow.nodes.find((n) => n.id === edge.source)?.type;
     return (
       <aside className="inspector" aria-label="Edge inspector">
-        <h3 style={{ marginTop: 0 }}>Connection</h3>
+        <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>Connection</h2>
         <p className="field-hint">
           {edge.source} → {edge.target}
         </p>
@@ -967,7 +976,7 @@ export function NodeInspector(): React.JSX.Element | null {
   if (node === null) {
     return (
       <aside className="inspector">
-        <h3 style={{ marginTop: 0 }}>Workflow</h3>
+        <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>Workflow</h2>
         <div className="field">
           <label className="field-label" htmlFor="wf-name">
             Name
@@ -1171,7 +1180,7 @@ export function NodeInspector(): React.JSX.Element | null {
 
   return (
     <aside className="inspector" aria-label="Node inspector">
-      <h3 style={{ marginTop: 0 }}>{meta.label}</h3>
+      <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>{meta.label}</h2>
       <p className="field-hint">{meta.description}</p>
       {nodeIssues.length > 0 && (
         <Notice inline className="node-setup">

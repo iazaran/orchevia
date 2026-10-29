@@ -648,7 +648,6 @@ export function WorkflowCanvas({
         className="canvas-toolbar"
         ref={toolbarRef}
         style={{ border: 0, margin: 0 }}
-        role="toolbar"
         aria-label="Add nodes"
       >
         {ADDABLE.map((kind) => (
