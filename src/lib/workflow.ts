@@ -812,8 +812,21 @@ export function toScriptMode(config: NodeConfig): NodeConfig {
 }
 
 /**
+ * Why a script step cannot become a plain command without changing what it
+ * runs, or `null`. Command arguments reach the program as they are, with no
+ * shell to expand `~`, so `bash ~/bin/check.sh` would look for a folder
+ * literally named `~`.
+ */
+export function commandModeBlocker(config: NodeConfig): string | null {
+  return (config.scriptFile ?? '').trim().startsWith('~/')
+    ? 'A script under ~/ cannot become a plain command: command arguments are not expanded like a shell would. Change the path to a full path first.'
+    : null;
+}
+
+/**
  * Switch a Command step back to "Command": the script becomes the
  * interpreter's first argument, so the step still runs the same file.
+ * Callers check [`commandModeBlocker`] first.
  */
 export function toCommandMode(config: NodeConfig): NodeConfig {
   if (config.scriptFile === undefined) return config;

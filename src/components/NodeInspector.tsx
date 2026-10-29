@@ -8,6 +8,7 @@ import {
   commandWorkingFolder,
   scriptPathFromPicked,
   setWorkflowDefaults,
+  commandModeBlocker,
   toCommandMode,
   toScriptMode,
   type Workflow,
@@ -872,6 +873,8 @@ export function NodeInspector(): React.JSX.Element | null {
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
   const [detectingBranch, setDetectingBranch] = useState(false);
+  // Why the last Command/Script file switch did not happen, for that step only.
+  const [modeNote, setModeNote] = useState<{ nodeId: string; text: string } | null>(null);
   const [branchDetectMsg, setBranchDetectMsg, , branchDetectMsgEvent] =
     useNoticeMessage('warn');
 
@@ -1202,6 +1205,9 @@ export function NodeInspector(): React.JSX.Element | null {
   };
 
   const switchCommandMode = (script: boolean): void => {
+    const blocked = script ? null : commandModeBlocker(node.config);
+    setModeNote(blocked === null ? null : { nodeId: node.id, text: blocked });
+    if (blocked !== null) return;
     // Nothing is dropped: an interpreter running a file keeps that file, and
     // a script turns back into its interpreter's first argument.
     const config = script ? toScriptMode(node.config) : toCommandMode(node.config);
@@ -1271,6 +1277,11 @@ export function NodeInspector(): React.JSX.Element | null {
                 </label>
               ))}
             </div>
+            {modeNote?.nodeId === node.id && (
+              <p className="field-hint" role="status">
+                {modeNote.text}
+              </p>
+            )}
           </div>
           {scriptMode ? (
             <>

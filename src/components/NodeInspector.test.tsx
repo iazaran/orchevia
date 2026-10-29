@@ -550,3 +550,32 @@ it('keeps a non-interpreter command intact when switching to a script file', asy
       ?.definition.nodes.find((n) => n.id === 'command')?.config,
   ).toEqual({ executable: 'npm', args: ['test'] });
 });
+
+it('keeps a home-relative script in script mode and says why', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Home script');
+  workflow.nodes.push({
+    id: 'command',
+    type: 'command',
+    position: { x: 0, y: 0 },
+    config: { scriptFile: '~/bin/check.sh', args: ['--fast'] },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'command',
+    selectedEdgeId: null,
+    overlayRunId: null,
+  });
+  render(<NodeInspector />);
+  fireEvent.click(screen.getByRole('radio', { name: 'Command' }));
+  const node = useAppStore
+    .getState()
+    .workflows.find((w) => w.id === stored.id)
+    ?.definition.nodes.find((n) => n.id === 'command');
+  // `bash ~/bin/check.sh` would look for a folder named `~`: nothing changes.
+  expect(node?.config).toEqual({ scriptFile: '~/bin/check.sh', args: ['--fast'] });
+  expect(screen.getByRole('radio', { name: 'Script file' })).toBeChecked();
+  expect(screen.getByText(/cannot become a plain command/)).toBeVisible();
+});

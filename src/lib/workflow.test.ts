@@ -17,6 +17,7 @@ import {
   scriptPathFromPicked,
   scriptPathIsRooted,
   sparedAnchors,
+  commandModeBlocker,
   toCommandMode,
   toScriptMode,
   nextBranchLabel,
@@ -764,5 +765,10 @@ describe('script-file Command steps', () => {
       executable: 'bash',
       args: ['ci.sh'],
     });
+    // A home-relative script would stop working as a plain argument.
+    expect(commandModeBlocker({ scriptFile: ' ~/bin/check.sh' })).toContain('full path');
+    expect(commandModeBlocker({ scriptFile: '/home/me/bin/check.sh' })).toBeNull();
+    expect(commandModeBlocker({ scriptFile: 'scripts/ci.sh' })).toBeNull();
+    expect(commandModeBlocker({ executable: 'npm' })).toBeNull();
   });
 });
