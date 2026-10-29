@@ -102,10 +102,7 @@ pub fn instantiate(
         .filter(|i| i.severity == crate::workflow::ValidationSeverity::Error)
     {
         // Machine-local configuration, not structural breakage.
-        if matches!(
-            issue.code.as_str(),
-            "git-dir-required" | "ticket-server-required" | "mcp-server-required"
-        ) {
+        if crate::workflow::SETUP_ISSUE_CODES.contains(&issue.code.as_str()) {
             setup_needed.push(issue.message.clone());
         } else {
             blocking.push(issue.message.clone());
@@ -234,10 +231,7 @@ pub fn import_developer_template(
         .into_iter()
         .filter(|issue| {
             issue.severity == crate::workflow::ValidationSeverity::Error
-                && !matches!(
-                    issue.code.as_str(),
-                    "git-dir-required" | "ticket-server-required" | "mcp-server-required"
-                )
+                && !crate::workflow::SETUP_ISSUE_CODES.contains(&issue.code.as_str())
         })
         .map(|issue| issue.message)
         .collect();

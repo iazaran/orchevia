@@ -486,11 +486,7 @@ fn required_shell_variables(args: &[String]) -> Vec<String> {
 
 /// Machine-local wiring the user fills in after preview (repo dirs, MCP
 /// servers). Never blocks acceptance — shown as a setup checklist instead.
-pub const SETUP_ISSUE_CODES: &[&str] = &[
-    "git-dir-required",
-    "ticket-server-required",
-    "mcp-server-required",
-];
+pub use crate::workflow::SETUP_ISSUE_CODES;
 
 /// Nodes that can reach themselves sit on a cycle and need max_visits.
 /// Defaults them to 2 with a repair note instead of blocking the preview.

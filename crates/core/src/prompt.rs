@@ -71,11 +71,16 @@ pub fn render_prompt_lenient(template: &str, vars: &HashMap<String, String>) -> 
 }
 
 /// Collect placeholder names referenced by a template (sorted, deduped).
+/// Escaped openers (`\{{`) are literal text, exactly as [`render_prompt`] treats them.
 pub fn referenced_variables(template: &str) -> Vec<String> {
     let mut names: HashSet<String> = HashSet::new();
     let chars: Vec<char> = template.chars().collect();
     let mut i = 0;
     while i < chars.len() {
+        if chars[i] == '\\' && chars.get(i + 1) == Some(&'{') && chars.get(i + 2) == Some(&'{') {
+            i += 3;
+            continue;
+        }
         if chars[i] == '{' && chars.get(i + 1) == Some(&'{') {
             if let Some(end) = find_close(&chars, i + 2) {
                 let raw: String = chars[i + 2..end].iter().collect();
@@ -248,6 +253,16 @@ mod tests {
     fn referenced_variables_lists_sorted_unique() {
         let names = referenced_variables("{{b}} {{a}} {{b}}");
         assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn referenced_variables_skip_escaped_placeholders_like_rendering() {
+        let template = "\\{{input.literal}} {{input.real}} {{{{x}}}}";
+        assert_eq!(
+            referenced_variables(template),
+            vec!["input.real".to_string()]
+        );
+        assert_eq!(render_prompt(template, &vars(&[])).1, vec!["input.real"]);
     }
 
     #[test]

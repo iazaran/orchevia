@@ -377,7 +377,82 @@ pub struct ValidationIssue {
     pub severity: ValidationSeverity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// The connection an issue is about (unknown endpoints, labels, loops).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_id: Option<String>,
 }
+
+/// Every code [`validate_workflow`] can report. The TypeScript twin
+/// (`VALIDATION_CODES` in `src/lib/workflow.ts`) and the shared parity
+/// fixture (`src/test/validation-parity.json`) must list the same codes.
+pub const VALIDATION_CODES: &[&str] = &[
+    "schema-too-new",
+    "name-required",
+    "single-start",
+    "end-required",
+    "edge-unknown-source",
+    "edge-unknown-target",
+    "edge-self-loop",
+    "command-executable-required",
+    "command-executable-suspicious",
+    "command-timeout-invalid",
+    "agent-session-group-invalid",
+    "agent-session-variable-invalid",
+    "agent-session-turns-invalid",
+    "agent-context-limit-invalid",
+    "agent-context-ref-invalid",
+    "agent-profile-required",
+    "agent-role-unknown",
+    "agent-prompt-required",
+    "agent-timeout-invalid",
+    "agent-input-unknown",
+    "agent-tool-allowance-invalid",
+    "agent-subagent-allowance-invalid",
+    "agent-required-tools-invalid",
+    "agent-allowance-misplaced",
+    "agent-required-tools-misplaced",
+    "prompt-unknown-variable",
+    "condition-required",
+    "condition-unknown-ref",
+    "condition-branches-required",
+    "git-op-required",
+    "git-dir-required",
+    "git-branch-required",
+    "git-branch-invalid",
+    "git-paths-required",
+    "git-message-required",
+    "git-path-required",
+    "github-op-required",
+    "github-title-required",
+    "github-branches-required",
+    "github-body-required",
+    "ticket-key-required",
+    "ticket-server-required",
+    "mcp-server-required",
+    "mcp-tool-required",
+    "retry-unbounded",
+    "retry-delay-invalid",
+    "loop-limit-invalid",
+    "input-name-invalid",
+    "input-duplicate",
+    "workflow-limits-invalid",
+    "edge-label-unknown",
+    "edge-label-misplaced",
+    "cycle-needs-condition",
+    "cycle-unbounded",
+    "cycle-into-end",
+    "unreachable-node",
+    "dead-end-node",
+];
+
+/// Error codes that mean "this machine still needs configuring" (a folder,
+/// a server) rather than a broken graph: templates and generated drafts may
+/// carry them into the editor as setup items instead of being refused.
+pub const SETUP_ISSUE_CODES: &[&str] = &[
+    "git-dir-required",
+    "ticket-server-required",
+    "mcp-server-required",
+];
 
 impl Workflow {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
@@ -659,7 +734,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         wf.nodes.iter().map(|n| n.id.as_str()).collect();
     for edge in &wf.edges {
         if !node_ids.contains(edge.source.as_str()) {
-            push_error(
+            push_edge_error(
                 &mut issues,
                 "edge-unknown-source",
                 format!(
@@ -667,10 +742,11 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     edge.id, edge.source
                 ),
                 None,
+                edge,
             );
         }
         if !node_ids.contains(edge.target.as_str()) {
-            push_error(
+            push_edge_error(
                 &mut issues,
                 "edge-unknown-target",
                 format!(
@@ -678,14 +754,16 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     edge.id, edge.target
                 ),
                 None,
+                edge,
             );
         }
         if edge.source == edge.target {
-            push_error(
+            push_edge_error(
                 &mut issues,
                 "edge-self-loop",
                 format!("Edge '{}' connects a node to itself.", edge.id),
                 Some(edge.source.clone()),
+                edge,
             );
         }
     }
@@ -1149,12 +1227,15 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     ),
                     None,
                 );
+                if let Some(issue) = issues.last_mut() {
+                    issue.edge_id = Some(edge.id.clone());
+                }
                 continue;
             }
             if matches!(kind, EdgeKind::TrueBranch | EdgeKind::FalseBranch) {
                 let source_kind = by_id.get(edge.source.as_str()).map(|n| n.kind);
                 if source_kind != Some(NodeKind::Condition) {
-                    push_error(
+                    push_edge_error(
                         &mut issues,
                         "edge-label-misplaced",
                         format!(
@@ -1162,6 +1243,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                             edge.id
                         ),
                         None,
+                        edge,
                     );
                 }
             }
@@ -1174,6 +1256,8 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         let loop_edges = find_loop_edges(wf);
         let by_id: std::collections::HashMap<&str, &Node> =
             wf.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        // A node on several loops still needs one bound: report it once.
+        let mut unbounded: HashSet<&str> = HashSet::new();
         for edge in wf.edges.iter().filter(|e| loop_edges.contains(&e.id)) {
             // Nodes on this cycle: reachable from target AND able to reach source.
             let from_target = reachable_from(wf, &edge.target);
@@ -1183,7 +1267,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 .filter(|n| from_target.contains(&n.id) && can_reach(wf, &n.id, &edge.source))
                 .collect();
             if !cycle_nodes.iter().any(|n| n.kind == NodeKind::Condition) {
-                push_error(
+                push_edge_error(
                     &mut issues,
                     "cycle-needs-condition",
                     format!(
@@ -1191,10 +1275,11 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         edge.id
                     ),
                     Some(edge.source.clone()),
+                    edge,
                 );
             }
             for node in cycle_nodes {
-                if node.config.max_visits.unwrap_or(1) < 2 {
+                if node.config.max_visits.unwrap_or(1) < 2 && unbounded.insert(node.id.as_str()) {
                     push_error(
                         &mut issues,
                         "cycle-unbounded",
@@ -1210,7 +1295,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         // Loop edges into End nodes make no sense (End terminates).
         for edge in wf.edges.iter().filter(|e| loop_edges.contains(&e.id)) {
             if by_id.get(edge.target.as_str()).map(|n| n.kind) == Some(NodeKind::End) {
-                push_error(
+                push_edge_error(
                     &mut issues,
                     "cycle-into-end",
                     format!(
@@ -1218,6 +1303,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         edge.id
                     ),
                     Some(edge.target.clone()),
+                    edge,
                 );
             }
         }
@@ -1290,12 +1376,28 @@ fn push_error(
     message: String,
     node_id: Option<String>,
 ) {
+    debug_assert!(VALIDATION_CODES.contains(&code), "unlisted code {code}");
     issues.push(ValidationIssue {
         code: code.to_string(),
         message,
         severity: ValidationSeverity::Error,
         node_id,
+        edge_id: None,
     });
+}
+
+/// An error about one connection (and optionally the step it points at).
+fn push_edge_error(
+    issues: &mut Vec<ValidationIssue>,
+    code: &str,
+    message: String,
+    node_id: Option<String>,
+    edge: &Edge,
+) {
+    push_error(issues, code, message, node_id);
+    if let Some(issue) = issues.last_mut() {
+        issue.edge_id = Some(edge.id.clone());
+    }
 }
 
 fn push_warning(
@@ -1304,11 +1406,13 @@ fn push_warning(
     message: String,
     node_id: Option<String>,
 ) {
+    debug_assert!(VALIDATION_CODES.contains(&code), "unlisted code {code}");
     issues.push(ValidationIssue {
         code: code.to_string(),
         message,
         severity: ValidationSeverity::Warning,
         node_id,
+        edge_id: None,
     });
 }
 
@@ -2544,5 +2648,149 @@ mod perf_tests {
                 .all(|i| i.severity != ValidationSeverity::Error),
             "{issues:?}"
         );
+    }
+}
+
+/// One fixture keeps this validator and its TypeScript twin
+/// (`validateWorkflowLocal`, checked by `src/lib/validation-parity.test.ts`)
+/// in step: both must report exactly the issues each case lists.
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const FIXTURE: &str = include_str!("../../../src/test/validation-parity.json");
+
+    fn fixture() -> Value {
+        serde_json::from_str(FIXTURE).expect("fixture is JSON")
+    }
+
+    fn strings(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|v| v.as_str().expect("string").to_string())
+            .collect()
+    }
+
+    /// Fill the fields cases leave out, exactly like the TypeScript test.
+    fn case_workflow(case: &Value) -> Workflow {
+        let mut wf = case["workflow"].clone();
+        let object = wf.as_object_mut().expect("workflow object");
+        object
+            .entry("schemaVersion")
+            .or_insert(json!(CURRENT_SCHEMA_VERSION));
+        object.entry("id").or_insert(json!("wf-parity"));
+        object.entry("name").or_insert(json!("Parity"));
+        for node in object
+            .get_mut("nodes")
+            .and_then(Value::as_array_mut)
+            .expect("nodes")
+        {
+            let node = node.as_object_mut().expect("node object");
+            node.entry("position").or_insert(json!({"x": 0, "y": 0}));
+            node.entry("config").or_insert(json!({}));
+        }
+        Workflow::from_json(&wf.to_string()).expect("case workflow parses")
+    }
+
+    fn key(code: &str, severity: &str, node: Option<&str>, edge: Option<&str>) -> String {
+        format!(
+            "{code} {severity} node={} edge={}",
+            node.unwrap_or("-"),
+            edge.unwrap_or("-")
+        )
+    }
+
+    #[test]
+    fn every_case_reports_exactly_the_listed_issues() {
+        let mut mismatches = Vec::new();
+        for case in fixture()["cases"].as_array().expect("cases") {
+            let mut expected: Vec<String> = case["issues"]
+                .as_array()
+                .expect("issues")
+                .iter()
+                .map(|i| {
+                    key(
+                        i["code"].as_str().expect("code"),
+                        i["severity"].as_str().expect("severity"),
+                        i["nodeId"].as_str(),
+                        i["edgeId"].as_str(),
+                    )
+                })
+                .collect();
+            let mut actual: Vec<String> = validate_workflow(&case_workflow(case))
+                .iter()
+                .map(|i| {
+                    let severity = match i.severity {
+                        ValidationSeverity::Error => "error",
+                        ValidationSeverity::Warning => "warning",
+                    };
+                    key(
+                        &i.code,
+                        severity,
+                        i.node_id.as_deref(),
+                        i.edge_id.as_deref(),
+                    )
+                })
+                .collect();
+            expected.sort();
+            actual.sort();
+            if expected != actual {
+                mismatches.push(format!(
+                    "{}\n  expected: {expected:#?}\n  actual: {actual:#?}",
+                    case["name"]
+                ));
+            }
+        }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn the_fixture_lists_and_exercises_every_code() {
+        let fixture = fixture();
+        let codes = strings(&fixture["codes"]);
+        let mut listed = codes.clone();
+        listed.sort();
+        let mut known: Vec<String> = VALIDATION_CODES.iter().map(|c| c.to_string()).collect();
+        known.sort();
+        assert_eq!(listed, known, "fixture codes vs VALIDATION_CODES");
+        let exercised: HashSet<String> = fixture["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .flat_map(|c| c["issues"].as_array().expect("issues").iter())
+            .map(|i| i["code"].as_str().expect("code").to_string())
+            .collect();
+        for code in &codes {
+            assert!(exercised.contains(code), "no case reports {code}");
+        }
+        assert_eq!(
+            strings(&fixture["setupCodes"]),
+            SETUP_ISSUE_CODES.to_vec(),
+            "fixture setupCodes vs SETUP_ISSUE_CODES"
+        );
+    }
+
+    /// Exemptions are run-start checks that need the database or PATH. They
+    /// stay out of `validate_workflow` and must really exist in the engine.
+    #[test]
+    fn exemptions_are_real_run_start_checks() {
+        let engine = include_str!("engine.rs");
+        for exemption in fixture()["exemptions"].as_array().expect("exemptions") {
+            let code = exemption["code"].as_str().expect("code");
+            assert!(!VALIDATION_CODES.contains(&code), "{code} is validated");
+            assert!(
+                exemption["reason"]
+                    .as_str()
+                    .is_some_and(|r| !r.trim().is_empty()),
+                "{code} needs a reason"
+            );
+            assert!(
+                engine.contains(&format!("code: \"{code}\"")),
+                "{code} is not a run-start check in engine.rs"
+            );
+        }
     }
 }

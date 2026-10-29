@@ -560,13 +560,37 @@ export function effectiveExecutable(profile: AgentProfile): string {
 const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\}\}/g;
 const ESCAPED_OPEN = /\\\{\{/g;
 
+const VARIABLE_NAME = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/**
+ * Placeholder names a template references, sorted and unique. Scans exactly
+ * like Rust `referenced_variables`: `\{{` is literal text, each `{{` closes at
+ * the first `}}`, and only valid dotted names (≤128 chars) count.
+ */
 export function referencedVariables(template: string): string[] {
+  const chars = Array.from(template);
   const names = new Set<string>();
-  // Strip escaped openers so `\{{x}}` is not collected.
-  const scrubbed = template.replace(ESCAPED_OPEN, '');
-  for (const match of scrubbed.matchAll(PLACEHOLDER)) {
-    const name = match[1];
-    if (name !== undefined) names.add(name);
+  let i = 0;
+  while (i < chars.length) {
+    if (chars[i] === '\\' && chars[i + 1] === '{' && chars[i + 2] === '{') {
+      i += 3;
+      continue;
+    }
+    if (chars[i] === '{' && chars[i + 1] === '{') {
+      let end = i + 2;
+      while (end + 1 < chars.length && !(chars[end] === '}' && chars[end + 1] === '}'))
+        end++;
+      if (end + 1 < chars.length) {
+        const name = chars
+          .slice(i + 2, end)
+          .join('')
+          .trim();
+        if (name.length <= 128 && VARIABLE_NAME.test(name)) names.add(name);
+        i = end + 2;
+        continue;
+      }
+    }
+    i++;
   }
   return [...names].sort();
 }

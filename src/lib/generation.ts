@@ -4,7 +4,12 @@
  */
 
 import type { AgentProfile } from './agents';
-import type { ValidationIssue, Workflow, WorkflowNode } from './workflow';
+import {
+  isValidInputName,
+  type ValidationIssue,
+  type Workflow,
+  type WorkflowNode,
+} from './workflow';
 
 export interface GenerationPreview {
   generationId: string;
@@ -38,9 +43,7 @@ export interface DeclaredInput {
   required: boolean;
 }
 
-export function isValidInputName(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name);
-}
+export { isValidInputName };
 
 /** Parse the generator inputs box. Returns inputs + per-line problems. */
 export function parseInputDeclarations(text: string): {

@@ -120,6 +120,19 @@ describe('run controls', () => {
     expect(entries[1]?.offsetMs).toBe(0);
     expect(entries.find((e) => e.id === 3)?.durationMs).toBe(4000);
   });
+  it('routes every failure label the engine accepts, including "on error"', () => {
+    const recovery: Workflow = {
+      ...workflow,
+      edges: [
+        { id: 'sb', source: 's', target: 'b' },
+        { id: 'ba', source: 'b', target: 'a', label: 'On Error' },
+        { id: 'be', source: 'b', target: 'e' },
+        { id: 'ae', source: 'a', target: 'e' },
+      ],
+    };
+    const graph = replayGraph(recovery, [row(1, 's'), row(2, 'b', 'failed')]);
+    expect(graph.ready).toEqual(['a']);
+  });
   it('waits for both branches at a join', () => {
     expect(replayGraph(workflow, [row(1, 's'), row(2, 'a')]).ready).toEqual(['b']);
     expect(replayGraph(workflow, [row(1, 's'), row(2, 'a'), row(3, 'b')]).ready).toEqual([

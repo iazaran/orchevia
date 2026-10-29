@@ -673,6 +673,7 @@ impl Engine {
                     message: format!("Workflow input '{}' is required.", input.name),
                     severity: ValidationSeverity::Error,
                     node_id: None,
+                    edge_id: None,
                 });
             }
         }
@@ -692,6 +693,7 @@ impl Engine {
                     message: "AI Agent node still references a role; resolve roles to profiles before running.".to_string(),
                     severity: ValidationSeverity::Error,
                     node_id: Some(node.id.clone()),
+                    edge_id: None,
                 });
                     continue;
                 }
@@ -705,6 +707,7 @@ impl Engine {
                                     message,
                                     severity: ValidationSeverity::Error,
                                     node_id: Some(node.id.clone()),
+                                    edge_id: None,
                                 });
                             }
                         }
@@ -718,6 +721,7 @@ impl Engine {
                                 ),
                                 severity: ValidationSeverity::Error,
                                 node_id: Some(node.id.clone()),
+                                edge_id: None,
                             });
                         }
                     }
@@ -728,6 +732,7 @@ impl Engine {
                         ),
                         severity: ValidationSeverity::Error,
                         node_id: Some(node.id.clone()),
+                        edge_id: None,
                     }),
                     Err(e) => {
                         return Err(EngineError::Db(e.to_string()));
@@ -745,6 +750,7 @@ impl Engine {
                     ),
                     severity: ValidationSeverity::Error,
                     node_id: None,
+                    edge_id: None,
                 });
             }
             if needs_gh && !crate::github::cli_available() {
@@ -755,6 +761,7 @@ impl Engine {
                     ),
                     severity: ValidationSeverity::Error,
                     node_id: None,
+                    edge_id: None,
                 });
             }
             for node in workflow
@@ -771,6 +778,7 @@ impl Engine {
                                 message: format!("MCP server '{}' is disabled.", server.name),
                                 severity: ValidationSeverity::Error,
                                 node_id: Some(node.id.clone()),
+                                edge_id: None,
                             });
                         } else if !crate::mcp::server_command_available(&server) {
                             issues.push(crate::workflow::ValidationIssue {
@@ -781,6 +789,7 @@ impl Engine {
                                 ),
                                 severity: ValidationSeverity::Error,
                                 node_id: Some(node.id.clone()),
+                                edge_id: None,
                             });
                         }
                     }
@@ -789,6 +798,7 @@ impl Engine {
                         message: format!("Node references unknown MCP server '{server_id}'."),
                         severity: ValidationSeverity::Error,
                         node_id: Some(node.id.clone()),
+                        edge_id: None,
                     }),
                     Err(e) => {
                         return Err(EngineError::Db(e.to_string()));

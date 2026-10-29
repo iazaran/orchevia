@@ -186,7 +186,11 @@ describe('validation coverage', () => {
   it('rejects edges to unknown nodes', () => {
     const wf = createEmptyWorkflow('Edges');
     wf.edges = [{ id: 'e9', source: 'nope', target: 'missing' }];
-    expect(validateWorkflowLocal(wf).map((i) => i.code)).toContain('edge-unknown-node');
+    const issues = validateWorkflowLocal(wf).filter((i) => i.edgeId === 'e9');
+    expect(issues.map((i) => i.code)).toEqual([
+      'edge-unknown-source',
+      'edge-unknown-target',
+    ]);
   });
 });
 
@@ -317,10 +321,13 @@ describe('commit/PR quick flow', () => {
     expect(validateWorkflowLocal(wf)).toHaveLength(0);
   });
 
-  it('falls back to a generic name without a branch', () => {
+  it('falls back to a generic name and asks for the PR branch without one', () => {
     const wf = createCommitPrWorkflow('/repo', '');
     expect(wf.name).toContain('branch');
-    expect(validateWorkflowLocal(wf)).toHaveLength(0);
+    // Like the backend: a blank head needs a workflow default branch.
+    expect(validateWorkflowLocal(wf).map((i) => i.code)).toEqual([
+      'github-branches-required',
+    ]);
   });
 });
 

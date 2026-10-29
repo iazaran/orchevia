@@ -3,7 +3,7 @@ import { builtinTemplates, instantiateTemplateLocal } from './templates';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
 import { missingToolGrants } from './permissions';
-import type { NodeConfig } from './workflow';
+import { setWorkflowDefaults, validateWorkflowLocal, type NodeConfig } from './workflow';
 
 it('creates independent workflow clones on repeated template use', () => {
   const template = builtinTemplates()[0];
@@ -271,4 +271,27 @@ it('imports declared tools and reports which ones the mapped profiles lack', asy
   await expect(backend.importTemplate(JSON.stringify(invalid))).rejects.toThrow(
     /credential/i,
   );
+});
+
+it('leaves nothing on the setup list once a repository and MCP server are chosen', () => {
+  // TemplatesView lists every remaining browser-validation error as setup;
+  // the full validator must not invent items for a set-up built-in.
+  for (const template of builtinTemplates()) {
+    const roles = Object.fromEntries(
+      template.workflow.nodes.flatMap((n) =>
+        n.config.agentRole ? [[n.config.agentRole, 'profile-' + n.config.agentRole]] : [],
+      ),
+    );
+    let workflow = instantiateTemplateLocal(template, roles).workflow;
+    workflow = setWorkflowDefaults(workflow, '/repo', workflow.defaults?.branch ?? '');
+    workflow.nodes = workflow.nodes.map((n) =>
+      n.type === 'ticket' || n.type === 'mcp'
+        ? { ...n, config: { mcpServerId: 'jira', ...n.config } }
+        : n,
+    );
+    expect(
+      validateWorkflowLocal(workflow).filter((i) => i.severity === 'error'),
+      template.id,
+    ).toEqual([]);
+  }
 });

@@ -6,6 +6,7 @@ import type {
   WorkflowEdge,
 } from './workflow';
 import {
+  classifyEdgeLabel,
   MAX_ATTEMPTS_LIMIT,
   MAX_SUBAGENT_LIMIT,
   MAX_TOOL_CALL_LIMIT,
@@ -494,12 +495,8 @@ type EdgeKind = 'success' | 'failure' | 'true' | 'false';
 
 /** Mirrors `classify_edge_label`; unknown labels behave as success edges. */
 function edgeKind(label?: string): EdgeKind {
-  const value = (label ?? '').trim().toLowerCase();
-  if (['true', 'yes', 'on true'].includes(value)) return 'true';
-  if (['false', 'no', 'on false'].includes(value)) return 'false';
-  if (['failure', 'fail', 'error', 'on failure', 'on error'].includes(value))
-    return 'failure';
-  return 'success';
+  const kind = classifyEdgeLabel(label);
+  return kind === 'unknown' ? 'success' : kind;
 }
 
 type Outcome = 'succeeded' | 'failed' | 'skipped' | 'cancelled';

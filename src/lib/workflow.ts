@@ -7,7 +7,7 @@ import type { RunExecution } from './run-controls';
  * `crates/core/src/workflow.rs`.
  */
 
-import { referencedVariables } from './agents';
+import { referencedVariables, WELL_KNOWN_ROLES } from './agents';
 import { validateToolRules } from './permissions';
 
 export const CURRENT_SCHEMA_VERSION = 6;
@@ -228,6 +228,8 @@ export interface ValidationIssue {
   message: string;
   severity: ValidationSeverity;
   nodeId?: string;
+  /** The connection an issue is about (unknown endpoints, labels, loops). */
+  edgeId?: string;
 }
 
 export type RunStatus =
@@ -621,386 +623,759 @@ export function issueNodeLabel(wf: Workflow, issue: ValidationIssue): string | n
   return node.label?.trim() || node.id;
 }
 
-/** Lightweight client-side validation (backend re-validates authoritatively). */
+/**
+ * Every code `validateWorkflowLocal` can report — the same list as Rust
+ * `VALIDATION_CODES`. The shared fixture `src/test/validation-parity.json`
+ * holds cases both validators must answer identically.
+ */
+export const VALIDATION_CODES = [
+  'schema-too-new',
+  'name-required',
+  'single-start',
+  'end-required',
+  'edge-unknown-source',
+  'edge-unknown-target',
+  'edge-self-loop',
+  'command-executable-required',
+  'command-executable-suspicious',
+  'command-timeout-invalid',
+  'agent-session-group-invalid',
+  'agent-session-variable-invalid',
+  'agent-session-turns-invalid',
+  'agent-context-limit-invalid',
+  'agent-context-ref-invalid',
+  'agent-profile-required',
+  'agent-role-unknown',
+  'agent-prompt-required',
+  'agent-timeout-invalid',
+  'agent-input-unknown',
+  'agent-tool-allowance-invalid',
+  'agent-subagent-allowance-invalid',
+  'agent-required-tools-invalid',
+  'agent-allowance-misplaced',
+  'agent-required-tools-misplaced',
+  'prompt-unknown-variable',
+  'condition-required',
+  'condition-unknown-ref',
+  'condition-branches-required',
+  'git-op-required',
+  'git-dir-required',
+  'git-branch-required',
+  'git-branch-invalid',
+  'git-paths-required',
+  'git-message-required',
+  'git-path-required',
+  'github-op-required',
+  'github-title-required',
+  'github-branches-required',
+  'github-body-required',
+  'ticket-key-required',
+  'ticket-server-required',
+  'mcp-server-required',
+  'mcp-tool-required',
+  'retry-unbounded',
+  'retry-delay-invalid',
+  'loop-limit-invalid',
+  'input-name-invalid',
+  'input-duplicate',
+  'workflow-limits-invalid',
+  'edge-label-unknown',
+  'edge-label-misplaced',
+  'cycle-needs-condition',
+  'cycle-unbounded',
+  'cycle-into-end',
+  'unreachable-node',
+  'dead-end-node',
+] as const;
+
+export type ValidationCode = (typeof VALIDATION_CODES)[number];
+
+/**
+ * Error codes that mean "this machine still needs configuring" rather than a
+ * broken graph (mirrors Rust `SETUP_ISSUE_CODES`): templates and drafts carry
+ * them into the editor as setup items instead of being refused.
+ */
+export const SETUP_ISSUE_CODES: readonly string[] = [
+  'git-dir-required',
+  'ticket-server-required',
+  'mcp-server-required',
+];
+
+/** Routing meaning of an edge label; unknown labels route like success. */
+export type EdgeKind = 'success' | 'failure' | 'true' | 'false' | 'unknown';
+
+/** Classify an edge label (trimmed, ASCII case-insensitive). Mirrors Rust `classify_edge_label`. */
+export function classifyEdgeLabel(label?: string): EdgeKind {
+  const value = (label ?? '').trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (['', 'success', 'ok', 'on success', 'default'].includes(value)) return 'success';
+  if (['failure', 'fail', 'error', 'on failure', 'on error'].includes(value))
+    return 'failure';
+  if (['true', 'yes', 'on true'].includes(value)) return 'true';
+  if (['false', 'no', 'on false'].includes(value)) return 'false';
+  return 'unknown';
+}
+
+/**
+ * Loop-back edges: edges whose target is still on the depth-first path from
+ * Start. Mirrors Rust `find_loop_edges` step for step (same visiting order).
+ */
+export function findLoopEdges(wf: Workflow): Set<string> {
+  const loops = new Set<string>();
+  const start = wf.nodes.find((n) => n.type === 'start');
+  if (start === undefined) return loops;
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  for (const edge of wf.edges) {
+    const list = outgoing.get(edge.source) ?? [];
+    list.push(edge);
+    outgoing.set(edge.source, list);
+  }
+  const visited = new Set<string>();
+  const onStack = new Set<string>([start.id]);
+  const stack: [string, number][] = [[start.id, 0]];
+  for (let top = stack.pop(); top !== undefined; top = stack.pop()) {
+    const [nodeId, index] = top;
+    const edge = outgoing.get(nodeId)?.[index];
+    if (edge === undefined) {
+      onStack.delete(nodeId);
+      continue;
+    }
+    stack.push([nodeId, index + 1]);
+    if (onStack.has(edge.target)) {
+      loops.add(edge.id);
+    } else if (!visited.has(edge.target)) {
+      visited.add(edge.target);
+      onStack.add(edge.target);
+      stack.push([edge.target, 0]);
+    }
+  }
+  return loops;
+}
+
+/** Node ids reachable from `from` along edges, including `from`. */
+function reachableFrom(wf: Workflow, from: string): Set<string> {
+  const seen = new Set<string>();
+  const pending = [from];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    if (seen.has(current)) continue;
+    seen.add(current);
+    for (const edge of wf.edges) if (edge.source === current) pending.push(edge.target);
+  }
+  return seen;
+}
+
+/** Valid input (and developer node key) name. Mirrors Rust `is_valid_input_name`. */
+export function isValidInputName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name);
+}
+
+/** Why a branch name is unusable, or null. Mirrors Rust `git::validate_branch_name`. */
+export function branchNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === '') return 'Branch name must not be empty.';
+  // Rust counts UTF-8 bytes, not characters.
+  if (new TextEncoder().encode(trimmed).length > 200) return 'Branch name is too long.';
+  for (const bad of [' ', '~', '^', ':', '?', '*', '[', '\\', "'", '"', '\n']) {
+    if (trimmed.includes(bad)) return `Branch name contains invalid character '${bad}'.`;
+  }
+  if (trimmed.startsWith('-') || trimmed.includes('..') || trimmed.endsWith('/'))
+    return 'Branch name is not a valid git ref.';
+  return null;
+}
+
+const KIND_NAMES: Record<NodeKind, string> = {
+  start: 'Start',
+  command: 'Command',
+  approval: 'Approval',
+  agent: 'Agent',
+  condition: 'Condition',
+  git: 'Git',
+  github: 'GitHub',
+  ticket: 'Ticket',
+  mcp: 'Mcp',
+  end: 'End',
+};
+
+function nodeLabel(node: WorkflowNode): string {
+  const label = node.label ?? '';
+  return label.trim() === '' ? `${KIND_NAMES[node.type]} (${node.id})` : label;
+}
+
+const TICKET_FIELDS = [
+  'key',
+  'title',
+  'description',
+  'acceptanceCriteria',
+  'status',
+  'url',
+];
+const NODE_FIELDS = ['output', 'status', 'exitCode', 'severity', 'visits'];
+
+/**
+ * Check a `dotted.path` variable against workflow inputs, node ids and the
+ * `workflow.*`/`ticket.*` namespaces. Mirrors Rust `check_variable_ref`.
+ */
+function variableRefProblem(
+  wf: Workflow,
+  name: string,
+  nodeIds: ReadonlySet<string>,
+): string | null {
+  const [head = '', second, third] = name.split('.');
+  switch (head) {
+    case 'workflow':
+      return second === 'name' || second === 'id'
+        ? null
+        : `'${name}': workflow has no field '${second ?? ''}'.`;
+    case 'input':
+      if (second === undefined) return `'${name}': expected input.<name>.`;
+      return (wf.inputs ?? []).some((i) => i.name === second)
+        ? null
+        : `'${name}': no workflow input '${second}'.`;
+    case 'ticket':
+      if (second === undefined) return `'${name}': expected ticket.<field>.`;
+      return TICKET_FIELDS.includes(second)
+        ? null
+        : `'${name}': ticket has no field '${second}'.`;
+    case 'node':
+      if (second === undefined) return `'${name}': expected node.<id>[.field].`;
+      if (!nodeIds.has(second)) return `'${name}': no node '${second}'.`;
+      return third === undefined || NODE_FIELDS.includes(third)
+        ? null
+        : `'${name}': node has no field '${third}'.`;
+    default:
+      // Bare single-segment names are legacy shorthand for node outputs.
+      if (!name.includes('.'))
+        return nodeIds.has(head)
+          ? null
+          : `'${name}': no node, input, or workflow field matches.`;
+      return `'${name}': must start with workflow., input., or node..`;
+  }
+}
+
+function validTimeout(seconds: number | undefined): boolean {
+  return (
+    seconds === undefined ||
+    (Number.isInteger(seconds) && seconds >= 1 && seconds <= MAX_TIMEOUT_SECS)
+  );
+}
+
+type GitIssue = [ValidationCode, string];
+
+/** Per-operation Git fields. Mirrors Rust `validate_git_op`. */
+function gitOpIssues(op: GitOp, defaultBranch: string | undefined): GitIssue[] {
+  const blank = (s: string): boolean => s.trim() === '';
+  switch (op.op) {
+    case 'status':
+    case 'diffSummary':
+    case 'worktreeList':
+    case 'remotes':
+      return [];
+    case 'branchCreate':
+    case 'checkout': {
+      const name = blank(op.name) ? (defaultBranch ?? '') : op.name;
+      if (blank(name))
+        return [
+          [
+            'git-branch-required',
+            'Git branch operation needs a name: set it on the step or set a workflow default branch.',
+          ],
+        ];
+      const problem = branchNameProblem(name);
+      return problem === null ? [] : [['git-branch-invalid', problem]];
+    }
+    case 'stage':
+      return (op.paths ?? []).every(blank)
+        ? [
+            [
+              'git-paths-required',
+              'Stage needs at least one explicit path (no implicit -A).',
+            ],
+          ]
+        : [];
+    case 'commit':
+      return blank(op.message)
+        ? [['git-message-required', 'Commit needs an explicit message.']]
+        : [];
+    case 'worktreeAdd': {
+      const found: GitIssue[] = [];
+      if (blank(op.path))
+        found.push(['git-path-required', 'Worktree needs an explicit path.']);
+      if (op.branch !== undefined && !blank(op.branch)) {
+        const problem = branchNameProblem(op.branch);
+        if (problem !== null) found.push(['git-branch-invalid', problem]);
+      }
+      return found;
+    }
+    case 'worktreeRemove':
+      return blank(op.path)
+        ? [['git-path-required', 'Worktree removal needs an explicit path.']]
+        : [];
+    default:
+      // Unknown operations cannot load in the backend; nothing to check here.
+      return [];
+  }
+}
+
+/** Per-operation GitHub fields. Mirrors Rust `validate_github_op`. */
+function githubOpIssues(op: GitHubOp, defaultBranch: string | undefined): GitIssue[] {
+  if (op.op === 'createPr') {
+    const found: GitIssue[] = [];
+    if (op.title.trim() === '')
+      found.push(['github-title-required', 'PR creation needs an explicit title.']);
+    if (op.base.trim() === '' || (op.head.trim() === '' && defaultBranch === undefined))
+      found.push([
+        'github-branches-required',
+        'PR creation needs base and head branches (a blank head uses the workflow default branch).',
+      ]);
+    return found;
+  }
+  if (op.op === 'postComment' && op.body.trim() === '')
+    return [['github-body-required', 'Comments need an explicit body.']];
+  return [];
+}
+
+/**
+ * Client-side validation for instant feedback and the browser mock. The
+ * backend re-validates authoritatively; both report the same codes for the
+ * same workflow (pinned by the shared parity fixture).
+ */
 export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  if (wf.name.trim() === '') {
+  const push = (
+    severity: ValidationSeverity,
+    code: ValidationCode,
+    message: string,
+    nodeId?: string,
+    edgeId?: string,
+  ): void => {
     issues.push({
-      code: 'name-required',
-      message: 'Workflow name must not be empty.',
-      severity: 'error',
+      code,
+      message,
+      severity,
+      ...(nodeId === undefined ? {} : { nodeId }),
+      ...(edgeId === undefined ? {} : { edgeId }),
     });
+  };
+  const error = (
+    code: ValidationCode,
+    message: string,
+    nodeId?: string,
+    edgeId?: string,
+  ): void => {
+    push('error', code, message, nodeId, edgeId);
+  };
+  const warning = (code: ValidationCode, message: string, nodeId?: string): void => {
+    push('warning', code, message, nodeId);
+  };
+
+  if (wf.schemaVersion > CURRENT_SCHEMA_VERSION) {
+    error(
+      'schema-too-new',
+      `Workflow schema v${String(wf.schemaVersion)} is newer than supported v${String(CURRENT_SCHEMA_VERSION)}. Please update Orchevia.`,
+    );
+    return issues;
   }
+  if (wf.name.trim() === '') error('name-required', 'Workflow name must not be empty.');
   const starts = wf.nodes.filter((n) => n.type === 'start');
-  if (starts.length !== 1) {
-    issues.push({
-      code: 'single-start',
-      message: `Workflow must have exactly one Start node, found ${String(starts.length)}.`,
-      severity: 'error',
-    });
-  }
-  if (!wf.nodes.some((n) => n.type === 'end')) {
-    issues.push({
-      code: 'end-required',
-      message: 'Workflow must have at least one End node.',
-      severity: 'error',
-    });
-  }
-  const ids = new Set(wf.nodes.map((n) => n.id));
+  if (starts.length !== 1)
+    error(
+      'single-start',
+      `Workflow must have exactly one Start node, found ${String(starts.length)}.`,
+    );
+  if (!wf.nodes.some((n) => n.type === 'end'))
+    error('end-required', 'Workflow must have at least one End node.');
+
+  const nodeIds = new Set(wf.nodes.map((n) => n.id));
   for (const edge of wf.edges) {
-    if (!ids.has(edge.source) || !ids.has(edge.target)) {
-      issues.push({
-        code: 'edge-unknown-node',
-        message: `Edge '${edge.id}' references an unknown node.`,
-        severity: 'error',
-      });
-    }
+    if (!nodeIds.has(edge.source))
+      error(
+        'edge-unknown-source',
+        `Edge '${edge.id}' references unknown source node '${edge.source}'.`,
+        undefined,
+        edge.id,
+      );
+    if (!nodeIds.has(edge.target))
+      error(
+        'edge-unknown-target',
+        `Edge '${edge.id}' references unknown target node '${edge.target}'.`,
+        undefined,
+        edge.id,
+      );
+    if (edge.source === edge.target)
+      error(
+        'edge-self-loop',
+        `Edge '${edge.id}' connects a node to itself.`,
+        edge.source,
+        edge.id,
+      );
   }
+
+  const defaultBranch = (wf.defaults?.branch ?? '').trim() || undefined;
+  const hasDefaultDir = (wf.defaults?.repoDir ?? '').trim() !== '';
+  const needsDir = (node: WorkflowNode): boolean =>
+    (node.config.workingDir ?? '').trim() === '' && !hasDefaultDir;
+
   for (const node of wf.nodes) {
-    if (node.type === 'command' && (node.config.executable ?? '').trim() === '') {
-      issues.push({
-        code: 'command-executable-required',
-        message: 'Command node requires an executable.',
-        severity: 'error',
-        nodeId: node.id,
-      });
-    }
-    if (node.type === 'command' && (node.config.executable ?? '').trim() === 'compose') {
-      issues.push({
-        code: 'command-executable-suspicious',
-        message:
-          '`compose` is not a standalone tool here — use executable `docker` with args starting `compose` (or the `docker-compose` binary).',
-        severity: 'warning',
-        nodeId: node.id,
-      });
-    }
-    if (node.type === 'agent') {
-      const invalid = (code: string, message: string): void => {
-        issues.push({ code, message, severity: 'error', nodeId: node.id });
-      };
-      const group = node.config.sessionGroup;
-      if (group !== undefined) {
-        if (!group.trim() || Array.from(group).length > 256 || /[\0\n\r]/.test(group))
-          invalid(
-            'agent-session-group-invalid',
-            'Session group must be 1–256 characters with no line breaks.',
-          );
-        for (const name of referencedVariables(group.replace(/\\\{\{/g, ''))) {
-          const [kind, id, field] = name.split('.');
-          const known =
-            (kind === 'workflow' && ['id', 'name'].includes(id ?? '')) ||
-            (kind === 'input' && (wf.inputs ?? []).some((i) => i.name === id)) ||
-            (kind === 'ticket' &&
-              [
-                'key',
-                'title',
-                'description',
-                'acceptanceCriteria',
-                'status',
-                'url',
-              ].includes(id ?? '')) ||
-            (kind === 'node' &&
-              ids.has(id ?? '') &&
-              (field === undefined ||
-                ['output', 'status', 'exitCode', 'severity', 'visits'].includes(field)));
-          if (!known)
-            invalid(
-              'agent-session-variable-invalid',
-              `Session group references unknown variable '${name}'. Use workflow.*, input.*, ticket.* or node.<id>.output namespaces.`,
-            );
-        }
-      }
-      const turns = node.config.sessionMaxTurns;
-      if (
-        turns !== undefined &&
-        (!Number.isInteger(turns) || turns < 1 || turns > 20 || group === undefined)
-      )
-        invalid(
-          'agent-session-turns-invalid',
-          'Session max turns must be 1–20 and requires a session group.',
-        );
-      const contextRefs = node.config.contextRefs ?? [];
-      const chars = node.config.contextMaxChars;
-      if (
-        chars !== undefined &&
-        (!Number.isInteger(chars) ||
-          chars < 256 ||
-          chars > 64000 ||
-          contextRefs.length === 0)
-      )
-        invalid(
-          'agent-context-limit-invalid',
-          'Context budget must be 256–64000 characters and requires context references.',
-        );
-      const seen = new Set<string>();
-      if (contextRefs.length > 16)
-        invalid('agent-context-ref-invalid', 'Select at most 16 context references.');
-      for (const id of contextRefs) {
-        if (id === node.id || !ids.has(id) || seen.has(id))
-          invalid(
-            'agent-context-ref-invalid',
-            `Context reference '${id}' must be a unique, existing, different node.`,
-          );
-        seen.add(id);
-      }
-      const hasProfile = (node.config.agentProfileId ?? '').trim() !== '';
-      const hasRole = (node.config.agentRole ?? '').trim() !== '';
-      if (!hasProfile && !hasRole) {
-        issues.push({
-          code: 'agent-profile-required',
-          message: 'AI Agent node requires an Agent Profile (or a role for templates).',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      if ((node.config.prompt ?? '').trim() === '') {
-        issues.push({
-          code: 'agent-prompt-required',
-          message: 'AI Agent node requires a prompt/instruction.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      const timeout = node.config.timeoutSecs;
-      if (
-        timeout !== undefined &&
-        (!Number.isInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT_SECS)
-      ) {
-        issues.push({
-          code: 'agent-timeout-invalid',
-          message: `AI Agent timeout must be between 1 second and 12 hours (${String(MAX_TIMEOUT_SECS)}).`,
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      if (node.config.maxToolCalls !== undefined) {
-        const error = validateLimitValue(
-          'Node tool-call allowance',
-          node.config.maxToolCalls,
-          MAX_TOOL_CALL_LIMIT,
-        );
-        if (error !== null) {
-          issues.push({
-            code: 'agent-tool-allowance-invalid',
-            message: error,
-            severity: 'error',
-            nodeId: node.id,
-          });
-        }
-      }
-      if (node.config.maxSubagents !== undefined) {
-        const error = validateLimitValue(
-          'Node subagent allowance',
-          node.config.maxSubagents,
-          MAX_SUBAGENT_LIMIT,
-        );
-        if (error !== null) {
-          issues.push({
-            code: 'agent-subagent-allowance-invalid',
-            message: error,
-            severity: 'error',
-            nodeId: node.id,
-          });
-        }
-      }
-      for (const message of validateToolRules(
-        node.config.requiredTools ?? [],
-        'Required tools',
-      )) {
-        issues.push({
-          code: 'agent-required-tools-invalid',
-          message,
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-    }
-    if (
-      node.type !== 'agent' &&
-      (node.config.maxToolCalls !== undefined || node.config.maxSubagents !== undefined)
-    ) {
-      issues.push({
-        code: 'agent-allowance-misplaced',
-        message: 'Tool-call and subagent allowances only apply to AI Agent nodes.',
-        severity: 'error',
-        nodeId: node.id,
-      });
-    }
-    if (node.type !== 'agent' && (node.config.requiredTools ?? []).length > 0) {
-      issues.push({
-        code: 'agent-required-tools-misplaced',
-        message: 'Required tools only apply to AI Agent nodes.',
-        severity: 'error',
-        nodeId: node.id,
-      });
-    }
-    if (node.type === 'command') {
-      const timeout = node.config.timeoutSecs;
-      if (
-        timeout !== undefined &&
-        (!Number.isInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT_SECS)
-      ) {
-        issues.push({
-          code: 'command-timeout-invalid',
-          message: `Command timeout must be between 1 second and 12 hours (${String(MAX_TIMEOUT_SECS)}).`,
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-    }
-    const retry = node.config.retry;
-    if (retry !== undefined) {
-      if (
-        !Number.isInteger(retry.maxAttempts) ||
-        retry.maxAttempts < 1 ||
-        retry.maxAttempts > 10
-      ) {
-        issues.push({
-          code: 'retry-unbounded',
-          message: 'Retry max attempts must be between 1 and 10.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      if (retry.delayMs !== undefined && (retry.delayMs < 0 || retry.delayMs > 60000)) {
-        issues.push({
-          code: 'retry-delay-invalid',
-          message: 'Retry delay must not exceed 60 seconds.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-    }
-    const maxVisits = node.config.maxVisits;
+    const config = node.config;
+    const at = node.id;
+    const retry = (): void => {
+      if (config.retry === undefined) return;
+      const { maxAttempts, delayMs } = config.retry;
+      if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)
+        error('retry-unbounded', 'Retry max attempts must be between 1 and 10.', at);
+      if (delayMs !== undefined && (delayMs < 0 || delayMs > 60000))
+        error('retry-delay-invalid', 'Retry delay must not exceed 60 seconds.', at);
+    };
+    const maxVisits = config.maxVisits;
     if (
       maxVisits !== undefined &&
       (!Number.isInteger(maxVisits) || maxVisits < 1 || maxVisits > 100)
-    ) {
-      issues.push({
-        code: 'loop-limit-invalid',
-        message: 'Node max visits must be between 1 and 100.',
-        severity: 'error',
-        nodeId: node.id,
-      });
-    }
-    if (node.type === 'condition') {
-      const condition = node.config.condition;
-      if (condition === undefined || condition.clauses.length === 0) {
-        issues.push({
-          code: 'condition-required',
-          message: 'Condition node requires a condition expression.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      } else {
-        const outs = wf.edges.filter((e) => e.source === node.id);
-        const norm = (label?: string): string => (label ?? '').trim().toLowerCase();
-        const hasTrue = outs.some((e) =>
-          ['true', 'yes', 'on true'].includes(norm(e.label)),
-        );
-        const hasFalse = outs.some((e) =>
-          ['false', 'no', 'on false'].includes(norm(e.label)),
-        );
-        if (!hasTrue || !hasFalse) {
-          issues.push({
-            code: 'condition-branches-required',
-            message:
-              "Condition node needs one 'true' and one 'false' outgoing edge (labels).",
-            severity: 'error',
-            nodeId: node.id,
-          });
+    )
+      error('loop-limit-invalid', 'Node max visits must be between 1 and 100.', at);
+
+    switch (node.type) {
+      case 'command': {
+        const exe = (config.executable ?? '').trim();
+        if (exe === '')
+          error(
+            'command-executable-required',
+            'Command node requires an executable.',
+            at,
+          );
+        else if (exe === 'compose')
+          warning(
+            'command-executable-suspicious',
+            '`compose` is not a standalone tool here — use executable `docker` with args starting `compose` (or the `docker-compose` binary).',
+            at,
+          );
+        if (!validTimeout(config.timeoutSecs))
+          error(
+            'command-timeout-invalid',
+            `Command timeout must be between 1 second and 12 hours (${String(MAX_TIMEOUT_SECS)}).`,
+            at,
+          );
+        retry();
+        break;
+      }
+      case 'agent': {
+        const group = config.sessionGroup;
+        if (group !== undefined) {
+          if (
+            group.trim() === '' ||
+            Array.from(group).length > 256 ||
+            /[\0\n\r]/.test(group)
+          )
+            error(
+              'agent-session-group-invalid',
+              'Session group must be 1–256 characters with no line breaks.',
+              at,
+            );
+          for (const name of referencedVariables(group)) {
+            const problem = name.includes('.')
+              ? variableRefProblem(wf, name, nodeIds)
+              : `Session variable '${name}' needs a namespace; use node.${name}.output for a node output.`;
+            if (problem !== null) error('agent-session-variable-invalid', problem, at);
+          }
         }
+        const turns = config.sessionMaxTurns;
+        if (
+          turns !== undefined &&
+          (!Number.isInteger(turns) || turns < 1 || turns > 20 || group === undefined)
+        )
+          error(
+            'agent-session-turns-invalid',
+            'Session max turns must be 1–20 and requires a session group.',
+            at,
+          );
+        const contextRefs = config.contextRefs ?? [];
+        const chars = config.contextMaxChars;
+        if (
+          chars !== undefined &&
+          (!Number.isInteger(chars) ||
+            chars < 256 ||
+            chars > 64000 ||
+            contextRefs.length === 0)
+        )
+          error(
+            'agent-context-limit-invalid',
+            'Context budget must be 256–64000 characters and requires context references.',
+            at,
+          );
+        if (contextRefs.length > 16)
+          error('agent-context-ref-invalid', 'Select at most 16 context references.', at);
+        const seen = new Set<string>();
+        for (const id of contextRefs) {
+          if (id === node.id || !nodeIds.has(id) || seen.has(id))
+            error(
+              'agent-context-ref-invalid',
+              `Context reference '${id}' must be a unique, existing, different node.`,
+              at,
+            );
+          seen.add(id);
+        }
+        const profile = (config.agentProfileId ?? '').trim();
+        const role = (config.agentRole ?? '').trim();
+        if (profile === '' && role === '')
+          error(
+            'agent-profile-required',
+            'AI Agent node requires an Agent Profile (or a role for templates/proposals).',
+            at,
+          );
+        if (role !== '' && !(WELL_KNOWN_ROLES as readonly string[]).includes(role))
+          warning(
+            'agent-role-unknown',
+            `Agent role '${role}' is not a well-known role; resolve it before running.`,
+            at,
+          );
+        if ((config.prompt ?? '').trim() === '')
+          error(
+            'agent-prompt-required',
+            'AI Agent node requires a prompt/instruction.',
+            at,
+          );
+        if (!validTimeout(config.timeoutSecs))
+          error(
+            'agent-timeout-invalid',
+            `AI Agent timeout must be between 1 second and 12 hours (${String(MAX_TIMEOUT_SECS)}).`,
+            at,
+          );
+        for (const input of config.inputRefs ?? []) {
+          if (!nodeIds.has(input))
+            error(
+              'agent-input-unknown',
+              `AI Agent node references unknown node '${input}'.`,
+              at,
+            );
+        }
+        if (config.maxToolCalls !== undefined) {
+          const problem = validateLimitValue(
+            'Node tool-call allowance',
+            config.maxToolCalls,
+            MAX_TOOL_CALL_LIMIT,
+          );
+          if (problem !== null) error('agent-tool-allowance-invalid', problem, at);
+        }
+        if (config.maxSubagents !== undefined) {
+          const problem = validateLimitValue(
+            'Node subagent allowance',
+            config.maxSubagents,
+            MAX_SUBAGENT_LIMIT,
+          );
+          if (problem !== null) error('agent-subagent-allowance-invalid', problem, at);
+        }
+        for (const message of validateToolRules(
+          config.requiredTools ?? [],
+          'Required tools',
+        ))
+          error('agent-required-tools-invalid', message, at);
+        retry();
+        if (config.prompt !== undefined)
+          for (const name of referencedVariables(config.prompt)) {
+            const problem = variableRefProblem(wf, name, nodeIds);
+            if (problem !== null)
+              error(
+                'prompt-unknown-variable',
+                `Prompt references unknown variable: ${problem}`,
+                at,
+              );
+          }
+        break;
       }
-    }
-    if (node.type === 'git') {
-      if (node.config.gitOp === undefined) {
-        issues.push({
-          code: 'git-op-required',
-          message: 'Git node requires an operation.',
-          severity: 'error',
-          nodeId: node.id,
-        });
+      case 'condition': {
+        const condition = config.condition;
+        if (condition === undefined) {
+          error(
+            'condition-required',
+            'Condition node requires a condition expression.',
+            at,
+          );
+          break;
+        }
+        if (condition.clauses.length === 0)
+          error('condition-required', 'Condition node requires at least one clause.', at);
+        for (const clause of condition.clauses) {
+          const problem = variableRefProblem(wf, clause.left, nodeIds);
+          if (problem !== null)
+            error(
+              'condition-unknown-ref',
+              `Condition references unknown variable: ${problem}`,
+              at,
+            );
+        }
+        const outs = wf.edges.filter((e) => e.source === node.id);
+        const hasTrue = outs.some((e) => classifyEdgeLabel(e.label) === 'true');
+        const hasFalse = outs.some((e) => classifyEdgeLabel(e.label) === 'false');
+        if (!hasTrue || !hasFalse)
+          error(
+            'condition-branches-required',
+            "Condition node needs one 'true' and one 'false' outgoing edge (labels).",
+            at,
+          );
+        break;
       }
-      if (
-        (node.config.workingDir ?? '').trim() === '' &&
-        (wf.defaults?.repoDir ?? '').trim() === ''
-      ) {
-        issues.push({
-          code: 'git-dir-required',
-          message:
+      case 'git':
+        if (config.gitOp === undefined)
+          error('git-op-required', 'Git node requires an operation.', at);
+        else
+          for (const [code, message] of gitOpIssues(config.gitOp, defaultBranch))
+            error(code, message, at);
+        if (needsDir(node))
+          error(
+            'git-dir-required',
             'Git node requires a working directory: set it on the node or set a workflow default (select the canvas background to edit Workflow settings).',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-    }
-    if (node.type === 'github') {
-      if (node.config.githubOp === undefined) {
-        issues.push({
-          code: 'github-op-required',
-          message: 'GitHub node requires an operation.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      if (
-        (node.config.workingDir ?? '').trim() === '' &&
-        (wf.defaults?.repoDir ?? '').trim() === ''
-      ) {
-        issues.push({
-          code: 'git-dir-required',
-          message:
+            at,
+          );
+        break;
+      case 'github':
+        if (config.githubOp === undefined)
+          error('github-op-required', 'GitHub node requires an operation.', at);
+        else
+          for (const [code, message] of githubOpIssues(config.githubOp, defaultBranch))
+            error(code, message, at);
+        if (needsDir(node))
+          error(
+            'git-dir-required',
             'GitHub node requires a working directory: set it on the node or set a workflow default (select the canvas background to edit Workflow settings).',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
+            at,
+          );
+        break;
+      case 'ticket':
+        if ((config.ticketKey ?? '').trim() === '')
+          error(
+            'ticket-key-required',
+            'Ticket node requires a ticket key ({{…}} templates allowed).',
+            at,
+          );
+        if ((config.mcpServerId ?? '').trim() === '')
+          error(
+            'ticket-server-required',
+            'Ticket node requires an MCP server (Jira source).',
+            at,
+          );
+        break;
+      case 'mcp':
+        if ((config.mcpServerId ?? '').trim() === '')
+          error('mcp-server-required', 'MCP node requires a server.', at);
+        if ((config.mcpTool ?? '').trim() === '')
+          error('mcp-tool-required', 'MCP node requires a tool name.', at);
+        break;
+      case 'start':
+      case 'end':
+      case 'approval':
+        break;
     }
-    if (node.type === 'ticket') {
-      if ((node.config.ticketKey ?? '').trim() === '') {
-        issues.push({
-          code: 'ticket-key-required',
-          message: 'Ticket node requires a ticket key.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      if ((node.config.mcpServerId ?? '').trim() === '') {
-        issues.push({
-          code: 'ticket-server-required',
-          message: 'Ticket node requires an MCP server.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-    }
-    if (node.type === 'mcp') {
-      if ((node.config.mcpServerId ?? '').trim() === '') {
-        issues.push({
-          code: 'mcp-server-required',
-          message: 'MCP node requires a server.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
-      if ((node.config.mcpTool ?? '').trim() === '') {
-        issues.push({
-          code: 'mcp-tool-required',
-          message: 'MCP node requires a tool name.',
-          severity: 'error',
-          nodeId: node.id,
-        });
-      }
+    // Agent-only settings anywhere else would be silently ignored: refuse them.
+    if (
+      node.type !== 'agent' &&
+      (config.maxToolCalls !== undefined || config.maxSubagents !== undefined)
+    )
+      error(
+        'agent-allowance-misplaced',
+        'Tool-call and subagent allowances only apply to AI Agent nodes.',
+        at,
+      );
+    if (node.type !== 'agent' && (config.requiredTools ?? []).length > 0)
+      error(
+        'agent-required-tools-misplaced',
+        'Required tools only apply to AI Agent nodes.',
+        at,
+      );
+  }
+
+  const seenInputs = new Set<string>();
+  for (const input of wf.inputs ?? []) {
+    if (!isValidInputName(input.name))
+      error(
+        'input-name-invalid',
+        `Input name '${input.name}' must start with a letter/underscore and hold letters, digits, '_' or '-'.`,
+      );
+    if (seenInputs.has(input.name))
+      error('input-duplicate', `Duplicate workflow input '${input.name}'.`);
+    seenInputs.add(input.name);
+  }
+
+  if (wf.limits !== undefined) {
+    const problem = validateWorkflowLimits(wf.limits);
+    if (problem !== null) error('workflow-limits-invalid', problem);
+  }
+
+  const byId = new Map(wf.nodes.map((n) => [n.id, n]));
+  for (const edge of wf.edges) {
+    const kind = classifyEdgeLabel(edge.label);
+    if (kind === 'unknown') {
+      push(
+        'warning',
+        'edge-label-unknown',
+        `Edge '${edge.id}' has an unrecognized label '${edge.label ?? ''}'; it will behave as a success edge.`,
+        undefined,
+        edge.id,
+      );
+    } else if (
+      (kind === 'true' || kind === 'false') &&
+      byId.get(edge.source)?.type !== 'condition'
+    ) {
+      error(
+        'edge-label-misplaced',
+        `Edge '${edge.id}' uses a true/false label but its source is not a Condition node.`,
+        undefined,
+        edge.id,
+      );
     }
   }
-  if (wf.limits !== undefined) {
-    const error = validateWorkflowLimits(wf.limits);
-    if (error !== null) {
-      issues.push({
-        code: 'workflow-limits-invalid',
-        message: error,
-        severity: 'error',
-      });
+
+  // Every loop needs a Condition to leave it and an explicit bound on each step.
+  const loopEdges = findLoopEdges(wf);
+  const loops = wf.edges.filter((e) => loopEdges.has(e.id));
+  const unbounded = new Set<string>();
+  for (const edge of loops) {
+    const fromTarget = reachableFrom(wf, edge.target);
+    const cycle = wf.nodes.filter(
+      (n) => fromTarget.has(n.id) && reachableFrom(wf, n.id).has(edge.source),
+    );
+    if (!cycle.some((n) => n.type === 'condition'))
+      error(
+        'cycle-needs-condition',
+        `Cycle through edge '${edge.id}' has no Condition node to guard it; loops must branch on a Condition.`,
+        edge.source,
+        edge.id,
+      );
+    for (const node of cycle) {
+      if ((node.config.maxVisits ?? 1) >= 2 || unbounded.has(node.id)) continue;
+      unbounded.add(node.id);
+      error(
+        'cycle-unbounded',
+        `Node '${nodeLabel(node)}' is on a cycle but has no explicit loop bound (set max visits >= 2).`,
+        node.id,
+      );
+    }
+  }
+  for (const edge of loops) {
+    if (byId.get(edge.target)?.type === 'end')
+      error(
+        'cycle-into-end',
+        `Loop edge '${edge.id}' targets an End node, which terminates the run.`,
+        edge.target,
+        edge.id,
+      );
+  }
+
+  const start = starts.length === 1 ? starts[0] : undefined;
+  if (start !== undefined) {
+    const reachable = reachableFrom(wf, start.id);
+    for (const node of wf.nodes) {
+      if (!reachable.has(node.id))
+        warning(
+          'unreachable-node',
+          `Node '${nodeLabel(node)}' is unreachable from Start and will not execute.`,
+          node.id,
+        );
+    }
+    for (const node of wf.nodes) {
+      if (node.type === 'end' || wf.edges.some((e) => e.source === node.id)) continue;
+      warning(
+        'dead-end-node',
+        `Node '${nodeLabel(node)}' has no outgoing connection; the run will stop there.`,
+        node.id,
+      );
     }
   }
   return issues;
@@ -1012,9 +1387,7 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
  * and the user relabels by clicking the edge).
  */
 export function nextBranchLabel(existing: (string | undefined)[]): 'true' | 'false' {
-  const norm = (l?: string): string => (l ?? '').trim().toLowerCase();
-  const hasTrue = existing.some((l) => ['true', 'yes', 'on true'].includes(norm(l)));
-  return hasTrue ? 'false' : 'true';
+  return existing.some((l) => classifyEdgeLabel(l) === 'true') ? 'false' : 'true';
 }
 
 /**

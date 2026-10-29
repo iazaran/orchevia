@@ -84,19 +84,32 @@ Errors block execution; warnings don't. Current rules:
 - exactly one `start`, at least one `end`
 - edges reference existing nodes; no self-loops
 - command nodes require a non-empty `executable`
-- agent nodes require an `agentProfileId` and a non-empty `prompt`; `timeoutSecs`
-  must be 1–43200 when set; `inputRefs` must reference existing nodes
+- agent nodes require an `agentProfileId` (or a well-known `agentRole`; other
+  roles warn) and a non-empty `prompt`; `timeoutSecs` must be 1–43200 when set;
+  `inputRefs` must reference existing nodes
 - condition nodes require a non-empty `condition` and one `true` + one `false`
   outgoing edge; `true`/`false` labels elsewhere are errors; unknown labels warn
-- `retry.maxAttempts` 1–10, `retry.delayMs` ≤ 60000; `timeoutSecs` 1–43200;
-  `maxVisits` 1–100
+- Git/GitHub nodes need an operation and a folder (node `workingDir` or
+  `defaults.repoDir`); branch, path, message, title and body fields must be
+  filled, and a blank branch or PR head uses `defaults.branch` when it is set
+- `retry.maxAttempts` 1–10, `retry.delayMs` ≤ 60000 (Command and Agent nodes);
+  `timeoutSecs` 1–43200; `maxVisits` 1–100
 - cycles need a `condition` on the loop and `maxVisits >= 2` on cycle nodes
-- prompt/condition variable refs must resolve (`workflow.*`, declared
-  `input.*`, existing `node.*`); inputs need valid unique names
+- prompt/condition/session-group variable refs must resolve (`workflow.*`,
+  declared `input.*`, `ticket.*`, existing `node.*`); inputs need valid unique
+  names
 - runs additionally require the referenced profile to exist and its CLI to be on
   `PATH` (checked at start; missing tools fail with `agent-cli-unavailable`)
 - unreachable-from-start nodes → warning; dead-end non-`end` nodes → warning
 - unknown future `schemaVersion` → hard error (“please update Orchevia”)
+
+The editor's instant checks (`validateWorkflowLocal`) and the backend's
+authoritative ones (`validate_workflow`) report the same codes: each issue has
+a `code`, `severity`, and the `nodeId` and/or `edgeId` it is about. The shared
+fixture `src/test/validation-parity.json` lists every code and runs on both
+sides. Checks that need the database or `PATH` (profiles, CLIs, MCP servers,
+required run inputs) only happen when a run starts; the fixture lists them as
+exemptions.
 
 ## Execution semantics
 
