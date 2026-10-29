@@ -500,6 +500,70 @@ describe('Agents view', () => {
   });
 });
 
+describe('Setup check and in-place updates', () => {
+  it('is accessible with setup check results and the install button', async () => {
+    const { backend } = await populatedBackend();
+    backend.checkAgentSetup = (id) =>
+      Promise.resolve({
+        profileId: id,
+        profileName: 'Checked',
+        status: 'warning',
+        durationMs: 1,
+        items: [
+          {
+            id: 'installed',
+            label: 'CLI installed',
+            status: 'passed',
+            detail: '/bin/claude',
+          },
+          {
+            id: 'editFile',
+            label: 'Edits files without asking',
+            status: 'warning',
+            detail: 'Refused tools: Write.',
+            hint: 'Give this profile `Full access`.',
+          },
+        ],
+      });
+    backend.desktopInfo = () =>
+      Promise.resolve({
+        platform: 'linux',
+        arch: 'x86_64',
+        installKind: 'appimage',
+        inPlaceUpdates: true,
+      });
+    useAppStore.setState({
+      updateCheck: {
+        current: '0.1.24',
+        latest: {
+          version: '0.2.0',
+          url: 'https://github.com/iazaran/orchevia/releases/tag/v0.2.0',
+          assets: [],
+        },
+        updateAvailable: true,
+        checkedAt: '2026-11-01T10:00:00Z',
+      },
+    });
+    const user = await renderView(<EnvironmentView />);
+    await user.click(screen.getByRole('button', { name: 'Check every profile' }));
+    expect(await screen.findAllByText('Works, with limits')).not.toHaveLength(0);
+    expect(
+      await screen.findByRole('button', { name: 'Install and restart' }),
+    ).toBeVisible();
+    await expectNoAxeViolations();
+  });
+
+  it('is accessible with a profile check in Agents', async () => {
+    await populatedBackend();
+    const user = await renderView(<AgentsView />);
+    const check = screen.getAllByRole('button', { name: 'Check setup' })[0];
+    if (check === undefined) throw new Error('fixture');
+    await user.click(check);
+    expect(await screen.findAllByText('Needs attention')).not.toHaveLength(0);
+    await expectNoAxeViolations();
+  });
+});
+
 describe('Templates view', () => {
   it('is accessible with built-in and saved templates and in its dialogs', async () => {
     await populatedBackend();
