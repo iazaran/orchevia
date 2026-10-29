@@ -128,6 +128,35 @@ test('publication requires all four nonempty installers and produces their exact
   }
 });
 
+test('signed update files publish only as a complete set', () => {
+  const updates = [
+    'Orchevia-linux-x86_64.AppImage.sig',
+    'Orchevia-macos-arm64.app.tar.gz',
+    'Orchevia-macos-arm64.app.tar.gz.sig',
+    'Orchevia-macos-x86_64.app.tar.gz',
+    'Orchevia-macos-x86_64.app.tar.gz.sig',
+  ];
+  const dir = mkdtempSync(join(tmpdir(), 'orchevia-publish-'));
+  const artifactDir = join(dir, 'release-artifacts');
+  mkdirSync(artifactDir);
+  try {
+    for (const name of assets) writeFileSync(join(artifactDir, name), name);
+    for (const name of updates.slice(0, 4)) writeFileSync(join(artifactDir, name), name);
+    assert.notEqual(
+      execute(checksums, { cwd: dir }).status,
+      0,
+      'a missing update signature must block publication',
+    );
+    writeFileSync(join(artifactDir, updates[4]), updates[4]);
+    assert.equal(execute(checksums, { cwd: dir }).status, 0);
+    const sums = readFileSync(join(artifactDir, 'SHA256SUMS'), 'utf8');
+    assert.match(sums, /\.\/Orchevia-macos-arm64\.app\.tar\.gz\n/);
+    assert.doesNotMatch(sums, /\.sig/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 const stage = runBlock('.github/workflows/release.yml', 'Stage artifacts');
 
 function stagingFixture() {
@@ -168,6 +197,16 @@ test('macOS staging names the DMG by its target architecture and rejects any oth
       readFileSync(join(dir, 'release-artifacts/Orchevia-macos-x86_64.dmg'), 'utf8'),
       'intel dmg',
     );
+    // A signed update bundle ships beside the DMG, and never without its signature.
+    writeFileSync(join(bundle, 'macos/Orchevia.app.tar.gz'), 'update');
+    assert.notEqual(execute(stage, { cwd: dir, env }).status, 0);
+    writeFileSync(join(bundle, 'macos/Orchevia.app.tar.gz.sig'), 'signature');
+    assert.equal(execute(stage, { cwd: dir, env }).status, 0);
+    for (const [name, content] of [
+      ['Orchevia-macos-x86_64.app.tar.gz', 'update'],
+      ['Orchevia-macos-x86_64.app.tar.gz.sig', 'signature'],
+    ])
+      assert.equal(readFileSync(join(dir, 'release-artifacts', name), 'utf8'), content);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -192,7 +231,15 @@ test('Linux staging requires both packages from the host bundle', () => {
       'a missing AppImage must block staging',
     );
     writeFileSync(join(bundle, 'appimage/orchevia_0.1.17_amd64.AppImage'), 'appimage');
+    writeFileSync(join(bundle, 'appimage/orchevia_0.1.17_amd64.AppImage.sig'), 'sig');
     assert.equal(execute(stage, { cwd: dir, env }).status, 0);
+    assert.equal(
+      readFileSync(
+        join(dir, 'release-artifacts/Orchevia-linux-x86_64.AppImage.sig'),
+        'utf8',
+      ),
+      'sig',
+    );
     for (const [name, content] of [
       ['Orchevia-linux-x86_64.deb', 'deb'],
       ['Orchevia-linux-x86_64.AppImage', 'appimage'],

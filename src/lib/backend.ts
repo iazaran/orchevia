@@ -242,6 +242,9 @@ export interface Backend {
   checkForUpdate(): Promise<UpdateCheck>;
   /** Announce a newer version once (Inbox + desktop when enabled). */
   recordUpdateNotice(version: string): Promise<boolean>;
+  /** Download the signed `version`, replace this copy and restart. Only for
+   * `DesktopInfo.inPlaceUpdates` copies with no workflow running. */
+  installUpdate(version: string): Promise<void>;
   diagnosticsBundle(): Promise<string>;
   roleMapDefault(): Promise<Record<string, string>>;
   listTemplates(): Promise<{ builtin: WorkflowTemplate[]; user: WorkflowTemplate[] }>;
@@ -546,6 +549,9 @@ class TauriBackend implements Backend {
   }
   recordUpdateNotice(version: string): Promise<boolean> {
     return this.invoke('record_update_notice', { version });
+  }
+  installUpdate(version: string): Promise<void> {
+    return this.invoke('install_update', { version });
   }
   diagnosticsBundle(): Promise<string> {
     return this.invoke('diagnostics_bundle');
@@ -2390,7 +2396,12 @@ class MockBackend implements Backend {
   }
 
   async desktopInfo(): Promise<DesktopInfo> {
-    return { platform: 'browser', arch: 'unknown', installKind: 'unknown' };
+    return {
+      platform: 'browser',
+      arch: 'unknown',
+      installKind: 'unknown',
+      inPlaceUpdates: false,
+    };
   }
 
   async quitApp(): Promise<void> {
@@ -2417,6 +2428,12 @@ class MockBackend implements Backend {
     this.settings.set('updates.notifiedVersion', normalized);
     this.persist();
     return true;
+  }
+
+  async installUpdate(_version: string): Promise<void> {
+    // The preview's install kind is `unknown`, which the desktop app refuses
+    // with the same words.
+    throw new Error('This copy cannot update itself; download the new version instead.');
   }
 
   async diagnosticsBundle(): Promise<string> {

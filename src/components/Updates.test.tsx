@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it } from 'vitest';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
 import { UpdateBanner, UpdatesSection } from './Updates';
+import { ConfirmHost } from './ConfirmDialog';
 
 const newer = {
   current: '0.1.20',
@@ -58,4 +59,55 @@ it('lets the user turn automatic checks off and see the result', async () => {
   });
   expect(screen.getByRole('status')).toHaveTextContent('Orchevia 0.2.0 is available');
   expect(screen.getByRole('button', { name: "What's new" })).toBeInTheDocument();
+});
+
+it('installs in place only after confirmation and shows why it could not', async () => {
+  const backend = __setMockBackendForTests();
+  backend.desktopInfo = () =>
+    Promise.resolve({
+      platform: 'linux',
+      arch: 'x86_64',
+      installKind: 'appimage',
+      inPlaceUpdates: true,
+    });
+  const installs: string[] = [];
+  backend.installUpdate = (version) => {
+    installs.push(version);
+    return Promise.reject(
+      new Error(
+        'Finish or cancel the 1 running workflow first: restarting would stop it.',
+      ),
+    );
+  };
+  useAppStore.setState({ updateCheck: newer });
+  const user = userEvent.setup();
+  render(
+    <>
+      <UpdatesSection />
+      <ConfirmHost />
+    </>,
+  );
+  const button = await screen.findByRole('button', { name: 'Install and restart' });
+  expect(
+    screen.getByText(/Install and restart downloads the signed update/),
+  ).toBeVisible();
+  await user.click(button);
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(installs).toEqual([]);
+  await user.click(button);
+  const dialog = await screen.findByRole('alertdialog', {
+    name: 'Install Orchevia 0.2.0?',
+  });
+  await user.click(within(dialog).getByRole('button', { name: 'Install and restart' }));
+  expect(await screen.findByText(/running workflow first/)).toBeInTheDocument();
+  expect(installs).toEqual(['0.2.0']);
+  expect(screen.getByRole('button', { name: 'Install and restart' })).toBeEnabled();
+});
+
+it('keeps the download path for copies that cannot update themselves', async () => {
+  __setMockBackendForTests();
+  useAppStore.setState({ updateCheck: newer });
+  render(<UpdatesSection />);
+  await screen.findByText(/Orchevia 0.2.0 is available/);
+  expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
 });

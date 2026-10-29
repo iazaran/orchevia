@@ -49,5 +49,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/iazaran/orchevia/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

@@ -92,13 +92,23 @@ jobs:
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: test "$(uname -m)" = "$EXPECTED_ARCH"
+      # With the update signing secret, the bundler also writes signed update
+      # bundles (the AppImage itself, a .app.tar.gz on macOS). Without it the
+      # release ships installers only and copies keep offering the download.
       - name: Build and package (capture bundler stdout and stderr)
         id: package
         shell: bash
         env:
           RELEASE_BUNDLES: ${{ matrix.bundles }}
           RELEASE_TARGET: ${{ matrix.target }}
-        run: pnpm tauri build --ci --verbose --bundles "$RELEASE_BUNDLES" ${RELEASE_TARGET:+--target "$RELEASE_TARGET"} -- --locked 2>&1 | tee build.log
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          updater=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            updater=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+          fi
+          pnpm tauri build --ci --verbose --bundles "$RELEASE_BUNDLES" ${RELEASE_TARGET:+--target "$RELEASE_TARGET"} "${updater[@]}" -- --locked 2>&1 | tee build.log
       - name: macOS packaging diagnostics
         if: failure() && runner.os == 'macOS' && steps.package.outcome == 'failure'
         env:
@@ -146,6 +156,10 @@ jobs:
             test -n "$appimage"
             cp "$deb" "release-artifacts/Orchevia-linux-$RELEASE_ARCH.deb"
             cp "$appimage" "release-artifacts/Orchevia-linux-$RELEASE_ARCH.AppImage"
+            # The AppImage is its own update bundle; only its signature is extra.
+            if [ -f "$appimage.sig" ]; then
+              cp "$appimage.sig" "release-artifacts/Orchevia-linux-$RELEASE_ARCH.AppImage.sig"
+            fi
           else
             app=$(find "$bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)
             test -n "$app"
@@ -160,6 +174,12 @@ jobs:
             dmg=$(find "$bundle/dmg" -type f -name '*.dmg' -print -quit)
             test -n "$dmg"
             cp "$dmg" "release-artifacts/Orchevia-macos-$RELEASE_ARCH.dmg"
+            update=$(find "$bundle/macos" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)
+            if [ -n "$update" ]; then
+              test -s "$update.sig"
+              cp "$update" "release-artifacts/Orchevia-macos-$RELEASE_ARCH.app.tar.gz"
+              cp "$update.sig" "release-artifacts/Orchevia-macos-$RELEASE_ARCH.app.tar.gz.sig"
+            fi
           fi
           ls -la release-artifacts
       # Publication follows within minutes; one day is enough to rerun it and
@@ -203,24 +223,43 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: release-artifacts
+      # Four installers, plus the five signed update files when the signing
+      # secret is set; never a partial set.
       - name: Checksums
         run: |
           cd release-artifacts
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 4
           for file in Orchevia-linux-x86_64.deb Orchevia-linux-x86_64.AppImage \
             Orchevia-macos-arm64.dmg Orchevia-macos-x86_64.dmg; do
             test -s "$file"
           done
-          find . -maxdepth 1 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \) -print0 \
+          count=$(find . -maxdepth 1 -type f | wc -l)
+          if [ "$count" -ne 4 ]; then
+            test "$count" -eq 9
+            for file in Orchevia-linux-x86_64.AppImage.sig \
+              Orchevia-macos-arm64.app.tar.gz Orchevia-macos-arm64.app.tar.gz.sig \
+              Orchevia-macos-x86_64.app.tar.gz Orchevia-macos-x86_64.app.tar.gz.sig; do
+              test -s "$file"
+            done
+          fi
+          find . -maxdepth 1 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.app.tar.gz' \) -print0 \
             | sort -z | xargs -0 -r sha256sum > SHA256SUMS
           test -s SHA256SUMS
           cat SHA256SUMS
+      # Every signature must verify with the public key built into the app
+      # before copies are told about the update.
+      - name: In-place update manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/updater-manifest.mjs release-artifacts "$RELEASE_TAG"
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
           files: release-artifacts/*
           generate_release_notes: true
           body: |
+            > Copies installed from the AppImage or a DMG can install this update from
+            > Environment → Updates (0.1.24 and later). Debian and Ubuntu update through apt.
+            >
             > macOS builds are not notarized yet, so macOS blocks the first launch with a
             > warning that it cannot verify Orchevia. Close the warning, then choose
             > **Open Anyway** in System Settings → Privacy & Security (System

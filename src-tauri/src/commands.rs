@@ -638,8 +638,80 @@ pub async fn fire_schedule_now(
 
 /// Tray, platform and install facts for the Background and Updates sections.
 #[tauri::command]
-pub fn desktop_info(state: State<AppState>) -> orchevia_core::desktop::DesktopInfo {
-    orchevia_core::desktop::desktop_info(state.tray_available.get().copied().flatten())
+pub fn desktop_info(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> orchevia_core::desktop::DesktopInfo {
+    orchevia_core::desktop::desktop_info(
+        state.tray_available.get().copied().flatten(),
+        updater_configured(&app),
+    )
+}
+
+/// The build carries the public key that verifies update signatures
+/// (`plugins.updater.pubkey` in `tauri.conf.json`).
+fn updater_configured(app: &tauri::AppHandle) -> bool {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|key| !key.trim().is_empty())
+}
+
+/// Download the signed update for `version`, replace this copy and restart.
+/// Refused for installs a package manager owns and while a run is running:
+/// a restart would stop its CLIs and the run could not resume.
+#[tauri::command]
+pub async fn install_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version: String,
+) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let kind = orchevia_core::desktop::install_kind();
+    if !orchevia_core::desktop::supports_in_place_update(kind) || !updater_configured(&app) {
+        return Err(match kind {
+            "apt" => "apt updates this copy: run sudo apt update && sudo apt upgrade.".into(),
+            "deb" => "Download the new .deb and install it over this one.".into(),
+            _ => "This copy cannot update itself; download the new version instead.".into(),
+        });
+    }
+    let running = state
+        .db
+        .list_active_runs()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|run| run.status == orchevia_core::db::RunStatus::Running)
+        .count();
+    if running > 0 {
+        return Err(format!(
+            "Finish or cancel the {running} running workflow{} first: restarting would stop {}.",
+            if running == 1 { "" } else { "s" },
+            if running == 1 { "it" } else { "them" }
+        ));
+    }
+    let update = app
+        .updater()
+        .map_err(|e| format!("Could not prepare the update: {e}"))?
+        .check()
+        .await
+        .map_err(|e| format!("Could not fetch the update: {e}. Download it instead."))?
+        .ok_or_else(|| "No newer signed update was found; download it instead.".to_string())?;
+    if orchevia_core::updates::parse_version(&update.version)
+        != orchevia_core::updates::parse_version(&version)
+    {
+        return Err(format!(
+            "The signed update is {}, not {version}. Check again, then install.",
+            update.version
+        ));
+    }
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("Could not install the update: {e}"))?;
+    app.restart()
 }
 
 /// Quit from inside the app: on desktops without a tray (GNOME without the

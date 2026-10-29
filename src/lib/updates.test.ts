@@ -126,13 +126,28 @@ describe('latest release', () => {
   it('picks the installer that matches this copy', () => {
     const parsed = parseLatestRelease(release);
     if (parsed === null) throw new Error('release');
-    const deb = { platform: 'linux', arch: 'x86_64', installKind: 'deb' };
+    const deb = {
+      platform: 'linux',
+      arch: 'x86_64',
+      installKind: 'deb',
+      inPlaceUpdates: false,
+    };
     expect(assetFor(parsed, deb)?.name).toBe('Orchevia-linux-x86_64.deb');
     expect(
-      assetFor(parsed, { platform: 'macos', arch: 'arm64', installKind: 'app' })?.name,
+      assetFor(parsed, {
+        platform: 'macos',
+        arch: 'arm64',
+        installKind: 'app',
+        inPlaceUpdates: false,
+      })?.name,
     ).toBe('Orchevia-macos-arm64.dmg');
     expect(
-      assetFor(parsed, { platform: 'linux', arch: 'x86_64', installKind: 'appimage' }),
+      assetFor(parsed, {
+        platform: 'linux',
+        arch: 'x86_64',
+        installKind: 'appimage',
+        inPlaceUpdates: false,
+      }),
     ).toBeUndefined();
     expect(assetFor(parsed, null)).toBeUndefined();
     expect(installSteps(deb, 'Orchevia-linux-x86_64.deb')).toContain(
@@ -141,7 +156,7 @@ describe('latest release', () => {
     // A new DMG is quarantined again, and macOS asks for Open Anyway.
     expect(
       installSteps(
-        { platform: 'macos', arch: 'arm64', installKind: 'app' },
+        { platform: 'macos', arch: 'arm64', installKind: 'app', inPlaceUpdates: false },
         'Orchevia-macos-arm64.dmg',
       ),
     ).toContain('Open Anyway in System Settings → Privacy & Security');
@@ -149,5 +164,17 @@ describe('latest release', () => {
     const apt = { ...deb, installKind: 'apt' };
     expect(assetFor(parsed, apt)).toBeUndefined();
     expect(installSteps(apt)).toContain('sudo apt update && sudo apt upgrade');
+    // A copy that updates itself points at the button instead of manual steps.
+    expect(
+      installSteps(
+        {
+          platform: 'linux',
+          arch: 'x86_64',
+          installKind: 'appimage',
+          inPlaceUpdates: true,
+        },
+        'Orchevia-linux-x86_64.AppImage',
+      ),
+    ).toContain('Install and restart downloads the signed update');
   });
 });

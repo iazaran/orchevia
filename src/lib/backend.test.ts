@@ -1221,7 +1221,9 @@ it('mirrors desktop integration commands', async () => {
     platform: 'browser',
     arch: 'unknown',
     installKind: 'unknown',
+    inPlaceUpdates: false,
   });
+  await expect(backend.installUpdate('9.9.9')).rejects.toThrow('cannot update itself');
   await expect(backend.quitApp()).rejects.toThrow('desktop app');
   await expect(backend.openExternalUrl('https://example.com/')).rejects.toThrow(
     "Only Orchevia's own GitHub pages",
