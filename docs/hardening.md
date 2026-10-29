@@ -33,7 +33,7 @@ project accepts. Honest limitations beat aspirational claims.
 - macOS builds are ad-hoc signed, not notarized: the first launch needs Open
   Anyway in Privacy & Security; verify SHA256SUMS.
 - Loop-exit reasoning for exotic re-convergent diamonds across loop
-  iterations is best-effort (simple review/fix cycles are exact).
+  iterations is best-effort (review/fix cycles, also nested ones, are exact).
 - Timezones are fixed offsets (`local`/`utc`/`±HH:MM`); no IANA database.
 - OS notifications depend on `notify-send`/`osascript` presence.
 
