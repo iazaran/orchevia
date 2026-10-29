@@ -30,6 +30,15 @@ pub struct DesktopInfo {
     /// `apt` (.deb with the apt repository set up), `deb`, `appimage`, `app`
     /// (macOS bundle) or `unknown`.
     pub install_kind: String,
+    /// Whether this copy can download a signed update and replace itself:
+    /// AppImage and macOS bundles of a build that carries the update key.
+    pub in_place_updates: bool,
+}
+
+/// Install kinds the updater replaces in place. Debian packages stay with apt
+/// (or a downloaded .deb), so a package manager never sees files change.
+pub fn supports_in_place_update(install_kind: &str) -> bool {
+    matches!(install_kind, "appimage" | "app")
 }
 
 pub fn platform() -> &'static str {
@@ -196,18 +205,37 @@ pub fn open_external(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn desktop_info(tray_available: Option<bool>) -> DesktopInfo {
+/// `updater_configured`: the build carries the public key that verifies
+/// update signatures.
+pub fn desktop_info(tray_available: Option<bool>, updater_configured: bool) -> DesktopInfo {
+    let install_kind = install_kind();
     DesktopInfo {
         tray_available,
         platform: platform().into(),
         arch: arch().into(),
-        install_kind: install_kind().into(),
+        install_kind: install_kind.into(),
+        in_place_updates: updater_configured && supports_in_place_update(install_kind),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_appimages_and_mac_bundles_update_in_place() {
+        assert!(supports_in_place_update("appimage"));
+        assert!(supports_in_place_update("app"));
+        for kind in ["apt", "deb", "unknown", ""] {
+            assert!(!supports_in_place_update(kind), "{kind}");
+        }
+        // A build without the update key never offers it.
+        assert!(!desktop_info(None, false).in_place_updates);
+        assert_eq!(
+            desktop_info(None, true).in_place_updates,
+            supports_in_place_update(install_kind())
+        );
+    }
 
     #[test]
     fn parses_gdbus_and_busctl_replies() {

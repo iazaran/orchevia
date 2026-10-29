@@ -31,8 +31,13 @@ executable path in the relevant profile.
 In **Agents**, create a profile for your installed CLI. Keep the model blank to
 use its default, or choose a model supported by that CLI and account. Profiles
 hold reusable model, effort, working-directory, and optional skill settings.
-A profile test checks CLI availability; test a small agent step before relying
-on models or skills in a larger automation.
+**Check setup** on a profile (or **Check every profile** in Environment and at
+the end of the setup wizard) sends one short prompt in a temporary folder. It
+shows whether the CLI is installed, signed in, can read a file and, at the
+profile's permission level, can edit one without asking, with the fix for
+anything that fails. It runs only when you click it and uses your plan like any
+other prompt. Test a small agent step before relying on models or skills in a
+larger automation.
 
 Headless agents cannot ask for permission while a step runs, so decide once what
 they may do: the wizard's **Permissions** step or **Environment → Agent
@@ -58,7 +63,10 @@ Start → Plan → Human Approval → Implement → Command: project tests → R
 Use the repository's actual test command. A Command node takes an executable
 and separate arguments: for example, `pnpm` with `test` as one argument. If you
 need shell operators such as `&&`, explicitly choose `sh` with `-c` and the
-script as separate arguments. Review any generated shell script before running.
+script as separate arguments, or keep the script in a file and switch the step
+to **Script file** (it runs with `bash` unless you name another interpreter; a
+relative path resolves against the working directory). Review any generated
+shell script before running.
 
 The workflow repository default supplies Command, Git and GitHub working
 directories when a node has no override. Node configuration wins. Agent steps

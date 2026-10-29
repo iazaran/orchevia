@@ -892,3 +892,64 @@ async fn reuse_finds_a_branch_result_after_an_earlier_pass_skipped_it() {
         "{rows:?}"
     );
 }
+
+#[tokio::test]
+async fn dry_runs_show_the_script_command_they_would_run_without_looking_it_up() {
+    let (db, engine, mut wf) = setup();
+    wf.defaults = Some(crate::workflow::WorkflowDefaults {
+        repo_dir: Some("/no/such/repo".into()),
+        branch: None,
+    });
+    wf.nodes[1].config.executable = None;
+    wf.nodes[1].config.script_file = Some("scripts/ci.sh".into());
+    wf.nodes[1].config.args = vec!["--name".into(), "{{input.name}}".into()];
+    let fixtures = json!({"dryRun":true,"fixtures":{
+        "a":[{"status":"succeeded"}],"b":[{"status":"succeeded"}]}});
+    engine
+        .start_run_with_options(&wf, "dry-script", &HashMap::new(), &options(fixtures))
+        .unwrap();
+    engine.execute(wf.clone(), "dry-script".into()).await;
+    let rows = db.list_node_results("dry-script").unwrap();
+    let row = rows.iter().find(|r| r.node_id == "a").unwrap();
+    assert_eq!(row.status, "succeeded", "{rows:?}");
+    let meta: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+    assert_eq!(meta["simulated"], true);
+    assert_eq!(
+        meta["command"],
+        "bash /no/such/repo/scripts/ci.sh --name saved"
+    );
+    // Only the engine writes the command; fixtures cannot fake one.
+    let faked = json!({"dryRun":true,"fixtures":{
+        "a":[{"status":"succeeded","structured":{"command":"rm -rf /"}}]}});
+    assert!(engine
+        .start_run_with_options(&wf, "faked", &HashMap::new(), &options(faked))
+        .is_err());
+}
+
+#[tokio::test]
+async fn recovery_waits_while_an_update_holds_admission() {
+    let (db, _, wf) = setup();
+    let registry = CancellationRegistry::default();
+    let engine = Engine::new(db.clone(), registry.clone());
+    engine.start_run_with_options(&wf,"source",&HashMap::new(),&options(json!({"dryRun":true,"fixtures":{"a":[{"status":"succeeded"}],"b":[{"status":"failed"}]}}))).unwrap();
+    engine.execute(wf.clone(), "source".into()).await;
+    let plan = engine.preview_recovery("source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    let hold = registry.hold_admission();
+    let refused = engine.recover_run("source", "held", &choices, &plan.fingerprint, "request");
+    assert!(
+        matches!(refused, Err(crate::engine::EngineError::Updating)),
+        "{refused:?}"
+    );
+    assert!(db.get_run("held").unwrap().is_none());
+    drop(hold);
+    assert_eq!(
+        engine
+            .recover_run("source", "after", &choices, &plan.fingerprint, "request")
+            .unwrap(),
+        "after"
+    );
+}

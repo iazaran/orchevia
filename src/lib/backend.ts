@@ -64,6 +64,8 @@ import {
   type AgentProfile,
   type AppPermissionDefault,
   type AgentSkillInfo,
+  SETUP_CHECK_LABELS,
+  type SetupCheckReport,
   type AdapterKind,
 } from './agents';
 import { evalCondition } from './conditions';
@@ -120,6 +122,8 @@ import type {
   Workflow,
 } from './workflow';
 import {
+  commandArgv,
+  commandWorkingFolder,
   createSampleWorkflow,
   validateWorkflowLocal,
   MAX_ATTEMPTS_LIMIT,
@@ -195,7 +199,8 @@ export interface Backend {
     preview: string;
     referencedVariables: string[];
   }>;
-  testAgentProfile(profileId: string): Promise<ToolStatus>;
+  /** Sends one short real prompt with the profile; only on user request. */
+  checkAgentSetup(profileId: string): Promise<SetupCheckReport>;
   listKnownFolders(limit?: number): Promise<string[]>;
   listCustomModels(adapter: string): Promise<string[]>;
   saveCustomModels(adapter: string, models: string[]): Promise<string[]>;
@@ -239,6 +244,9 @@ export interface Backend {
   checkForUpdate(): Promise<UpdateCheck>;
   /** Announce a newer version once (Inbox + desktop when enabled). */
   recordUpdateNotice(version: string): Promise<boolean>;
+  /** Download the signed `version`, replace this copy and restart. Only for
+   * `DesktopInfo.inPlaceUpdates` copies with no workflow running. */
+  installUpdate(version: string): Promise<void>;
   diagnosticsBundle(): Promise<string>;
   roleMapDefault(): Promise<Record<string, string>>;
   listTemplates(): Promise<{ builtin: WorkflowTemplate[]; user: WorkflowTemplate[] }>;
@@ -439,8 +447,8 @@ class TauriBackend implements Backend {
       workingDir,
     });
   }
-  testAgentProfile(profileId: string): Promise<ToolStatus> {
-    return this.invoke('test_agent_profile', { profileId });
+  checkAgentSetup(profileId: string): Promise<SetupCheckReport> {
+    return this.invoke('check_agent_setup', { profileId });
   }
   listKnownFolders(limit = 20): Promise<string[]> {
     return this.invoke('list_known_folders', { limit });
@@ -544,6 +552,9 @@ class TauriBackend implements Backend {
   recordUpdateNotice(version: string): Promise<boolean> {
     return this.invoke('record_update_notice', { version });
   }
+  installUpdate(version: string): Promise<void> {
+    return this.invoke('install_update', { version });
+  }
   diagnosticsBundle(): Promise<string> {
     return this.invoke('diagnostics_bundle');
   }
@@ -631,6 +642,36 @@ class TauriBackend implements Backend {
   observeEdits(observations: EditObservation[]): Promise<Preference[]> {
     return this.invoke('observe_edits', { observations });
   }
+}
+
+/** Display-only command line for the browser mock (the core shell-escapes). */
+function mockCommandPreview(executable: string, args: string[]): string {
+  return [executable, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' ');
+}
+
+/**
+ * What a Command step runs, as the engine records it: arguments rendered with
+ * the run's variables, a relative script joined to the working folder.
+ */
+function mockStepCommand(
+  workflow: Workflow,
+  node: Workflow['nodes'][number],
+  inputs: Record<string, string>,
+): string {
+  const vars: Record<string, string> = {
+    'workflow.id': workflow.id,
+    'workflow.name': workflow.name,
+  };
+  for (const [name, value] of Object.entries(inputs)) vars['input.' + name] = value;
+  const args = (node.config.args ?? []).map((arg) => {
+    const rendered = renderPromptStrict(arg, vars);
+    return 'rendered' in rendered ? rendered.rendered : arg;
+  });
+  const [executable = '', ...rest] = commandArgv(
+    { ...node.config, args },
+    commandWorkingFolder(node.config, workflow.defaults),
+  );
+  return mockCommandPreview(executable, rest);
 }
 
 /**
@@ -1051,7 +1092,14 @@ class MockBackend implements Backend {
           row.attempt = attempt;
           row.durationMs = 0;
           row.exitCode = fixture.exitCode ?? (status === 'succeeded' ? 0 : 1);
-          row.structuredJson = JSON.stringify({ ...fixture.structured, simulated: true });
+          row.structuredJson = JSON.stringify({
+            ...fixture.structured,
+            simulated: true,
+            // What a Command step would have run (never looked up).
+            ...(node.type === 'command'
+              ? { command: mockStepCommand(workflow, node, run.inputs ?? {}) }
+              : {}),
+          });
           if (status !== 'retrying') break;
           const delay = Math.min(
             60000,
@@ -1099,7 +1147,9 @@ class MockBackend implements Backend {
             node.config.condition,
             mockVariables(workflow, results, run.inputs ?? {}),
           );
-        this.pushResult(runId, nodeId, 'succeeded', String(outcome));
+        // Like the engine's condition rows: the branch is also structured.
+        const row = this.pushResult(runId, nodeId, 'succeeded', String(outcome));
+        row.structuredJson = JSON.stringify({ branch: String(outcome) });
         continue;
       }
       if (
@@ -1276,9 +1326,10 @@ class MockBackend implements Backend {
         continue;
       }
       if (node.type === 'command') {
-        const exe = node.config.executable ?? '';
-        const prefix = `mock$ ${exe} ${(node.config.args ?? []).join(' ')}`;
+        const command = mockStepCommand(workflow, node, run.inputs ?? {});
+        const prefix = `mock$ ${command}`;
         const live = this.startResult(runId, nodeId, prefix + '\n');
+        live.structuredJson = JSON.stringify({ command });
         await new Promise((resolve) => {
           this.timers.set(runId, setTimeout(resolve, 350));
         });
@@ -1967,7 +2018,7 @@ class MockBackend implements Backend {
   }
 
   async previewCommand(executable: string, args: string[]): Promise<string> {
-    return [executable, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' ');
+    return mockCommandPreview(executable, args);
   }
 
   async listAdapters(): Promise<AdapterInfo[]> {
@@ -2120,13 +2171,32 @@ class MockBackend implements Backend {
     };
   }
 
-  async testAgentProfile(profileId: string): Promise<ToolStatus> {
+  async checkAgentSetup(profileId: string): Promise<SetupCheckReport> {
     const profile = this.profiles.get(profileId);
     if (profile === undefined) throw new Error(`Unknown Agent Profile '${profileId}'.`);
+    // The browser preview runs no CLI, so the check stops at the first item,
+    // as the desktop app does for a missing executable.
+    const exe = effectiveExecutable(profile);
     return {
-      id: profile.id,
-      displayName: `${profile.name} (${profile.adapter})`,
-      installed: false,
+      profileId: profile.id,
+      profileName: profile.name,
+      status: 'failed',
+      items: [
+        {
+          id: 'installed',
+          label: SETUP_CHECK_LABELS.installed,
+          status: 'failed',
+          detail: `'${exe}' was not found: the browser preview runs no CLI.`,
+          hint: 'Run the desktop app to check this profile.',
+        },
+        ...(['answered', 'readFile', 'editFile'] as const).map((id) => ({
+          id,
+          label: SETUP_CHECK_LABELS[id],
+          status: 'skipped' as const,
+          detail: 'Needs the CLI first.',
+        })),
+      ],
+      durationMs: 0,
     };
   }
 
@@ -2368,7 +2438,12 @@ class MockBackend implements Backend {
   }
 
   async desktopInfo(): Promise<DesktopInfo> {
-    return { platform: 'browser', arch: 'unknown', installKind: 'unknown' };
+    return {
+      platform: 'browser',
+      arch: 'unknown',
+      installKind: 'unknown',
+      inPlaceUpdates: false,
+    };
   }
 
   async quitApp(): Promise<void> {
@@ -2395,6 +2470,12 @@ class MockBackend implements Backend {
     this.settings.set('updates.notifiedVersion', normalized);
     this.persist();
     return true;
+  }
+
+  async installUpdate(_version: string): Promise<void> {
+    // The preview's install kind is `unknown`, which the desktop app refuses
+    // with the same words.
+    throw new Error('This copy cannot update itself; download the new version instead.');
   }
 
   async diagnosticsBundle(): Promise<string> {

@@ -4,7 +4,13 @@
  */
 
 import type { AgentProfile } from './agents';
-import type { ValidationIssue, Workflow, WorkflowNode } from './workflow';
+import {
+  commandArgv,
+  isValidInputName,
+  type ValidationIssue,
+  type Workflow,
+  type WorkflowNode,
+} from './workflow';
 
 export interface GenerationPreview {
   generationId: string;
@@ -38,9 +44,7 @@ export interface DeclaredInput {
   required: boolean;
 }
 
-export function isValidInputName(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name);
-}
+export { isValidInputName };
 
 /** Parse the generator inputs box. Returns inputs + per-line problems. */
 export function parseInputDeclarations(text: string): {
@@ -203,16 +207,18 @@ export function describeGeneratedStep(
       (args.length > 0 ? ' · ' + args.join(' · ') : '')
     );
   }
-  if (node.type === 'command')
+  if (node.type === 'command') {
+    const [executable, ...args] = commandArgv(node.config);
     return (
-      'CLI: ' +
+      (node.config.scriptFile === undefined ? 'CLI: ' : 'Script: ') +
       [
-        node.config.executable ?? 'missing',
-        ...(node.config.args ?? []).map((arg) =>
-          /\s|["']/.test(arg) || !arg ? JSON.stringify(arg) : arg,
-        ),
+        node.config.executable === undefined && node.config.scriptFile === undefined
+          ? 'missing'
+          : (executable ?? 'missing'),
+        ...args.map((arg) => (/\s|["']/.test(arg) || !arg ? JSON.stringify(arg) : arg)),
       ].join(' ')
     );
+  }
   if (node.type === 'approval') return 'Human approval';
   if (node.type === 'condition') return 'True / false decision';
   return '';

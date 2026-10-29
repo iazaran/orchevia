@@ -30,13 +30,23 @@ export function classifyChanges(paths) {
       // Lint workflows and exercise delivery scripts without recompiling unchanged
       // source, but package for macOS: both workflows build and verify the DMG.
       changes.workflows = changes.macos = true;
+    } else if (
+      path === '.github/workflows/cli-canary.yml' ||
+      path === 'scripts/verify-linux-app.sh'
+    ) {
+      // The weekly canary and the release's Linux launch check: actionlint and the
+      // delivery tests cover them; neither compiles nor packages in CI.
+      changes.workflows = true;
     } else if (path.startsWith('crates/') || path.startsWith('src-tauri/')) {
       changes.rust = changes.desktop = true;
       // Configuration, icons and manifests shape the signed bundle; Rust source does not.
+      // The macOS job also runs the process-tree cleanup tests, so the process-group
+      // code itself is a macOS input too.
       if (
-        path.startsWith('src-tauri/') &&
-        !path.startsWith('src-tauri/src/') &&
-        !path.startsWith('src-tauri/tests/')
+        (path.startsWith('src-tauri/') &&
+          !path.startsWith('src-tauri/src/') &&
+          !path.startsWith('src-tauri/tests/')) ||
+        path === 'crates/core/src/process.rs'
       )
         changes.macos = true;
     } else if (

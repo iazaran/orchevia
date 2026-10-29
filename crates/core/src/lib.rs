@@ -23,6 +23,7 @@ pub mod review;
 pub mod run_controls;
 pub mod schedule;
 pub mod scheduler;
+pub mod setup_check;
 pub mod templates;
 pub mod ticket;
 pub mod tools;
@@ -40,5 +41,7 @@ pub use workflow::{
 
 pub mod workflow_document;
 
+#[cfg(test)]
+mod cli_canary;
 #[cfg(test)]
 mod run_control_tests;

@@ -638,8 +638,93 @@ pub async fn fire_schedule_now(
 
 /// Tray, platform and install facts for the Background and Updates sections.
 #[tauri::command]
-pub fn desktop_info(state: State<AppState>) -> orchevia_core::desktop::DesktopInfo {
-    orchevia_core::desktop::desktop_info(state.tray_available.get().copied().flatten())
+pub fn desktop_info(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> orchevia_core::desktop::DesktopInfo {
+    orchevia_core::desktop::desktop_info(
+        state.tray_available.get().copied().flatten(),
+        updater_configured(&app),
+    )
+}
+
+/// The build carries the public key that verifies update signatures
+/// (`plugins.updater.pubkey` in `tauri.conf.json`).
+fn updater_configured(app: &tauri::AppHandle) -> bool {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|key| !key.trim().is_empty())
+}
+
+/// Download the signed update for `version`, replace this copy and restart.
+/// Refused for installs a package manager owns and while a run is running:
+/// a restart would stop its CLIs and the run could not resume.
+#[tauri::command]
+pub async fn install_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version: String,
+) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let kind = orchevia_core::desktop::install_kind();
+    if !orchevia_core::desktop::supports_in_place_update(kind) || !updater_configured(&app) {
+        return Err(match kind {
+            "apt" => "apt updates this copy: run sudo apt update && sudo apt upgrade.".into(),
+            "deb" => "Download the new .deb and install it over this one.".into(),
+            _ => "This copy cannot update itself; download the new version instead.".into(),
+        });
+    }
+    no_running_runs(&state)?;
+    let update = app
+        .updater()
+        .map_err(|e| format!("Could not prepare the update: {e}"))?
+        .check()
+        .await
+        .map_err(|e| format!("Could not fetch the update: {e}. Download it instead."))?
+        .ok_or_else(|| "No newer signed update was found; download it instead.".to_string())?;
+    if orchevia_core::updates::parse_version(&update.version)
+        != orchevia_core::updates::parse_version(&version)
+    {
+        return Err(format!(
+            "The signed update is {}, not {version}. Check again, then install.",
+            update.version
+        ));
+    }
+    let bytes = update
+        .download(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("Could not download the update: {e}"))?;
+    // A schedule or the user may have started a run during the download.
+    // From here no run or continuation is admitted, and any admitted before
+    // is already recorded; the hold lifts if this returns early.
+    let _hold = state.cancel.hold_admission();
+    no_running_runs(&state)?;
+    update
+        .install(bytes)
+        .map_err(|e| format!("Could not install the update: {e}"))?;
+    app.restart()
+}
+
+fn no_running_runs(state: &State<'_, AppState>) -> Result<(), String> {
+    let running = state
+        .db
+        .list_active_runs()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|run| run.status == orchevia_core::db::RunStatus::Running)
+        .count();
+    if running == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "Finish or cancel the {running} running workflow{} first: restarting would stop {}.",
+        if running == 1 { "" } else { "s" },
+        if running == 1 { "it" } else { "them" }
+    ))
 }
 
 /// Quit from inside the app: on desktops without a tray (GNOME without the
@@ -1134,52 +1219,23 @@ pub fn preview_agent_command(
     })
 }
 
+/// One short real prompt with the profile at its effective permission level:
+/// installed, signed in, reads and edits files headless. Only on request.
 #[tauri::command]
-pub async fn test_agent_profile(
+pub async fn check_agent_setup(
     state: State<'_, AppState>,
     profile_id: String,
-) -> Result<ToolStatus, String> {
+) -> Result<orchevia_core::setup_check::SetupCheckReport, String> {
     let profile = state
         .db
-        .get_agent_profile(&profile_id)
+        .get_effective_agent_profile(&profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown Agent Profile '{profile_id}'."))?;
-    // The `--version` probe can take seconds; keep it off the UI thread.
-    tauri::async_runtime::spawn_blocking(move || probe_agent_profile(&profile))
-        .await
-        .map_err(|e| format!("Profile test failed to join: {e}"))
-}
-
-fn probe_agent_profile(profile: &AgentProfile) -> ToolStatus {
-    let exe = profile.effective_executable();
-    let found =
-        orchevia_core::tools::find_executable(&exe).map(|p| p.to_string_lossy().into_owned());
-    // Probe --version without a shell; failure just reports unavailable.
-    let version = found.as_deref().and_then(|path| {
-        let spec = CommandSpec {
-            executable: path.to_string(),
-            args: vec!["--version".to_string()],
-            working_dir: None,
-            stdin: None,
-        };
-        orchevia_core::process::run_command(&spec, Some(std::time::Duration::from_secs(5)))
-            .ok()
-            .filter(|r| r.exit_code == Some(0))
-            .and_then(|r| {
-                format!("{}\n{}", r.stdout, r.stderr)
-                    .lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())
-                    .map(|l| l.chars().take(120).collect())
-            })
-    });
-    ToolStatus {
-        id: profile.id.clone(),
-        display_name: format!("{} ({})", profile.name, profile.adapter.as_str()),
-        installed: found.is_some(),
-        version,
-        path: found,
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::setup_check::check_agent_setup(&profile)
+    })
+    .await
+    .map_err(|e| format!("Setup check failed to join: {e}"))
 }
 
 // -- Generation, templates, memory (Milestone 6) -------------------------------

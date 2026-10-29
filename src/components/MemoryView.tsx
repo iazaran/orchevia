@@ -485,6 +485,7 @@ export function MemoryView(): React.JSX.Element {
         </div>
         <textarea
           className="textarea"
+          aria-label="Preferences JSON"
           rows={5}
           style={{ maxWidth: 680 }}
           value={memoryText ?? ''}

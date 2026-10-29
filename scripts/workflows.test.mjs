@@ -128,6 +128,81 @@ test('publication requires all four nonempty installers and produces their exact
   }
 });
 
+test('signed update files publish only as a complete set', () => {
+  const updates = [
+    'Orchevia-linux-x86_64.AppImage.sig',
+    'Orchevia-macos-arm64.app.tar.gz',
+    'Orchevia-macos-arm64.app.tar.gz.sig',
+    'Orchevia-macos-x86_64.app.tar.gz',
+    'Orchevia-macos-x86_64.app.tar.gz.sig',
+  ];
+  const dir = mkdtempSync(join(tmpdir(), 'orchevia-publish-'));
+  const artifactDir = join(dir, 'release-artifacts');
+  mkdirSync(artifactDir);
+  try {
+    for (const name of assets) writeFileSync(join(artifactDir, name), name);
+    for (const name of updates.slice(0, 4)) writeFileSync(join(artifactDir, name), name);
+    assert.notEqual(
+      execute(checksums, { cwd: dir }).status,
+      0,
+      'a missing update signature must block publication',
+    );
+    writeFileSync(join(artifactDir, updates[4]), updates[4]);
+    assert.equal(execute(checksums, { cwd: dir }).status, 0);
+    const sums = readFileSync(join(artifactDir, 'SHA256SUMS'), 'utf8');
+    assert.match(sums, /\.\/Orchevia-macos-arm64\.app\.tar\.gz\n/);
+    assert.doesNotMatch(sums, /\.sig/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('signing without the public key of the app stops before building', () => {
+  const build = runBlock(
+    '.github/workflows/release.yml',
+    'Build and package (capture bundler stdout and stderr)',
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'orchevia-build-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  mkdirSync(join(dir, 'src-tauri'));
+  // A stand-in pnpm records the arguments the real build would get.
+  writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\nprintf "%s\\n" "$@" > args\n', {
+    mode: 0o755,
+  });
+  const run = (pubkey, key) => {
+    writeFileSync(
+      join(dir, 'src-tauri/tauri.conf.json'),
+      JSON.stringify({ plugins: { updater: { pubkey } } }),
+    );
+    rmSync(join(dir, 'args'), { force: true });
+    return execute(build, {
+      cwd: dir,
+      env: {
+        PATH: `${bin}:${String(process.env.PATH)}`,
+        RELEASE_BUNDLES: 'deb,appimage',
+        RELEASE_TARGET: '',
+        TAURI_SIGNING_PRIVATE_KEY: key,
+      },
+    });
+  };
+  try {
+    let result = run('', 'secret');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /no plugins\.updater\.pubkey/);
+    assert.equal(run('', '').status, 0);
+    assert.doesNotMatch(
+      readFileSync(join(dir, 'args'), 'utf8'),
+      /createUpdaterArtifacts/,
+    );
+    result = run('cHVibGlj', 'secret');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(join(dir, 'args'), 'utf8'), /createUpdaterArtifacts":true/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 const stage = runBlock('.github/workflows/release.yml', 'Stage artifacts');
 
 function stagingFixture() {
@@ -168,6 +243,16 @@ test('macOS staging names the DMG by its target architecture and rejects any oth
       readFileSync(join(dir, 'release-artifacts/Orchevia-macos-x86_64.dmg'), 'utf8'),
       'intel dmg',
     );
+    // A signed update bundle ships beside the DMG, and never without its signature.
+    writeFileSync(join(bundle, 'macos/Orchevia.app.tar.gz'), 'update');
+    assert.notEqual(execute(stage, { cwd: dir, env }).status, 0);
+    writeFileSync(join(bundle, 'macos/Orchevia.app.tar.gz.sig'), 'signature');
+    assert.equal(execute(stage, { cwd: dir, env }).status, 0);
+    for (const [name, content] of [
+      ['Orchevia-macos-x86_64.app.tar.gz', 'update'],
+      ['Orchevia-macos-x86_64.app.tar.gz.sig', 'signature'],
+    ])
+      assert.equal(readFileSync(join(dir, 'release-artifacts', name), 'utf8'), content);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -192,7 +277,15 @@ test('Linux staging requires both packages from the host bundle', () => {
       'a missing AppImage must block staging',
     );
     writeFileSync(join(bundle, 'appimage/orchevia_0.1.17_amd64.AppImage'), 'appimage');
+    writeFileSync(join(bundle, 'appimage/orchevia_0.1.17_amd64.AppImage.sig'), 'sig');
     assert.equal(execute(stage, { cwd: dir, env }).status, 0);
+    assert.equal(
+      readFileSync(
+        join(dir, 'release-artifacts/Orchevia-linux-x86_64.AppImage.sig'),
+        'utf8',
+      ),
+      'sig',
+    );
     for (const [name, content] of [
       ['Orchevia-linux-x86_64.deb', 'deb'],
       ['Orchevia-linux-x86_64.AppImage', 'appimage'],
@@ -251,4 +344,112 @@ test('macOS apps are signed as a whole and checked before they ship', () => {
     readFileSync('.github/workflows/ci.yml', 'utf8'),
     /if: needs\.changes\.outputs\.macos == 'true'\n\s+runs-on: macos-15\n[\s\S]*?run: bash scripts\/verify-macos-app\.sh target\/aarch64-apple-darwin\/release\/bundle --launch\n/,
   );
+});
+
+test('Linux packages are launched before they ship', () => {
+  const release = readFileSync('.github/workflows/release.yml', 'utf8');
+  const verify = release.indexOf('- name: Verify the Linux packages launch');
+  const stageAt = release.indexOf('- name: Stage artifacts');
+  assert.ok(verify > release.indexOf('- name: Build and package'));
+  assert.ok(verify < stageAt);
+  assert.match(
+    release.slice(verify, stageAt),
+    /if: runner\.os == 'Linux'\n[\s\S]*\n\s+bash scripts\/verify-linux-app\.sh target\/release\/bundle\n/,
+  );
+  // The launch expects the data folder of the identifier users already have.
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+  assert.ok(
+    readFileSync('scripts/verify-linux-app.sh', 'utf8')
+      .split('\n')
+      .includes(`identifier=${String(config.identifier)}`),
+  );
+});
+
+// Test functions of a top-level module, as libtest names them.
+function testsIn(file, module) {
+  const source = readFileSync(`crates/core/src/${file}.rs`, 'utf8');
+  const start = source.indexOf(`\nmod ${module} {`);
+  if (start === -1) return [];
+  const end = source.indexOf('\nmod ', start + 1);
+  return Array.from(
+    source
+      .slice(start, end === -1 ? undefined : end)
+      .matchAll(/#\[(?:tokio::)?test\]\s*(?:#\[[^\]]*\]\s*)*(?:async )?fn (\w+)/g),
+    (match) => match[1],
+  );
+}
+
+test('macOS CI runs the process-tree cleanup tests, and every filter selects tests', () => {
+  const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
+  const job = ci.slice(ci.indexOf('\n  macos:'), ci.indexOf('\n  result:'));
+  assert.match(
+    job,
+    /if: needs\.changes\.outputs\.macos == 'true'\n\s+runs-on: macos-15\n/,
+  );
+  const step = /- name: Process-tree cleanup tests\n\s+run: >-\n((?: {10}.*\n)+)/.exec(
+    job,
+  );
+  assert.ok(step, 'missing cleanup test step');
+  const command = step[1].trim().split(/\s+/);
+  const separator = command.indexOf('--');
+  assert.deepEqual(command.slice(0, separator), [
+    'cargo',
+    'test',
+    '-p',
+    'orchevia-core',
+    '--locked',
+    '--lib',
+  ]);
+  // libtest runs every test whose path contains one of the filters.
+  const selected = command.slice(separator + 1).flatMap((filter) => {
+    const [file = '', module = '', name = ''] = filter.split('::');
+    const tests = testsIn(file, module).filter((test) => test.startsWith(name));
+    assert.ok(tests.length > 0, `${filter} selects no test`);
+    return tests;
+  });
+  for (const name of [
+    'timeout_stops_descendants_in_the_process_group',
+    'app_exit_cleanup_stops_tracked_groups',
+    'a_finished_exchange_stops_everything_the_server_started',
+    'timeout_returns_promptly_while_a_grandchild_holds_the_pipe',
+    'noisy_login_shell_reports_path_promptly_and_its_jobs_are_stopped',
+    'cancel_and_timeout_stop_descendants_and_keep_partial_output',
+  ])
+    assert.ok(selected.includes(name), name);
+  // A cleanup failure stops the job before the long packaging step.
+  assert.ok(job.indexOf('Process-tree cleanup tests') < job.indexOf('pnpm tauri build'));
+});
+
+test('the weekly CLI canary checks the newest CLIs without secrets or saved caches', () => {
+  const canary = readFileSync('.github/workflows/cli-canary.yml', 'utf8');
+  assert.match(
+    canary,
+    /\n {2}schedule:\n {4}- cron: '\d+ \d+ \* \* [0-6]'\n {2}workflow_dispatch:\n/,
+  );
+  assert.match(canary, /\npermissions:\n {2}contents: read\n/);
+  assert.doesNotMatch(canary, /secrets\.|macos-|windows-/);
+  assert.match(canary, /runs-on: ubuntu-latest\n/);
+  assert.match(canary, /save-if: false\n/);
+  assert.match(canary, /@anthropic-ai\/claude-code@latest @openai\/codex@latest/);
+  assert.match(
+    canary,
+    /run: cargo test -p orchevia-core --locked --lib cli_canary -- --ignored --nocapture\n/,
+  );
+  // The filter reaches the ignored live checks, one per CLI and variable.
+  assert.match(
+    readFileSync('crates/core/src/lib.rs', 'utf8'),
+    /#\[cfg\(test\)\]\nmod cli_canary;/,
+  );
+  const source = readFileSync('crates/core/src/cli_canary.rs', 'utf8');
+  for (const [cli, variable] of [
+    ['Claude', 'ORCHEVIA_CANARY_CLAUDE'],
+    ['Codex', 'ORCHEVIA_CANARY_CODEX'],
+  ]) {
+    assert.ok(canary.includes(`echo "${variable}=`), variable);
+    assert.ok(
+      source.includes(`check_cli(AdapterKind::${cli}, "${variable}");`),
+      variable,
+    );
+  }
+  assert.equal(source.match(/#\[ignore = /g)?.length, 2);
 });

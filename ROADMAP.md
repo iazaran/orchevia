@@ -7,16 +7,16 @@ are public.
 
 ## Implemented
 
-| Area            | Current capabilities                                                                                                  |
-| --------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays                  |
-| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, tool permissions, command previews        |
-| Execution       | Parallel paths/joins, bounded loops/retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                           |
-| Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history     |
-| Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode   |
-| Onboarding      | Tool detection, setup wizard, install/auth guidance, system/light/dark themes                                         |
-| Delivery        | Gated validation, tag-driven Linux/macOS installers, checksums, in-app update notices, project page with demo         |
+| Area            | Current capabilities                                                                                                                                                                         |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps                                                              |
+| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, tool permissions, command previews, real setup check                                                             |
+| Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard                                                            |
+| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                                                                                                  |
+| Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history                                                                            |
+| Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode                                                                          |
+| Onboarding      | Tool detection, setup wizard, install/auth guidance, setup check for every profile, system/light/dark themes                                                                                 |
+| Delivery        | Gated validation, tag-driven Linux/macOS installers launched before release, checksums, signed in-place updates (AppImage, macOS), apt repository, weekly CLI canary, project page with demo |
 
 ## Current priorities
 
@@ -30,20 +30,17 @@ concrete use case, fit the existing architecture, and include tests and document
 
 ## Next improvements to validate with real use
 
-- Clearer per-profile and MCP setup diagnostics, with small real-tool smoke tests.
+- MCP server diagnostics as direct as the agent setup check, with small real-tool
+  smoke tests.
 - Workflow recipes exercised in different languages, using each project's test
   command and accepted project knowledge.
 - Exercise dry-run fixtures, deliberate recovery and reported-spend guards against
   real project feedback; verify native parallel timing and provider-report coverage.
-- Process-tree cleanup on real systems: cancel, timeout, MCP shutdown and app exit
-  stop a CLI's process group on Linux and macOS (verified with automated tests on
-  Linux). Verify with real CLIs that spawn MCP servers on both macOS architectures;
-  tools that detach into their own session remain out of reach.
-- A maintained desktop smoke-test matrix covering local generation, approvals,
-  automation, restart recovery and all installer architectures.
-- Installing updates in place for AppImage and macOS: signed release metadata for
-  the Tauri updater. Debian and Ubuntu already update through the signed apt
-  repository; elsewhere the app announces new releases and links the installer.
+- Process-tree cleanup with real CLIs that spawn MCP servers, on both macOS
+  architectures (cancel, timeout, MCP shutdown and app exit are tested in CI on Linux
+  and Apple Silicon); tools that detach into their own session remain out of reach.
+- Keep the manual rows of the [desktop smoke-test matrix](docs/smoke-tests.md)
+  current for every release, including the first in-place update from 0.1.24.
 
 ## Product boundaries
 

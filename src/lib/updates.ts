@@ -31,6 +31,9 @@ export interface DesktopInfo {
   /** `apt` (.deb kept up to date by the apt repository), `deb`, `appimage`,
    * `app` (macOS) or `unknown`. */
   installKind: string;
+  /** This copy can download a signed update and replace itself (AppImage and
+   * macOS builds that carry the update key). */
+  inPlaceUpdates: boolean;
 }
 
 export interface ReleaseAsset {
@@ -173,9 +176,27 @@ export function assetFor(
   return name === undefined ? undefined : release.assets.find((a) => a.name === name);
 }
 
+/** Name of the signed update manifest a release carries when it was built
+ * with the update signing key. */
+export const UPDATE_MANIFEST_ASSET = 'latest.json';
+
+/** Whether this copy can install `release` itself: it updates in place and
+ * the release published a signed update manifest. */
+export function canInstallInPlace(
+  release: LatestRelease,
+  desktop: DesktopInfo | null,
+): boolean {
+  return (
+    desktop?.inPlaceUpdates === true &&
+    release.assets.some((asset) => asset.name === UPDATE_MANIFEST_ASSET)
+  );
+}
+
 /** How to apply the downloaded installer; data is kept in every case. */
 export function installSteps(desktop: DesktopInfo | null, assetName?: string): string {
   const file = assetName ?? 'the installer';
+  if (desktop?.inPlaceUpdates === true)
+    return 'Install and restart downloads the signed update, replaces this copy and restarts Orchevia. You can also download it yourself.';
   switch (desktop?.installKind) {
     case 'apt':
       return 'Update it with apt: sudo apt update && sudo apt upgrade. Restart Orchevia afterwards.';

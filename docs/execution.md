@@ -25,12 +25,12 @@ canvas positions never affect execution.
 
 ## Node behaviors
 
-| Node                | Behavior                                                                                                                                                                                                                                 |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `start` / `end`     | Instant success markers.                                                                                                                                                                                                                 |
-| `command` / `agent` | Run a local process with separate arguments (a shell only when explicit), optional bounded retries and per-node timeout up to 12 hours. Commands default to 600 seconds; agents use their profile default. Non-zero exit fails the node. |
-| `approval`          | Pauses the run durably (`paused` row + run status `paused`). Resumes via approve (records `approved` + optional note) or fails via reject. Approvals engage only when no other branch is in flight.                                      |
-| `condition`         | Evaluates a constrained expression (see below) and routes to the `true` or `false` labeled edge. Missing variables or type errors fail the node.                                                                                         |
+| Node                | Behavior                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start` / `end`     | Instant success markers.                                                                                                                                                                                                                                                                                                                                                     |
+| `command` / `agent` | Run a local process with separate arguments (a shell only when explicit), optional bounded retries and per-node timeout up to 12 hours. Commands default to 600 seconds; agents use their profile default. Non-zero exit fails the node. A Command with a `scriptFile` runs `<executable or bash> <resolved script> <args…>`; Runs shows the exact command each attempt ran. |
+| `approval`          | Pauses the run durably (`paused` row + run status `paused`). Resumes via approve (records `approved` + optional note) or fails via reject. Approvals engage only when no other branch is in flight.                                                                                                                                                                          |
+| `condition`         | Evaluates a constrained expression (see below) and routes to the `true` or `false` labeled edge. Missing variables or type errors fail the node.                                                                                                                                                                                                                             |
 
 ## Edge labels (routing)
 
@@ -89,12 +89,13 @@ runs.
 
 Review/fix pattern: `… → review → condition(true → fix → review, false → end)`.
 Each loop-back needs `maxVisits >= 2` on the cycle nodes; exceeding it fails the
-run with `Loop limit exceeded`. While a loop continues, sibling (exit-path)
-edges stay pending — they resolve on the exit visit, so exits are never skipped
+run with `Loop limit exceeded`. While a loop can still go round, edges that leave
+it stay pending: the pass that takes one resolves it, and the ones left are
+skipped once every step of the loop has finished, so exits are never skipped
 prematurely. This also holds when the condition's taken branch loops back through
-another step (`condition -true-> fix -> tests -> … -> condition`): only branches
-that cannot lead back to the condition wait; branches inside the loop resolve as
-usual. When several reviewers feed the condition, loop the fix back to all of them
+another step (`condition -true-> fix -> tests -> … -> condition`) and for failure
+routes out of the loop; branches inside the loop resolve as usual. When several
+reviewers feed the condition, loop the fix back to all of them
 so none keeps a stale finding. Side nodes off the cycle path run once (documented limitation: put
 per-iteration work on the cycle with its own bound).
 
@@ -106,6 +107,28 @@ arrival of another branch at a join after the loop. A step that fails when its o
 failure route already ran fails the run.
 
 `node.<id>.visits` exposes completed visit counts for loop-exit conditions.
+
+### Nested loops
+
+A loop can run inside another (since 0.1.24), for example a fix loop inside a
+review loop:
+`… → tests → gate(true → fix → tests, false → review) → again(true → tests, false → publish)`.
+The outer loop may go back to the inner loop's first step, as here, or to a step
+before it.
+
+- A loop is the steps its loop-back repeats. An inner loop is only its own
+  steps; an outer loop includes the loops inside it.
+- Leaving the inner loop is an exit even though the path comes back through the
+  outer loop: while the fix loop goes round, `review` waits instead of being
+  skipped. The steps after the outer loop, including a join fed by another
+  branch, wait for the outer loop's last pass.
+- Going round the inner loop re-runs only its steps; going round the outer loop
+  re-runs everything inside it, inner loop included.
+- `maxVisits` and `node.<id>.visits` count the whole run, not one outer pass. An
+  inner step's bound must cover all its rounds on every outer pass; the pass
+  that goes over fails the run with `Loop limit exceeded`.
+- A failure route that leaves both loops ends them: the steps after the loops
+  that it does not lead to are skipped.
 
 ## Parallelism
 
@@ -229,8 +252,10 @@ Every reached effectful attempt needs a fixture; exhaustion records a failure an
 never invokes a real tool. A missing Approval fixture pauses for a human decision;
 provided Approval fixtures use `approved`, `rejected` or `paused`. Each effectful
 fixture uses `succeeded` or `failed`; stdout/stderr, exitCode and structured output
-are optional. Reserved session/usage/provenance metadata is rejected. Bounds:
-1000 fixture attempts per node, 800000 output/structured bytes per fixture.
+are optional. Reserved session/usage/provenance/`command` metadata is rejected.
+Bounds: 1000 fixture attempts per node, 800000 output/structured bytes per fixture.
+A simulated Command step still records the command it would have run (shown as
+**Would run** in Runs); its script file is not looked up.
 
 Normal structural validation, required inputs, failure routing, retry policies,
 joins and loop limits apply. Supplied fixtures and execution mode persist through

@@ -9,10 +9,12 @@ import {
   UPDATE_DISMISSED_SETTING,
   UPDATE_FIRST_CHECK_DELAY_MS,
   assetFor,
+  canInstallInPlace,
   installSteps,
   type DesktopInfo,
 } from '../lib/updates';
 import { useAppStore } from '../store';
+import { confirmDialog } from './ConfirmDialog';
 import { Notice, useNoticeMessage } from './Notice';
 import { Switch } from './Switch';
 import { version } from '../../package.json';
@@ -152,8 +154,30 @@ export function UpdatesSection(): React.JSX.Element {
         setMessage(errorMessage(err), 'error');
       });
   };
+  const [installing, setInstalling] = useState(false);
   const available = check?.updateAvailable === true ? check.latest : null;
   const asset = available === null ? undefined : assetFor(available, desktop);
+  // A release built without the signing key has no manifest to install from.
+  const inPlace = available !== null && canInstallInPlace(available, desktop);
+  const install = async (target: string): Promise<void> => {
+    const ok = await confirmDialog({
+      title: `Install Orchevia ${target}?`,
+      message:
+        'Orchevia downloads the update, checks its signature, replaces this copy and restarts. Workflows, history and settings are kept. Running workflows must finish first.',
+      confirmLabel: 'Install and restart',
+    });
+    if (!ok) return;
+    setInstalling(true);
+    setMessage(null);
+    try {
+      // Resolves only when the install fails: on success the app restarts.
+      await getBackend().installUpdate(target);
+    } catch (err: unknown) {
+      setMessage(errorMessage(err), 'error');
+    } finally {
+      setInstalling(false);
+    }
+  };
   return (
     <section aria-label="Updates" className="tool-card" style={{ maxWidth: 680 }}>
       {message !== null && (
@@ -183,6 +207,11 @@ export function UpdatesSection(): React.JSX.Element {
         day. The request carries nothing about you or your work, and nothing installs
         without you.
       </p>
+      {installing && (
+        <p className="field-hint" role="status" style={{ margin: '8px 0 0' }}>
+          Downloading and installing… Orchevia restarts when it is done.
+        </p>
+      )}
       <p className="field-hint" role="status" style={{ margin: '8px 0 0' }}>
         {checking
           ? 'Checking…'
@@ -196,7 +225,10 @@ export function UpdatesSection(): React.JSX.Element {
       </p>
       {available !== null && (
         <p className="field-hint" style={{ margin: '8px 0 0' }}>
-          {installSteps(desktop, asset?.name)}
+          {installSteps(
+            desktop === null ? null : { ...desktop, inPlaceUpdates: inPlace },
+            asset?.name,
+          )}
         </p>
       )}
       <div className="background-card-actions">
@@ -209,9 +241,20 @@ export function UpdatesSection(): React.JSX.Element {
         >
           Check now
         </button>
-        {asset !== undefined && (
+        {inPlace && (
           <button
             className="btn btn-primary"
+            disabled={installing}
+            onClick={() => {
+              void install(available.version);
+            }}
+          >
+            {installing ? 'Installing…' : 'Install and restart'}
+          </button>
+        )}
+        {asset !== undefined && (
+          <button
+            className={inPlace ? 'btn' : 'btn btn-primary'}
             onClick={() => {
               open(asset.url);
             }}

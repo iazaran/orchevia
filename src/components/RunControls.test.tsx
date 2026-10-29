@@ -504,7 +504,9 @@ it('names unfinished steps when Start is pressed and links to each', async () =>
   expect(screen.queryByRole('alert')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
   const alert = await screen.findByRole('alert');
-  expect(alert).toHaveTextContent('Run tests: Command node requires an executable.');
+  expect(alert).toHaveTextContent(
+    'Run tests: Command node requires an executable or a script file.',
+  );
   expect(start).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Show step' }));
   expect(show).toHaveBeenCalledWith('tests');

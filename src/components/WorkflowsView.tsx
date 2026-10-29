@@ -21,6 +21,9 @@ import {
   createEmptyWorkflow,
   createReviewLoopDemoWorkflow,
   createReviewWorkflow,
+  SETUP_ISSUE_CODES,
+  validateWorkflowLocal,
+  type ValidationIssue,
   type Workflow,
   type StoredWorkflow,
 } from '../lib/workflow';
@@ -771,11 +774,42 @@ export function WorkflowsView(): React.JSX.Element {
   const [templateName, setTemplateName] = useState('');
   const [templateCategory, setTemplateCategory] = useState('general');
 
+  // What Use template will make of this workflow, saved as it is: setup it
+  // asks for, and problems it refuses until they are fixed.
+  const [templateSetup, setTemplateSetup] = useState<{
+    setup: string[];
+    blocking: string[];
+  } | null>(null);
   const openSaveAsTemplate = (): void => {
     if (active === null) return;
     setTemplateName(`${active.name} (template)`);
     setTemplateCategory('general');
+    setTemplateSetup(null);
     setTemplateModal(true);
+    const definition = active.definition;
+    const errors = (
+      issues: ValidationIssue[],
+    ): { setup: string[]; blocking: string[] } => {
+      const unique = (setup: boolean): string[] => [
+        ...new Set(
+          issues
+            .filter(
+              (i) =>
+                i.severity === 'error' && SETUP_ISSUE_CODES.includes(i.code) === setup,
+            )
+            .map((i) => i.message),
+        ),
+      ];
+      return { setup: unique(true), blocking: unique(false) };
+    };
+    void getBackend()
+      .validateWorkflow(definition)
+      .then((issues) => {
+        setTemplateSetup(errors(issues));
+      })
+      .catch(() => {
+        setTemplateSetup(errors(validateWorkflowLocal(definition)));
+      });
   };
 
   const saveAsTemplate = (): void => {
@@ -793,9 +827,18 @@ export function WorkflowsView(): React.JSX.Element {
       })
       .then(() => {
         setTemplateModal(false);
+        const setup = templateSetup?.setup.length ?? 0;
+        const blocking = templateSetup?.blocking.length ?? 0;
+        const plural = (n: number, word: string): string =>
+          `${String(n)} ${word}${n === 1 ? '' : 's'}`;
         setRunMessage(
-          `Saved template '${name}' — find it under Templates → Mine.`,
-          'info',
+          `Saved template '${name}' — find it under Templates → Mine.` +
+            (blocking > 0
+              ? ` Use template refuses it until ${plural(blocking, 'problem')} ${blocking === 1 ? 'is' : 'are'} fixed.`
+              : setup > 0
+                ? ` Using it will first ask for ${plural(setup, 'setup item')}.`
+                : ''),
+          blocking > 0 ? 'warn' : 'info',
         );
         void refreshLibrary();
       })
@@ -996,11 +1039,11 @@ export function WorkflowsView(): React.JSX.Element {
           maxWidth={780}
         >
           <div>
-            <h3 style={{ marginTop: 0, paddingRight: 40 }}>
+            <h2 style={{ marginTop: 0, paddingRight: 40, fontSize: '1.17em' }}>
               {assistanceBase === null
                 ? 'Generate workflow'
                 : `Assist: ${assistanceBase.name}`}
-            </h3>
+            </h2>
             {assistanceBase !== null && (
               <div className="field">
                 <label className="field-label" htmlFor="assistance-mode">
@@ -1499,7 +1542,7 @@ export function WorkflowsView(): React.JSX.Element {
           }}
         >
           <div>
-            <h3 style={{ marginTop: 0 }}>Sample workflows</h3>
+            <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>Sample workflows</h2>
             <p className="field-hint">
               Starting points that use your Agent Profiles — created as editable copies,
               never run automatically. For full flows (ticket → draft PR), see Templates.
@@ -1616,6 +1659,7 @@ export function WorkflowsView(): React.JSX.Element {
             <button
               key={w.id}
               className={`wf-card${w.id === active?.id ? ' selected' : ''}`}
+              aria-current={w.id === active?.id ? 'true' : undefined}
               onClick={() => {
                 selectWorkflow(w.id);
               }}
@@ -1785,6 +1829,43 @@ export function WorkflowsView(): React.JSX.Element {
               Concrete profile references become portable role references where possible.
               Lands in Templates → Mine.
             </p>
+            {templateSetup === null ? (
+              <p className="field-hint" role="status">
+                Checking what this workflow still needs…
+              </p>
+            ) : (
+              <>
+                {templateSetup.blocking.length > 0 && (
+                  <Notice inline variant="warn" style={{ marginBottom: 12 }}>
+                    <span>
+                      You can save it now, but Use template refuses it until these are
+                      fixed:
+                    </span>
+                    <ul
+                      className="template-setup-list"
+                      aria-label="Problems to fix before the template can be used"
+                    >
+                      {templateSetup.blocking.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </Notice>
+                )}
+                {templateSetup.setup.length > 0 && (
+                  <Notice inline style={{ marginBottom: 12 }}>
+                    <span>Anyone using this template will first need to:</span>
+                    <ul
+                      className="template-setup-list"
+                      aria-label="Setup the template needs"
+                    >
+                      {templateSetup.setup.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </Notice>
+                )}
+              </>
+            )}
             <div className="field">
               <label className="field-label" htmlFor="tpl-name">
                 Template name

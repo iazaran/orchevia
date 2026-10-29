@@ -1,8 +1,18 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import { ADAPTER_LABELS, referencedVariables } from '../lib/agents';
 import { parseCondition, renderCondition, type ConditionOp } from '../lib/conditions';
-import { NODE_KIND_META, setWorkflowDefaults, type Workflow } from '../lib/workflow';
+import {
+  NODE_KIND_META,
+  commandArgv,
+  commandWorkingFolder,
+  scriptPathFromPicked,
+  setWorkflowDefaults,
+  commandModeBlocker,
+  toCommandMode,
+  toScriptMode,
+  type Workflow,
+} from '../lib/workflow';
 import { profileGrants } from '../lib/permissions';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
@@ -157,8 +167,11 @@ export function GitEditor({
       )}
       {op.op === 'stage' && (
         <div className="field">
-          <label className="field-label">Paths (one per line, explicit)</label>
+          <label className="field-label" htmlFor={`git-paths-${nodeId}`}>
+            Paths (one per line, explicit)
+          </label>
           <LinesTextarea
+            id={`git-paths-${nodeId}`}
             rows={2}
             value={op.paths ?? []}
             onChange={(paths) => {
@@ -248,11 +261,15 @@ function GitTextField({
   onChange: (v: string) => void;
   textarea?: boolean;
 }): React.JSX.Element {
+  const id = useId();
   return (
     <div className="field">
-      <span className="field-label">{label}</span>
+      <label className="field-label" htmlFor={id}>
+        {label}
+      </label>
       {textarea === true ? (
         <textarea
+          id={id}
           className="textarea"
           rows={2}
           placeholder={placeholder}
@@ -263,6 +280,7 @@ function GitTextField({
         />
       ) : (
         <input
+          id={id}
           className="input"
           placeholder={placeholder}
           value={value}
@@ -542,10 +560,11 @@ export function McpNodeEditor({
         onChange={(mcpTool) => patchNode({ ...node.config, mcpTool }, node.label)}
       />
       <div className="field">
-        <label className="field-label">
+        <label className="field-label" htmlFor={`mcp-args-${nodeId}`}>
           Arguments (one KEY=value per line, values support {'{{…}}'})
         </label>
         <KeyValueTextarea
+          id={`mcp-args-${nodeId}`}
           rows={3}
           placeholder="key=DEV-1234"
           value={node.config.mcpArgs ?? {}}
@@ -854,6 +873,8 @@ export function NodeInspector(): React.JSX.Element | null {
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
   const [detectingBranch, setDetectingBranch] = useState(false);
+  // Why the last Command/Script file switch did not happen, for that step only.
+  const [modeNote, setModeNote] = useState<{ nodeId: string; text: string } | null>(null);
   const [branchDetectMsg, setBranchDetectMsg, , branchDetectMsgEvent] =
     useNoticeMessage('warn');
 
@@ -903,7 +924,7 @@ export function NodeInspector(): React.JSX.Element | null {
     const sourceKind = workflow.nodes.find((n) => n.id === edge.source)?.type;
     return (
       <aside className="inspector" aria-label="Edge inspector">
-        <h3 style={{ marginTop: 0 }}>Connection</h3>
+        <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>Connection</h2>
         <p className="field-hint">
           {edge.source} → {edge.target}
         </p>
@@ -967,7 +988,7 @@ export function NodeInspector(): React.JSX.Element | null {
   if (node === null) {
     return (
       <aside className="inspector">
-        <h3 style={{ marginTop: 0 }}>Workflow</h3>
+        <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>Workflow</h2>
         <div className="field">
           <label className="field-label" htmlFor="wf-name">
             Name
@@ -1161,17 +1182,42 @@ export function NodeInspector(): React.JSX.Element | null {
     });
   };
 
-  const refreshPreview = (): void => {
+  // Where a Command step runs; a relative script path resolves against it.
+  const commandFolder = commandWorkingFolder(node.config, workflow.defaults);
+  const scriptMode = node.type === 'command' && node.config.scriptFile !== undefined;
+
+  /** Preview the real argv (a script runs as `<interpreter> <script> args…`). */
+  const refreshPreview = (config = node.config): void => {
     if (node.type !== 'command') return;
+    if (config.scriptFile?.trim() === '') {
+      // Nothing real to show until a script is chosen.
+      setPreview(null);
+      return;
+    }
+    const [executable = '', ...args] = commandArgv(
+      config,
+      commandWorkingFolder(config, workflow.defaults),
+    );
     void getBackend()
-      .previewCommand(node.config.executable ?? '', node.config.args ?? [])
+      .previewCommand(executable, args)
       .then(setPreview)
       .catch(() => setPreview(null));
   };
 
+  const switchCommandMode = (script: boolean): void => {
+    const blocked = script ? null : commandModeBlocker(node.config);
+    setModeNote(blocked === null ? null : { nodeId: node.id, text: blocked });
+    if (blocked !== null) return;
+    // Nothing is dropped: an interpreter running a file keeps that file, and
+    // a script turns back into its interpreter's first argument.
+    const config = script ? toScriptMode(node.config) : toCommandMode(node.config);
+    patch(config, node.label);
+    refreshPreview(config);
+  };
+
   return (
     <aside className="inspector" aria-label="Node inspector">
-      <h3 style={{ marginTop: 0 }}>{meta.label}</h3>
+      <h2 style={{ marginTop: 0, fontSize: '1.17em' }}>{meta.label}</h2>
       <p className="field-hint">{meta.description}</p>
       {nodeIssues.length > 0 && (
         <Notice inline className="node-setup">
@@ -1201,29 +1247,121 @@ export function NodeInspector(): React.JSX.Element | null {
       {node.type === 'command' && (
         <>
           <div className="field">
-            <label className="field-label" htmlFor="node-exe">
-              Executable
-            </label>
-            <input
-              id="node-exe"
-              className="input"
-              placeholder="e.g. git, gh, echo"
-              value={node.config.executable ?? ''}
-              onChange={(e) => {
-                patch({ ...node.config, executable: e.target.value }, node.label);
-              }}
-              onBlur={() => {
-                refreshPreview();
-              }}
-              onFocus={refreshPreview}
-            />
-            <span className="field-hint">
-              Executable and arguments are passed separately — no shell is involved.
+            <span className="field-label" id="node-run-mode-label">
+              Runs
             </span>
+            <div
+              role="radiogroup"
+              aria-labelledby="node-run-mode-label"
+              className="command-mode"
+            >
+              {[
+                { script: false, id: 'command', title: 'Command' },
+                { script: true, id: 'script', title: 'Script file' },
+              ].map((mode) => (
+                <label
+                  key={mode.id}
+                  htmlFor={`node-run-mode-${mode.id}`}
+                  className={`access-option${scriptMode === mode.script ? ' selected' : ''}`}
+                >
+                  <input
+                    id={`node-run-mode-${mode.id}`}
+                    type="radio"
+                    name="node-run-mode"
+                    checked={scriptMode === mode.script}
+                    onChange={() => {
+                      switchCommandMode(mode.script);
+                    }}
+                  />
+                  <span>{mode.title}</span>
+                </label>
+              ))}
+            </div>
+            {modeNote?.nodeId === node.id && (
+              <p className="field-hint" role="status">
+                {modeNote.text}
+              </p>
+            )}
           </div>
+          {scriptMode ? (
+            <>
+              <DirPicker
+                id="node-script"
+                label="Script path"
+                pick="file"
+                value={node.config.scriptFile ?? ''}
+                placeholder="scripts/check.sh"
+                fromPicked={(path) => scriptPathFromPicked(path, commandFolder)}
+                onChange={(v) => {
+                  const config = { ...node.config, scriptFile: v.trim() };
+                  patch(config, node.label);
+                  refreshPreview(config);
+                }}
+              />
+              <span className="field-hint">
+                Relative to the working folder
+                {commandFolder === undefined ? '' : ` (${commandFolder})`}; ~/ is your
+                home folder. The path is used as written: pass values as arguments.
+              </span>
+              <div className="field">
+                <label className="field-label" htmlFor="node-exe">
+                  Run with
+                </label>
+                <input
+                  id="node-exe"
+                  className="input"
+                  placeholder="bash"
+                  value={node.config.executable ?? ''}
+                  onChange={(e) => {
+                    const config = { ...node.config };
+                    if (e.target.value.trim() === '') delete config.executable;
+                    else config.executable = e.target.value;
+                    patch(config, node.label);
+                  }}
+                  onBlur={() => {
+                    refreshPreview();
+                  }}
+                  onFocus={() => {
+                    refreshPreview();
+                  }}
+                />
+                <span className="field-hint">
+                  The interpreter that runs the script (python3, node, sh…); blank runs it
+                  with bash.
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="field">
+              <label className="field-label" htmlFor="node-exe">
+                Executable
+              </label>
+              <input
+                id="node-exe"
+                className="input"
+                placeholder="e.g. git, gh, echo"
+                value={node.config.executable ?? ''}
+                onChange={(e) => {
+                  patch({ ...node.config, executable: e.target.value }, node.label);
+                }}
+                onBlur={() => {
+                  refreshPreview();
+                }}
+                onFocus={() => {
+                  refreshPreview();
+                }}
+              />
+              <span className="field-hint">
+                Executable and arguments are passed separately — no shell is involved.
+                Long shell scripts read better as a Script file.
+              </span>
+            </div>
+          )}
           <div className="field">
             <label className="field-label" htmlFor="node-args">
-              Arguments (one per line)
+              {scriptMode
+                ? 'Script arguments (one per line)'
+                : 'Arguments (one per line)'}
             </label>
             <LinesTextarea
               id="node-args"

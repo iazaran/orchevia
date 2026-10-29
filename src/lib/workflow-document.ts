@@ -33,6 +33,7 @@ const configKeys = [
   'executable',
   'args',
   'workingDir',
+  'scriptFile',
   'message',
   'prompt',
   'sessionGroup',
@@ -102,6 +103,7 @@ function configShape(value: unknown, raw = false): void {
   for (const key of [
     'executable',
     'workingDir',
+    'scriptFile',
     'message',
     'prompt',
     'sessionGroup',

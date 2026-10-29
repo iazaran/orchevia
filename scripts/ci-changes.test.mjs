@@ -53,6 +53,27 @@ test('bundle inputs also package and verify the macOS app', () => {
   );
 });
 
+test('the process-group code also runs the macOS cleanup tests; other core code does not', () => {
+  assert.deepEqual(classifyChanges(['crates/core/src/process.rs']), {
+    ...none,
+    rust: true,
+    desktop: true,
+    macos: true,
+  });
+  for (const path of ['crates/core/src/mcp.rs', 'crates/core/src/tools.rs']) {
+    assert.deepEqual(classifyChanges([path]), { ...none, rust: true, desktop: true });
+  }
+});
+
+test('the CLI canary and the Linux launch check are linted without compiling', () => {
+  for (const path of [
+    '.github/workflows/cli-canary.yml',
+    'scripts/verify-linux-app.sh',
+  ]) {
+    assert.deepEqual(classifyChanges([path]), { ...none, workflows: true });
+  }
+});
+
 test('shared contracts, locks, and delivery scripts validate both stacks', () => {
   for (const path of [
     'Cargo.lock',

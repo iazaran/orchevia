@@ -82,6 +82,9 @@ pub struct ProposalNodeConfig {
     pub args: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    /// Command nodes: script to run with `executable` as its interpreter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// Logical role for agent nodes (resolved to a profile at compile).
@@ -486,11 +489,7 @@ fn required_shell_variables(args: &[String]) -> Vec<String> {
 
 /// Machine-local wiring the user fills in after preview (repo dirs, MCP
 /// servers). Never blocks acceptance — shown as a setup checklist instead.
-pub const SETUP_ISSUE_CODES: &[&str] = &[
-    "git-dir-required",
-    "ticket-server-required",
-    "mcp-server-required",
-];
+pub use crate::workflow::SETUP_ISSUE_CODES;
 
 /// Nodes that can reach themselves sit on a cycle and need max_visits.
 /// Defaults them to 2 with a repair note instead of blocking the preview.
@@ -651,7 +650,26 @@ fn compile_node_config(
             // in the preview as risky and need explicit user approval, and
             // the executable allowlist below blocks shell-like values.
             let exe = config.executable.as_deref().unwrap_or("").trim();
-            if exe.is_empty() {
+            if let Some(script) = config.script_file.as_deref() {
+                // Script steps: the executable is only the interpreter
+                // (blank runs bash), and still has to be a bare tool name.
+                if exe.contains('/') || exe.contains('\\') || exe.starts_with('-') {
+                    return Err(format!(
+                        "Generated commands must be bare tool names, got '{exe}'. Edit it explicitly if you mean it."
+                    ));
+                }
+                if !saved {
+                    repairs.push(format!(
+                        "'{label}': runs the script file '{script}'; check that it exists and review what it does."
+                    ));
+                }
+                if !exe.is_empty() {
+                    out.executable = Some(exe.to_string());
+                }
+                out.script_file = Some(script.to_string());
+                out.args = args.to_vec();
+                out.working_dir = config.working_dir.clone();
+            } else if exe.is_empty() {
                 if !saved {
                     return Err(format!(
                         "Command node '{label}' needs config.executable; supply a concrete local tool."
@@ -839,6 +857,17 @@ fn compile_node_config(
             ));
         }
         NodeKind::Start | NodeKind::End => {}
+    }
+    if kind != NodeKind::Command {
+        if let Some(script) = &config.script_file {
+            if !saved {
+                return Err(format!(
+                    "Only Command nodes run script files; '{label}' sets scriptFile '{script}'."
+                ));
+            }
+            // Kept, never dropped: validation flags the saved misplacement.
+            out.script_file = Some(script.clone());
+        }
     }
     if let Some(max_attempts) = retry_attempts {
         out.retry = Some(crate::workflow::RetryPolicy {
@@ -1316,7 +1345,9 @@ Efficiency rules: preserve native execution boundaries and requested decisions, 
     }
 }
 
-fn generator_command(
+/// The command workflow generation runs: the profile's text invocation in the
+/// repository. Also exercised against the newest CLIs by `cli_canary`.
+pub(crate) fn generator_command(
     profile: &crate::agents::AgentProfile,
     prompt: &str,
     repo_dir: Option<&str>,
@@ -1823,6 +1854,58 @@ Good luck!"#;
         let err = compile_proposal(&proposal, &role_map(), "wf-empty", None)
             .expect_err("missing executable must be repaired");
         assert!(err.contains("config.executable"), "{err}");
+    }
+
+    #[test]
+    fn script_files_are_carried_and_flagged_never_dropped() {
+        let text = proposal_with_command(
+            r#"{"scriptFile":"scripts/migrate.sh","args":["--dry"],"workingDir":"/repo"}"#,
+        );
+        let proposal = parse_proposal(&text).expect("parse");
+        let preview = compile_proposal(&proposal, &role_map(), "wf-script", None).unwrap();
+        let step = &preview.workflow.nodes[1].config;
+        assert_eq!(step.script_file.as_deref(), Some("scripts/migrate.sh"));
+        assert_eq!(step.executable, None, "blank interpreter runs bash");
+        assert_eq!(step.args, vec!["--dry"]);
+        assert!(
+            preview
+                .repairs
+                .iter()
+                .any(|r| r.contains("scripts/migrate.sh")),
+            "{:?}",
+            preview.repairs
+        );
+        // Interpreters are still bare tool names.
+        let text = proposal_with_command(r#"{"executable":"/bin/sh","scriptFile":"x.sh"}"#);
+        let proposal = parse_proposal(&text).expect("parse");
+        assert!(compile_proposal(&proposal, &role_map(), "wf-script", None).is_err());
+        // Anywhere else a script file is refused rather than silently lost.
+        let mut misplaced = parse_proposal(PROPOSAL).expect("parse");
+        misplaced.nodes[1].config.script_file = Some("x.sh".into());
+        let err = compile_proposal(&misplaced, &role_map(), "wf-script", None).unwrap_err();
+        assert!(err.contains("script file"), "{err}");
+    }
+
+    #[test]
+    fn assistance_keeps_a_saved_script_file() {
+        let original = parse_proposal(r#"{"name":"Tests","nodes":[{"key":"start","type":"start"},{"key":"test","type":"command","config":{"executable":"python3","scriptFile":"tools/check.py","args":["--all"]}},{"key":"end","type":"end"}],"edges":[{"from":"start","to":"test"},{"from":"test","to":"end"}]}"#).unwrap();
+        let base = compile_proposal(&original, &HashMap::new(), "saved", None)
+            .unwrap()
+            .workflow;
+        assert_eq!(
+            base.nodes[1].config.script_file.as_deref(),
+            Some("tools/check.py")
+        );
+        let mut edit = original;
+        edit.nodes[1].config = ProposalNodeConfig::default();
+        for mode in [AssistanceMode::Optimize, AssistanceMode::Arrange] {
+            let preview =
+                compile_assistance_proposal(&edit, &base, mode, &HashMap::new(), &[]).unwrap();
+            let step = &preview.workflow.nodes[1].config;
+            assert_eq!(step.script_file.as_deref(), Some("tools/check.py"));
+            assert_eq!(step.executable.as_deref(), Some("python3"));
+            assert_eq!(step.args, vec!["--all"]);
+        }
     }
 
     #[test]

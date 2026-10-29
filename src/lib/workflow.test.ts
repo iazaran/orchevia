@@ -10,8 +10,16 @@ import {
   createSampleWorkflow,
   CURRENT_SCHEMA_VERSION,
   bypassedEdgeIds,
+  commandArgv,
+  commandWorkingFolder,
   removeFromWorkflow,
+  resolveScriptPath,
+  scriptPathFromPicked,
+  scriptPathIsRooted,
   sparedAnchors,
+  commandModeBlocker,
+  toCommandMode,
+  toScriptMode,
   nextBranchLabel,
   planExecutionOrder,
   setWorkflowDefaults,
@@ -186,7 +194,11 @@ describe('validation coverage', () => {
   it('rejects edges to unknown nodes', () => {
     const wf = createEmptyWorkflow('Edges');
     wf.edges = [{ id: 'e9', source: 'nope', target: 'missing' }];
-    expect(validateWorkflowLocal(wf).map((i) => i.code)).toContain('edge-unknown-node');
+    const issues = validateWorkflowLocal(wf).filter((i) => i.edgeId === 'e9');
+    expect(issues.map((i) => i.code)).toEqual([
+      'edge-unknown-source',
+      'edge-unknown-target',
+    ]);
   });
 });
 
@@ -317,10 +329,13 @@ describe('commit/PR quick flow', () => {
     expect(validateWorkflowLocal(wf)).toHaveLength(0);
   });
 
-  it('falls back to a generic name without a branch', () => {
+  it('falls back to a generic name and asks for the PR branch without one', () => {
     const wf = createCommitPrWorkflow('/repo', '');
     expect(wf.name).toContain('branch');
-    expect(validateWorkflowLocal(wf)).toHaveLength(0);
+    // Like the backend: a blank head needs a workflow default branch.
+    expect(validateWorkflowLocal(wf).map((i) => i.code)).toEqual([
+      'github-branches-required',
+    ]);
   });
 });
 
@@ -684,5 +699,107 @@ describe('sparedAnchors', () => {
     expect([...sparedAnchors(wf, new Set([end.id, 'end-2']))]).toEqual([end.id]);
     expect(sparedAnchors(wf, new Set(['end-2'])).size).toBe(0);
     expect([...sparedAnchors(wf, new Set([start.id]))]).toEqual([start.id]);
+  });
+});
+
+describe('script-file Command steps', () => {
+  it('runs the script with its interpreter, bash when none is named', () => {
+    expect(commandArgv({ executable: 'make', args: ['test'] })).toEqual(['make', 'test']);
+    expect(commandArgv({ scriptFile: 'scripts/ci.sh', args: ['--fast'] })).toEqual([
+      'bash',
+      'scripts/ci.sh',
+      '--fast',
+    ]);
+    expect(
+      commandArgv({ executable: 'python3', scriptFile: 'tools/x.py' }, '/repo/'),
+    ).toEqual(['python3', '/repo/tools/x.py']);
+    expect(commandArgv({ scriptFile: '~/bin/x.sh' }, '/repo')).toEqual([
+      'bash',
+      '~/bin/x.sh',
+    ]);
+  });
+
+  it('resolves only relative paths against the working folder', () => {
+    expect(commandWorkingFolder({ workingDir: ' ' }, { repoDir: '/repo' })).toBe('/repo');
+    expect(commandWorkingFolder({ workingDir: '/own' }, { repoDir: '/repo' })).toBe(
+      '/own',
+    );
+    expect(commandWorkingFolder({})).toBeUndefined();
+    expect(resolveScriptPath('ci.sh', '/repo')).toBe('/repo/ci.sh');
+    expect(resolveScriptPath('ci.sh')).toBe('ci.sh');
+    for (const rooted of ['/opt/x.sh', ' ~/x.sh']) {
+      expect(scriptPathIsRooted(rooted), rooted).toBe(true);
+      expect(resolveScriptPath(rooted, '/repo')).toBe(rooted.trim());
+    }
+    for (const relative of [
+      'x.sh',
+      './x.sh',
+      '~x',
+      '~',
+      'C:x',
+      'C:\\x.ps1',
+      '\\\\srv\\x',
+    ])
+      expect(scriptPathIsRooted(relative), relative).toBe(false);
+  });
+
+  it('stores picked scripts relative to the working folder when inside it', () => {
+    expect(scriptPathFromPicked('/repo/scripts/ci.sh', '/repo')).toBe('scripts/ci.sh');
+    expect(scriptPathFromPicked('/repo/scripts/ci.sh', '/repo/')).toBe('scripts/ci.sh');
+    expect(scriptPathFromPicked('/repository/ci.sh', '/repo')).toBe('/repository/ci.sh');
+    expect(scriptPathFromPicked('/elsewhere/ci.sh')).toBe('/elsewhere/ci.sh');
+  });
+
+  it('switches modes without dropping the command', () => {
+    const bash = { executable: 'bash', args: ['scripts/ci.sh', '--fast'] };
+    const script = toScriptMode(bash);
+    expect(script).toEqual({
+      executable: 'bash',
+      scriptFile: 'scripts/ci.sh',
+      args: ['--fast'],
+    });
+    expect(toCommandMode(script)).toEqual(bash);
+    // `bash -c '…'` and other tools keep everything and wait for a path.
+    const inline = { executable: 'bash', args: ['-c', 'make test'] };
+    expect(toScriptMode(inline)).toEqual({ ...inline, scriptFile: '' });
+    expect(toCommandMode({ ...inline, scriptFile: '' })).toEqual(inline);
+    expect(toScriptMode({ executable: 'npm', args: ['test'] })).toEqual({
+      executable: 'npm',
+      args: ['test'],
+      scriptFile: '',
+    });
+    // A blank interpreter means bash, so the file keeps running under bash.
+    expect(toCommandMode({ scriptFile: 'ci.sh' })).toEqual({
+      executable: 'bash',
+      args: ['ci.sh'],
+    });
+    // Subcommands and bare words are not files.
+    expect(
+      toScriptMode({ executable: 'deno', args: ['run', 'scripts/check.ts'] }),
+    ).toEqual({
+      executable: 'deno',
+      args: ['run', 'scripts/check.ts'],
+      scriptFile: '',
+    });
+    expect(toScriptMode({ executable: 'bash', args: ['run'] })).toEqual({
+      executable: 'bash',
+      args: ['run'],
+      scriptFile: '',
+    });
+    expect(toScriptMode({ executable: 'python3', args: ['tools/check'] })).toEqual({
+      executable: 'python3',
+      scriptFile: 'tools/check',
+      args: [],
+    });
+    // A file named like an option stays a file.
+    expect(toCommandMode({ scriptFile: '-check.sh', args: ['--fast'] })).toEqual({
+      executable: 'bash',
+      args: ['./-check.sh', '--fast'],
+    });
+    // A home-relative script would stop working as a plain argument.
+    expect(commandModeBlocker({ scriptFile: ' ~/bin/check.sh' })).toContain('full path');
+    expect(commandModeBlocker({ scriptFile: '/home/me/bin/check.sh' })).toBeNull();
+    expect(commandModeBlocker({ scriptFile: 'scripts/ci.sh' })).toBeNull();
+    expect(commandModeBlocker({ executable: 'npm' })).toBeNull();
   });
 });

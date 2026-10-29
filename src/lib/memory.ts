@@ -1,5 +1,5 @@
 import type { EditObservation, Preference, ProjectMemoryContext } from './generation';
-import type { Workflow, WorkflowNode } from './workflow';
+import { commandArgv, type Workflow, type WorkflowNode } from './workflow';
 import { renderPromptStrict } from './agents';
 
 function hasControlCharacters(value: string): boolean {
@@ -203,10 +203,24 @@ function commandText(node: WorkflowNode, repoDir?: string): string {
   const args = node.config.args ?? [];
   const quote = (s: string): string =>
     /^[A-Za-z0-9_./:-]+$/.test(s) ? s : "'" + s.replaceAll("'", "'\"'\"'") + "'";
+  // A script path stays as written (relative to the folder below); a leading
+  // `~/` stays unquoted so the shell still expands it.
+  const scriptPath = (s: string): string =>
+    s.startsWith('~/') ? '~/' + quote(s.slice(2)) : quote(s);
+  const argv = commandArgv(node.config);
   const command =
-    node.config.executable === 'sh' && args.length === 2 && args[0] === '-c'
+    node.config.scriptFile === undefined &&
+    node.config.executable === 'sh' &&
+    args.length === 2 &&
+    args[0] === '-c'
       ? (args[1] ?? '')
-      : [node.config.executable ?? '', ...args].map(quote).join(' ');
+      : argv
+          .map((arg, i) =>
+            i === 1 && node.config.scriptFile !== undefined
+              ? scriptPath(arg)
+              : quote(arg),
+          )
+          .join(' ');
   const directory = node.config.workingDir?.trim();
   if (directory && repoDir?.trim() && directory !== repoDir.trim()) {
     const quoted = "'" + directory.replaceAll("'", "'\"'\"'") + "'";
@@ -241,6 +255,20 @@ export function successfulCommand(
     workflow.defaults?.repoDir,
   );
 }
+/** The playbook field a Command step's label (or id) names: test, lint or
+ * build. Other steps (setup scripts, worktree creation) are not offered. */
+export function playbookField(
+  node: Pick<WorkflowNode, 'id' | 'label'>,
+): 'testCommand' | 'lintCommand' | 'buildCommand' | null {
+  const label = node.label ?? node.id;
+  return /test/i.test(label)
+    ? 'testCommand'
+    : /lint/i.test(label)
+      ? 'lintCommand'
+      : /build/i.test(label)
+        ? 'buildCommand'
+        : null;
+}
 export function commandEdits(
   previous: Workflow,
   current: Workflow,
@@ -251,14 +279,7 @@ export function commandEdits(
     const old = previous.nodes.find((n) => n.id === node.id);
     if (node.type !== 'command' || (old !== undefined && old.type !== 'command'))
       return [];
-    const label = node.label ?? node.id;
-    const field = /test/i.test(label)
-      ? 'testCommand'
-      : /lint/i.test(label)
-        ? 'lintCommand'
-        : /build/i.test(label)
-          ? 'buildCommand'
-          : null;
+    const field = playbookField(node);
     if (!field) return [];
     const from = old ? commandText(old, previous.defaults?.repoDir) : '',
       to = commandText(node, current.defaults?.repoDir);

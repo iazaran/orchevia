@@ -392,6 +392,12 @@ impl Scheduler {
                                 Some(&run_id),
                             );
                         }
+                        Err(e) if e == crate::engine::UPDATE_INSTALLING => {
+                            // The app restarts in a moment: the slot keeps its
+                            // place and runs after the restart.
+                            defer(&mut schedule, "an update is installing");
+                            self.record_schedule(&before, &schedule, false);
+                        }
                         Err(e) => {
                             // No retry storm: this slot is spent; the next one
                             // tries again.
@@ -1735,6 +1741,52 @@ fi
     }
 
     use crate::schedule::{MissedPolicy, Schedule, ScheduleKind};
+
+    #[tokio::test]
+    async fn a_slot_refused_while_an_update_installs_runs_after_the_restart() {
+        struct Updating;
+        impl RunStarter for Updating {
+            fn start_workflow_run(
+                &self,
+                _workflow_id: &str,
+                _inputs: &HashMap<String, String>,
+            ) -> Result<String, String> {
+                Err(crate::engine::UPDATE_INSTALLING.into())
+            }
+        }
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let wf = sample_workflow();
+        db.upsert_workflow(&wf).expect("wf");
+        let slot = Utc::now();
+        db.upsert_schedule(&due_schedule("update", &wf.id, slot))
+            .expect("schedule");
+        let refused: Arc<dyn RunStarter> = Arc::new(Updating);
+        Scheduler::new(Arc::clone(&db))
+            .tick_once(&refused, slot)
+            .await;
+        let saved = db.get_schedule("update").expect("get").expect("exists");
+        assert_eq!(saved.next_run_at, Some(slot));
+        assert_eq!(saved.deferred_slot, Some(slot));
+        assert_eq!(
+            saved.last_status.as_deref(),
+            Some("deferred: an update is installing")
+        );
+        assert!(db
+            .list_notifications(10, false)
+            .expect("notifications")
+            .iter()
+            .all(|n| n.kind != "schedule-failed"));
+        // After the restart, the same slot starts.
+        let recorder = Arc::new(Recorder {
+            inputs: Mutex::new(vec![]),
+            fail_number: None,
+        });
+        let starter: Arc<dyn RunStarter> = recorder.clone();
+        Scheduler::new(Arc::clone(&db))
+            .tick_once(&starter, slot + chrono::Duration::seconds(40))
+            .await;
+        assert_eq!(recorder.inputs.lock().expect("inputs").len(), 1);
+    }
 
     #[tokio::test]
     async fn a_held_back_slot_runs_when_capacity_frees_however_late() {

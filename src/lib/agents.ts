@@ -239,6 +239,47 @@ export interface AgentSkillInfo {
   source: string;
 }
 
+/** Mirrors `setup_check::CheckStatus`; the order is worst-last. */
+export type SetupCheckStatus = 'skipped' | 'passed' | 'warning' | 'failed';
+
+export interface SetupCheckItem {
+  id: 'installed' | 'answered' | 'readFile' | 'editFile';
+  label: string;
+  status: SetupCheckStatus;
+  detail: string;
+  hint?: string;
+}
+
+/** One profile's setup check: a short real prompt, run only on request. */
+export interface SetupCheckReport {
+  profileId: string;
+  profileName: string;
+  status: SetupCheckStatus;
+  items: SetupCheckItem[];
+  durationMs: number;
+}
+
+export const SETUP_CHECK_LABELS: Record<SetupCheckItem['id'], string> = {
+  installed: 'CLI installed',
+  answered: 'Signed in and answering',
+  readFile: 'Reads files in its working folder',
+  editFile: 'Edits files without asking',
+};
+
+/** What the report means for running workflows, in a few words. */
+export function setupCheckSummary(status: SetupCheckStatus): string {
+  switch (status) {
+    case 'passed':
+      return 'Ready';
+    case 'warning':
+      return 'Works, with limits';
+    case 'failed':
+      return 'Needs attention';
+    case 'skipped':
+      return 'Not checked';
+  }
+}
+
 /** Invoke selected skills using the syntax understood by the chosen CLI. */
 export function composeSkillPrompt(profile: AgentProfile, prompt: string): string {
   const skills = profile.skills ?? [];
@@ -519,13 +560,37 @@ export function effectiveExecutable(profile: AgentProfile): string {
 const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*\}\}/g;
 const ESCAPED_OPEN = /\\\{\{/g;
 
+const VARIABLE_NAME = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/**
+ * Placeholder names a template references, sorted and unique. Scans exactly
+ * like Rust `referenced_variables`: `\{{` is literal text, each `{{` closes at
+ * the first `}}`, and only valid dotted names (≤128 chars) count.
+ */
 export function referencedVariables(template: string): string[] {
+  const chars = Array.from(template);
   const names = new Set<string>();
-  // Strip escaped openers so `\{{x}}` is not collected.
-  const scrubbed = template.replace(ESCAPED_OPEN, '');
-  for (const match of scrubbed.matchAll(PLACEHOLDER)) {
-    const name = match[1];
-    if (name !== undefined) names.add(name);
+  let i = 0;
+  while (i < chars.length) {
+    if (chars[i] === '\\' && chars[i + 1] === '{' && chars[i + 2] === '{') {
+      i += 3;
+      continue;
+    }
+    if (chars[i] === '{' && chars[i + 1] === '{') {
+      let end = i + 2;
+      while (end + 1 < chars.length && !(chars[end] === '}' && chars[end + 1] === '}'))
+        end++;
+      if (end + 1 < chars.length) {
+        const name = chars
+          .slice(i + 2, end)
+          .join('')
+          .trim();
+        if (name.length <= 128 && VARIABLE_NAME.test(name)) names.add(name);
+        i = end + 2;
+        continue;
+      }
+    }
+    i++;
   }
   return [...names].sort();
 }

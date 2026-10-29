@@ -140,3 +140,70 @@ describe('agent profile permissions', () => {
     useAppStore.setState({ agentPermissionDefault: null });
   });
 });
+
+describe('agent setup check', () => {
+  it('runs one profile check on request and shows each item with its hint', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    const profile = await backend.saveAgentProfile({
+      ...createDefaultProfile('claude'),
+      name: 'Implementer',
+    });
+    let calls = 0;
+    backend.checkAgentSetup = (id) => {
+      calls += 1;
+      return Promise.resolve({
+        profileId: id,
+        profileName: 'Implementer',
+        status: 'warning',
+        durationMs: 4200,
+        items: [
+          {
+            id: 'installed',
+            label: 'CLI installed',
+            status: 'passed',
+            detail: '/bin/claude',
+          },
+          {
+            id: 'answered',
+            label: 'Signed in and answering',
+            status: 'passed',
+            detail: 'Answered in 4s.',
+          },
+          {
+            id: 'readFile',
+            label: 'Reads files in its working folder',
+            status: 'passed',
+            detail: 'Read it.',
+          },
+          {
+            id: 'editFile',
+            label: 'Edits files without asking',
+            status: 'warning',
+            detail:
+              'Under your Claude Code settings, steps that edit files will be refused.',
+            hint: 'Give this profile `Full access` in Agents.',
+          },
+        ],
+      });
+    };
+    useAppStore.setState({
+      profiles: [profile],
+      adapters: [],
+      tools: [],
+      knownFolders: [],
+    });
+    const user = userEvent.setup();
+    render(<AgentsView />);
+
+    expect(calls).toBe(0);
+    await user.click(screen.getByRole('button', { name: 'Check setup' }));
+    const list = await screen.findByRole('list', { name: 'Setup check for Implementer' });
+    expect(calls).toBe(1);
+    expect(screen.getByText('Works, with limits')).toBeInTheDocument();
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(4);
+    expect(items[3]).toHaveTextContent('Limited');
+    expect(within(items[3]!).getByText('Full access').tagName).toBe('CODE');
+  });
+});

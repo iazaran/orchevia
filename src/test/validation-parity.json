@@ -1,0 +1,1165 @@
+{
+  "about": "Shared by validate_workflow (crates/core/src/workflow.rs) and validateWorkflowLocal (src/lib/workflow.ts). Both must report exactly the issues listed for every case (code, severity, nodeId, edgeId; order and messages are not compared). Missing workflow fields default to schemaVersion = current, id 'wf-parity', name 'Parity'; nodes default to position {0,0} and config {}.",
+  "codes": [
+    "schema-too-new",
+    "name-required",
+    "single-start",
+    "end-required",
+    "edge-unknown-source",
+    "edge-unknown-target",
+    "edge-self-loop",
+    "command-executable-required",
+    "command-executable-suspicious",
+    "command-timeout-invalid",
+    "command-script-required",
+    "command-script-templated",
+    "command-script-dir-required",
+    "command-script-misplaced",
+    "agent-session-group-invalid",
+    "agent-session-variable-invalid",
+    "agent-session-turns-invalid",
+    "agent-context-limit-invalid",
+    "agent-context-ref-invalid",
+    "agent-profile-required",
+    "agent-role-unknown",
+    "agent-prompt-required",
+    "agent-timeout-invalid",
+    "agent-input-unknown",
+    "agent-tool-allowance-invalid",
+    "agent-subagent-allowance-invalid",
+    "agent-required-tools-invalid",
+    "agent-allowance-misplaced",
+    "agent-required-tools-misplaced",
+    "prompt-unknown-variable",
+    "condition-required",
+    "condition-unknown-ref",
+    "condition-branches-required",
+    "git-op-required",
+    "git-dir-required",
+    "git-branch-required",
+    "git-branch-invalid",
+    "git-paths-required",
+    "git-message-required",
+    "git-path-required",
+    "github-op-required",
+    "github-title-required",
+    "github-branches-required",
+    "github-body-required",
+    "ticket-key-required",
+    "ticket-server-required",
+    "mcp-server-required",
+    "mcp-tool-required",
+    "retry-unbounded",
+    "retry-delay-invalid",
+    "loop-limit-invalid",
+    "input-name-invalid",
+    "input-duplicate",
+    "workflow-limits-invalid",
+    "edge-label-unknown",
+    "edge-label-misplaced",
+    "cycle-needs-condition",
+    "cycle-unbounded",
+    "cycle-into-end",
+    "unreachable-node",
+    "dead-end-node"
+  ],
+  "setupCodes": [
+    "git-dir-required",
+    "command-script-dir-required",
+    "ticket-server-required",
+    "mcp-server-required"
+  ],
+  "exemptions": [
+    {
+      "code": "input-required",
+      "reason": "Checked when a run starts, against the values the run was given; a saved workflow has no run inputs yet."
+    },
+    {
+      "code": "agent-role-unresolved",
+      "reason": "Checked when a run starts: roles are fine in templates and drafts and only block a real run."
+    },
+    {
+      "code": "agent-profile-missing",
+      "reason": "Needs the saved Agent Profiles (database); the browser validator cannot see which profiles exist."
+    },
+    {
+      "code": "agent-session-profile-invalid",
+      "reason": "Needs the referenced Agent Profile's adapter and arguments (database)."
+    },
+    {
+      "code": "agent-cli-unavailable",
+      "reason": "Needs the machine's PATH to find the profile's CLI."
+    },
+    {
+      "code": "git-cli-unavailable",
+      "reason": "Needs the machine's PATH to find git."
+    },
+    {
+      "code": "gh-cli-unavailable",
+      "reason": "Needs the machine's PATH to find gh."
+    },
+    {
+      "code": "mcp-server-missing",
+      "reason": "Needs the configured MCP servers (database)."
+    },
+    {
+      "code": "mcp-server-disabled",
+      "reason": "Needs the configured MCP servers (database)."
+    },
+    {
+      "code": "mcp-server-unavailable",
+      "reason": "Needs the machine's PATH to find the MCP server command."
+    }
+  ],
+  "cases": [
+    {
+      "name": "a valid linear workflow reports nothing",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "cmd",
+            "type": "command",
+            "config": { "executable": "echo", "args": ["hi"] }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "cmd" },
+          { "id": "e2", "source": "cmd", "target": "end" }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "a newer schema stops validation",
+      "workflow": { "schemaVersion": 99, "name": "", "nodes": [], "edges": [] },
+      "issues": [{ "code": "schema-too-new", "severity": "error" }]
+    },
+    {
+      "name": "name, start and end are required",
+      "workflow": {
+        "name": "  ",
+        "nodes": [{ "id": "cmd", "type": "command", "config": { "executable": "echo" } }],
+        "edges": []
+      },
+      "issues": [
+        { "code": "name-required", "severity": "error" },
+        { "code": "single-start", "severity": "error" },
+        { "code": "end-required", "severity": "error" }
+      ]
+    },
+    {
+      "name": "two starts skip the reachability warnings",
+      "workflow": {
+        "nodes": [
+          { "id": "s1", "type": "start" },
+          { "id": "s2", "type": "start" },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [{ "id": "e1", "source": "s1", "target": "end" }]
+      },
+      "issues": [{ "code": "single-start", "severity": "error" }]
+    },
+    {
+      "name": "edges must join two different existing steps",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "cmd",
+            "type": "command",
+            "config": { "executable": "echo", "maxVisits": 2 }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "cmd" },
+          { "id": "e2", "source": "cmd", "target": "end" },
+          { "id": "ghost-in", "source": "ghost", "target": "end" },
+          { "id": "ghost-out", "source": "start", "target": "nowhere" },
+          { "id": "self", "source": "cmd", "target": "cmd" }
+        ]
+      },
+      "issues": [
+        { "code": "edge-unknown-source", "severity": "error", "edgeId": "ghost-in" },
+        { "code": "edge-unknown-target", "severity": "error", "edgeId": "ghost-out" },
+        {
+          "code": "edge-self-loop",
+          "severity": "error",
+          "nodeId": "cmd",
+          "edgeId": "self"
+        },
+        {
+          "code": "cycle-needs-condition",
+          "severity": "error",
+          "nodeId": "cmd",
+          "edgeId": "self"
+        }
+      ]
+    },
+    {
+      "name": "command fields, retries and loop bounds",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "blank", "type": "command", "config": { "executable": " " } },
+          {
+            "id": "compose",
+            "type": "command",
+            "config": { "executable": "compose", "args": ["up"] }
+          },
+          {
+            "id": "slow",
+            "type": "command",
+            "config": {
+              "executable": "make",
+              "timeoutSecs": 0,
+              "retry": { "maxAttempts": 11, "delayMs": 60001 }
+            }
+          },
+          {
+            "id": "busy",
+            "type": "command",
+            "config": { "executable": "make", "timeoutSecs": 43200, "maxVisits": 101 }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "blank" },
+          { "id": "e2", "source": "blank", "target": "compose" },
+          { "id": "e3", "source": "compose", "target": "slow" },
+          { "id": "e4", "source": "slow", "target": "busy" },
+          { "id": "e5", "source": "busy", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "command-executable-required", "severity": "error", "nodeId": "blank" },
+        {
+          "code": "command-executable-suspicious",
+          "severity": "warning",
+          "nodeId": "compose"
+        },
+        { "code": "command-timeout-invalid", "severity": "error", "nodeId": "slow" },
+        { "code": "retry-unbounded", "severity": "error", "nodeId": "slow" },
+        { "code": "retry-delay-invalid", "severity": "error", "nodeId": "slow" },
+        { "code": "loop-limit-invalid", "severity": "error", "nodeId": "busy" }
+      ]
+    },
+    {
+      "name": "script files on Command steps",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "bash",
+            "type": "command",
+            "config": { "scriptFile": "scripts/ci.sh", "workingDir": "/repo" }
+          },
+          { "id": "blank", "type": "command", "config": { "scriptFile": " " } },
+          {
+            "id": "templated",
+            "type": "command",
+            "config": {
+              "executable": "python3",
+              "scriptFile": "{{input.dir}}/check.py",
+              "workingDir": "/repo"
+            }
+          },
+          { "id": "nodir", "type": "command", "config": { "scriptFile": "ci.sh" } },
+          { "id": "home", "type": "command", "config": { "scriptFile": "~/bin/ci.sh" } },
+          {
+            "id": "absolute",
+            "type": "command",
+            "config": {
+              "executable": "sh",
+              "scriptFile": "/opt/ci.sh",
+              "args": ["--fast"]
+            }
+          },
+          {
+            "id": "windows",
+            "type": "command",
+            "config": { "executable": "pwsh", "scriptFile": "C:\\ci\\run.ps1" }
+          },
+          {
+            "id": "agent",
+            "type": "agent",
+            "config": { "agentProfileId": "p1", "prompt": "Work", "scriptFile": "ci.sh" }
+          },
+          {
+            "id": "git",
+            "type": "git",
+            "config": {
+              "workingDir": "/repo",
+              "gitOp": { "op": "status" },
+              "scriptFile": ""
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "bash" },
+          { "id": "e2", "source": "bash", "target": "blank" },
+          { "id": "e3", "source": "blank", "target": "templated" },
+          { "id": "e4", "source": "templated", "target": "nodir" },
+          { "id": "e5", "source": "nodir", "target": "home" },
+          { "id": "e6", "source": "home", "target": "absolute" },
+          { "id": "e7", "source": "absolute", "target": "windows" },
+          { "id": "e8", "source": "windows", "target": "agent" },
+          { "id": "e9", "source": "agent", "target": "git" },
+          { "id": "e10", "source": "git", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "command-script-required", "severity": "error", "nodeId": "blank" },
+        {
+          "code": "command-script-templated",
+          "severity": "error",
+          "nodeId": "templated"
+        },
+        { "code": "command-script-dir-required", "severity": "error", "nodeId": "nodir" },
+        {
+          "code": "command-script-dir-required",
+          "severity": "error",
+          "nodeId": "windows"
+        },
+        { "code": "command-script-misplaced", "severity": "error", "nodeId": "agent" },
+        { "code": "command-script-misplaced", "severity": "error", "nodeId": "git" }
+      ]
+    },
+    {
+      "name": "relative scripts use the workflow default folder, but not a blank one",
+      "workflow": {
+        "defaults": { "repoDir": " " },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "nodir",
+            "type": "command",
+            "config": { "scriptFile": "./ci.sh", "workingDir": " " }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "nodir" },
+          { "id": "e2", "source": "nodir", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "command-script-dir-required", "severity": "error", "nodeId": "nodir" }
+      ]
+    },
+    {
+      "name": "a workflow default folder serves relative scripts",
+      "workflow": {
+        "defaults": { "repoDir": "/repo" },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "ci", "type": "command", "config": { "scriptFile": "scripts/ci.sh" } },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "ci" },
+          { "id": "e2", "source": "ci", "target": "end" }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "retries only count on Command and Agent steps; loop bounds on every step",
+      "workflow": {
+        "defaults": { "repoDir": "/repo" },
+        "nodes": [
+          { "id": "start", "type": "start", "config": { "maxVisits": 0 } },
+          {
+            "id": "status",
+            "type": "git",
+            "config": { "gitOp": { "op": "status" }, "retry": { "maxAttempts": 0 } }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "status" },
+          { "id": "e2", "source": "status", "target": "end" }
+        ]
+      },
+      "issues": [{ "code": "loop-limit-invalid", "severity": "error", "nodeId": "start" }]
+    },
+    {
+      "name": "agent profile, prompt, timeout, references and allowances",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "empty", "type": "agent" },
+          {
+            "id": "roled",
+            "type": "agent",
+            "config": {
+              "agentRole": "wizard",
+              "prompt": "Cast {{input.spell}} but keep \\{{input.literal}} as text",
+              "timeoutSecs": 43201,
+              "inputRefs": ["start", "ghost"],
+              "retry": { "maxAttempts": 0 }
+            }
+          },
+          {
+            "id": "limits",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "Work",
+              "maxToolCalls": 0,
+              "maxSubagents": 1001,
+              "requiredTools": ["Read", "Read", ""]
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "empty" },
+          { "id": "e2", "source": "empty", "target": "roled" },
+          { "id": "e3", "source": "roled", "target": "limits" },
+          { "id": "e4", "source": "limits", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "agent-profile-required", "severity": "error", "nodeId": "empty" },
+        { "code": "agent-prompt-required", "severity": "error", "nodeId": "empty" },
+        { "code": "agent-role-unknown", "severity": "warning", "nodeId": "roled" },
+        { "code": "agent-timeout-invalid", "severity": "error", "nodeId": "roled" },
+        { "code": "agent-input-unknown", "severity": "error", "nodeId": "roled" },
+        { "code": "retry-unbounded", "severity": "error", "nodeId": "roled" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "roled" },
+        {
+          "code": "agent-tool-allowance-invalid",
+          "severity": "error",
+          "nodeId": "limits"
+        },
+        {
+          "code": "agent-subagent-allowance-invalid",
+          "severity": "error",
+          "nodeId": "limits"
+        },
+        {
+          "code": "agent-required-tools-invalid",
+          "severity": "error",
+          "nodeId": "limits"
+        },
+        {
+          "code": "agent-required-tools-invalid",
+          "severity": "error",
+          "nodeId": "limits"
+        }
+      ]
+    },
+    {
+      "name": "prompt variables resolve against workflow, inputs, tickets and steps",
+      "workflow": {
+        "inputs": [{ "name": "task" }],
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "ok",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "{{workflow.id}} {{ workflow.name }} {{input.task}} {{ticket.title}} {{node.start}} {{node.start.visits}} {{start}} {{not valid}} {{{{x}}}}"
+            }
+          },
+          {
+            "id": "bad",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "{{workflow.owner}} {{input}} {{ticket.owner}} {{node.ghost.output}} {{node.start.bogus}} {{ghost}} {{env.HOME}} {{ghost}}"
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "ok" },
+          { "id": "e2", "source": "ok", "target": "bad" },
+          { "id": "e3", "source": "bad", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" },
+        { "code": "prompt-unknown-variable", "severity": "error", "nodeId": "bad" }
+      ]
+    },
+    {
+      "name": "agent sessions and handoff context",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "blank-group",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "Work",
+              "sessionGroup": " ",
+              "sessionMaxTurns": 21
+            }
+          },
+          {
+            "id": "bare-group",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "Work",
+              "sessionGroup": "item-{{start}}-{{input.ticket}}-{{node.start.output}}-\\{{start}}"
+            }
+          },
+          {
+            "id": "no-group",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "Work",
+              "sessionMaxTurns": 2,
+              "contextMaxChars": 1000
+            }
+          },
+          {
+            "id": "context",
+            "type": "agent",
+            "config": {
+              "agentProfileId": "p1",
+              "prompt": "Work",
+              "contextRefs": ["start", "context", "ghost", "start"],
+              "contextMaxChars": 255
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "blank-group" },
+          { "id": "e2", "source": "blank-group", "target": "bare-group" },
+          { "id": "e3", "source": "bare-group", "target": "no-group" },
+          { "id": "e4", "source": "no-group", "target": "context" },
+          { "id": "e5", "source": "context", "target": "end" }
+        ]
+      },
+      "issues": [
+        {
+          "code": "agent-session-group-invalid",
+          "severity": "error",
+          "nodeId": "blank-group"
+        },
+        {
+          "code": "agent-session-turns-invalid",
+          "severity": "error",
+          "nodeId": "blank-group"
+        },
+        {
+          "code": "agent-session-variable-invalid",
+          "severity": "error",
+          "nodeId": "bare-group"
+        },
+        {
+          "code": "agent-session-variable-invalid",
+          "severity": "error",
+          "nodeId": "bare-group"
+        },
+        {
+          "code": "agent-session-turns-invalid",
+          "severity": "error",
+          "nodeId": "no-group"
+        },
+        {
+          "code": "agent-context-limit-invalid",
+          "severity": "error",
+          "nodeId": "no-group"
+        },
+        {
+          "code": "agent-context-limit-invalid",
+          "severity": "error",
+          "nodeId": "context"
+        },
+        { "code": "agent-context-ref-invalid", "severity": "error", "nodeId": "context" },
+        { "code": "agent-context-ref-invalid", "severity": "error", "nodeId": "context" },
+        { "code": "agent-context-ref-invalid", "severity": "error", "nodeId": "context" }
+      ]
+    },
+    {
+      "name": "agent-only settings on other steps are refused",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "cmd",
+            "type": "command",
+            "config": {
+              "executable": "echo",
+              "maxSubagents": 1,
+              "requiredTools": ["Read"]
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "cmd" },
+          { "id": "e2", "source": "cmd", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "agent-allowance-misplaced", "severity": "error", "nodeId": "cmd" },
+        { "code": "agent-required-tools-misplaced", "severity": "error", "nodeId": "cmd" }
+      ]
+    },
+    {
+      "name": "conditions need clauses, known variables and both branches",
+      "workflow": {
+        "inputs": [{ "name": "mode" }],
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "none", "type": "condition" },
+          {
+            "id": "empty",
+            "type": "condition",
+            "config": { "condition": { "logic": "and", "clauses": [] } }
+          },
+          {
+            "id": "refs",
+            "type": "condition",
+            "config": {
+              "condition": {
+                "logic": "or",
+                "clauses": [
+                  { "left": "input.mode", "op": "equals", "right": "fast" },
+                  { "left": "node.ghost.output", "op": "contains", "right": "x" },
+                  { "left": "input.speed", "op": "notEquals", "right": "x" },
+                  { "left": "start", "op": "equals", "right": "x" }
+                ]
+              }
+            }
+          },
+          {
+            "id": "half",
+            "type": "condition",
+            "config": {
+              "condition": {
+                "logic": "and",
+                "clauses": [{ "left": "workflow.name", "op": "equals", "right": "x" }]
+              }
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "none" },
+          { "id": "e2", "source": "none", "target": "empty" },
+          { "id": "e3", "source": "empty", "target": "refs" },
+          { "id": "e4", "source": "refs", "target": "half", "label": " YES " },
+          { "id": "e5", "source": "refs", "target": "end", "label": "On False" },
+          { "id": "e6", "source": "half", "target": "end", "label": "true" }
+        ]
+      },
+      "issues": [
+        { "code": "condition-required", "severity": "error", "nodeId": "none" },
+        { "code": "condition-required", "severity": "error", "nodeId": "empty" },
+        { "code": "condition-branches-required", "severity": "error", "nodeId": "empty" },
+        { "code": "condition-unknown-ref", "severity": "error", "nodeId": "refs" },
+        { "code": "condition-unknown-ref", "severity": "error", "nodeId": "refs" },
+        { "code": "condition-branches-required", "severity": "error", "nodeId": "half" }
+      ]
+    },
+    {
+      "name": "edge labels",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "a", "type": "command", "config": { "executable": "make" } },
+          { "id": "b", "type": "command", "config": { "executable": "make" } },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "a" },
+          { "id": "ok", "source": "a", "target": "b", "label": "On Success" },
+          { "id": "fail", "source": "a", "target": "end", "label": "on error" },
+          { "id": "branch", "source": "b", "target": "end", "label": "false" },
+          { "id": "odd", "source": "b", "target": "end", "label": "maybe" }
+        ]
+      },
+      "issues": [
+        { "code": "edge-label-misplaced", "severity": "error", "edgeId": "branch" },
+        { "code": "edge-label-unknown", "severity": "warning", "edgeId": "odd" }
+      ]
+    },
+    {
+      "name": "Git operation fields",
+      "workflow": {
+        "defaults": { "repoDir": "/repo" },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "noop", "type": "git" },
+          {
+            "id": "create",
+            "type": "git",
+            "config": { "gitOp": { "op": "branchCreate", "name": " " } }
+          },
+          {
+            "id": "checkout",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": "bad..name" } }
+          },
+          {
+            "id": "stage",
+            "type": "git",
+            "config": { "gitOp": { "op": "stage", "paths": ["", " "] } }
+          },
+          {
+            "id": "stage-none",
+            "type": "git",
+            "config": { "gitOp": { "op": "stage" } }
+          },
+          {
+            "id": "commit",
+            "type": "git",
+            "config": { "gitOp": { "op": "commit", "message": " " } }
+          },
+          {
+            "id": "add",
+            "type": "git",
+            "config": {
+              "gitOp": { "op": "worktreeAdd", "path": "", "branch": "has space" }
+            }
+          },
+          {
+            "id": "remove",
+            "type": "git",
+            "config": { "gitOp": { "op": "worktreeRemove", "path": " " } }
+          },
+          {
+            "id": "fine",
+            "type": "git",
+            "config": {
+              "workingDir": "/elsewhere",
+              "gitOp": { "op": "worktreeAdd", "path": "../wt", "branch": " " }
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "noop" },
+          { "id": "e2", "source": "noop", "target": "create" },
+          { "id": "e3", "source": "create", "target": "checkout" },
+          { "id": "e4", "source": "checkout", "target": "stage" },
+          { "id": "e5", "source": "stage", "target": "stage-none" },
+          { "id": "e6", "source": "stage-none", "target": "commit" },
+          { "id": "e7", "source": "commit", "target": "add" },
+          { "id": "e8", "source": "add", "target": "remove" },
+          { "id": "e9", "source": "remove", "target": "fine" },
+          { "id": "e10", "source": "fine", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "git-op-required", "severity": "error", "nodeId": "noop" },
+        { "code": "git-branch-required", "severity": "error", "nodeId": "create" },
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "checkout" },
+        { "code": "git-paths-required", "severity": "error", "nodeId": "stage" },
+        { "code": "git-paths-required", "severity": "error", "nodeId": "stage-none" },
+        { "code": "git-message-required", "severity": "error", "nodeId": "commit" },
+        { "code": "git-path-required", "severity": "error", "nodeId": "add" },
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "add" },
+        { "code": "git-path-required", "severity": "error", "nodeId": "remove" }
+      ]
+    },
+    {
+      "name": "branch names follow the git rules",
+      "workflow": {
+        "defaults": { "repoDir": "/repo" },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "tilde",
+            "type": "git",
+            "config": { "gitOp": { "op": "branchCreate", "name": "a~b" } }
+          },
+          {
+            "id": "dash",
+            "type": "git",
+            "config": { "gitOp": { "op": "branchCreate", "name": "-x" } }
+          },
+          {
+            "id": "slash",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": "feature/" } }
+          },
+          {
+            "id": "quote",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": "it's" } }
+          },
+          {
+            "id": "templated",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": "{{input.branch}}" } }
+          },
+          {
+            "id": "long",
+            "type": "git",
+            "config": {
+              "gitOp": {
+                "op": "checkout",
+                "name": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+              }
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "tilde" },
+          { "id": "e2", "source": "tilde", "target": "dash" },
+          { "id": "e3", "source": "dash", "target": "slash" },
+          { "id": "e4", "source": "slash", "target": "quote" },
+          { "id": "e5", "source": "quote", "target": "templated" },
+          { "id": "e6", "source": "templated", "target": "long" },
+          { "id": "e7", "source": "long", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "tilde" },
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "dash" },
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "slash" },
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "quote" },
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "long" }
+      ]
+    },
+    {
+      "name": "GitHub operation fields and folders",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "noop", "type": "github", "config": { "workingDir": "/repo" } },
+          {
+            "id": "pr",
+            "type": "github",
+            "config": {
+              "workingDir": "/repo",
+              "githubOp": { "op": "createPr", "title": " ", "base": "main", "head": "" }
+            }
+          },
+          {
+            "id": "comment",
+            "type": "github",
+            "config": {
+              "workingDir": "/repo",
+              "githubOp": { "op": "postComment", "number": 1, "body": "" }
+            }
+          },
+          {
+            "id": "nodir",
+            "type": "github",
+            "config": { "workingDir": " ", "githubOp": { "op": "prStatus" } }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "noop" },
+          { "id": "e2", "source": "noop", "target": "pr" },
+          { "id": "e3", "source": "pr", "target": "comment" },
+          { "id": "e4", "source": "comment", "target": "nodir" },
+          { "id": "e5", "source": "nodir", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "github-op-required", "severity": "error", "nodeId": "noop" },
+        { "code": "github-title-required", "severity": "error", "nodeId": "pr" },
+        { "code": "github-branches-required", "severity": "error", "nodeId": "pr" },
+        { "code": "github-body-required", "severity": "error", "nodeId": "comment" },
+        { "code": "git-dir-required", "severity": "error", "nodeId": "nodir" }
+      ]
+    },
+    {
+      "name": "workflow defaults fill blank folders and branches",
+      "workflow": {
+        "defaults": { "repoDir": "/repo", "branch": " feature/x " },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "status", "type": "git", "config": { "gitOp": { "op": "status" } } },
+          {
+            "id": "checkout",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": "" } }
+          },
+          {
+            "id": "pr",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "createPr",
+                "title": "Ship",
+                "base": "main",
+                "head": " "
+              }
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "status" },
+          { "id": "e2", "source": "status", "target": "checkout" },
+          { "id": "e3", "source": "checkout", "target": "pr" },
+          { "id": "e4", "source": "pr", "target": "end" }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "an invalid default branch is reported on the step that uses it",
+      "workflow": {
+        "defaults": { "repoDir": "/repo", "branch": "bad..name" },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "checkout",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": " " } }
+          },
+          {
+            "id": "create",
+            "type": "git",
+            "config": { "gitOp": { "op": "branchCreate", "name": "feature/ok" } }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "checkout" },
+          { "id": "e2", "source": "checkout", "target": "create" },
+          { "id": "e3", "source": "create", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "git-branch-invalid", "severity": "error", "nodeId": "checkout" }
+      ]
+    },
+    {
+      "name": "blank defaults do not count",
+      "workflow": {
+        "defaults": { "repoDir": " ", "branch": " " },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "checkout",
+            "type": "git",
+            "config": { "gitOp": { "op": "checkout", "name": "" } }
+          },
+          {
+            "id": "pr",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "createPr",
+                "title": "Ship",
+                "base": "main",
+                "head": ""
+              }
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "checkout" },
+          { "id": "e2", "source": "checkout", "target": "pr" },
+          { "id": "e3", "source": "pr", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "git-branch-required", "severity": "error", "nodeId": "checkout" },
+        { "code": "git-dir-required", "severity": "error", "nodeId": "checkout" },
+        { "code": "github-branches-required", "severity": "error", "nodeId": "pr" },
+        { "code": "git-dir-required", "severity": "error", "nodeId": "pr" }
+      ]
+    },
+    {
+      "name": "ticket and MCP steps",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "ticket", "type": "ticket", "config": { "ticketKey": " " } },
+          { "id": "mcp", "type": "mcp", "config": { "mcpServerId": "", "mcpTool": " " } },
+          {
+            "id": "fine",
+            "type": "ticket",
+            "config": { "ticketKey": "{{input.key}}", "mcpServerId": "jira" }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "ticket" },
+          { "id": "e2", "source": "ticket", "target": "mcp" },
+          { "id": "e3", "source": "mcp", "target": "fine" },
+          { "id": "e4", "source": "fine", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "ticket-key-required", "severity": "error", "nodeId": "ticket" },
+        { "code": "ticket-server-required", "severity": "error", "nodeId": "ticket" },
+        { "code": "mcp-server-required", "severity": "error", "nodeId": "mcp" },
+        { "code": "mcp-tool-required", "severity": "error", "nodeId": "mcp" }
+      ]
+    },
+    {
+      "name": "inputs and workflow limits",
+      "workflow": {
+        "inputs": [
+          { "name": "1st" },
+          { "name": "ok" },
+          { "name": "ok" },
+          { "name": "with space" }
+        ],
+        "limits": { "maxAgentAttempts": 0 },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [{ "id": "e1", "source": "start", "target": "end" }]
+      },
+      "issues": [
+        { "code": "input-name-invalid", "severity": "error" },
+        { "code": "input-duplicate", "severity": "error" },
+        { "code": "input-name-invalid", "severity": "error" },
+        { "code": "workflow-limits-invalid", "severity": "error" }
+      ]
+    },
+    {
+      "name": "loops need a Condition and bounds, reported once per step",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "a", "type": "command", "config": { "executable": "make" } },
+          { "id": "b", "type": "command", "config": { "executable": "make" } },
+          {
+            "id": "cond",
+            "type": "condition",
+            "config": {
+              "maxVisits": 3,
+              "condition": {
+                "logic": "and",
+                "clauses": [
+                  { "left": "node.b.exitCode", "op": "notEquals", "right": "0" }
+                ]
+              }
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "a" },
+          { "id": "e2", "source": "a", "target": "b" },
+          { "id": "e3", "source": "b", "target": "cond" },
+          { "id": "again", "source": "cond", "target": "a", "label": "true" },
+          { "id": "done", "source": "cond", "target": "end", "label": "false" },
+          { "id": "back", "source": "b", "target": "a", "label": "failure" }
+        ]
+      },
+      "issues": [
+        { "code": "cycle-unbounded", "severity": "error", "nodeId": "a" },
+        { "code": "cycle-unbounded", "severity": "error", "nodeId": "b" }
+      ]
+    },
+    {
+      "name": "a guarded, bounded review loop is fine",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "review",
+            "type": "agent",
+            "config": { "agentRole": "fastReview", "prompt": "Review", "maxVisits": 3 }
+          },
+          {
+            "id": "cond",
+            "type": "condition",
+            "config": {
+              "maxVisits": 3,
+              "condition": {
+                "logic": "or",
+                "clauses": [
+                  { "left": "node.review.severity", "op": "contains", "right": "P1" }
+                ]
+              }
+            }
+          },
+          {
+            "id": "fix",
+            "type": "agent",
+            "config": {
+              "agentRole": "implementation",
+              "prompt": "Fix {{node.review.output}} (visit {{node.fix.visits}})",
+              "maxVisits": 3
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "review" },
+          { "id": "e2", "source": "review", "target": "cond" },
+          { "id": "e3", "source": "cond", "target": "fix", "label": "true" },
+          { "id": "e4", "source": "cond", "target": "end", "label": "false" },
+          { "id": "e5", "source": "fix", "target": "review" }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "a loop back into an End step",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "end", "type": "end", "config": { "maxVisits": 2 } },
+          {
+            "id": "after",
+            "type": "command",
+            "config": { "executable": "echo", "maxVisits": 2 }
+          }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "end" },
+          { "id": "e2", "source": "end", "target": "after" },
+          { "id": "back", "source": "after", "target": "end" }
+        ]
+      },
+      "issues": [
+        {
+          "code": "cycle-needs-condition",
+          "severity": "error",
+          "nodeId": "after",
+          "edgeId": "back"
+        },
+        {
+          "code": "cycle-into-end",
+          "severity": "error",
+          "nodeId": "end",
+          "edgeId": "back"
+        }
+      ]
+    },
+    {
+      "name": "unreachable steps and dead ends warn",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "stuck", "type": "approval", "config": { "message": "OK?" } },
+          { "id": "orphan", "type": "command", "config": { "executable": "echo" } },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [{ "id": "e1", "source": "start", "target": "stuck" }]
+      },
+      "issues": [
+        { "code": "unreachable-node", "severity": "warning", "nodeId": "orphan" },
+        { "code": "unreachable-node", "severity": "warning", "nodeId": "end" },
+        { "code": "dead-end-node", "severity": "warning", "nodeId": "stuck" },
+        { "code": "dead-end-node", "severity": "warning", "nodeId": "orphan" }
+      ]
+    }
+  ]
+}

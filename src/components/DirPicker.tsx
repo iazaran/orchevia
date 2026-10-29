@@ -9,9 +9,9 @@ function isDesktop(): boolean {
 }
 
 /**
- * Directory field with a native Browse button (Tauri dialog plugin).
- * Falls back to a plain text input in the browser mock, where no native
- * dialog exists.
+ * Path field with a native Browse button (Tauri dialog plugin): a folder by
+ * default, or a file with `pick="file"`. Falls back to a plain text input in
+ * the browser mock, where no native dialog exists.
  */
 export function DirPicker({
   id,
@@ -20,6 +20,8 @@ export function DirPicker({
   placeholder,
   onChange,
   onPicked,
+  pick = 'folder',
+  fromPicked,
 }: {
   id: string;
   label: string;
@@ -27,6 +29,10 @@ export function DirPicker({
   placeholder?: string;
   onChange: (v: string) => void;
   onPicked?: (path: string) => void;
+  /** What the system picker chooses. */
+  pick?: 'folder' | 'file';
+  /** Rewrite a picked path before it is stored (e.g. relative to a folder). */
+  fromPicked?: (path: string) => string;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   // Callers store the path trimmed; keep a typed space (`My Repo`) visible.
@@ -37,10 +43,11 @@ export function DirPicker({
     void (async () => {
       try {
         const { open } = await import('@tauri-apps/plugin-dialog');
-        const selected = await open({ directory: true, multiple: false });
+        const selected = await open({ directory: pick === 'folder', multiple: false });
         if (typeof selected === 'string' && selected !== '') {
-          onChange(selected);
-          onPicked?.(selected);
+          const path = fromPicked ? fromPicked(selected) : selected;
+          onChange(path);
+          onPicked?.(path);
         }
       } catch {
         // No dialog available (browser mock): user types the path.
@@ -72,7 +79,7 @@ export function DirPicker({
             style={{ whiteSpace: 'nowrap' }}
             disabled={busy}
             onClick={browse}
-            title="Choose a folder with the system picker"
+            title={`Choose a ${pick} with the system picker`}
           >
             {busy ? '…' : 'Browse…'}
           </button>

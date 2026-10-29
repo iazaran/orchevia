@@ -93,9 +93,10 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 
 Orchevia tells you when a new version is ready (a banner, an Inbox entry and the
 installer link under **Environment → Updates**, where you can also turn the check
-off). It does not install updates by itself yet: with the apt repository run
-`sudo apt update && sudo apt upgrade`, otherwise install the new file over the old one.
-Your workflows and history are kept.
+off). From v0.1.24, AppImage and macOS copies can choose **Install and restart** there:
+Orchevia downloads the signed update, checks its signature and restarts. With the apt
+repository run `sudo apt update && sudo apt upgrade`; otherwise install the new file
+over the old one. Your workflows and history are kept.
 
 </details>
 

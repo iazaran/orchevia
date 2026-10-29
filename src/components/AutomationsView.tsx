@@ -346,7 +346,7 @@ export function AutomationsView(): React.JSX.Element {
           style={{ marginBottom: 16, maxWidth: 680 }}
         >
           <div className="background-card-head">
-            <h3 style={{ margin: 0 }}>Background mode</h3>
+            <h2 style={{ margin: 0, fontSize: 14 }}>Background mode</h2>
             <Switch
               checked={backgroundMode}
               onChange={toggleBackground}
@@ -906,6 +906,7 @@ function KindEditor({
           <button
             key={t}
             className={`tool-chip${tab === t ? ' selected' : ''}`}
+            aria-pressed={tab === t}
             onClick={() => switchTab(t)}
           >
             {t}

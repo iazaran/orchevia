@@ -162,6 +162,116 @@ it('promotes the successful snapshot command with run evidence only', async () =
   expect(screen.queryByRole('button', { name: 'Save command to playbook' })).toBeNull();
 });
 
+it('offers the playbook only for test, lint and build steps, preselecting the field', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  workflow.defaults = { repoDir: '/project' };
+  for (const [id, label] of [
+    ['lint', 'Lint the code'],
+    ['setup', 'Create ticket worktree and branch'],
+  ] as const)
+    workflow.nodes.push({
+      id,
+      type: 'command',
+      label,
+      position: { x: 0, y: 0 },
+      config: { executable: 'sh', args: ['-c', `make ${id}`] },
+    });
+  const run = {
+    id: 'labelled-run',
+    workflowId: workflow.id,
+    status: 'succeeded' as const,
+    startedAt: new Date().toISOString(),
+    inputs: {},
+  };
+  const results = ['setup', 'lint'].map((nodeId, i) => ({
+    id: i + 1,
+    runId: run.id,
+    nodeId,
+    status: 'succeeded',
+    stdout: '',
+    stderr: '',
+    startedAt: run.startedAt,
+  }));
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const user = userEvent.setup();
+  const offers = await screen.findAllByText('Save this command to the project playbook…');
+  expect(offers).toHaveLength(1);
+  expect(offers[0]?.closest('.run-step')).toHaveTextContent('Lint the code');
+  await user.click(offers[0]!);
+  expect(screen.getByLabelText("Save it as the project's")).toHaveValue('lintCommand');
+  await user.click(screen.getByRole('button', { name: 'Save command to playbook' }));
+  expect(await screen.findByText(/Saved verified command/)).toBeInTheDocument();
+  const context = await backend.getProjectMemoryContext('/project');
+  expect(context.text).toMatch(/lint[^\n]*make lint/i);
+});
+
+it('shows the argv a script step ran and promotes the command that runs it', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  workflow.defaults = { repoDir: '/project' };
+  workflow.nodes.push({
+    id: 'script',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 0 },
+    config: { scriptFile: 'scripts/test.sh', args: ['--all'] },
+  });
+  const run = {
+    id: 'script-run',
+    workflowId: workflow.id,
+    status: 'succeeded' as const,
+    startedAt: new Date().toISOString(),
+    inputs: {},
+  };
+  const result = {
+    id: 1,
+    runId: run.id,
+    nodeId: 'script',
+    status: 'succeeded',
+    stdout: 'ok',
+    stderr: '',
+    startedAt: run.startedAt,
+    structuredJson: JSON.stringify({ command: 'bash /project/scripts/test.sh --all' }),
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([result]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [result] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const ran = await screen.findByText('bash /project/scripts/test.sh --all');
+  expect(ran.closest('.run-step-command')).toHaveTextContent(/^Ran/);
+  const user = userEvent.setup();
+  await user.click(screen.getByText('Save this command to the project playbook…'));
+  await user.click(screen.getByRole('button', { name: 'Save command to playbook' }));
+  expect(await screen.findByText(/Saved verified command/)).toBeInTheDocument();
+  // The playbook keeps the portable, repository-relative command.
+  const context = await backend.getProjectMemoryContext('/project');
+  expect(context.text).toContain('bash scripts/test.sh --all');
+});
+
 it('refreshes on every Runs entry and preserves the selected run with current results', async () => {
   const backend = __setMockBackendForTests();
   const oldRun = {
@@ -534,12 +644,14 @@ it('expands full live output without claiming a count of visual lines', async ()
     (_, i) => `Line ${String(i)} ${'long wrapped text '.repeat(30)}`,
   ).join('\n');
   await renderLiveOutput(text);
-  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout' }));
-  const expand = screen.getByRole('button', { name: 'Expand stdout' });
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout, step 1' }));
+  const expand = screen.getByRole('button', {
+    name: 'Show full output of stdout, step 1',
+  });
   expect(expand).toHaveTextContent('Show full output');
   expect(expand).not.toHaveTextContent('lines');
   fireEvent.click(expand);
-  expect(screen.getByRole('region', { name: 'stdout output' })).toHaveTextContent(
+  expect(screen.getByRole('region', { name: 'stdout output, step 1' })).toHaveTextContent(
     'Line 29',
   );
 });
@@ -548,13 +660,15 @@ it('follows new live output, pauses on scroll-up and resumes explicitly', async 
   const result = await renderLiveOutput(
     Array.from({ length: 20 }, (_, i) => `line ${String(i)}`).join('\n'),
   );
-  const output = screen.getByRole('region', { name: 'stdout output' });
+  const output = screen.getByRole('region', { name: 'stdout output, step 1' });
   Object.defineProperties(output, {
     scrollHeight: { value: 1000, configurable: true },
     clientHeight: { value: 200, configurable: true },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Expand stdout' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout, step 1' }));
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Show full output of stdout, step 1' }),
+  );
   expect(output.scrollTop).toBe(1000);
   output.scrollTop = 100;
   fireEvent.scroll(output);
@@ -566,7 +680,7 @@ it('follows new live output, pauses on scroll-up and resumes explicitly', async 
     }),
   );
   expect(output.scrollTop).toBe(100);
-  fireEvent.click(screen.getByRole('button', { name: 'Follow latest stdout' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Follow latest stdout, step 1' }));
   expect(output.scrollTop).toBe(1000);
   Object.defineProperty(output, 'scrollHeight', { value: 1400 });
   act(() =>
@@ -584,9 +698,11 @@ it('follows new live output, pauses on scroll-up and resumes explicitly', async 
 it('follows expanded agent activity as it streams', async () => {
   const activity = 'tool update\n'.repeat(30);
   const result = await renderLiveOutput('', JSON.stringify({ agentActivity: activity }));
-  const output = screen.getByRole('region', { name: 'Agent activity output' });
+  const output = screen.getByRole('region', { name: 'Agent activity output, step 1' });
   Object.defineProperty(output, 'scrollHeight', { value: 900, configurable: true });
-  fireEvent.click(screen.getByRole('button', { name: 'Expand Agent activity' }));
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Show full output of Agent activity, step 1' }),
+  );
   expect(output.scrollTop).toBe(900);
   Object.defineProperty(output, 'scrollHeight', { value: 1200 });
   act(() =>
@@ -676,7 +792,7 @@ it('places deduplicated findings at their source steps and keeps unknown sources
 
 it('follows the final output update when a running step finishes', async () => {
   const result = await renderLiveOutput('running output\n'.repeat(20));
-  const output = screen.getByRole('region', { name: 'stdout output' });
+  const output = screen.getByRole('region', { name: 'stdout output, step 1' });
   Object.defineProperty(output, 'scrollHeight', { value: 1800 });
   act(() =>
     useAppStore.setState({
@@ -692,7 +808,7 @@ it('follows the final output update when a running step finishes', async () => {
 
 it('keeps a paused reader in place when the final output arrives', async () => {
   const result = await renderLiveOutput('running output\n'.repeat(20));
-  const output = screen.getByRole('region', { name: 'stdout output' });
+  const output = screen.getByRole('region', { name: 'stdout output, step 1' });
   Object.defineProperties(output, {
     scrollHeight: { value: 1800 },
     clientHeight: { value: 200 },

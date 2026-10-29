@@ -69,8 +69,14 @@ and assistance always use the text form.
 Optional effort maps to `--effort` for Claude and `model_reasoning_effort` for
 Codex. Custom adapters leave effort to the CLI. Selected skills are prefixed
 to the prompt as `/skill-name` (Claude) or `$skill-name` (Codex).
-The Test button probes CLI availability; verify a selected skill with a small
-workflow run. Personal and fixed-directory skills are discovered locally;
+**Check setup** sends one short prompt with the profile, in a temporary folder,
+at its effective permission level: CLI installed (and its version), signed in
+and answering, reads a file in its working folder, and edits one without
+asking. A signed-out CLI, a usage limit, a timeout and refused tools each get
+their own message and fix. Under CLI settings a refused edit is a warning (steps
+that edit will be refused); under Full access it is a failure, because it means
+the CLI no longer honours the permission flag headless. Custom CLIs are judged on
+their reply only. Verify a selected skill with a small workflow run. Personal and fixed-directory skills are discovered locally;
 plugin, synced, and per-node project skills can be entered by name.
 
 Claude and Codex receive the prompt on **stdin**, so prompt text can never become

@@ -1,7 +1,7 @@
 import definitions from './builtin-templates.json';
 import type { InstantiationPreview, WorkflowTemplate } from './generation';
 import type { AgentProfile } from './agents';
-import { newId, validateWorkflowLocal } from './workflow';
+import { newId, SETUP_ISSUE_CODES, validateWorkflowLocal } from './workflow';
 import { decodeDocument, remapConfigReferences } from './workflow-document';
 
 /** The core constructors are authoritative; a Rust test pins this browser data. */
@@ -46,11 +46,7 @@ export function importTemplateDocument(
   }
   if (!workflow.nodes.length) throw new Error('Template workflow has no nodes.');
   const blocking = validateWorkflowLocal(workflow).filter(
-    (issue) =>
-      issue.severity === 'error' &&
-      !['git-dir-required', 'ticket-server-required', 'mcp-server-required'].includes(
-        issue.code,
-      ),
+    (issue) => issue.severity === 'error' && !SETUP_ISSUE_CODES.includes(issue.code),
   );
   if (blocking.length) throw new Error(blocking.map((issue) => issue.message).join('; '));
   const metadata = (key: string, fallback: string): string => {
@@ -116,15 +112,12 @@ export function instantiateTemplateLocal(
     edge.target = ids[edge.target] ?? edge.target;
   }
   const errors = validateWorkflowLocal(workflow).filter((i) => i.severity === 'error');
-  const setupCodes = [
-    'git-dir-required',
-    'ticket-server-required',
-    'mcp-server-required',
-  ];
-  const blocking = errors.filter((i) => !setupCodes.includes(i.code));
+  const blocking = errors.filter((i) => !SETUP_ISSUE_CODES.includes(i.code));
   if (blocking.length) throw new Error(blocking.map((i) => i.message).join('; '));
   return {
     workflow,
-    setupNeeded: errors.filter((i) => setupCodes.includes(i.code)).map((i) => i.message),
+    setupNeeded: errors
+      .filter((i) => SETUP_ISSUE_CODES.includes(i.code))
+      .map((i) => i.message),
   };
 }

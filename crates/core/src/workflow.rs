@@ -116,6 +116,12 @@ pub struct NodeConfig {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    /// Command nodes only: a script to run as `<executable or bash> <script>
+    /// <args…>`, so `executable` becomes the interpreter. Relative paths
+    /// resolve against the effective working folder (node `working_dir`, else
+    /// `defaults.repo_dir`); `~/` is the home folder. Never templated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     // -- AI Agent node (Milestone 2) -------------------------------------
@@ -377,6 +383,123 @@ pub struct ValidationIssue {
     pub severity: ValidationSeverity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// The connection an issue is about (unknown endpoints, labels, loops).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_id: Option<String>,
+}
+
+/// Every code [`validate_workflow`] can report. The TypeScript twin
+/// (`VALIDATION_CODES` in `src/lib/workflow.ts`) and the shared parity
+/// fixture (`src/test/validation-parity.json`) must list the same codes.
+pub const VALIDATION_CODES: &[&str] = &[
+    "schema-too-new",
+    "name-required",
+    "single-start",
+    "end-required",
+    "edge-unknown-source",
+    "edge-unknown-target",
+    "edge-self-loop",
+    "command-executable-required",
+    "command-executable-suspicious",
+    "command-timeout-invalid",
+    "command-script-required",
+    "command-script-templated",
+    "command-script-dir-required",
+    "command-script-misplaced",
+    "agent-session-group-invalid",
+    "agent-session-variable-invalid",
+    "agent-session-turns-invalid",
+    "agent-context-limit-invalid",
+    "agent-context-ref-invalid",
+    "agent-profile-required",
+    "agent-role-unknown",
+    "agent-prompt-required",
+    "agent-timeout-invalid",
+    "agent-input-unknown",
+    "agent-tool-allowance-invalid",
+    "agent-subagent-allowance-invalid",
+    "agent-required-tools-invalid",
+    "agent-allowance-misplaced",
+    "agent-required-tools-misplaced",
+    "prompt-unknown-variable",
+    "condition-required",
+    "condition-unknown-ref",
+    "condition-branches-required",
+    "git-op-required",
+    "git-dir-required",
+    "git-branch-required",
+    "git-branch-invalid",
+    "git-paths-required",
+    "git-message-required",
+    "git-path-required",
+    "github-op-required",
+    "github-title-required",
+    "github-branches-required",
+    "github-body-required",
+    "ticket-key-required",
+    "ticket-server-required",
+    "mcp-server-required",
+    "mcp-tool-required",
+    "retry-unbounded",
+    "retry-delay-invalid",
+    "loop-limit-invalid",
+    "input-name-invalid",
+    "input-duplicate",
+    "workflow-limits-invalid",
+    "edge-label-unknown",
+    "edge-label-misplaced",
+    "cycle-needs-condition",
+    "cycle-unbounded",
+    "cycle-into-end",
+    "unreachable-node",
+    "dead-end-node",
+];
+
+/// Error codes that mean "this machine still needs configuring" (a folder,
+/// a server) rather than a broken graph: templates and generated drafts may
+/// carry them into the editor as setup items instead of being refused.
+pub const SETUP_ISSUE_CODES: &[&str] = &[
+    "git-dir-required",
+    "command-script-dir-required",
+    "ticket-server-required",
+    "mcp-server-required",
+];
+
+/// Whether a script path names its own root (`/…` or `~/…`) instead of
+/// resolving against the step's working folder. Purely textual, so validation
+/// agrees with the TypeScript twin. Orchevia runs on Linux and macOS, where
+/// `C:\…` and `\…` are relative names, as the engine treats them.
+pub fn script_path_is_rooted(path: &str) -> bool {
+    let path = path.trim();
+    path.starts_with('/') || path.starts_with("~/")
+}
+
+/// Resolve a Command step's script path: `~/` against `home`, absolute paths
+/// as they are, and anything else against the step's working folder.
+pub fn resolve_script_file(
+    path: &str,
+    working_dir: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("This step has no script file to run.".to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home
+            .map(|home| home.join(rest))
+            .ok_or_else(|| format!("Cannot expand '~' in '{path}': HOME is not set."));
+    }
+    let candidate = std::path::Path::new(path);
+    if candidate.is_absolute() {
+        return Ok(candidate.to_path_buf());
+    }
+    match working_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
+        Some(dir) => Ok(std::path::Path::new(dir).join(candidate)),
+        None => Err(format!(
+            "Script file '{path}' is relative, but this step has no working folder: set one on the step or set a workflow default."
+        )),
+    }
 }
 
 impl Workflow {
@@ -659,7 +782,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         wf.nodes.iter().map(|n| n.id.as_str()).collect();
     for edge in &wf.edges {
         if !node_ids.contains(edge.source.as_str()) {
-            push_error(
+            push_edge_error(
                 &mut issues,
                 "edge-unknown-source",
                 format!(
@@ -667,10 +790,11 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     edge.id, edge.source
                 ),
                 None,
+                edge,
             );
         }
         if !node_ids.contains(edge.target.as_str()) {
-            push_error(
+            push_edge_error(
                 &mut issues,
                 "edge-unknown-target",
                 format!(
@@ -678,14 +802,16 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     edge.id, edge.target
                 ),
                 None,
+                edge,
             );
         }
         if edge.source == edge.target {
-            push_error(
+            push_edge_error(
                 &mut issues,
                 "edge-self-loop",
                 format!("Edge '{}' connects a node to itself.", edge.id),
                 Some(edge.source.clone()),
+                edge,
             );
         }
     }
@@ -695,11 +821,12 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         match node.kind {
             NodeKind::Command => {
                 let exe = node.config.executable.as_deref().unwrap_or("").trim();
-                if exe.is_empty() {
+                // A script file runs with `bash` when no interpreter is named.
+                if exe.is_empty() && node.config.script_file.is_none() {
                     push_error(
                         &mut issues,
                         "command-executable-required",
-                        "Command node requires an executable.".to_string(),
+                        "Command node requires an executable or a script file.".to_string(),
                         Some(node.id.clone()),
                     );
                 } else if exe == "compose" {
@@ -720,6 +847,9 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                             Some(node.id.clone()),
                         );
                     }
+                }
+                if let Some(script) = node.config.script_file.as_deref() {
+                    validate_script_file(wf, node, script, &mut issues);
                 }
                 validate_retry(node, &mut issues);
                 validate_max_visits(node, &mut issues);
@@ -1080,6 +1210,14 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 Some(node.id.clone()),
             );
         }
+        if node.kind != NodeKind::Command && node.config.script_file.is_some() {
+            push_error(
+                &mut issues,
+                "command-script-misplaced",
+                "Only Command steps run script files.".to_string(),
+                Some(node.id.clone()),
+            );
+        }
         // Prompt template variable references (agent nodes).
         if node.kind == NodeKind::Agent {
             if let Some(template) = node.config.prompt.as_deref() {
@@ -1149,12 +1287,15 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     ),
                     None,
                 );
+                if let Some(issue) = issues.last_mut() {
+                    issue.edge_id = Some(edge.id.clone());
+                }
                 continue;
             }
             if matches!(kind, EdgeKind::TrueBranch | EdgeKind::FalseBranch) {
                 let source_kind = by_id.get(edge.source.as_str()).map(|n| n.kind);
                 if source_kind != Some(NodeKind::Condition) {
-                    push_error(
+                    push_edge_error(
                         &mut issues,
                         "edge-label-misplaced",
                         format!(
@@ -1162,6 +1303,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                             edge.id
                         ),
                         None,
+                        edge,
                     );
                 }
             }
@@ -1174,6 +1316,8 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         let loop_edges = find_loop_edges(wf);
         let by_id: std::collections::HashMap<&str, &Node> =
             wf.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        // A node on several loops still needs one bound: report it once.
+        let mut unbounded: HashSet<&str> = HashSet::new();
         for edge in wf.edges.iter().filter(|e| loop_edges.contains(&e.id)) {
             // Nodes on this cycle: reachable from target AND able to reach source.
             let from_target = reachable_from(wf, &edge.target);
@@ -1183,7 +1327,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 .filter(|n| from_target.contains(&n.id) && can_reach(wf, &n.id, &edge.source))
                 .collect();
             if !cycle_nodes.iter().any(|n| n.kind == NodeKind::Condition) {
-                push_error(
+                push_edge_error(
                     &mut issues,
                     "cycle-needs-condition",
                     format!(
@@ -1191,10 +1335,11 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         edge.id
                     ),
                     Some(edge.source.clone()),
+                    edge,
                 );
             }
             for node in cycle_nodes {
-                if node.config.max_visits.unwrap_or(1) < 2 {
+                if node.config.max_visits.unwrap_or(1) < 2 && unbounded.insert(node.id.as_str()) {
                     push_error(
                         &mut issues,
                         "cycle-unbounded",
@@ -1210,7 +1355,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         // Loop edges into End nodes make no sense (End terminates).
         for edge in wf.edges.iter().filter(|e| loop_edges.contains(&e.id)) {
             if by_id.get(edge.target.as_str()).map(|n| n.kind) == Some(NodeKind::End) {
-                push_error(
+                push_edge_error(
                     &mut issues,
                     "cycle-into-end",
                     format!(
@@ -1218,6 +1363,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                         edge.id
                     ),
                     Some(edge.target.clone()),
+                    edge,
                 );
             }
         }
@@ -1290,12 +1436,28 @@ fn push_error(
     message: String,
     node_id: Option<String>,
 ) {
+    debug_assert!(VALIDATION_CODES.contains(&code), "unlisted code {code}");
     issues.push(ValidationIssue {
         code: code.to_string(),
         message,
         severity: ValidationSeverity::Error,
         node_id,
+        edge_id: None,
     });
+}
+
+/// An error about one connection (and optionally the step it points at).
+fn push_edge_error(
+    issues: &mut Vec<ValidationIssue>,
+    code: &str,
+    message: String,
+    node_id: Option<String>,
+    edge: &Edge,
+) {
+    push_error(issues, code, message, node_id);
+    if let Some(issue) = issues.last_mut() {
+        issue.edge_id = Some(edge.id.clone());
+    }
 }
 
 fn push_warning(
@@ -1304,11 +1466,13 @@ fn push_warning(
     message: String,
     node_id: Option<String>,
 ) {
+    debug_assert!(VALIDATION_CODES.contains(&code), "unlisted code {code}");
     issues.push(ValidationIssue {
         code: code.to_string(),
         message,
         severity: ValidationSeverity::Warning,
         node_id,
+        edge_id: None,
     });
 }
 
@@ -1439,6 +1603,46 @@ fn validate_github_op(
                 );
             }
         }
+    }
+}
+
+/// Validate a Command step's script path (its existence is checked when the
+/// step runs, on the machine that runs it).
+fn validate_script_file(
+    wf: &Workflow,
+    node: &Node,
+    script: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if script.trim().is_empty() {
+        push_error(
+            issues,
+            "command-script-required",
+            "Choose the script file this step runs.".to_string(),
+            Some(node.id.clone()),
+        );
+        return;
+    }
+    if script.contains("{{") {
+        push_error(
+            issues,
+            "command-script-templated",
+            "Script file paths are not templated: use a fixed path and pass values as arguments."
+                .to_string(),
+            Some(node.id.clone()),
+        );
+    }
+    let has_dir = |dir: Option<&str>| dir.is_some_and(|d| !d.trim().is_empty());
+    if !script_path_is_rooted(script)
+        && !has_dir(node.config.working_dir.as_deref())
+        && !has_dir(wf.defaults.as_ref().and_then(|d| d.repo_dir.as_deref()))
+    {
+        push_error(
+            issues,
+            "command-script-dir-required",
+            "A relative script path needs a working folder: set one on the step or set a workflow default (select the canvas background to edit Workflow settings).".to_string(),
+            Some(node.id.clone()),
+        );
     }
 }
 
@@ -2122,6 +2326,91 @@ mod tests {
         );
     }
 
+    /// start → implement → test → gate -true-> fix → test (inner loop);
+    /// gate -false-> review → outer -true-> `outer_to` (outer loop);
+    /// outer -false-> end. Every step but `unbounded` sets `maxVisits`.
+    fn nested_loop_workflow(outer_to: &str, unbounded: Option<&str>) -> Workflow {
+        use serde_json::json;
+        let gate = |id: &str, step: &str| {
+            json!({"id": id, "type": "condition", "config": {"condition": {"logic": "and",
+                "clauses": [{"left": format!("node.{step}.output"), "op": "contains", "right": "again"}]}}})
+        };
+        let command =
+            |id: &str| json!({"id": id, "type": "command", "config": {"executable": "echo"}});
+        let mut nodes = vec![
+            json!({"id": "start", "type": "start"}),
+            command("implement"),
+            command("test"),
+            gate("gate", "test"),
+            command("fix"),
+            command("review"),
+            gate("outer", "review"),
+            json!({"id": "end", "type": "end"}),
+        ];
+        for node in &mut nodes {
+            let id = node["id"].as_str().unwrap_or_default().to_string();
+            if !["start", "end"].contains(&id.as_str()) && unbounded != Some(id.as_str()) {
+                node["config"]["maxVisits"] = json!(4);
+            }
+        }
+        let edge = |id: &str, source: &str, target: &str, label: Option<&str>| json!({"id": id, "source": source, "target": target, "label": label});
+        let wf = json!({
+            "schemaVersion": CURRENT_SCHEMA_VERSION,
+            "id": "wf-nested",
+            "name": "Nested",
+            "nodes": nodes,
+            "edges": [
+                edge("e0", "start", "implement", None),
+                edge("e1", "implement", "test", None),
+                edge("e2", "test", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "test", None),
+                edge("e5", "gate", "review", Some("false")),
+                edge("e6", "review", "outer", None),
+                edge("e7", "outer", outer_to, Some("true")),
+                edge("e8", "outer", "end", Some("false")),
+            ],
+        });
+        Workflow::from_json(&wf.to_string()).expect("nested workflow")
+    }
+
+    #[test]
+    fn nested_loops_validate_and_every_repeated_step_needs_a_bound() {
+        // The outer loop restarts at the inner loop's first step, or at a
+        // step before it.
+        for outer_to in ["test", "implement"] {
+            let wf = nested_loop_workflow(outer_to, None);
+            let loops = find_loop_edges(&wf);
+            assert!(loops.contains("e4") && loops.contains("e7"), "{loops:?}");
+            let issues = validate_workflow(&wf);
+            assert!(
+                !issues
+                    .iter()
+                    .any(|i| i.severity == ValidationSeverity::Error),
+                "{outer_to}: {issues:?}"
+            );
+            let mut repeated = vec!["test", "gate", "fix", "review", "outer"];
+            if outer_to == "implement" {
+                repeated.push("implement");
+            }
+            for step in repeated {
+                let issues = validate_workflow(&nested_loop_workflow(outer_to, Some(step)));
+                assert!(
+                    issues
+                        .iter()
+                        .any(|i| i.code == "cycle-unbounded" && i.node_id.as_deref() == Some(step)),
+                    "{outer_to}/{step}: {issues:?}"
+                );
+            }
+        }
+        // A step before both loops runs once and needs no bound.
+        let issues = validate_workflow(&nested_loop_workflow("test", Some("implement")));
+        assert!(
+            !issues.iter().any(|i| i.code == "cycle-unbounded"),
+            "{issues:?}"
+        );
+    }
+
     #[test]
     fn duplicate_inputs_rejected() {
         let mut wf = linear_workflow();
@@ -2459,5 +2748,210 @@ mod perf_tests {
                 .all(|i| i.severity != ValidationSeverity::Error),
             "{issues:?}"
         );
+    }
+}
+
+/// One fixture keeps this validator and its TypeScript twin
+/// (`validateWorkflowLocal`, checked by `src/lib/validation-parity.test.ts`)
+/// in step: both must report exactly the issues each case lists.
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    const FIXTURE: &str = include_str!("../../../src/test/validation-parity.json");
+
+    fn fixture() -> Value {
+        serde_json::from_str(FIXTURE).expect("fixture is JSON")
+    }
+
+    fn strings(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|v| v.as_str().expect("string").to_string())
+            .collect()
+    }
+
+    /// Fill the fields cases leave out, exactly like the TypeScript test.
+    fn case_workflow(case: &Value) -> Workflow {
+        let mut wf = case["workflow"].clone();
+        let object = wf.as_object_mut().expect("workflow object");
+        object
+            .entry("schemaVersion")
+            .or_insert(json!(CURRENT_SCHEMA_VERSION));
+        object.entry("id").or_insert(json!("wf-parity"));
+        object.entry("name").or_insert(json!("Parity"));
+        for node in object
+            .get_mut("nodes")
+            .and_then(Value::as_array_mut)
+            .expect("nodes")
+        {
+            let node = node.as_object_mut().expect("node object");
+            node.entry("position").or_insert(json!({"x": 0, "y": 0}));
+            node.entry("config").or_insert(json!({}));
+        }
+        Workflow::from_json(&wf.to_string()).expect("case workflow parses")
+    }
+
+    fn key(code: &str, severity: &str, node: Option<&str>, edge: Option<&str>) -> String {
+        format!(
+            "{code} {severity} node={} edge={}",
+            node.unwrap_or("-"),
+            edge.unwrap_or("-")
+        )
+    }
+
+    #[test]
+    fn every_case_reports_exactly_the_listed_issues() {
+        let mut mismatches = Vec::new();
+        for case in fixture()["cases"].as_array().expect("cases") {
+            let mut expected: Vec<String> = case["issues"]
+                .as_array()
+                .expect("issues")
+                .iter()
+                .map(|i| {
+                    key(
+                        i["code"].as_str().expect("code"),
+                        i["severity"].as_str().expect("severity"),
+                        i["nodeId"].as_str(),
+                        i["edgeId"].as_str(),
+                    )
+                })
+                .collect();
+            let mut actual: Vec<String> = validate_workflow(&case_workflow(case))
+                .iter()
+                .map(|i| {
+                    let severity = match i.severity {
+                        ValidationSeverity::Error => "error",
+                        ValidationSeverity::Warning => "warning",
+                    };
+                    key(
+                        &i.code,
+                        severity,
+                        i.node_id.as_deref(),
+                        i.edge_id.as_deref(),
+                    )
+                })
+                .collect();
+            expected.sort();
+            actual.sort();
+            if expected != actual {
+                mismatches.push(format!(
+                    "{}\n  expected: {expected:#?}\n  actual: {actual:#?}",
+                    case["name"]
+                ));
+            }
+        }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn the_fixture_lists_and_exercises_every_code() {
+        let fixture = fixture();
+        let codes = strings(&fixture["codes"]);
+        let mut listed = codes.clone();
+        listed.sort();
+        let mut known: Vec<String> = VALIDATION_CODES.iter().map(|c| c.to_string()).collect();
+        known.sort();
+        assert_eq!(listed, known, "fixture codes vs VALIDATION_CODES");
+        let exercised: HashSet<String> = fixture["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .flat_map(|c| c["issues"].as_array().expect("issues").iter())
+            .map(|i| i["code"].as_str().expect("code").to_string())
+            .collect();
+        for code in &codes {
+            assert!(exercised.contains(code), "no case reports {code}");
+        }
+        assert_eq!(
+            strings(&fixture["setupCodes"]),
+            SETUP_ISSUE_CODES.to_vec(),
+            "fixture setupCodes vs SETUP_ISSUE_CODES"
+        );
+    }
+
+    /// Exemptions are run-start checks that need the database or PATH. They
+    /// stay out of `validate_workflow` and must really exist in the engine.
+    #[test]
+    fn exemptions_are_real_run_start_checks() {
+        let engine = include_str!("engine.rs");
+        for exemption in fixture()["exemptions"].as_array().expect("exemptions") {
+            let code = exemption["code"].as_str().expect("code");
+            assert!(!VALIDATION_CODES.contains(&code), "{code} is validated");
+            assert!(
+                exemption["reason"]
+                    .as_str()
+                    .is_some_and(|r| !r.trim().is_empty()),
+                "{code} needs a reason"
+            );
+            assert!(
+                engine.contains(&format!("code: \"{code}\"")),
+                "{code} is not a run-start check in engine.rs"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_file_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn only_slash_and_home_paths_are_rooted_as_in_the_engine() {
+        for rooted in ["/usr/bin/x.sh", " ~/bin/x.sh"] {
+            assert!(script_path_is_rooted(rooted), "{rooted}");
+        }
+        // Windows-style names are relative on Linux and macOS, as in the engine.
+        for relative in [
+            "scripts/x.sh",
+            "./x.sh",
+            "../x.sh",
+            "~x.sh",
+            "~",
+            "C:x",
+            "C:\\x.ps1",
+            "\\\\server\\x.ps1",
+        ] {
+            assert!(!Path::new(relative.trim()).is_absolute(), "{relative}");
+            assert!(!script_path_is_rooted(relative), "{relative}");
+        }
+    }
+
+    #[test]
+    fn script_paths_resolve_against_the_working_folder_and_home() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            resolve_script_file(" scripts/ci.sh ", Some("/repo"), Some(home)),
+            Ok(PathBuf::from("/repo/scripts/ci.sh"))
+        );
+        assert_eq!(
+            resolve_script_file("~/bin/ci.sh", Some("/repo"), Some(home)),
+            Ok(PathBuf::from("/home/me/bin/ci.sh"))
+        );
+        assert_eq!(
+            resolve_script_file("/opt/ci.sh", None, None),
+            Ok(PathBuf::from("/opt/ci.sh"))
+        );
+        let relative = resolve_script_file("ci.sh", Some("  "), Some(home)).unwrap_err();
+        assert!(relative.contains("no working folder"), "{relative}");
+        let no_home = resolve_script_file("~/ci.sh", Some("/repo"), None).unwrap_err();
+        assert!(no_home.contains("HOME"), "{no_home}");
+        assert!(resolve_script_file(" ", Some("/repo"), Some(home)).is_err());
+    }
+
+    #[test]
+    fn script_file_round_trips_as_camel_case() {
+        let config: NodeConfig = serde_json::from_value(serde_json::json!({
+            "executable": "python3", "scriptFile": "tools/check.py", "args": ["--fast"]
+        }))
+        .unwrap();
+        assert_eq!(config.script_file.as_deref(), Some("tools/check.py"));
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["scriptFile"], "tools/check.py");
+        assert!(serde_json::to_value(NodeConfig::default()).unwrap()["scriptFile"].is_null());
     }
 }

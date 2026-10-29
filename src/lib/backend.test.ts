@@ -407,6 +407,54 @@ it('counts a reused dry-run command once, as reuse, like the core', async () => 
   expect(summary.totals.simulatedResults).toBe(0);
 });
 
+it('records the argv a script step runs, like the core, in real and dry runs', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Script');
+  workflow.defaults = { repoDir: '/repo' };
+  workflow.inputs = [{ name: 'suite', default: 'unit' }];
+  const [start, end] = workflow.nodes;
+  if (!start || !end) throw new Error('fixture');
+  workflow.nodes.splice(1, 0, {
+    id: 'ci',
+    type: 'command',
+    position: { x: 0, y: 0 },
+    config: { scriptFile: 'scripts/ci.sh', args: ['--suite', '{{input.suite}}'] },
+  });
+  workflow.edges = [
+    { id: 's', source: start.id, target: 'ci' },
+    { id: 'e', source: 'ci', target: end.id },
+  ];
+  await backend.saveWorkflow(workflow);
+  const command = async (runId: string): Promise<unknown> => {
+    await vi.waitFor(
+      async () => expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+      { timeout: 5000 },
+    );
+    const row = (await backend.getRunResults(runId)).find((r) => r.nodeId === 'ci');
+    return (JSON.parse(row?.structuredJson ?? '{}') as { command?: unknown }).command;
+  };
+  const real = await backend.runWorkflow(workflow.id, { suite: 'e2e' });
+  expect(await command(real.runId)).toBe('bash /repo/scripts/ci.sh --suite e2e');
+  const dry = await backend.runWorkflow(
+    workflow.id,
+    {},
+    { dryRun: true, fixtures: { ci: [{ status: 'succeeded' }] } },
+  );
+  expect(await command(dry.runId)).toBe('bash /repo/scripts/ci.sh --suite unit');
+  // Fixtures cannot supply the command themselves.
+  await expect(
+    backend.runWorkflow(
+      workflow.id,
+      {},
+      {
+        dryRun: true,
+        fixtures: { ci: [{ status: 'succeeded', structured: { command: 'other' } }] },
+      },
+    ),
+  ).rejects.toThrow(/reserved/);
+});
+
 describe('mock backend (browser dev)', () => {
   it('dry-runs all branches without profiles and recovers with explicit choices', async () => {
     const backend = __setMockBackendForTests();
@@ -1221,7 +1269,9 @@ it('mirrors desktop integration commands', async () => {
     platform: 'browser',
     arch: 'unknown',
     installKind: 'unknown',
+    inPlaceUpdates: false,
   });
+  await expect(backend.installUpdate('9.9.9')).rejects.toThrow('cannot update itself');
   await expect(backend.quitApp()).rejects.toThrow('desktop app');
   await expect(backend.openExternalUrl('https://example.com/')).rejects.toThrow(
     "Only Orchevia's own GitHub pages",
@@ -1430,5 +1480,32 @@ describe('mock parity with the desktop backend', () => {
     const profile = await backend.saveAgentProfile(createDefaultProfile('claude'));
     const preview = await backend.previewAgentCommand(profile.id, '');
     expect(preview.executable).not.toBe('');
+  });
+});
+
+describe('mock setup check', () => {
+  it('rejects unknown profiles and stops at the missing CLI, as the desktop app does', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    await expect(backend.checkAgentSetup('missing')).rejects.toThrow(
+      "Unknown Agent Profile 'missing'.",
+    );
+    const saved = await backend.saveAgentProfile({
+      ...createDefaultProfile('codex'),
+      name: 'Reviewer',
+    });
+    const report = await backend.checkAgentSetup(saved.id);
+    expect(report).toMatchObject({
+      profileId: saved.id,
+      profileName: 'Reviewer',
+      status: 'failed',
+    });
+    expect(report.items.map((i) => [i.id, i.status])).toEqual([
+      ['installed', 'failed'],
+      ['answered', 'skipped'],
+      ['readFile', 'skipped'],
+      ['editFile', 'skipped'],
+    ]);
+    expect(report.items[0]?.detail).toContain("'codex'");
   });
 });

@@ -31,8 +31,9 @@ registry release; provenance and removal criteria are in
 2. **No implicit shell.** `process.rs` and the Tauri engine pass executable + argv separately
    to the OS. Arguments containing `;`, `$()`, backticks, or pipes are inert data.
    The UI preview is shell-escaped for _display only_. A Command node can
-   explicitly invoke `bash`, `sh`, or another interpreter; that script then has
-   the full permissions of your user.
+   explicitly invoke `bash`, `sh`, or another interpreter, or run a script file
+   with one (`bash` by default); that script then has the full permissions of
+   your user. Script paths are never templated.
 3. **Killing is real.** Cancel flips an atomic flag checked between nodes _and_ stops
    the in-flight child. On Linux and macOS each child leads its own process group;
    cancel, timeouts (default 10 min per command), MCP shutdown and app exit send

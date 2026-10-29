@@ -65,6 +65,7 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let db_path = default_db_path(app.handle());
             let db = SqliteDb::open(&db_path).unwrap_or_else(|e| {
@@ -248,7 +249,8 @@ fn main() {
             commands::save_agent_profile,
             commands::delete_agent_profile,
             commands::preview_agent_command,
-            commands::test_agent_profile,
+            commands::check_agent_setup,
+            commands::install_update,
             commands::list_known_folders,
             commands::git_current_branch,
             commands::git_branches,

@@ -11,6 +11,7 @@ import { errorMessage } from '../lib/errors';
 import { AgentPermissionsSettings } from './AgentPermissions';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
+import { SetupCheckPanel } from './SetupCheck';
 
 interface InstallHint {
   id: string;
@@ -47,7 +48,7 @@ const INSTALL_HINTS: InstallHint[] = [
     steps: [
       'Install from your Claude dashboard, then make sure `claude` is on PATH (`claude --version` in a terminal).',
       'Authenticate: run `claude login` (or the provider flow) in a terminal.',
-      'Back here → Re-detect tools, then Test the profile in Agents.',
+      'Back here → Re-detect tools; the last step checks that each profile can work.',
     ],
   },
   {
@@ -57,7 +58,7 @@ const INSTALL_HINTS: InstallHint[] = [
     steps: [
       'Install from your Codex dashboard, then make sure `codex` is on PATH (`codex --version` in a terminal).',
       'Complete the Codex login flow in a terminal.',
-      'Back here → Re-detect tools, then Test the profile in Agents.',
+      'Back here → Re-detect tools; the last step checks that each profile can work.',
     ],
   },
 ];
@@ -434,11 +435,17 @@ export function OnboardingWizard({
         )}
 
         {step === 6 && (
-          <p className="field-hint">
-            You are ready. Workflows run only when you press ▶ Run; approvals pause for
-            your decision; schedules stay disabled until you trust them. Reopen this
-            wizard anytime from the sidebar.
-          </p>
+          <>
+            <p className="field-hint">
+              You are ready. Workflows run only when you press ▶ Run; approvals pause for
+              your decision; schedules stay disabled until you trust them. Reopen this
+              wizard anytime from the sidebar.
+            </p>
+            <h3 style={{ fontSize: 13, marginBottom: 4 }}>
+              Check your agents (optional)
+            </h3>
+            <SetupCheckPanel profiles={profiles} />
+          </>
         )}
 
         {message !== null && (

@@ -126,7 +126,7 @@ jobs:
   # Package Apple Silicon like the release and run its checks, so a change that
   # breaks the signed bundle fails here instead of on the tag.
   macos:
-    name: Desktop macOS (package · signature · launch)
+    name: Desktop macOS (process cleanup · package · signature · launch)
     needs: [changes]
     if: needs.changes.outputs.macos == 'true'
     runs-on: macos-15
@@ -143,6 +143,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+      # Cancel, timeouts, MCP shutdown and app exit stop a CLI's whole process
+      # group; run those tests against macOS's own process groups and `ps` too.
+      - name: Process-tree cleanup tests
+        run: >-
+          cargo test -p orchevia-core --locked --lib --
+          process::tests:: mcp::tests:: tools::tests::noisy_login_shell
+          tools::tests::hung_login_shell engine::integration_tests::cancel
+          engine::integration_tests::timeout_
       - run: pnpm install --frozen-lockfile
       - run: pnpm tauri build --ci --bundles app,dmg --target aarch64-apple-darwin -- --locked
       - run: bash scripts/verify-macos-app.sh target/aarch64-apple-darwin/release/bundle --launch

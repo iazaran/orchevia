@@ -1,5 +1,12 @@
-import type { NodeKind, StoredNodeResult, StoredRun, Workflow } from './workflow';
+import type {
+  NodeKind,
+  StoredNodeResult,
+  StoredRun,
+  Workflow,
+  WorkflowEdge,
+} from './workflow';
 import {
+  classifyEdgeLabel,
   MAX_ATTEMPTS_LIMIT,
   MAX_SUBAGENT_LIMIT,
   MAX_TOOL_CALL_LIMIT,
@@ -183,6 +190,7 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
             'agentActivity',
             'simulated',
             'reusedFrom',
+            'command',
           ].includes(key),
         )
       )
@@ -484,14 +492,46 @@ export function timelineEntries(
   });
 }
 
-function edgeKind(label?: string): string {
-  const value = (label ?? '').trim().toLowerCase();
-  if (['true', 'yes', 'on true'].includes(value)) return 'true';
-  if (['false', 'no', 'on false'].includes(value)) return 'false';
-  if (['failure', 'fail', 'error', 'on failure'].includes(value)) return 'failure';
-  return 'success';
+type EdgeKind = 'success' | 'failure' | 'true' | 'false';
+
+/** Mirrors `classify_edge_label`; unknown labels behave as success edges. */
+function edgeKind(label?: string): EdgeKind {
+  const kind = classifyEdgeLabel(label);
+  return kind === 'unknown' ? 'success' : kind;
 }
-/** Browser-only replay of the core routing contract; it never proves native concurrency. */
+
+type Outcome = 'succeeded' | 'failed' | 'skipped' | 'cancelled';
+
+const TERMINAL_STATUSES: Record<string, Outcome> = {
+  succeeded: 'succeeded',
+  approved: 'succeeded',
+  failed: 'failed',
+  rejected: 'failed',
+  skipped: 'skipped',
+  cancelled: 'cancelled',
+};
+
+/** The branch a condition row took: its structured `branch`, else its output. */
+function branchOf(row: StoredNodeResult): boolean | null {
+  try {
+    const data: unknown = JSON.parse(row.structuredJson ?? '{}');
+    if (isRecord(data) && typeof data.branch === 'string') return data.branch === 'true';
+  } catch {
+    // Older mock rows carry the branch only as their output.
+  }
+  const text = row.stdout.trim();
+  return text === 'true' ? true : text === 'false' ? false : null;
+}
+
+/**
+ * Browser-only replay of the engine's routing (`crates/core/src/engine.rs`):
+ * the same loop-back edges and loop bodies, one arrival per edge per pass,
+ * re-armed passes, held loop exits and released waits. History rows replay in
+ * order; steps here run one at a time, so it never proves native concurrency.
+ *
+ * `skipped` lists the steps this replay skipped that have no skip row yet, in
+ * the order the engine would record them.
+ */
 export function replayGraph(
   workflow: Workflow,
   rows: StoredNodeResult[],
@@ -502,138 +542,300 @@ export function replayGraph(
   error: string | null;
 } {
   const nodes = new Map(workflow.nodes.map((n) => [n.id, n]));
-  const outgoing = (id: string): Workflow['edges'] =>
-    workflow.edges.filter((e) => e.source === id);
-  const loopEdges = new Set<string>();
-  const color = new Map<string, number>();
-  const dfs = (id: string): void => {
-    color.set(id, 1);
-    for (const edge of outgoing(id)) {
-      if (color.get(edge.target) === 1) loopEdges.add(edge.id);
-      else if (!color.has(edge.target)) dfs(edge.target);
-    }
-    color.set(id, 2);
-  };
-  const start = workflow.nodes.find((n) => n.type === 'start');
-  if (start) dfs(start.id);
-  workflow.nodes.forEach((n) => {
-    if (!color.has(n.id)) dfs(n.id);
-  });
-  const pending = new Map(
-    workflow.nodes.map((n) => [
-      n.id,
-      workflow.edges.filter((e) => e.target === n.id && !loopEdges.has(e.id)).length,
-    ]),
+  const edgesById = new Map(
+    workflow.edges.map((edge, index) => [edge.id, { edge, index }]),
   );
-  const taken = new Set(start ? [start.id] : []);
-  const terminal = new Map<string, string>();
-  const visits = new Map<string, number>();
-  let error: string | null = null;
-  const skipped = new Set<string>();
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  const incoming = new Map<string, WorkflowEdge[]>();
+  for (const edge of workflow.edges) {
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge]);
+  }
+  const out = (id: string): WorkflowEdge[] => outgoing.get(id) ?? [];
+  const into = (id: string): WorkflowEdge[] => incoming.get(id) ?? [];
   const reach = (from: string): Set<string> => {
     const seen = new Set<string>();
     const stack = [from];
-    while (stack.length) {
-      const id = stack.pop();
-      if (id === undefined || seen.has(id)) continue;
+    for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
+      if (seen.has(id)) continue;
       seen.add(id);
-      outgoing(id).forEach((e) => stack.push(e.target));
+      out(id).forEach((e) => stack.push(e.target));
     }
     return seen;
   };
-  const resolve = (target: string, isTaken: boolean): void => {
+  const maxVisits = (id: string): number =>
+    Math.min(100, Math.max(1, nodes.get(id)?.config.maxVisits ?? 1));
+
+  // Loop-back edges: edges into a step on the depth-first path from Start.
+  const loopEdges = new Set<string>();
+  const start = workflow.nodes.find((n) => n.type === 'start');
+  if (start) {
+    const onPath = new Set<string>();
+    const seen = new Set([start.id]);
+    const dfs = (id: string): void => {
+      onPath.add(id);
+      for (const edge of out(id)) {
+        if (onPath.has(edge.target)) loopEdges.add(edge.id);
+        else if (!seen.has(edge.target)) {
+          seen.add(edge.target);
+          dfs(edge.target);
+        }
+      }
+      onPath.delete(id);
+    };
+    dfs(start.id);
+  }
+
+  // The steps each loop repeats: the natural loop of its loop-back edge, plus
+  // the loops nested in it (whose condition branches out all land in it).
+  const naturalLoop = (edge: WorkflowEdge): Set<string> => {
+    const fromTarget = reach(edge.target);
+    const body = new Set([edge.target]);
+    const stack = [edge.source];
+    for (let id = stack.pop(); id !== undefined; id = stack.pop()) {
+      if (!fromTarget.has(id) || body.has(id)) continue;
+      body.add(id);
+      into(id).forEach((e) => stack.push(e.source));
+    }
+    return body;
+  };
+  const branchesOut = (id: string, body: Set<string>): string[] =>
+    nodes.get(id)?.type === 'condition'
+      ? out(id)
+          .filter((e) => ['true', 'false'].includes(edgeKind(e.label)))
+          .filter((e) => !body.has(e.target))
+          .map((e) => e.target)
+      : [];
+  const natural = workflow.edges
+    .filter((edge) => loopEdges.has(edge.id))
+    .map((edge) => ({ edge, body: naturalLoop(edge) }));
+  const bodies = natural.map(({ body }) => new Set(body));
+  // Bodies only grow, so this settles.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [inner, { edge, body }] of natural.entries()) {
+      const innerBody = bodies[inner];
+      if (innerBody === undefined) continue;
+      for (const [outer, outerBody] of bodies.entries()) {
+        if (
+          inner === outer ||
+          !outerBody.has(edge.target) ||
+          [...innerBody].every((id) => outerBody.has(id))
+        )
+          continue;
+        const nested = [...body].every((id) =>
+          branchesOut(id, body).every((target) => outerBody.has(target)),
+        );
+        if (!nested) continue;
+        innerBody.forEach((id) => outerBody.add(id));
+        changed = true;
+      }
+    }
+  }
+  const loops = natural.map(({ edge }, i) => ({
+    edgeId: edge.id,
+    body: bodies[i] ?? new Set<string>(),
+  }));
+
+  const terminal = new Map<string, Outcome>();
+  const visits = new Map<string, number>();
+  const pending = new Map(
+    workflow.nodes.map((n) => [
+      n.id,
+      into(n.id).filter((e) => !loopEdges.has(e.id)).length,
+    ]),
+  );
+  const taken = new Set(start ? [start.id] : []);
+  // Non-loop edges resolved this pass, and whether each was taken.
+  const resolved = new Map<string, boolean>();
+  // Untaken exits of loops that may still go round.
+  const held = new Set<string>();
+  // Skips this replay made that no row records yet.
+  const unrecorded = new Set<string>();
+  let error: string | null = null;
+
+  const exitWaits = (source: string, target: string): boolean =>
+    loops.some(
+      ({ body }) =>
+        body.has(source) &&
+        !body.has(target) &&
+        [...body].some((id) => !terminal.has(id)),
+    );
+  const markSkipped = (id: string): void => {
+    if (terminal.has(id)) return;
+    unrecorded.delete(id);
+    unrecorded.add(id);
+    terminal.set(id, 'skipped');
+    out(id)
+      .filter((e) => !loopEdges.has(e.id))
+      .forEach((e) => resolveEdge(e.target, e.id, false));
+  };
+  // `resolveEdge` without holding loop exits.
+  const settleEdge = (target: string, edgeId: string | null, isTaken: boolean): void => {
+    if (edgeId !== null) held.delete(edgeId);
+    if (terminal.has(target)) return;
+    if (edgeId !== null) {
+      const again = resolved.has(edgeId);
+      resolved.set(edgeId, isTaken);
+      if (again) return;
+    }
     pending.set(target, Math.max(0, (pending.get(target) ?? 0) - 1));
     if (isTaken) taken.add(target);
-    if (pending.get(target) === 0 && !taken.has(target)) skip(target);
+    if ((pending.get(target) ?? 0) === 0 && !taken.has(target)) markSkipped(target);
   };
-  const skip = (id: string): void => {
-    if (terminal.has(id)) return;
-    terminal.set(id, 'skipped');
-    skipped.add(id);
-    outgoing(id)
-      .filter((e) => !loopEdges.has(e.id))
-      .forEach((e) => resolve(e.target, false));
-  };
-  const apply = (row: StoredNodeResult): void => {
-    if (
-      !nodes.has(row.nodeId) ||
-      !['succeeded', 'failed', 'skipped', 'approved', 'rejected', 'cancelled'].includes(
-        row.status,
-      )
-    )
-      return;
-    if (row.status === 'skipped' && terminal.get(row.nodeId) === 'skipped') return;
-    const success = ['succeeded', 'approved'].includes(row.status);
-    const failed = ['failed', 'rejected'].includes(row.status);
-    if (success || failed) visits.set(row.nodeId, (visits.get(row.nodeId) ?? 0) + 1);
-    terminal.set(row.nodeId, row.status);
-    if (row.status === 'cancelled') {
-      error = 'Run cancelled.';
-      return;
-    }
-    const edges = outgoing(row.nodeId);
-    const isTaken = (label?: string): boolean =>
-      success
-        ? nodes.get(row.nodeId)?.type === 'condition'
-          ? edgeKind(label) === row.stdout.trim()
-          : edgeKind(label) === 'success'
-        : failed && edgeKind(label) === 'failure';
-    const loops = edges.filter((e) => loopEdges.has(e.id) && isTaken(e.label));
-    for (const edge of loops) {
-      if (
-        (visits.get(edge.target) ?? 0) >= (nodes.get(edge.target)?.config.maxVisits ?? 1)
-      ) {
-        error = `Loop limit exceeded at '${edge.target}'.`;
+  function resolveEdge(target: string, edgeId: string | null, isTaken: boolean): void {
+    if (terminal.has(target)) return;
+    if (edgeId !== null) {
+      // One arrival per edge per pass.
+      if (resolved.has(edgeId)) {
+        resolved.set(edgeId, isTaken);
         return;
       }
-      const cycle = [...reach(edge.target)].filter((id) => reach(id).has(row.nodeId));
-      cycle.push(row.nodeId);
-      cycle.forEach((id) => terminal.delete(id));
-      cycle.forEach((id) => {
-        pending.set(
-          id,
-          workflow.edges.filter(
-            (e) => e.target === id && !loopEdges.has(e.id) && !terminal.has(e.source),
-          ).length,
-        );
-        taken.delete(id);
-      });
-      resolve(edge.target, true);
-    }
-    for (const e of edges.filter((e) => !loopEdges.has(e.id) && isTaken(e.label))) {
-      if (terminal.has(e.target)) continue;
-      // Mirrors the engine: a branch back into an exhausted loop step ends the run.
-      const used = visits.get(e.target) ?? 0;
-      if (used > 0 && used >= (nodes.get(e.target)?.config.maxVisits ?? 1)) {
-        error = `Loop limit exceeded at '${e.target}'.`;
+      const edge = edgesById.get(edgeId)?.edge;
+      if (!isTaken && edge !== undefined && exitWaits(edge.source, target)) {
+        held.add(edgeId);
         return;
       }
-      resolve(e.target, true);
     }
-    // Mirrors the engine: a condition whose taken branch leads back to it keeps
-    // its exits (branches that cannot lead back) waiting for the exit visit.
-    const loopsBack =
-      nodes.get(row.nodeId)?.type === 'condition' &&
-      !loops.length &&
-      edges.some(
-        (e) =>
-          !loopEdges.has(e.id) && isTaken(e.label) && reach(e.target).has(row.nodeId),
+    settleEdge(target, edgeId, isTaken);
+  }
+  const releaseSettledExits = (): void => {
+    for (;;) {
+      const settled = [...held]
+        .map((id) => edgesById.get(id))
+        .filter((entry) => entry !== undefined)
+        .filter(({ edge }) => !exitWaits(edge.source, edge.target))
+        .sort((a, b) => a.index - b.index);
+      for (const id of held) if (!edgesById.has(id)) held.delete(id);
+      if (settled.length === 0) return;
+      settled.forEach(({ edge }) => settleEdge(edge.target, edge.id, false));
+    }
+  };
+  const resetCycle = (loopEdge: WorkflowEdge): void => {
+    const fromTarget = reach(loopEdge.target);
+    const rearmed = new Set(loops.find((l) => l.edgeId === loopEdge.id)?.body ?? []);
+    rearmed.add(loopEdge.source);
+    rearmed.add(loopEdge.target);
+    for (;;) {
+      const more = [...fromTarget].filter(
+        (id) =>
+          !rearmed.has(id) &&
+          terminal.get(id) === 'skipped' &&
+          into(id).some((e) => !loopEdges.has(e.id) && rearmed.has(e.source)),
       );
-    if (!loops.length)
-      edges
-        .filter((e) => !loopEdges.has(e.id) && !isTaken(e.label))
-        .forEach((e) => {
-          if (terminal.has(e.target)) return;
-          if (loopsBack && !reach(e.target).has(row.nodeId)) return;
-          resolve(e.target, false);
-        });
-    if (failed && !edges.some((e) => isTaken(e.label)))
-      error = `Node '${row.nodeId}' failed with no failure route.`;
+      if (more.length === 0) break;
+      more.forEach((id) => rearmed.add(id));
+    }
+    rearmed.forEach((id) => {
+      terminal.delete(id);
+      unrecorded.delete(id);
+    });
+    // A re-armed step arrives again at steps still waiting off the loop.
+    rearmed.forEach((id) => {
+      for (const edge of out(id)) {
+        const waiting =
+          !rearmed.has(edge.target) &&
+          !terminal.has(edge.target) &&
+          (pending.get(edge.target) ?? 0) > 0;
+        if (loopEdges.has(edge.id) || !waiting || !resolved.delete(edge.id)) continue;
+        pending.set(edge.target, (pending.get(edge.target) ?? 0) + 1);
+        if (into(edge.target).some((e) => resolved.get(e.id) === true))
+          taken.add(edge.target);
+        else taken.delete(edge.target);
+      }
+    });
+    rearmed.forEach((id) => {
+      let count = 0;
+      for (const edge of into(id)) {
+        held.delete(edge.id);
+        if (loopEdges.has(edge.id) || terminal.has(edge.source)) continue;
+        resolved.delete(edge.id);
+        count += 1;
+      }
+      pending.set(id, count);
+      taken.delete(id);
+    });
   };
-  rows.forEach(apply);
+  const loopLimit = (id: string): string =>
+    `Loop limit exceeded at '${id}' (max ${String(maxVisits(id))} visits).`;
+  /** Route a finished step; returns the run's failure, if this ends it. */
+  const applyCompletion = (
+    nodeId: string,
+    outcome: Outcome,
+    branch: boolean | null,
+  ): string | null => {
+    const node = nodes.get(nodeId);
+    const isCondition = node?.type === 'condition';
+    const takenLoop: WorkflowEdge[] = [];
+    const takenNormal: WorkflowEdge[] = [];
+    const untakenNormal: WorkflowEdge[] = [];
+    for (const edge of out(nodeId)) {
+      const kind = edgeKind(edge.label);
+      const isTaken =
+        outcome === 'succeeded'
+          ? isCondition
+            ? (branch === true && kind === 'true') ||
+              (branch === false && kind === 'false')
+            : kind === 'success'
+          : outcome === 'failed' && kind === 'failure';
+      if (loopEdges.has(edge.id)) {
+        if (isTaken) takenLoop.push(edge);
+      } else (isTaken ? takenNormal : untakenNormal).push(edge);
+    }
+    let failure: string | null = null;
+    for (const edge of takenLoop) {
+      if ((visits.get(edge.target) ?? 0) < maxVisits(edge.target)) {
+        resetCycle(edge);
+        resolveEdge(edge.target, null, true);
+      } else failure = loopLimit(edge.target);
+    }
+    if (failure !== null) return failure;
+    let routed = false;
+    for (const edge of takenNormal) {
+      if (terminal.has(edge.target)) continue;
+      const used = visits.get(edge.target) ?? 0;
+      if (used > 0 && used >= maxVisits(edge.target)) return loopLimit(edge.target);
+      routed = true;
+      resolveEdge(edge.target, edge.id, true);
+    }
+    for (const edge of untakenNormal) {
+      if (terminal.has(edge.target)) continue;
+      if (takenLoop.length === 0) resolveEdge(edge.target, edge.id, false);
+      else if (exitWaits(nodeId, edge.target)) held.add(edge.id);
+    }
+    if (outcome === 'failed' && !routed && takenLoop.length === 0) {
+      const label = node?.label ?? nodeId;
+      failure =
+        takenNormal.length === 0
+          ? `Node '${label}' failed with no failure route.`
+          : `Node '${label}' failed and its failure route already ran.`;
+    }
+    releaseSettledExits();
+    return failure;
+  };
+
+  for (const row of rows) {
+    const outcome = TERMINAL_STATUSES[row.status];
+    if (!nodes.has(row.nodeId) || outcome === undefined) continue;
+    // A skip this replay already made is the one this row records.
+    if (outcome === 'skipped' && terminal.get(row.nodeId) === 'skipped') {
+      unrecorded.delete(row.nodeId);
+      continue;
+    }
+    if (outcome === 'succeeded' || outcome === 'failed')
+      visits.set(row.nodeId, (visits.get(row.nodeId) ?? 0) + 1);
+    terminal.set(row.nodeId, outcome);
+    if (outcome === 'cancelled') {
+      error ??= 'Run cancelled.';
+      continue;
+    }
+    // Like the engine, keep replaying after a failure; the first one ends the run.
+    error ??= applyCompletion(row.nodeId, outcome, branchOf(row));
+  }
   if (start) {
     const reachable = reach(start.id);
-    workflow.nodes.filter((n) => !reachable.has(n.id)).forEach((n) => skip(n.id));
+    workflow.nodes.filter((n) => !reachable.has(n.id)).forEach((n) => markSkipped(n.id));
   }
   const readyNodes = (): string[] =>
     workflow.nodes
@@ -642,34 +844,46 @@ export function replayGraph(
           !terminal.has(n.id) &&
           (pending.get(n.id) ?? 0) === 0 &&
           taken.has(n.id) &&
-          (visits.get(n.id) ?? 0) < (n.config.maxVisits ?? 1),
+          (visits.get(n.id) ?? 0) < maxVisits(n.id),
       )
       .map((n) => n.id);
-  // Mirrors the engine's release: when nothing can run, exits a loop left
-  // waiting (it ended another way) resolve as untaken.
+  // When nothing can run, release the waits no step can end any more (exits a
+  // loop left waiting when it ended another way); a run still stuck fails.
   let ready = readyNodes();
-  while (ready.length === 0) {
-    const waiting = workflow.nodes.filter((n) => {
-      const incoming = workflow.edges.filter((e) => e.target === n.id);
-      return (
-        !terminal.has(n.id) &&
-        (pending.get(n.id) ?? 0) > 0 &&
-        incoming.length > 0 &&
-        incoming.every((e) => loopEdges.has(e.id) || terminal.has(e.source))
-      );
-    });
-    if (waiting.length === 0) break;
-    for (const n of waiting) {
-      for (let left = pending.get(n.id) ?? 0; left > 0; left -= 1) resolve(n.id, false);
+  while (
+    error === null &&
+    ready.length === 0 &&
+    workflow.nodes.some((n) => !terminal.has(n.id))
+  ) {
+    const waiting = workflow.nodes
+      .filter((n) => !terminal.has(n.id))
+      .flatMap((n) => {
+        const edges = into(n.id);
+        const settled =
+          edges.length > 0 &&
+          edges.every((e) => loopEdges.has(e.id) || terminal.has(e.source));
+        return settled && (pending.get(n.id) ?? 0) > 0
+          ? [
+              {
+                id: n.id,
+                unresolved: edges
+                  .filter((e) => !loopEdges.has(e.id) && !resolved.has(e.id))
+                  .map((e) => e.id),
+              },
+            ]
+          : [];
+      });
+    if (waiting.length === 0) {
+      const stuck = workflow.nodes.filter((n) => !terminal.has(n.id)).map((n) => n.id);
+      error = `Scheduler deadlock: nodes never became ready: ${stuck.join(', ')}.`;
+      break;
     }
+    for (const { id, unresolved } of waiting) {
+      unresolved.forEach((edgeId) => settleEdge(id, edgeId, false));
+      while (!terminal.has(id) && (pending.get(id) ?? 0) > 0) settleEdge(id, null, false);
+    }
+    releaseSettledExits();
     ready = readyNodes();
   }
-  return {
-    ready,
-    skipped: [...skipped].filter(
-      (id) => !rows.some((r) => r.nodeId === id && r.status === 'skipped'),
-    ),
-    visits,
-    error,
-  };
+  return { ready, skipped: [...unrecorded], visits, error };
 }

@@ -33,7 +33,7 @@ project accepts. Honest limitations beat aspirational claims.
 - macOS builds are ad-hoc signed, not notarized: the first launch needs Open
   Anyway in Privacy & Security; verify SHA256SUMS.
 - Loop-exit reasoning for exotic re-convergent diamonds across loop
-  iterations is best-effort (simple review/fix cycles are exact).
+  iterations is best-effort (review/fix cycles, also nested ones, are exact).
 - Timezones are fixed offsets (`local`/`utc`/`±HH:MM`); no IANA database.
 - OS notifications depend on `notify-send`/`osascript` presence.
 
@@ -57,9 +57,21 @@ Debian and Ubuntu users can install from the signed apt repository at
 there), so `sudo apt upgrade` installs new versions; the app then suggests that
 command instead of a download.
 
-Nothing else installs automatically. AppImage and macOS updates wait for signed
-release metadata: enable the Tauri updater with pinned public-key verification
-— never weaken signature checks.
+Since v0.1.24 AppImage and macOS copies can also install an update in place:
+**Environment → Updates → Install and restart** (after a confirmation, never on
+its own). The Tauri updater downloads the release's `latest.json`, verifies the
+update bundle's minisign signature against the public key pinned in
+`src-tauri/tauri.conf.json`, replaces the app and restarts. It refuses while a
+workflow is running, and Debian packages never update this way: apt (or a
+downloaded `.deb`) owns their files. Never weaken the signature check.
+
+Releases sign the update bundles with the `TAURI_SIGNING_PRIVATE_KEY` secret
+(and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). The publish job writes `latest.json`
+only after every signature verifies against the pinned public key
+(`scripts/updater-manifest.mjs`); without the secret a release ships its
+installers only and copies keep offering the download. Losing the private key
+means existing copies cannot verify later updates and must be reinstalled once
+by hand, so keep a backup of it and its password.
 
 ## Release checklist (maintainers)
 

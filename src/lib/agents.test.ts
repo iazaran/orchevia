@@ -157,6 +157,14 @@ describe('prompt composition', () => {
     expect(referencedVariables('\\{{a}} {{b}}')).toEqual(['b']);
   });
 
+  it('scans placeholders exactly like the core renderer', () => {
+    // Each `{{` closes at the first `}}`; malformed names are skipped whole.
+    expect(referencedVariables('{{{{x}}}} {{ a b }} {{ node.a.output }}')).toEqual([
+      'node.a.output',
+    ]);
+    expect(referencedVariables(`{{${'a'.repeat(129)}}} {{open`)).toEqual([]);
+  });
+
   it('merges presets with user-taught models without duplicates', () => {
     expect(mergeModelSuggestions(['opus', 'fable'], ['FABLE', 'my-model', ''])).toEqual([
       'opus',

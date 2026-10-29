@@ -26,21 +26,47 @@ depends only on nodes + edges.
 
 ## Node types (schema v4)
 
-| `type`      | Config                                                                                                                  | Semantics                                                                    |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `start`     | —                                                                                                                       | Single entry point; exactly one required                                     |
-| `command`   | `executable` (required), `args[]`, `workingDir?`                                                                        | Run a local process, no shell                                                |
-| `approval`  | `message?`                                                                                                              | Pause the run until approved/rejected                                        |
-| `agent`     | `agentProfileId` (required), `prompt` (required), `workingDir?`, `timeoutSecs?`, `inputRefs[]?`, `retry?`, `maxVisits?` | Run a local AI CLI via an Agent Profile; prompt is a `{{variable}}` template |
-| `condition` | `condition` (required: `logic` + `clauses[]`), `maxVisits?`                                                             | Branch on a constrained expression; needs `true` + `false` labeled edges     |
-| `git`       | `gitOp` (required), `workingDir` (required repo dir)                                                                    | Safe repo ops; lossy states refused                                          |
-| `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs/checks/comments via local `gh`                                           |
-| `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load Jira ticket via MCP → `ticket.*` vars                                   |
-| `mcp`       | `mcpServerId` + `mcpTool` (required), `mcpArgs` (templates ok)                                                          | Call one MCP tool with provenance                                            |
-| `end`       | —                                                                                                                       | Terminal node; at least one required                                         |
+| `type`      | Config                                                                                                                  | Semantics                                                                                    |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `start`     | —                                                                                                                       | Single entry point; exactly one required                                                     |
+| `command`   | `executable` (required unless `scriptFile`), `args[]`, `workingDir?`, `scriptFile?`                                     | Run a local process, no shell; a script file runs as `<executable or bash> <script> <args…>` |
+| `approval`  | `message?`                                                                                                              | Pause the run until approved/rejected                                                        |
+| `agent`     | `agentProfileId` (required), `prompt` (required), `workingDir?`, `timeoutSecs?`, `inputRefs[]?`, `retry?`, `maxVisits?` | Run a local AI CLI via an Agent Profile; prompt is a `{{variable}}` template                 |
+| `condition` | `condition` (required: `logic` + `clauses[]`), `maxVisits?`                                                             | Branch on a constrained expression; needs `true` + `false` labeled edges                     |
+| `git`       | `gitOp` (required), `workingDir` (required repo dir)                                                                    | Safe repo ops; lossy states refused                                                          |
+| `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs/checks/comments via local `gh`                                                           |
+| `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load Jira ticket via MCP → `ticket.*` vars                                                   |
+| `mcp`       | `mcpServerId` + `mcpTool` (required), `mcpArgs` (templates ok)                                                          | Call one MCP tool with provenance                                                            |
+| `end`       | —                                                                                                                       | Terminal node; at least one required                                                         |
 
 Future milestones extend this enum (`test`, `review`, `schedule`, …) with a
 schema bump + migration. Full integration guide: [integrations.md](./integrations.md).
+
+### Script files
+
+A Command step can run a script file instead of a long `bash -c '…'` argument:
+
+```json
+{
+  "type": "command",
+  "config": { "scriptFile": "scripts/ci.sh", "args": ["--fast"], "workingDir": "/repo" }
+}
+```
+
+The step runs `<executable, or bash when blank> <resolved script> <args…>`, so
+`executable` is the interpreter ("Run with": `python3`, `node`, `sh`…). A
+relative `scriptFile` resolves against the step's working folder: its own
+`workingDir`, else the workflow's `defaults.repoDir`. `~/` is your home folder
+and absolute paths are used as they are. The path is never templated (pass
+values as `args`, which render like any other argument). The script needs no
+execute permission. A missing or unreadable file fails the step with an error
+naming the resolved path. Run details, dry runs and the "Save this command to
+the project playbook" control all show the real program and arguments.
+
+In the inspector, a Command step offers **Command** or **Script file**. Switching
+keeps everything: `bash scripts/ci.sh --fast` becomes script `scripts/ci.sh`
+with argument `--fast`, and back; any other command keeps its executable and
+arguments and waits for a script path.
 
 ## Generated native operations
 
@@ -83,20 +109,36 @@ Errors block execution; warnings don't. Current rules:
 
 - exactly one `start`, at least one `end`
 - edges reference existing nodes; no self-loops
-- command nodes require a non-empty `executable`
-- agent nodes require an `agentProfileId` and a non-empty `prompt`; `timeoutSecs`
-  must be 1–43200 when set; `inputRefs` must reference existing nodes
+- command nodes require a non-empty `executable` or a `scriptFile`; a
+  `scriptFile` must not be blank or contain `{{`, a relative one needs a working
+  folder (node `workingDir` or `defaults.repoDir`), and only Command nodes may
+  set it
+- agent nodes require an `agentProfileId` (or a well-known `agentRole`; other
+  roles warn) and a non-empty `prompt`; `timeoutSecs` must be 1–43200 when set;
+  `inputRefs` must reference existing nodes
 - condition nodes require a non-empty `condition` and one `true` + one `false`
   outgoing edge; `true`/`false` labels elsewhere are errors; unknown labels warn
-- `retry.maxAttempts` 1–10, `retry.delayMs` ≤ 60000; `timeoutSecs` 1–43200;
-  `maxVisits` 1–100
+- Git/GitHub nodes need an operation and a folder (node `workingDir` or
+  `defaults.repoDir`); branch, path, message, title and body fields must be
+  filled, and a blank branch or PR head uses `defaults.branch` when it is set
+- `retry.maxAttempts` 1–10, `retry.delayMs` ≤ 60000 (Command and Agent nodes);
+  `timeoutSecs` 1–43200; `maxVisits` 1–100
 - cycles need a `condition` on the loop and `maxVisits >= 2` on cycle nodes
-- prompt/condition variable refs must resolve (`workflow.*`, declared
-  `input.*`, existing `node.*`); inputs need valid unique names
+- prompt/condition/session-group variable refs must resolve (`workflow.*`,
+  declared `input.*`, `ticket.*`, existing `node.*`); inputs need valid unique
+  names
 - runs additionally require the referenced profile to exist and its CLI to be on
   `PATH` (checked at start; missing tools fail with `agent-cli-unavailable`)
 - unreachable-from-start nodes → warning; dead-end non-`end` nodes → warning
 - unknown future `schemaVersion` → hard error (“please update Orchevia”)
+
+The editor's instant checks (`validateWorkflowLocal`) and the backend's
+authoritative ones (`validate_workflow`) report the same codes: each issue has
+a `code`, `severity`, and the `nodeId` and/or `edgeId` it is about. The shared
+fixture `src/test/validation-parity.json` lists every code and runs on both
+sides. Checks that need the database or `PATH` (profiles, CLIs, MCP servers,
+required run inputs) only happen when a run starts; the fixture lists them as
+exemptions.
 
 ## Execution semantics
 

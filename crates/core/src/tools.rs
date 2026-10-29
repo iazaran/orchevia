@@ -743,8 +743,12 @@ pub fn require_executable(exe: &str) -> Result<String, String> {
     })
 }
 
+/// How long a `<exe> --version` probe may take before the tool is reported
+/// without a version.
+pub(crate) const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Run `<exe> <version_args>` with a short timeout; return the first line.
-fn probe_version(exe: &std::path::Path, version_args: &[String]) -> Option<String> {
+pub(crate) fn probe_version(exe: &std::path::Path, version_args: &[String]) -> Option<String> {
     let exe_str = exe.to_string_lossy().into_owned();
     let spec = CommandSpec {
         executable: exe_str,
@@ -752,7 +756,13 @@ fn probe_version(exe: &std::path::Path, version_args: &[String]) -> Option<Strin
         working_dir: None,
         stdin: None,
     };
-    let result = run_command(&spec, Some(Duration::from_secs(5))).ok()?;
+    let result = run_command(&spec, Some(VERSION_PROBE_TIMEOUT)).ok()?;
+    version_line(&result)
+}
+
+/// The version shown for a probe: the first non-empty output line (stdout
+/// before stderr) of a run that exited successfully, at most 120 characters.
+pub(crate) fn version_line(result: &crate::process::ProcessResult) -> Option<String> {
     if result.exit_code != Some(0) {
         return None;
     }
@@ -945,10 +955,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let shell = dir.path().join("fake-shell");
         let job = dir.path().join("job.pid");
+        let sleeper_file = dir.path().join("sleeper.pid");
         write_executable(
             &shell,
             &format!(
-                "#!/bin/sh\necho 'Last login: today'\necho 'rc warning' >&2\nsleep 30 &\necho $$ > {}\nfor script; do :; done\nPATH=\"/orchevia-login-test/bin:$PATH\" /bin/sh -c \"$script\"\necho 'bye from zlogout'\n",
+                "#!/bin/sh\necho 'Last login: today'\necho 'rc warning' >&2\nsleep 30 &\necho $! > {}\necho $$ > {}\nfor script; do :; done\nPATH=\"/orchevia-login-test/bin:$PATH\" /bin/sh -c \"$script\"\necho 'bye from zlogout'\n",
+                shell_escape::escape(sleeper_file.to_string_lossy()),
                 shell_escape::escape(job.to_string_lossy())
             ),
         );
@@ -978,6 +990,11 @@ mod tests {
         }
         assert!(
             !crate::process::process_group_alive(group),
+            "rc job survived"
+        );
+        let sleeper = crate::process::test_support::recorded_pid(&sleeper_file);
+        assert!(
+            crate::process::test_support::stops(sleeper),
             "rc job survived"
         );
     }

@@ -1,0 +1,48 @@
+name: CLI canary
+
+# Weekly: install the newest Claude Code and Codex and check, signed out, that
+# they still accept every command Orchevia builds for them and that the output
+# Orchevia reads without an account still reads. Uses no secrets or accounts.
+# The checks live in crates/core/src/cli_canary.rs and run locally too.
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    name: Newest Claude Code and Codex accept Orchevia's commands
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      # Restore main's core cache read-only: the canary adds no cache storage.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          shared-key: core-checks
+          save-if: false
+      # Unpinned on purpose: the newest releases are what this checks.
+      - name: Install the newest Claude Code and Codex
+        run: |
+          npm install --prefix "$RUNNER_TEMP/clis" --no-save --no-audit --no-fund \
+            @anthropic-ai/claude-code@latest @openai/codex@latest
+          echo "ORCHEVIA_CANARY_CLAUDE=$RUNNER_TEMP/clis/node_modules/.bin/claude" >> "$GITHUB_ENV"
+          echo "ORCHEVIA_CANARY_CODEX=$RUNNER_TEMP/clis/node_modules/.bin/codex" >> "$GITHUB_ENV"
+      # Each CLI runs with an empty home folder and a cleared environment; a
+      # failure names the CLI version, the command and the refused argument.
+      - name: Check every command Orchevia sends them
+        run: cargo test -p orchevia-core --locked --lib cli_canary -- --ignored --nocapture

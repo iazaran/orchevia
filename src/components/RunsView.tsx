@@ -1,7 +1,7 @@
 import { RunTimeline } from './RunTimeline';
 import { RecoveryDialog, SpendContinueDialog, UsageContinueDialog } from './RunControls';
 import { resultMetadata, type SpendPause, type UsagePause } from '../lib/run-controls';
-import { successfulCommand } from '../lib/memory';
+import { playbookField, successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
@@ -257,6 +257,7 @@ function ReportBody({ text }: { text: string }): React.JSX.Element {
 function OutputBlock({
   text,
   label,
+  step,
   defaultOpen,
   expanded,
   onToggle,
@@ -265,6 +266,8 @@ function OutputBlock({
 }: {
   text: string;
   label: string;
+  /** Every step has its own outputs; the number tells their names apart. */
+  step: number;
   defaultOpen: boolean;
   expanded: boolean | undefined;
   onToggle: () => void;
@@ -291,13 +294,14 @@ function OutputBlock({
   }, [text, open, live, following]);
   if (text === '') return null;
   const shown = open ? text : lines.slice(0, 8).join('\n').slice(0, 1200) + '\n…';
+  const where = `step ${String(step)}`;
   return (
     <div className="run-output">
       <div
         ref={viewport}
         className="run-output-scroll"
         role="region"
-        aria-label={`${label} output`}
+        aria-label={`${label} output, ${where}`}
         tabIndex={0}
         onScroll={(event) => {
           if (!open) return;
@@ -315,7 +319,7 @@ function OutputBlock({
         <button
           className="btn btn-ghost output-toggle"
           aria-expanded={open}
-          aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
+          aria-label={`${open ? 'Collapse' : 'Show full output of'} ${label}, ${where}`}
           onClick={onToggle}
         >
           {open ? 'Collapse ▲' : 'Show full output ▼'}
@@ -324,7 +328,7 @@ function OutputBlock({
       {open && !following && (
         <button
           className="btn btn-ghost output-toggle"
-          aria-label={`${live ? 'Follow' : 'Jump to'} latest ${label}`}
+          aria-label={`${live ? 'Follow' : 'Jump to'} latest ${label}, ${where}`}
           onClick={() => {
             setFollowing(true);
             if (viewport.current)
@@ -457,10 +461,14 @@ export function RunsView(): React.JSX.Element {
       cancelled = true;
     };
   }, [activeRunId, setActionError]);
-  const promoteCommand = (runId: string, nodeId: string): void => {
+  const promoteCommand = (
+    runId: string,
+    nodeId: string,
+    suggested: NonNullable<ReturnType<typeof playbookField>>,
+  ): void => {
     setMemoryBusy(true);
     setMemoryMessage(null);
-    const field = memoryFields[memoryKey(runId, nodeId)] ?? 'testCommand';
+    const field = memoryFields[memoryKey(runId, nodeId)] ?? suggested;
     void (async () => {
       const backend = getBackend();
       const [run, workflow, recorded] = await Promise.all([
@@ -854,6 +862,7 @@ export function RunsView(): React.JSX.Element {
               <div key={run.id} className="run-row-wrap" style={{ position: 'relative' }}>
                 <button
                   className={`run-row${run.id === activeRunId ? ' selected' : ''}`}
+                  aria-current={run.id === activeRunId ? 'true' : undefined}
                   style={{ paddingRight: 44 }}
                   onClick={() => void selectRun(run.id)}
                   title={run.id}
@@ -1251,9 +1260,22 @@ export function RunsView(): React.JSX.Element {
                         };
                       });
                     };
+                    // Only steps labelled test, lint or build are offered.
+                    const suggestedField =
+                      node === null
+                        ? null
+                        : playbookField({ id: r.nodeId, label: node.label });
+                    // The exact program and arguments a Command step ran (or, in a
+                    // dry run, would have run), as the engine recorded them.
+                    const recordedCommand = resultMetadata(r).command;
+                    const ranCommand =
+                      node?.type === 'command' && typeof recordedCommand === 'string'
+                        ? recordedCommand
+                        : null;
                     const playbook =
                       activeRun.status === 'succeeded' &&
                       node?.type === 'command' &&
+                      suggestedField !== null &&
                       r.status === 'succeeded' &&
                       !activeRun.execution?.options.dryRun &&
                       resultMetadata(r).reusedFrom === undefined &&
@@ -1320,6 +1342,19 @@ export function RunsView(): React.JSX.Element {
                           </div>
                         )}
                         <div className="run-step-body">
+                          {ranCommand !== null && (
+                            <p
+                              className="run-step-command"
+                              title="Program and arguments exactly as passed (no shell)"
+                            >
+                              <span className="field-hint">
+                                {activeRun.execution?.options.dryRun
+                                  ? 'Would run'
+                                  : 'Ran'}
+                              </span>{' '}
+                              <code>{ranCommand}</code>
+                            </p>
+                          )}
                           {r.error !== undefined &&
                             r.error !== '' &&
                             (r.status === 'paused' ? (
@@ -1364,6 +1399,7 @@ export function RunsView(): React.JSX.Element {
                             text={r.stdout}
                             live={r.status === 'running'}
                             label="stdout"
+                            step={index + 1}
                             rich={node?.type === 'agent'}
                             defaultOpen={isLast}
                             expanded={expandedOutputs[`${String(r.id)}:out`]}
@@ -1377,6 +1413,7 @@ export function RunsView(): React.JSX.Element {
                                 text={context.activity}
                                 live={r.status === 'running'}
                                 label="Agent activity"
+                                step={index + 1}
                                 defaultOpen={false}
                                 expanded={expandedOutputs[`${String(r.id)}:activity`]}
                                 onToggle={() => {
@@ -1388,6 +1425,7 @@ export function RunsView(): React.JSX.Element {
                             text={r.stderr}
                             live={r.status === 'running'}
                             label="stderr"
+                            step={index + 1}
                             defaultOpen={isLast}
                             expanded={expandedOutputs[`${String(r.id)}:err`]}
                             onToggle={() => {
@@ -1408,7 +1446,7 @@ export function RunsView(): React.JSX.Element {
                                 aria-label={'Playbook field for ' + r.nodeId}
                                 value={
                                   memoryFields[memoryKey(activeRun.id, r.nodeId)] ??
-                                  'testCommand'
+                                  suggestedField
                                 }
                                 onChange={(e) =>
                                   setMemoryFields({
@@ -1424,7 +1462,9 @@ export function RunsView(): React.JSX.Element {
                               <button
                                 className="btn btn-ghost"
                                 disabled={memoryBusy}
-                                onClick={() => promoteCommand(activeRun.id, r.nodeId)}
+                                onClick={() =>
+                                  promoteCommand(activeRun.id, r.nodeId, suggestedField)
+                                }
                               >
                                 Save command to playbook
                               </button>
