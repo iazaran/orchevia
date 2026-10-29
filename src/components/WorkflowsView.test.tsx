@@ -3,7 +3,12 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { WorkflowsView } from './WorkflowsView';
 import { __setMockBackendForTests } from '../lib/backend';
-import { createEmptyWorkflow } from '../lib/workflow';
+import {
+  createEmptyWorkflow,
+  SETUP_ISSUE_CODES,
+  type ValidationIssue,
+  type WorkflowNode,
+} from '../lib/workflow';
 import { createDefaultProfile } from '../lib/agents';
 import { useAppStore } from '../store';
 vi.mock('./WorkflowCanvas', () => ({ WorkflowCanvas: () => null }));
@@ -456,17 +461,25 @@ it('flushes an editor draft before saving it as a template', async () => {
   );
 });
 
-it('lists the setup a saved template will ask for, without blocking the save', async () => {
+async function saveAsTemplateWith(node: WorkflowNode): Promise<{
+  backend: ReturnType<typeof __setMockBackendForTests>;
+  user: ReturnType<typeof userEvent.setup>;
+  issues: ValidationIssue[];
+}> {
   localStorage.clear();
   const backend = __setMockBackendForTests();
-  const workflow = createEmptyWorkflow('Needs a repo');
-  workflow.nodes.push({
-    id: 'commit',
-    type: 'git',
-    label: 'Commit',
-    position: { x: 0, y: 0 },
-    config: { gitOp: { op: 'commit', message: 'x' } },
-  });
+  const workflow = createEmptyWorkflow('Template source');
+  // Put the step between Start and End so it is the only thing unfinished.
+  const [start, end] = [
+    workflow.nodes.find((n) => n.type === 'start'),
+    workflow.nodes.find((n) => n.type === 'end'),
+  ];
+  if (start === undefined || end === undefined) throw new Error('fixture');
+  workflow.nodes.push(node);
+  workflow.edges = [
+    { id: 'in', source: start.id, target: node.id },
+    { id: 'out', source: node.id, target: end.id },
+  ];
   const stored = await backend.saveWorkflow(workflow);
   useAppStore.setState({
     workflows: [stored],
@@ -480,13 +493,52 @@ it('lists the setup a saved template will ask for, without blocking the save', a
   render(<WorkflowsView />);
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Save as template' }));
+  const issues = (await backend.validateWorkflow(workflow)).filter(
+    (i) => i.severity === 'error',
+  );
+  return { backend, user, issues };
+}
+
+it('lists the setup a saved template will ask for, without blocking the save', async () => {
+  const { backend, user, issues } = await saveAsTemplateWith({
+    id: 'commit',
+    type: 'git',
+    label: 'Commit',
+    position: { x: 0, y: 0 },
+    config: { gitOp: { op: 'commit', message: 'x' } },
+  });
+  expect(issues.map((i) => i.code)).toEqual(['git-dir-required']);
   const list = await screen.findByRole('list', { name: 'Setup the template needs' });
-  const expected = (await backend.validateWorkflow(workflow))
-    .filter((i) => i.severity === 'error')
-    .map((i) => i.message);
-  expect(expected.length).toBeGreaterThan(0);
-  for (const message of new Set(expected)) expect(list).toHaveTextContent(message);
+  expect(list).toHaveTextContent(issues[0]?.message ?? 'missing');
+  expect(
+    screen.queryByRole('list', {
+      name: 'Problems to fix before the template can be used',
+    }),
+  ).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Save template' }));
   await waitFor(async () => expect((await backend.listTemplates()).user).toHaveLength(1));
-  expect(await screen.findByText(/Using it will first ask for/)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/Using it will first ask for 1 setup item\./),
+  ).toBeInTheDocument();
+});
+
+it('says which problems Use template will refuse, apart from setup', async () => {
+  const { backend, user, issues } = await saveAsTemplateWith({
+    id: 'blank',
+    type: 'command',
+    label: 'Blank',
+    position: { x: 0, y: 0 },
+    config: {},
+  });
+  expect(issues.every((i) => !SETUP_ISSUE_CODES.includes(i.code))).toBe(true);
+  const list = await screen.findByRole('list', {
+    name: 'Problems to fix before the template can be used',
+  });
+  for (const issue of issues) expect(list).toHaveTextContent(issue.message);
+  expect(screen.queryByRole('list', { name: 'Setup the template needs' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Save template' }));
+  await waitFor(async () => expect((await backend.listTemplates()).user).toHaveLength(1));
+  expect(
+    await screen.findByText(/Use template refuses it until 1 problem is fixed/),
+  ).toBeInTheDocument();
 });
