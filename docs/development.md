@@ -53,7 +53,7 @@ repository formatting, delivery-script tests, and public-documentation tests.
 Changed frontend inputs also run lint, typecheck, all UI tests, and a production
 build. Native inputs run core fmt/clippy/tests and Linux desktop compilation and
 command tests. Shared manifests, locks, build scripts, and unfamiliar inputs run
-both stacks. Edits to the three existing workflows run actionlint and the delivery
+both stacks. Edits to the existing workflows run actionlint and the delivery
 regressions without compiling unchanged application code (CI and release edits
 also package for macOS, see below); new workflows fail safe
 and run both stacks as well. Pure prose changes avoid compilers; formatting still runs.
@@ -79,9 +79,12 @@ frontend validation; a core or desktop
 change also compiles/tests the Linux shell. Changes to macOS packaging inputs (the
 Tauri config, icons and manifests under `src-tauri/`, both workflows,
 `scripts/verify-macos-app.sh`, locks and unfamiliar files) also build the Apple
-Silicon app and DMG and run the release's macOS checks (**Desktop macOS**). Other
-macOS compilation is verified at release time, so platform-specific Rust failures
-can first appear there.
+Silicon app and DMG and run the release's macOS checks (**Desktop macOS**). That
+job first runs the core's process-tree cleanup tests (cancel, timeouts, MCP
+shutdown, app exit) against macOS process groups, so `crates/core/src/process.rs`
+is a macOS input too. Other macOS compilation is verified at release time, so
+platform-specific Rust failures can first appear there. The
+[smoke-test matrix](./smoke-tests.md) shows what each check covers per installer.
 
 pnpm caches its store by lockfile. Rust caches the actual workspace `target/`
 (no redundant `src-tauri/target`), with separate core-check and desktop-check keys.
@@ -118,6 +121,19 @@ security indexes, and the full packaging/media dependency set stay intact. Conne
 timeouts and three retries bound stalled requests; timing output distinguishes index
 refresh from installation. No host dependency installation is skipped on cache hits.
 
+## CLI canary (`.github/workflows/cli-canary.yml`)
+
+Every Monday, and on manual dispatch, an Ubuntu job installs the newest Claude Code
+and Codex from npm and runs the ignored `cli_canary` checks in `orchevia-core`.
+They build every command Orchevia sends those CLIs with the engine's own builders,
+run each signed out with an empty home folder and a cleared environment, and fail
+when a flag is refused or ignored, when `--version` stops showing a version, or
+when Orchevia's decoder cannot read the structured output (including a resumed
+session keeping its id). Failures name the CLI version, the command and the flag,
+as annotations on the run. The job uses no secrets and restores `main`'s core cache
+without saving one. Run it locally with the command in the
+[smoke-test matrix](./smoke-tests.md#running-the-automated-checks-locally).
+
 ## Releases (`.github/workflows/release.yml`)
 
 A matching `v*.*.*` tag runs fresh validation, then Linux x86_64 (`.deb`, AppImage)
@@ -148,7 +164,10 @@ runs before staging and refuses an app whose signature does not bind
 DMG holds the same signature, and launches the DMG's copy until it opens its
 database (the Intel build under Rosetta). Pull requests that change packaging
 inputs run the same build and checks for Apple Silicon in CI
-(`Desktop macOS`). Release installer artifacts are kept for one
+(`Desktop macOS`). On Linux, `scripts/verify-linux-app.sh` starts the app from
+the unpacked `.deb` (the program its desktop entry names) and the AppImage on an
+Xvfb display, each with an empty home folder, and requires it to open its database
+and keep running. Release installer artifacts are kept for one
 day (publication follows within minutes); packaging failure logs and the generated
 DMG script are retained for 7 days.
 
@@ -182,7 +201,8 @@ Finder workaround is applied without evidence of the underlying error.
    those links now serve the new version. Download the checksum file and compare its
    hashes with GitHub's asset digests; verify each downloaded installer before using it.
 6. Smoke-test installation and a small real workflow on Linux, Apple Silicon and
-   Intel macOS before claiming those native paths are verified.
+   Intel macOS before claiming those native paths are verified, following the
+   manual steps in the [smoke-test matrix](./smoke-tests.md).
 
 Example maintainer commands, **after merge** and after checking the intended commit
 (substitute the release version for `<version>`):

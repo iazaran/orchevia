@@ -88,6 +88,9 @@ Rules of thumb:
   persistence round-trips, safe process execution, and tool discovery with fakes.
 - Add a test with every behavior change. Deterministic only — no sleeps against real time
   where avoidable, no external services.
+- Desktop: the [smoke-test matrix](./docs/smoke-tests.md) lists which flows CI, the
+  release workflow and the weekly CLI canary check on each installer, and the manual
+  steps before a release is called verified there.
 
 ## Pull requests
 
