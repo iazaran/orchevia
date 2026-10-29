@@ -31,8 +31,13 @@ executable path in the relevant profile.
 In **Agents**, create a profile for your installed CLI. Keep the model blank to
 use its default, or choose a model supported by that CLI and account. Profiles
 hold reusable model, effort, working-directory, and optional skill settings.
-A profile test checks CLI availability; test a small agent step before relying
-on models or skills in a larger automation.
+**Check setup** on a profile (or **Check every profile** in Environment and at
+the end of the setup wizard) sends one short prompt in a temporary folder. It
+shows whether the CLI is installed, signed in, can read a file and, at the
+profile's permission level, can edit one without asking, with the fix for
+anything that fails. It runs only when you click it and uses your plan like any
+other prompt. Test a small agent step before relying on models or skills in a
+larger automation.
 
 Headless agents cannot ask for permission while a step runs, so decide once what
 they may do: the wizard's **Permissions** step or **Environment → Agent

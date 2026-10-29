@@ -173,7 +173,11 @@ Finder workaround is applied without evidence of the underlying error.
    Release workflow builds all supported platforms from the tag and publishes
    permanent GitHub assets.
 5. Verify the successful Release run and all four nonempty installer assets plus
-   `SHA256SUMS`. The README and project page link to
+   `SHA256SUMS`. With the `TAURI_SIGNING_PRIVATE_KEY` secret set, the release also
+   carries the signed update files (`Orchevia-linux-x86_64.AppImage.sig`, the two
+   `.app.tar.gz` bundles and their `.sig`) and `latest.json`, which the publish job
+   writes only after every signature verifies against the public key in
+   `src-tauri/tauri.conf.json`. The README and project page link to
    `releases/latest/download/<file>`, so they need no edit per release; check that
    those links now serve the new version. Download the checksum file and compare its
    hashes with GitHub's asset digests; verify each downloaded installer before using it.
