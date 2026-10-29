@@ -6,6 +6,33 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-10-29
+
+### Added
+
+- **Check setup proves an agent profile works.** It replaces the profile **Test**
+  button, which only ran `--version`. The check sends one short prompt in a temporary folder and shows,
+  item by item, whether the CLI is installed, signed in and answering, reads a
+  file in its working folder and, at the profile's permission level, edits one
+  without asking. A signed-out CLI, a usage limit, a timeout and refused tools each
+  name their fix. Run it per profile in **Agents**, or for every profile in
+  **Environment → Agent setup check** and at the end of the setup wizard. It runs
+  only when you click it and uses your plan like any other prompt.
+- **AppImage and macOS copies update in place.** When a newer release is ready,
+  **Environment → Updates → Install and restart** downloads the signed update,
+  checks its signature against the key built into the app, replaces this copy and
+  restarts. It waits for running workflows to finish. Debian and Ubuntu keep
+  updating through apt. Copies older than 0.1.24 update by hand once more.
+
+### Changed
+
+- **Save as template** lists what anyone using the template will first need to set
+  up (a repository, an MCP server, unfinished steps), the same checks **Use
+  template** runs. Saving stays allowed.
+- **Saving a command to the project playbook** is offered only on steps whose
+  label names test, lint or build, with that field preselected. Setup steps such
+  as worktree creation are no longer offered as the project's test command.
+
 ## [0.1.23] - 2026-10-24
 
 ### Fixed
