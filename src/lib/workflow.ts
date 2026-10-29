@@ -771,6 +771,8 @@ export function commandArgv(config: NodeConfig, workingFolder?: string): string[
   return [interpreter, resolveScriptPath(config.scriptFile, workingFolder), ...args];
 }
 
+/** Programs whose first argument is the file they run. Tools that take a
+ * subcommand first (`deno run`, `bun run`) are left out on purpose. */
 const INTERPRETERS = [
   'bash',
   'sh',
@@ -780,8 +782,6 @@ const INTERPRETERS = [
   'python',
   'python3',
   'node',
-  'deno',
-  'bun',
   'ruby',
   'perl',
   'php',
@@ -800,10 +800,13 @@ export function toScriptMode(config: NodeConfig): NodeConfig {
   const exe = (config.executable ?? '').trim();
   const [first, ...rest] = config.args ?? [];
   const interpreter = exe === '' || INTERPRETERS.includes(exe.split(/[/\\]/).pop() ?? '');
+  // Only something that looks like a file (`ci.sh`, `scripts/ci`) becomes
+  // the script; a bare word may be a subcommand.
+  const fileLike = first !== undefined && /[/\\]|\.[A-Za-z0-9]+$/.test(first.trim());
   if (
     interpreter &&
     first !== undefined &&
-    first.trim() !== '' &&
+    fileLike &&
     !first.startsWith('-') &&
     !first.includes('{{')
   )
@@ -836,7 +839,9 @@ export function toCommandMode(config: NodeConfig): NodeConfig {
   return {
     ...rest,
     executable: (config.executable ?? '').trim() || 'bash',
-    args: [script, ...(config.args ?? [])],
+    // `bash -check.sh` would read the name as options; `./-check.sh` is the
+    // same file, found from the step's working folder.
+    args: [script.startsWith('-') ? `./${script}` : script, ...(config.args ?? [])],
   };
 }
 

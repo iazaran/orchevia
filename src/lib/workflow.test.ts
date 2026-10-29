@@ -765,6 +765,29 @@ describe('script-file Command steps', () => {
       executable: 'bash',
       args: ['ci.sh'],
     });
+    // Subcommands and bare words are not files.
+    expect(
+      toScriptMode({ executable: 'deno', args: ['run', 'scripts/check.ts'] }),
+    ).toEqual({
+      executable: 'deno',
+      args: ['run', 'scripts/check.ts'],
+      scriptFile: '',
+    });
+    expect(toScriptMode({ executable: 'bash', args: ['run'] })).toEqual({
+      executable: 'bash',
+      args: ['run'],
+      scriptFile: '',
+    });
+    expect(toScriptMode({ executable: 'python3', args: ['tools/check'] })).toEqual({
+      executable: 'python3',
+      scriptFile: 'tools/check',
+      args: [],
+    });
+    // A file named like an option stays a file.
+    expect(toCommandMode({ scriptFile: '-check.sh', args: ['--fast'] })).toEqual({
+      executable: 'bash',
+      args: ['./-check.sh', '--fast'],
+    });
     // A home-relative script would stop working as a plain argument.
     expect(commandModeBlocker({ scriptFile: ' ~/bin/check.sh' })).toContain('full path');
     expect(commandModeBlocker({ scriptFile: '/home/me/bin/check.sh' })).toBeNull();
