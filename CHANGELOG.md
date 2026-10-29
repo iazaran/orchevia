@@ -23,6 +23,15 @@ All notable changes are recorded here, following
   checks its signature against the key built into the app, replaces this copy and
   restarts. It waits for running workflows to finish. Debian and Ubuntu keep
   updating through apt. Copies older than 0.1.24 update by hand once more.
+- **Command steps can run a script file.** Choose **Script file** in the step
+  inspector, then browse or type a path (relative to the step's working folder or
+  the workflow's repository; `~/` works), what runs it (bash by default) and its
+  arguments. The script lives in your repository, where it can be read, reviewed
+  and tested, instead of a long `bash -c` line inside the workflow. Switching
+  between Command and Script file keeps what you typed, and a missing or
+  unreadable script fails its step naming the full path it looked for.
+- **Runs show the exact command each Command step ran** ("Would run" in dry runs),
+  and **Save this command to the project playbook** saves that command.
 - **A weekly canary checks the newest Claude Code and Codex** against every
   command line Orchevia sends them, built by Orchevia's own code and read by its
   own output decoder, so a CLI update that renames, drops or ignores a flag is
@@ -62,6 +71,17 @@ All notable changes are recorded here, following
   cover its rounds on every outer pass; **Nested loops** in `docs/execution.md`
   explains this.
 
+- **The editor's instant checks report what a run would.** The checks shown while
+  you edit, the browser preview and the Templates setup list now report the same
+  problems, with the same wording, as the checks that run when you start a
+  workflow: loops, edge labels, unreachable steps, unknown variables, Git and
+  GitHub fields and input names. One shared set of test workflows keeps the two
+  in step.
+- **Escaped `\{{…}}` text** in prompts is no longer reported as an unknown
+  variable, and a step on two loops is reported once.
+- **The browser preview replays loops like the app.** Several loop runs there
+  ended "succeeded" without running the steps after the loop, and a stuck run
+  now fails with "Scheduler deadlock" as the app does.
 - **A signed-out Claude Code step says why it failed.** It showed "CLI reported a
   failed result."; it now shows Claude Code's own words, such as "Not logged in ·
   Please run /login".
