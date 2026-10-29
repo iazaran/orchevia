@@ -52,7 +52,9 @@ Please run /login") when it has no `errors`, so ordinary steps say why too.
   signed update's version and downloads it. It then holds admission
   (`CancellationRegistry::hold_admission`: run starts and approval, spend and
   usage continuations take the same lock and get `EngineError::Updating`),
-  checks for running runs again, installs and restarts. The single-instance lock is
+  checks for running runs again, installs and restarts. A schedule slot refused
+  with `UPDATE_INSTALLING` is held back (`deferred_slot`) and runs after the
+  restart instead of being spent. The single-instance lock is
   released by Tauri's exit cleanup before the restart.
 - Environment → Updates shows **Install and restart** (confirmation first); the
   download link stays.
@@ -105,7 +107,8 @@ the v0.1.23 rules it lacked. 16 vitest cases mirror the engine's traces.
   counts as a variable.
 - `scriptFile` on Command steps resolves like the working folder (node
   `workingDir`, then `defaults.repoDir`; `~/` and absolute paths allowed) and
-  runs `<executable or bash> <path> <args…>`. Codes: `command-script-required`,
+  runs `<executable or bash> <path> <args…>`. Only `/…` and `~/…` count as
+  rooted on both sides; `C:\…` is a relative name on Linux and macOS. Codes: `command-script-required`,
   `-templated`, `-dir-required`, `-misplaced`. Results record the exact argv as
   `command` metadata (reserved in fixtures), shown as "Ran …" / "Would run …".
   A path left relative by a relative working folder is anchored at the app's
@@ -115,7 +118,8 @@ the v0.1.23 rules it lacked. 16 vitest cases mirror the engine's traces.
 
 ## 6. Smaller changes
 
-- Save as template lists the setup Use template will ask for.
+- Save as template lists the setup Use template will ask for
+  (`SETUP_ISSUE_CODES`) apart from the errors it refuses.
 - The playbook save is offered only on steps labelled test, lint or build
   (`playbookField`, shared with edit observations).
 - axe-core checks every view, the shared dialogs and the new controls; the fixes

@@ -6,7 +6,7 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
-## [0.1.24] - 2026-10-29
+## [0.1.24] - 2026-10-30
 
 ### Added
 
@@ -49,9 +49,9 @@ All notable changes are recorded here, following
 
 ### Changed
 
-- **Save as template** lists what anyone using the template will first need to set
-  up (a repository, an MCP server, unfinished steps), the same checks **Use
-  template** runs. Saving stays allowed.
+- **Save as template** lists the setup **Use template** will ask for (a
+  repository, an MCP server) and, separately, the problems it refuses until they
+  are fixed. Saving stays allowed.
 - **Saving a command to the project playbook** is offered only on steps whose
   label names test, lint or build, with that field preselected. Setup steps such
   as worktree creation are no longer offered as the project's test command.
