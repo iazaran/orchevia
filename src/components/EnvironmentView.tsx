@@ -16,6 +16,7 @@ import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 import { UpdatesSection } from './Updates';
 import { LinesTextarea } from './DraftText';
+import { SetupCheckPanel } from './SetupCheck';
 
 export function EnvironmentView(): React.JSX.Element {
   const tools = useAppStore((s) => s.tools);
@@ -187,6 +188,11 @@ export function EnvironmentView(): React.JSX.Element {
             </p>
           </>
         )}
+
+        <h2 id="setup-check" style={{ fontSize: 14, marginTop: 20 }}>
+          Agent setup check
+        </h2>
+        <SetupCheckPanel profiles={profiles} />
 
         <h2 id="agent-permissions" style={{ fontSize: 14, marginTop: 20 }}>
           Agent permissions

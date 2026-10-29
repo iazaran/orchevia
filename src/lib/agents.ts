@@ -239,6 +239,47 @@ export interface AgentSkillInfo {
   source: string;
 }
 
+/** Mirrors `setup_check::CheckStatus`; the order is worst-last. */
+export type SetupCheckStatus = 'skipped' | 'passed' | 'warning' | 'failed';
+
+export interface SetupCheckItem {
+  id: 'installed' | 'answered' | 'readFile' | 'editFile';
+  label: string;
+  status: SetupCheckStatus;
+  detail: string;
+  hint?: string;
+}
+
+/** One profile's setup check: a short real prompt, run only on request. */
+export interface SetupCheckReport {
+  profileId: string;
+  profileName: string;
+  status: SetupCheckStatus;
+  items: SetupCheckItem[];
+  durationMs: number;
+}
+
+export const SETUP_CHECK_LABELS: Record<SetupCheckItem['id'], string> = {
+  installed: 'CLI installed',
+  answered: 'Signed in and answering',
+  readFile: 'Reads files in its working folder',
+  editFile: 'Edits files without asking',
+};
+
+/** What the report means for running workflows, in a few words. */
+export function setupCheckSummary(status: SetupCheckStatus): string {
+  switch (status) {
+    case 'passed':
+      return 'Ready';
+    case 'warning':
+      return 'Works, with limits';
+    case 'failed':
+      return 'Needs attention';
+    case 'skipped':
+      return 'Not checked';
+  }
+}
+
 /** Invoke selected skills using the syntax understood by the chosen CLI. */
 export function composeSkillPrompt(profile: AgentProfile, prompt: string): string {
   const skills = profile.skills ?? [];

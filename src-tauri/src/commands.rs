@@ -1134,52 +1134,23 @@ pub fn preview_agent_command(
     })
 }
 
+/// One short real prompt with the profile at its effective permission level:
+/// installed, signed in, reads and edits files headless. Only on request.
 #[tauri::command]
-pub async fn test_agent_profile(
+pub async fn check_agent_setup(
     state: State<'_, AppState>,
     profile_id: String,
-) -> Result<ToolStatus, String> {
+) -> Result<orchevia_core::setup_check::SetupCheckReport, String> {
     let profile = state
         .db
-        .get_agent_profile(&profile_id)
+        .get_effective_agent_profile(&profile_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Unknown Agent Profile '{profile_id}'."))?;
-    // The `--version` probe can take seconds; keep it off the UI thread.
-    tauri::async_runtime::spawn_blocking(move || probe_agent_profile(&profile))
-        .await
-        .map_err(|e| format!("Profile test failed to join: {e}"))
-}
-
-fn probe_agent_profile(profile: &AgentProfile) -> ToolStatus {
-    let exe = profile.effective_executable();
-    let found =
-        orchevia_core::tools::find_executable(&exe).map(|p| p.to_string_lossy().into_owned());
-    // Probe --version without a shell; failure just reports unavailable.
-    let version = found.as_deref().and_then(|path| {
-        let spec = CommandSpec {
-            executable: path.to_string(),
-            args: vec!["--version".to_string()],
-            working_dir: None,
-            stdin: None,
-        };
-        orchevia_core::process::run_command(&spec, Some(std::time::Duration::from_secs(5)))
-            .ok()
-            .filter(|r| r.exit_code == Some(0))
-            .and_then(|r| {
-                format!("{}\n{}", r.stdout, r.stderr)
-                    .lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())
-                    .map(|l| l.chars().take(120).collect())
-            })
-    });
-    ToolStatus {
-        id: profile.id.clone(),
-        display_name: format!("{} ({})", profile.name, profile.adapter.as_str()),
-        installed: found.is_some(),
-        version,
-        path: found,
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::setup_check::check_agent_setup(&profile)
+    })
+    .await
+    .map_err(|e| format!("Setup check failed to join: {e}"))
 }
 
 // -- Generation, templates, memory (Milestone 6) -------------------------------

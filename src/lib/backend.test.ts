@@ -1432,3 +1432,30 @@ describe('mock parity with the desktop backend', () => {
     expect(preview.executable).not.toBe('');
   });
 });
+
+describe('mock setup check', () => {
+  it('rejects unknown profiles and stops at the missing CLI, as the desktop app does', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    await expect(backend.checkAgentSetup('missing')).rejects.toThrow(
+      "Unknown Agent Profile 'missing'.",
+    );
+    const saved = await backend.saveAgentProfile({
+      ...createDefaultProfile('codex'),
+      name: 'Reviewer',
+    });
+    const report = await backend.checkAgentSetup(saved.id);
+    expect(report).toMatchObject({
+      profileId: saved.id,
+      profileName: 'Reviewer',
+      status: 'failed',
+    });
+    expect(report.items.map((i) => [i.id, i.status])).toEqual([
+      ['installed', 'failed'],
+      ['answered', 'skipped'],
+      ['readFile', 'skipped'],
+      ['editFile', 'skipped'],
+    ]);
+    expect(report.items[0]?.detail).toContain("'codex'");
+  });
+});

@@ -248,7 +248,7 @@ fn main() {
             commands::save_agent_profile,
             commands::delete_agent_profile,
             commands::preview_agent_command,
-            commands::test_agent_profile,
+            commands::check_agent_setup,
             commands::list_known_folders,
             commands::git_current_branch,
             commands::git_branches,

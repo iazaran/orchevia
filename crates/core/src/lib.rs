@@ -23,6 +23,7 @@ pub mod review;
 pub mod run_controls;
 pub mod schedule;
 pub mod scheduler;
+pub mod setup_check;
 pub mod templates;
 pub mod ticket;
 pub mod tools;

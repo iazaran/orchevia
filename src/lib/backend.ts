@@ -64,6 +64,8 @@ import {
   type AgentProfile,
   type AppPermissionDefault,
   type AgentSkillInfo,
+  SETUP_CHECK_LABELS,
+  type SetupCheckReport,
   type AdapterKind,
 } from './agents';
 import { evalCondition } from './conditions';
@@ -195,7 +197,8 @@ export interface Backend {
     preview: string;
     referencedVariables: string[];
   }>;
-  testAgentProfile(profileId: string): Promise<ToolStatus>;
+  /** Sends one short real prompt with the profile; only on user request. */
+  checkAgentSetup(profileId: string): Promise<SetupCheckReport>;
   listKnownFolders(limit?: number): Promise<string[]>;
   listCustomModels(adapter: string): Promise<string[]>;
   saveCustomModels(adapter: string, models: string[]): Promise<string[]>;
@@ -439,8 +442,8 @@ class TauriBackend implements Backend {
       workingDir,
     });
   }
-  testAgentProfile(profileId: string): Promise<ToolStatus> {
-    return this.invoke('test_agent_profile', { profileId });
+  checkAgentSetup(profileId: string): Promise<SetupCheckReport> {
+    return this.invoke('check_agent_setup', { profileId });
   }
   listKnownFolders(limit = 20): Promise<string[]> {
     return this.invoke('list_known_folders', { limit });
@@ -2120,13 +2123,32 @@ class MockBackend implements Backend {
     };
   }
 
-  async testAgentProfile(profileId: string): Promise<ToolStatus> {
+  async checkAgentSetup(profileId: string): Promise<SetupCheckReport> {
     const profile = this.profiles.get(profileId);
     if (profile === undefined) throw new Error(`Unknown Agent Profile '${profileId}'.`);
+    // The browser preview runs no CLI, so the check stops at the first item,
+    // as the desktop app does for a missing executable.
+    const exe = effectiveExecutable(profile);
     return {
-      id: profile.id,
-      displayName: `${profile.name} (${profile.adapter})`,
-      installed: false,
+      profileId: profile.id,
+      profileName: profile.name,
+      status: 'failed',
+      items: [
+        {
+          id: 'installed',
+          label: SETUP_CHECK_LABELS.installed,
+          status: 'failed',
+          detail: `'${exe}' was not found: the browser preview runs no CLI.`,
+          hint: 'Run the desktop app to check this profile.',
+        },
+        ...(['answered', 'readFile', 'editFile'] as const).map((id) => ({
+          id,
+          label: SETUP_CHECK_LABELS[id],
+          status: 'skipped' as const,
+          detail: 'Needs the CLI first.',
+        })),
+      ],
+      durationMs: 0,
     };
   }
 

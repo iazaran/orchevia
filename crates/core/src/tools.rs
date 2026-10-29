@@ -744,7 +744,7 @@ pub fn require_executable(exe: &str) -> Result<String, String> {
 }
 
 /// Run `<exe> <version_args>` with a short timeout; return the first line.
-fn probe_version(exe: &std::path::Path, version_args: &[String]) -> Option<String> {
+pub(crate) fn probe_version(exe: &std::path::Path, version_args: &[String]) -> Option<String> {
     let exe_str = exe.to_string_lossy().into_owned();
     let spec = CommandSpec {
         executable: exe_str,

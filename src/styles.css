@@ -1930,6 +1930,42 @@ details[open] > .gen-summary::after {
   align-items: center;
 }
 
+/* Setup check: one row per item, pill then label and detail. */
+.setup-check {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.setup-check-item {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.setup-check-item .status-pill {
+  justify-self: start;
+}
+.setup-check-item .field-hint {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.setup-check-hint {
+  color: var(--text-1);
+}
+.setup-check-profiles {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0 0;
+  display: grid;
+  gap: 6px;
+  max-width: 720px;
+}
+.setup-check-profiles summary {
+  cursor: pointer;
+}
+
 /* Generation preview: long proposals stay readable instead of pushing the
    canvas off-screen; blocking items scroll in their own box. */
 .preview-scroll {

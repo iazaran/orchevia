@@ -32,6 +32,12 @@ import { Notice, useNoticeMessage } from './Notice';
 import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 import { LinesTextarea } from './DraftText';
+import {
+  SETUP_CHECK_COST_NOTE,
+  SetupCheckResult,
+  SetupCheckStatusLine,
+  useSetupChecks,
+} from './SetupCheck';
 
 function emptyForm(adapter: AdapterKind): AgentProfile {
   return createDefaultProfile(adapter);
@@ -48,7 +54,7 @@ export function AgentsView(): React.JSX.Element {
 
   const [editing, setEditing] = useState<AgentProfile | null>(null);
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
-  const [testResult, setTestResult, testVariant, testEvent] = useNoticeMessage();
+  const setupChecks = useSetupChecks();
   const [newAdapter, setNewAdapter] = useState<AdapterKind>('claude');
   const [customModels, setCustomModels] = useState<Record<AdapterKind, string[]>>({
     claude: [],
@@ -183,23 +189,6 @@ export function AgentsView(): React.JSX.Element {
       })
       .catch((err: unknown) => {
         setMessage(errorMessage(err), 'error');
-      });
-  };
-
-  const test = (id: string): void => {
-    setTestResult('Testing…');
-    void getBackend()
-      .testAgentProfile(id)
-      .then((status) => {
-        setTestResult(
-          status.installed
-            ? `Found ${status.path ?? ''} ${status.version ?? ''}`.trim()
-            : 'CLI not found in your login shell PATH or common install locations. Install/authenticate it yourself or set its full path; the profile is kept and shows unavailable.',
-          status.installed ? 'info' : 'warn',
-        );
-      })
-      .catch((err: unknown) => {
-        setTestResult(errorMessage(err), 'error');
       });
   };
 
@@ -338,6 +327,7 @@ export function AgentsView(): React.JSX.Element {
                 : installed
                   ? 'Available'
                   : 'Unavailable';
+            const check = setupChecks.checks[p.id];
             return (
               <div key={p.id} className="tool-card profile-card">
                 <div className="profile-head">
@@ -444,24 +434,22 @@ export function AgentsView(): React.JSX.Element {
                   >
                     Edit
                   </button>
-                  <button className="btn btn-ghost" onClick={() => void test(p.id)}>
-                    Test
+                  <button
+                    className="btn btn-ghost"
+                    title={SETUP_CHECK_COST_NOTE}
+                    disabled={check?.kind === 'running'}
+                    onClick={() => void setupChecks.run([p.id])}
+                  >
+                    Check setup
                   </button>
+                  {check !== undefined && <SetupCheckStatusLine state={check} />}
                 </div>
+                {check?.kind === 'done' && <SetupCheckResult report={check.report} />}
+                {check?.kind === 'error' && <p className="field-hint">{check.message}</p>}
               </div>
             );
           })}
         </div>
-
-        {testResult !== null && (
-          <Notice
-            variant={testVariant}
-            eventId={testEvent}
-            onDismiss={() => setTestResult(null)}
-          >
-            {testResult}
-          </Notice>
-        )}
 
         {knownFolders.length > 0 && (
           <section aria-label="Recent project folders" style={{ marginTop: 20 }}>
