@@ -162,6 +162,63 @@ it('promotes the successful snapshot command with run evidence only', async () =
   expect(screen.queryByRole('button', { name: 'Save command to playbook' })).toBeNull();
 });
 
+it('offers the playbook only for test, lint and build steps, preselecting the field', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = (await backend.listWorkflows())[0]?.definition;
+  if (!workflow) throw new Error('fixture');
+  workflow.defaults = { repoDir: '/project' };
+  for (const [id, label] of [
+    ['lint', 'Lint the code'],
+    ['setup', 'Create ticket worktree and branch'],
+  ] as const)
+    workflow.nodes.push({
+      id,
+      type: 'command',
+      label,
+      position: { x: 0, y: 0 },
+      config: { executable: 'sh', args: ['-c', `make ${id}`] },
+    });
+  const run = {
+    id: 'labelled-run',
+    workflowId: workflow.id,
+    status: 'succeeded' as const,
+    startedAt: new Date().toISOString(),
+    inputs: {},
+  };
+  const results = ['setup', 'lint'].map((nodeId, i) => ({
+    id: i + 1,
+    runId: run.id,
+    nodeId,
+    status: 'succeeded',
+    stdout: '',
+    stderr: '',
+    startedAt: run.startedAt,
+  }));
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRun').mockResolvedValue(run);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const user = userEvent.setup();
+  const offers = await screen.findAllByText('Save this command to the project playbook…');
+  expect(offers).toHaveLength(1);
+  expect(offers[0]?.closest('.run-step')).toHaveTextContent('Lint the code');
+  await user.click(offers[0]!);
+  expect(screen.getByLabelText("Save it as the project's")).toHaveValue('lintCommand');
+  await user.click(screen.getByRole('button', { name: 'Save command to playbook' }));
+  expect(await screen.findByText(/Saved verified command/)).toBeInTheDocument();
+  const context = await backend.getProjectMemoryContext('/project');
+  expect(context.text).toMatch(/lint[^\n]*make lint/i);
+});
+
 it('refreshes on every Runs entry and preserves the selected run with current results', async () => {
   const backend = __setMockBackendForTests();
   const oldRun = {

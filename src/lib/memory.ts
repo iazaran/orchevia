@@ -241,6 +241,20 @@ export function successfulCommand(
     workflow.defaults?.repoDir,
   );
 }
+/** The playbook field a Command step's label (or id) names: test, lint or
+ * build. Other steps (setup scripts, worktree creation) are not offered. */
+export function playbookField(
+  node: Pick<WorkflowNode, 'id' | 'label'>,
+): 'testCommand' | 'lintCommand' | 'buildCommand' | null {
+  const label = node.label ?? node.id;
+  return /test/i.test(label)
+    ? 'testCommand'
+    : /lint/i.test(label)
+      ? 'lintCommand'
+      : /build/i.test(label)
+        ? 'buildCommand'
+        : null;
+}
 export function commandEdits(
   previous: Workflow,
   current: Workflow,
@@ -251,14 +265,7 @@ export function commandEdits(
     const old = previous.nodes.find((n) => n.id === node.id);
     if (node.type !== 'command' || (old !== undefined && old.type !== 'command'))
       return [];
-    const label = node.label ?? node.id;
-    const field = /test/i.test(label)
-      ? 'testCommand'
-      : /lint/i.test(label)
-        ? 'lintCommand'
-        : /build/i.test(label)
-          ? 'buildCommand'
-          : null;
+    const field = playbookField(node);
     if (!field) return [];
     const from = old ? commandText(old, previous.defaults?.repoDir) : '',
       to = commandText(node, current.defaults?.repoDir);

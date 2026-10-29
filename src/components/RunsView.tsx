@@ -1,7 +1,7 @@
 import { RunTimeline } from './RunTimeline';
 import { RecoveryDialog, SpendContinueDialog, UsageContinueDialog } from './RunControls';
 import { resultMetadata, type SpendPause, type UsagePause } from '../lib/run-controls';
-import { successfulCommand } from '../lib/memory';
+import { playbookField, successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
@@ -457,10 +457,14 @@ export function RunsView(): React.JSX.Element {
       cancelled = true;
     };
   }, [activeRunId, setActionError]);
-  const promoteCommand = (runId: string, nodeId: string): void => {
+  const promoteCommand = (
+    runId: string,
+    nodeId: string,
+    suggested: NonNullable<ReturnType<typeof playbookField>>,
+  ): void => {
     setMemoryBusy(true);
     setMemoryMessage(null);
-    const field = memoryFields[memoryKey(runId, nodeId)] ?? 'testCommand';
+    const field = memoryFields[memoryKey(runId, nodeId)] ?? suggested;
     void (async () => {
       const backend = getBackend();
       const [run, workflow, recorded] = await Promise.all([
@@ -1251,9 +1255,15 @@ export function RunsView(): React.JSX.Element {
                         };
                       });
                     };
+                    // Only steps labelled test, lint or build are offered.
+                    const suggestedField =
+                      node === null
+                        ? null
+                        : playbookField({ id: r.nodeId, label: node.label });
                     const playbook =
                       activeRun.status === 'succeeded' &&
                       node?.type === 'command' &&
+                      suggestedField !== null &&
                       r.status === 'succeeded' &&
                       !activeRun.execution?.options.dryRun &&
                       resultMetadata(r).reusedFrom === undefined &&
@@ -1408,7 +1418,7 @@ export function RunsView(): React.JSX.Element {
                                 aria-label={'Playbook field for ' + r.nodeId}
                                 value={
                                   memoryFields[memoryKey(activeRun.id, r.nodeId)] ??
-                                  'testCommand'
+                                  suggestedField
                                 }
                                 onChange={(e) =>
                                   setMemoryFields({
@@ -1424,7 +1434,9 @@ export function RunsView(): React.JSX.Element {
                               <button
                                 className="btn btn-ghost"
                                 disabled={memoryBusy}
-                                onClick={() => promoteCommand(activeRun.id, r.nodeId)}
+                                onClick={() =>
+                                  promoteCommand(activeRun.id, r.nodeId, suggestedField)
+                                }
                               >
                                 Save command to playbook
                               </button>
