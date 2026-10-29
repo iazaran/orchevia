@@ -925,3 +925,31 @@ async fn dry_runs_show_the_script_command_they_would_run_without_looking_it_up()
         .start_run_with_options(&wf, "faked", &HashMap::new(), &options(faked))
         .is_err());
 }
+
+#[tokio::test]
+async fn recovery_waits_while_an_update_holds_admission() {
+    let (db, _, wf) = setup();
+    let registry = CancellationRegistry::default();
+    let engine = Engine::new(db.clone(), registry.clone());
+    engine.start_run_with_options(&wf,"source",&HashMap::new(),&options(json!({"dryRun":true,"fixtures":{"a":[{"status":"succeeded"}],"b":[{"status":"failed"}]}}))).unwrap();
+    engine.execute(wf.clone(), "source".into()).await;
+    let plan = engine.preview_recovery("source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    let hold = registry.hold_admission();
+    let refused = engine.recover_run("source", "held", &choices, &plan.fingerprint, "request");
+    assert!(
+        matches!(refused, Err(crate::engine::EngineError::Updating)),
+        "{refused:?}"
+    );
+    assert!(db.get_run("held").unwrap().is_none());
+    drop(hold);
+    assert_eq!(
+        engine
+            .recover_run("source", "after", &choices, &plan.fingerprint, "request")
+            .unwrap(),
+        "after"
+    );
+}

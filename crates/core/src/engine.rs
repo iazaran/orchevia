@@ -562,6 +562,8 @@ impl Engine {
             consumed_agent_attempts: 0,
             usage_pause: None,
         };
+        let _admitting = self.cancel.flags();
+        self.cancel.admit()?;
         self.db
             .create_recovery_run(new_id, &source, &workflow, &execution, &seeds, request_id)
             .map_err(EngineError::from)
