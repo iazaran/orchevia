@@ -346,6 +346,25 @@ test('macOS apps are signed as a whole and checked before they ship', () => {
   );
 });
 
+test('Linux packages are launched before they ship', () => {
+  const release = readFileSync('.github/workflows/release.yml', 'utf8');
+  const verify = release.indexOf('- name: Verify the Linux packages launch');
+  const stageAt = release.indexOf('- name: Stage artifacts');
+  assert.ok(verify > release.indexOf('- name: Build and package'));
+  assert.ok(verify < stageAt);
+  assert.match(
+    release.slice(verify, stageAt),
+    /if: runner\.os == 'Linux'\n[\s\S]*\n\s+bash scripts\/verify-linux-app\.sh target\/release\/bundle\n/,
+  );
+  // The launch expects the data folder of the identifier users already have.
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+  assert.ok(
+    readFileSync('scripts/verify-linux-app.sh', 'utf8')
+      .split('\n')
+      .includes(`identifier=${String(config.identifier)}`),
+  );
+});
+
 // Test functions of a top-level module, as libtest names them.
 function testsIn(file, module) {
   const source = readFileSync(`crates/core/src/${file}.rs`, 'utf8');

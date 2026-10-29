@@ -144,6 +144,15 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: bash scripts/verify-macos-app.sh "target/$RELEASE_TARGET/release/bundle" --launch
+      # The Linux counterpart: start the app from the .deb (unpacked) and the
+      # AppImage on a virtual display, each with an empty home folder, and
+      # require it to open its database and keep running before anything ships.
+      - name: Verify the Linux packages launch
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          command -v Xvfb >/dev/null || sudo apt-get install -y --no-install-recommends xvfb
+          bash scripts/verify-linux-app.sh target/release/bundle
       - name: Stage artifacts
         env:
           RELEASE_ARCH: ${{ matrix.arch }}
