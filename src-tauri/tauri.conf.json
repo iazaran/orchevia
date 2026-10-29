@@ -52,7 +52,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJERDMyNzE4NkFFREJBNjkKUldScHV1MXFHQ2ZUTGZ6NCtTZGpGSTVHYjdwVkZvZ29odWVDRTEydXJ6SThUbE5yT2FIQURENUUK",
       "endpoints": [
         "https://github.com/iazaran/orchevia/releases/latest/download/latest.json"
       ]

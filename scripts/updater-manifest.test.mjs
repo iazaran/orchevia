@@ -128,3 +128,12 @@ test('the command line writes latest.json only for signed releases', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the app pins a minisign public key for its updates', () => {
+  const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+  // Emptying it would quietly turn in-place updates off for every copy.
+  assert.equal(parsePublicKey(config.plugins.updater.pubkey).keyId.length, 8);
+  assert.deepEqual(config.plugins.updater.endpoints, [
+    'https://github.com/iazaran/orchevia/releases/latest/download/latest.json',
+  ]);
+});
