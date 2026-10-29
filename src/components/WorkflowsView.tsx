@@ -21,6 +21,8 @@ import {
   createEmptyWorkflow,
   createReviewLoopDemoWorkflow,
   createReviewWorkflow,
+  validateWorkflowLocal,
+  type ValidationIssue,
   type Workflow,
   type StoredWorkflow,
 } from '../lib/workflow';
@@ -771,11 +773,26 @@ export function WorkflowsView(): React.JSX.Element {
   const [templateName, setTemplateName] = useState('');
   const [templateCategory, setTemplateCategory] = useState('general');
 
+  // What Use template will still ask for: saving keeps the workflow as it is.
+  const [templateSetup, setTemplateSetup] = useState<string[] | null>(null);
   const openSaveAsTemplate = (): void => {
     if (active === null) return;
     setTemplateName(`${active.name} (template)`);
     setTemplateCategory('general');
+    setTemplateSetup(null);
     setTemplateModal(true);
+    const definition = active.definition;
+    const errors = (issues: ValidationIssue[]): string[] => [
+      ...new Set(issues.filter((i) => i.severity === 'error').map((i) => i.message)),
+    ];
+    void getBackend()
+      .validateWorkflow(definition)
+      .then((issues) => {
+        setTemplateSetup(errors(issues));
+      })
+      .catch(() => {
+        setTemplateSetup(errors(validateWorkflowLocal(definition)));
+      });
   };
 
   const saveAsTemplate = (): void => {
@@ -793,8 +810,12 @@ export function WorkflowsView(): React.JSX.Element {
       })
       .then(() => {
         setTemplateModal(false);
+        const setup = templateSetup?.length ?? 0;
         setRunMessage(
-          `Saved template '${name}' — find it under Templates → Mine.`,
+          `Saved template '${name}' — find it under Templates → Mine.` +
+            (setup > 0
+              ? ` Using it will first ask for ${String(setup)} setup item${setup === 1 ? '' : 's'}.`
+              : ''),
           'info',
         );
         void refreshLibrary();
@@ -1785,6 +1806,22 @@ export function WorkflowsView(): React.JSX.Element {
               Concrete profile references become portable role references where possible.
               Lands in Templates → Mine.
             </p>
+            {templateSetup === null ? (
+              <p className="field-hint" role="status">
+                Checking what this workflow still needs…
+              </p>
+            ) : templateSetup.length > 0 ? (
+              <Notice inline variant="warn" style={{ marginBottom: 12 }}>
+                <span>
+                  You can save it now. Anyone using this template will first need to:
+                </span>
+                <ul className="template-setup-list" aria-label="Setup the template needs">
+                  {templateSetup.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </Notice>
+            ) : null}
             <div className="field">
               <label className="field-label" htmlFor="tpl-name">
                 Template name

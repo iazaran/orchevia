@@ -1930,6 +1930,11 @@ details[open] > .gen-summary::after {
   align-items: center;
 }
 
+.template-setup-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
 /* Setup check: one row per item, pill then label and detail. */
 .setup-check {
   list-style: none;

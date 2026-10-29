@@ -455,3 +455,38 @@ it('flushes an editor draft before saving it as a template', async () => {
     'Current edited name',
   );
 });
+
+it('lists the setup a saved template will ask for, without blocking the save', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Needs a repo');
+  workflow.nodes.push({
+    id: 'commit',
+    type: 'git',
+    label: 'Commit',
+    position: { x: 0, y: 0 },
+    config: { gitOp: { op: 'commit', message: 'x' } },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    workflowSaveStates: {},
+  });
+  render(<WorkflowsView />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Save as template' }));
+  const list = await screen.findByRole('list', { name: 'Setup the template needs' });
+  const expected = (await backend.validateWorkflow(workflow))
+    .filter((i) => i.severity === 'error')
+    .map((i) => i.message);
+  expect(expected.length).toBeGreaterThan(0);
+  for (const message of new Set(expected)) expect(list).toHaveTextContent(message);
+  await user.click(screen.getByRole('button', { name: 'Save template' }));
+  await waitFor(async () => expect((await backend.listTemplates()).user).toHaveLength(1));
+  expect(await screen.findByText(/Using it will first ask for/)).toBeInTheDocument();
+});
