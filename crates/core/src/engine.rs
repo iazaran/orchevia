@@ -50,7 +50,7 @@ pub enum EngineError {
     NotPaused(String),
     #[error("io error: {0}")]
     Io(String),
-    #[error("Orchevia is installing an update and restarts in a moment; start this run after the restart.")]
+    #[error("{}", UPDATE_INSTALLING)]
     Updating,
 }
 
@@ -59,6 +59,11 @@ impl From<DbError> for EngineError {
         EngineError::Db(e.to_string())
     }
 }
+
+/// Why a run or continuation was refused while an update installs; the
+/// scheduler keeps a slot refused this way for after the restart.
+pub const UPDATE_INSTALLING: &str =
+    "Orchevia is installing an update and restarts in a moment; start this run after the restart.";
 
 /// Registry of cancellation flags for in-flight runs. Its lock also admits
 /// new runs and continuations, so an update can stop admitting them and then
