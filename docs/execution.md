@@ -25,12 +25,12 @@ canvas positions never affect execution.
 
 ## Node behaviors
 
-| Node                | Behavior                                                                                                                                                                                                                                 |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `start` / `end`     | Instant success markers.                                                                                                                                                                                                                 |
-| `command` / `agent` | Run a local process with separate arguments (a shell only when explicit), optional bounded retries and per-node timeout up to 12 hours. Commands default to 600 seconds; agents use their profile default. Non-zero exit fails the node. |
-| `approval`          | Pauses the run durably (`paused` row + run status `paused`). Resumes via approve (records `approved` + optional note) or fails via reject. Approvals engage only when no other branch is in flight.                                      |
-| `condition`         | Evaluates a constrained expression (see below) and routes to the `true` or `false` labeled edge. Missing variables or type errors fail the node.                                                                                         |
+| Node                | Behavior                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start` / `end`     | Instant success markers.                                                                                                                                                                                                                                                                                                                                                     |
+| `command` / `agent` | Run a local process with separate arguments (a shell only when explicit), optional bounded retries and per-node timeout up to 12 hours. Commands default to 600 seconds; agents use their profile default. Non-zero exit fails the node. A Command with a `scriptFile` runs `<executable or bash> <resolved script> <args…>`; Runs shows the exact command each attempt ran. |
+| `approval`          | Pauses the run durably (`paused` row + run status `paused`). Resumes via approve (records `approved` + optional note) or fails via reject. Approvals engage only when no other branch is in flight.                                                                                                                                                                          |
+| `condition`         | Evaluates a constrained expression (see below) and routes to the `true` or `false` labeled edge. Missing variables or type errors fail the node.                                                                                                                                                                                                                             |
 
 ## Edge labels (routing)
 
@@ -252,8 +252,10 @@ Every reached effectful attempt needs a fixture; exhaustion records a failure an
 never invokes a real tool. A missing Approval fixture pauses for a human decision;
 provided Approval fixtures use `approved`, `rejected` or `paused`. Each effectful
 fixture uses `succeeded` or `failed`; stdout/stderr, exitCode and structured output
-are optional. Reserved session/usage/provenance metadata is rejected. Bounds:
-1000 fixture attempts per node, 800000 output/structured bytes per fixture.
+are optional. Reserved session/usage/provenance/`command` metadata is rejected.
+Bounds: 1000 fixture attempts per node, 800000 output/structured bytes per fixture.
+A simulated Command step still records the command it would have run (shown as
+**Would run** in Runs); its script file is not looked up.
 
 Normal structural validation, required inputs, failure routing, retry policies,
 joins and loop limits apply. Supplied fixtures and execution mode persist through

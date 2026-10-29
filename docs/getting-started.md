@@ -63,7 +63,10 @@ Start → Plan → Human Approval → Implement → Command: project tests → R
 Use the repository's actual test command. A Command node takes an executable
 and separate arguments: for example, `pnpm` with `test` as one argument. If you
 need shell operators such as `&&`, explicitly choose `sh` with `-c` and the
-script as separate arguments. Review any generated shell script before running.
+script as separate arguments, or keep the script in a file and switch the step
+to **Script file** (it runs with `bash` unless you name another interpreter; a
+relative path resolves against the working directory). Review any generated
+shell script before running.
 
 The workflow repository default supplies Command, Git and GitHub working
 directories when a node has no override. Node configuration wins. Agent steps
