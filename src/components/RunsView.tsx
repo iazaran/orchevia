@@ -257,6 +257,7 @@ function ReportBody({ text }: { text: string }): React.JSX.Element {
 function OutputBlock({
   text,
   label,
+  step,
   defaultOpen,
   expanded,
   onToggle,
@@ -265,6 +266,8 @@ function OutputBlock({
 }: {
   text: string;
   label: string;
+  /** Every step has its own outputs; the number tells their names apart. */
+  step: number;
   defaultOpen: boolean;
   expanded: boolean | undefined;
   onToggle: () => void;
@@ -291,13 +294,14 @@ function OutputBlock({
   }, [text, open, live, following]);
   if (text === '') return null;
   const shown = open ? text : lines.slice(0, 8).join('\n').slice(0, 1200) + '\n…';
+  const where = `step ${String(step)}`;
   return (
     <div className="run-output">
       <div
         ref={viewport}
         className="run-output-scroll"
         role="region"
-        aria-label={`${label} output`}
+        aria-label={`${label} output, ${where}`}
         tabIndex={0}
         onScroll={(event) => {
           if (!open) return;
@@ -315,7 +319,7 @@ function OutputBlock({
         <button
           className="btn btn-ghost output-toggle"
           aria-expanded={open}
-          aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
+          aria-label={`${open ? 'Collapse' : 'Show full output of'} ${label}, ${where}`}
           onClick={onToggle}
         >
           {open ? 'Collapse ▲' : 'Show full output ▼'}
@@ -324,7 +328,7 @@ function OutputBlock({
       {open && !following && (
         <button
           className="btn btn-ghost output-toggle"
-          aria-label={`${live ? 'Follow' : 'Jump to'} latest ${label}`}
+          aria-label={`${live ? 'Follow' : 'Jump to'} latest ${label}, ${where}`}
           onClick={() => {
             setFollowing(true);
             if (viewport.current)
@@ -1374,6 +1378,7 @@ export function RunsView(): React.JSX.Element {
                             text={r.stdout}
                             live={r.status === 'running'}
                             label="stdout"
+                            step={index + 1}
                             rich={node?.type === 'agent'}
                             defaultOpen={isLast}
                             expanded={expandedOutputs[`${String(r.id)}:out`]}
@@ -1387,6 +1392,7 @@ export function RunsView(): React.JSX.Element {
                                 text={context.activity}
                                 live={r.status === 'running'}
                                 label="Agent activity"
+                                step={index + 1}
                                 defaultOpen={false}
                                 expanded={expandedOutputs[`${String(r.id)}:activity`]}
                                 onToggle={() => {
@@ -1398,6 +1404,7 @@ export function RunsView(): React.JSX.Element {
                             text={r.stderr}
                             live={r.status === 'running'}
                             label="stderr"
+                            step={index + 1}
                             defaultOpen={isLast}
                             expanded={expandedOutputs[`${String(r.id)}:err`]}
                             onToggle={() => {

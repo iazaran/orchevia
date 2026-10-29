@@ -591,12 +591,14 @@ it('expands full live output without claiming a count of visual lines', async ()
     (_, i) => `Line ${String(i)} ${'long wrapped text '.repeat(30)}`,
   ).join('\n');
   await renderLiveOutput(text);
-  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout' }));
-  const expand = screen.getByRole('button', { name: 'Expand stdout' });
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout, step 1' }));
+  const expand = screen.getByRole('button', {
+    name: 'Show full output of stdout, step 1',
+  });
   expect(expand).toHaveTextContent('Show full output');
   expect(expand).not.toHaveTextContent('lines');
   fireEvent.click(expand);
-  expect(screen.getByRole('region', { name: 'stdout output' })).toHaveTextContent(
+  expect(screen.getByRole('region', { name: 'stdout output, step 1' })).toHaveTextContent(
     'Line 29',
   );
 });
@@ -605,13 +607,15 @@ it('follows new live output, pauses on scroll-up and resumes explicitly', async 
   const result = await renderLiveOutput(
     Array.from({ length: 20 }, (_, i) => `line ${String(i)}`).join('\n'),
   );
-  const output = screen.getByRole('region', { name: 'stdout output' });
+  const output = screen.getByRole('region', { name: 'stdout output, step 1' });
   Object.defineProperties(output, {
     scrollHeight: { value: 1000, configurable: true },
     clientHeight: { value: 200, configurable: true },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Expand stdout' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse stdout, step 1' }));
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Show full output of stdout, step 1' }),
+  );
   expect(output.scrollTop).toBe(1000);
   output.scrollTop = 100;
   fireEvent.scroll(output);
@@ -623,7 +627,7 @@ it('follows new live output, pauses on scroll-up and resumes explicitly', async 
     }),
   );
   expect(output.scrollTop).toBe(100);
-  fireEvent.click(screen.getByRole('button', { name: 'Follow latest stdout' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Follow latest stdout, step 1' }));
   expect(output.scrollTop).toBe(1000);
   Object.defineProperty(output, 'scrollHeight', { value: 1400 });
   act(() =>
@@ -641,9 +645,11 @@ it('follows new live output, pauses on scroll-up and resumes explicitly', async 
 it('follows expanded agent activity as it streams', async () => {
   const activity = 'tool update\n'.repeat(30);
   const result = await renderLiveOutput('', JSON.stringify({ agentActivity: activity }));
-  const output = screen.getByRole('region', { name: 'Agent activity output' });
+  const output = screen.getByRole('region', { name: 'Agent activity output, step 1' });
   Object.defineProperty(output, 'scrollHeight', { value: 900, configurable: true });
-  fireEvent.click(screen.getByRole('button', { name: 'Expand Agent activity' }));
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Show full output of Agent activity, step 1' }),
+  );
   expect(output.scrollTop).toBe(900);
   Object.defineProperty(output, 'scrollHeight', { value: 1200 });
   act(() =>
@@ -733,7 +739,7 @@ it('places deduplicated findings at their source steps and keeps unknown sources
 
 it('follows the final output update when a running step finishes', async () => {
   const result = await renderLiveOutput('running output\n'.repeat(20));
-  const output = screen.getByRole('region', { name: 'stdout output' });
+  const output = screen.getByRole('region', { name: 'stdout output, step 1' });
   Object.defineProperty(output, 'scrollHeight', { value: 1800 });
   act(() =>
     useAppStore.setState({
@@ -749,7 +755,7 @@ it('follows the final output update when a running step finishes', async () => {
 
 it('keeps a paused reader in place when the final output arrives', async () => {
   const result = await renderLiveOutput('running output\n'.repeat(20));
-  const output = screen.getByRole('region', { name: 'stdout output' });
+  const output = screen.getByRole('region', { name: 'stdout output, step 1' });
   Object.defineProperties(output, {
     scrollHeight: { value: 1800 },
     clientHeight: { value: 200 },

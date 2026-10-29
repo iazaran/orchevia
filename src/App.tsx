@@ -150,7 +150,8 @@ export function App(): React.JSX.Element {
             setView('inbox');
           }}
           title="Notifications"
-          aria-label="Inbox"
+          // The button's own label hides its content, so the count goes in it.
+          aria-label={unread > 0 ? `Inbox, ${String(unread)} unread` : 'Inbox'}
           aria-current={view === 'inbox' ? 'page' : undefined}
         >
           <span className="nav-icon" aria-hidden="true">
@@ -158,7 +159,7 @@ export function App(): React.JSX.Element {
           </span>
           <span className="nav-btn-label">Inbox</span>
           {unread > 0 && (
-            <span className="nav-badge" aria-label={`${String(unread)} unread`}>
+            <span className="nav-badge" aria-hidden="true">
               {unread}
             </span>
           )}

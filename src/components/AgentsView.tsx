@@ -466,7 +466,11 @@ export function AgentsView(): React.JSX.Element {
 
         {editing !== null && (
           <Modal
-            label={editing.name === '' ? 'New agent profile' : 'Edit agent profile'}
+            label={
+              profiles.some((p) => p.id === editing.id)
+                ? 'Edit agent profile'
+                : 'New agent profile'
+            }
             onClose={() => {
               setEditing(null);
             }}
@@ -601,6 +605,7 @@ function ProfileEditor({
   onSave: (p: AgentProfile) => void;
 }): React.JSX.Element {
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
+  const isNew = useAppStore((s) => !s.profiles.some((p) => p.id === initial.id));
   const [form, setForm] = useState<AgentProfile>(initial);
   const [skillsResult, setSkillsResult] = useState<{
     adapter: AdapterKind;
@@ -668,7 +673,7 @@ function ProfileEditor({
   return (
     <div aria-label="Profile editor">
       <h3 style={{ marginTop: 0, paddingRight: 40 }}>
-        {initial.name === '' ? 'New profile' : 'Edit profile'}
+        {isNew ? 'New profile' : 'Edit profile'}
       </h3>
       <div className="field">
         <label className="field-label" htmlFor="prof-name">
