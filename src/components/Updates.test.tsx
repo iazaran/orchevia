@@ -11,7 +11,7 @@ const newer = {
   latest: {
     version: '0.2.0',
     url: 'https://github.com/iazaran/orchevia/releases/tag/v0.2.0',
-    assets: [],
+    assets: [] as { name: string; url: string }[],
   },
   updateAvailable: true,
   checkedAt: '2026-11-01T10:00:00Z',
@@ -79,7 +79,13 @@ it('installs in place only after confirmation and shows why it could not', async
       ),
     );
   };
-  useAppStore.setState({ updateCheck: newer });
+  const manifest = {
+    name: 'latest.json',
+    url: 'https://github.com/iazaran/orchevia/releases/download/v0.2.0/latest.json',
+  };
+  useAppStore.setState({
+    updateCheck: { ...newer, latest: { ...newer.latest, assets: [manifest] } },
+  });
   const user = userEvent.setup();
   render(
     <>
@@ -109,5 +115,21 @@ it('keeps the download path for copies that cannot update themselves', async () 
   useAppStore.setState({ updateCheck: newer });
   render(<UpdatesSection />);
   await screen.findByText(/Orchevia 0.2.0 is available/);
+  expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+});
+
+it('offers no in-place install for a release without a signed manifest', async () => {
+  const backend = __setMockBackendForTests();
+  backend.desktopInfo = () =>
+    Promise.resolve({
+      platform: 'macos',
+      arch: 'arm64',
+      installKind: 'app',
+      inPlaceUpdates: true,
+    });
+  useAppStore.setState({ updateCheck: newer });
+  render(<UpdatesSection />);
+  // The copy could update itself, but this release has nothing signed to install.
+  expect(await screen.findByText(/Quit Orchevia, open/)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
 });

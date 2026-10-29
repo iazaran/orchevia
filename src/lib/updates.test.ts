@@ -4,6 +4,7 @@ import {
   UPDATE_REQUEST_TIMEOUT_MS,
   allowedExternalUrl,
   assetFor,
+  canInstallInPlace,
   fetchUpdateCheck,
   installSteps,
   isNewer,
@@ -176,5 +177,23 @@ describe('latest release', () => {
         'Orchevia-linux-x86_64.AppImage',
       ),
     ).toContain('Install and restart downloads the signed update');
+    // In-place needs both a capable copy and a release with a signed manifest.
+    const capable = {
+      platform: 'linux',
+      arch: 'x86_64',
+      installKind: 'appimage',
+      inPlaceUpdates: true,
+    };
+    const signed = {
+      ...parsed,
+      assets: [
+        ...parsed.assets,
+        { name: 'latest.json', url: `${parsed.url}/latest.json` },
+      ],
+    };
+    expect(canInstallInPlace(signed, capable)).toBe(true);
+    expect(canInstallInPlace(parsed, capable)).toBe(false);
+    expect(canInstallInPlace(signed, { ...capable, inPlaceUpdates: false })).toBe(false);
+    expect(canInstallInPlace(signed, null)).toBe(false);
   });
 });

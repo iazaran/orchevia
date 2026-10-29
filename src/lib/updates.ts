@@ -176,6 +176,22 @@ export function assetFor(
   return name === undefined ? undefined : release.assets.find((a) => a.name === name);
 }
 
+/** Name of the signed update manifest a release carries when it was built
+ * with the update signing key. */
+export const UPDATE_MANIFEST_ASSET = 'latest.json';
+
+/** Whether this copy can install `release` itself: it updates in place and
+ * the release published a signed update manifest. */
+export function canInstallInPlace(
+  release: LatestRelease,
+  desktop: DesktopInfo | null,
+): boolean {
+  return (
+    desktop?.inPlaceUpdates === true &&
+    release.assets.some((asset) => asset.name === UPDATE_MANIFEST_ASSET)
+  );
+}
+
 /** How to apply the downloaded installer; data is kept in every case. */
 export function installSteps(desktop: DesktopInfo | null, assetName?: string): string {
   const file = assetName ?? 'the installer';

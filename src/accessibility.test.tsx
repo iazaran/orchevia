@@ -538,7 +538,12 @@ describe('Setup check and in-place updates', () => {
         latest: {
           version: '0.2.0',
           url: 'https://github.com/iazaran/orchevia/releases/tag/v0.2.0',
-          assets: [],
+          assets: [
+            {
+              name: 'latest.json',
+              url: 'https://github.com/iazaran/orchevia/releases/download/v0.2.0/latest.json',
+            },
+          ],
         },
         updateAvailable: true,
         checkedAt: '2026-11-01T10:00:00Z',

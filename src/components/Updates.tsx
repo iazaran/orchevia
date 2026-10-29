@@ -9,6 +9,7 @@ import {
   UPDATE_DISMISSED_SETTING,
   UPDATE_FIRST_CHECK_DELAY_MS,
   assetFor,
+  canInstallInPlace,
   installSteps,
   type DesktopInfo,
 } from '../lib/updates';
@@ -156,7 +157,8 @@ export function UpdatesSection(): React.JSX.Element {
   const [installing, setInstalling] = useState(false);
   const available = check?.updateAvailable === true ? check.latest : null;
   const asset = available === null ? undefined : assetFor(available, desktop);
-  const inPlace = available !== null && desktop?.inPlaceUpdates === true;
+  // A release built without the signing key has no manifest to install from.
+  const inPlace = available !== null && canInstallInPlace(available, desktop);
   const install = async (target: string): Promise<void> => {
     const ok = await confirmDialog({
       title: `Install Orchevia ${target}?`,
@@ -223,7 +225,10 @@ export function UpdatesSection(): React.JSX.Element {
       </p>
       {available !== null && (
         <p className="field-hint" style={{ margin: '8px 0 0' }}>
-          {installSteps(desktop, asset?.name)}
+          {installSteps(
+            desktop === null ? null : { ...desktop, inPlaceUpdates: inPlace },
+            asset?.name,
+          )}
         </p>
       )}
       <div className="background-card-actions">
