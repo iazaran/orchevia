@@ -400,3 +400,37 @@ test('macOS CI runs the process-tree cleanup tests, and every filter selects tes
   // A cleanup failure stops the job before the long packaging step.
   assert.ok(job.indexOf('Process-tree cleanup tests') < job.indexOf('pnpm tauri build'));
 });
+
+test('the weekly CLI canary checks the newest CLIs without secrets or saved caches', () => {
+  const canary = readFileSync('.github/workflows/cli-canary.yml', 'utf8');
+  assert.match(
+    canary,
+    /\n {2}schedule:\n {4}- cron: '\d+ \d+ \* \* [0-6]'\n {2}workflow_dispatch:\n/,
+  );
+  assert.match(canary, /\npermissions:\n {2}contents: read\n/);
+  assert.doesNotMatch(canary, /secrets\.|macos-|windows-/);
+  assert.match(canary, /runs-on: ubuntu-latest\n/);
+  assert.match(canary, /save-if: false\n/);
+  assert.match(canary, /@anthropic-ai\/claude-code@latest @openai\/codex@latest/);
+  assert.match(
+    canary,
+    /run: cargo test -p orchevia-core --locked --lib cli_canary -- --ignored --nocapture\n/,
+  );
+  // The filter reaches the ignored live checks, one per CLI and variable.
+  assert.match(
+    readFileSync('crates/core/src/lib.rs', 'utf8'),
+    /#\[cfg\(test\)\]\nmod cli_canary;/,
+  );
+  const source = readFileSync('crates/core/src/cli_canary.rs', 'utf8');
+  for (const [cli, variable] of [
+    ['Claude', 'ORCHEVIA_CANARY_CLAUDE'],
+    ['Codex', 'ORCHEVIA_CANARY_CODEX'],
+  ]) {
+    assert.ok(canary.includes(`echo "${variable}=`), variable);
+    assert.ok(
+      source.includes(`check_cli(AdapterKind::${cli}, "${variable}");`),
+      variable,
+    );
+  }
+  assert.equal(source.match(/#\[ignore = /g)?.length, 2);
+});

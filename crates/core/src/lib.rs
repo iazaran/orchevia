@@ -42,4 +42,6 @@ pub use workflow::{
 pub mod workflow_document;
 
 #[cfg(test)]
+mod cli_canary;
+#[cfg(test)]
 mod run_control_tests;

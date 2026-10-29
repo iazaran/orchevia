@@ -65,6 +65,13 @@ test('the process-group code also runs the macOS cleanup tests; other core code 
   }
 });
 
+test('the CLI canary is linted without compiling', () => {
+  assert.deepEqual(classifyChanges(['.github/workflows/cli-canary.yml']), {
+    ...none,
+    workflows: true,
+  });
+});
+
 test('shared contracts, locks, and delivery scripts validate both stacks', () => {
   for (const path of [
     'Cargo.lock',

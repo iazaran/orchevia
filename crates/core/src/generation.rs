@@ -1316,7 +1316,9 @@ Efficiency rules: preserve native execution boundaries and requested decisions, 
     }
 }
 
-fn generator_command(
+/// The command workflow generation runs: the profile's text invocation in the
+/// repository. Also exercised against the newest CLIs by `cli_canary`.
+pub(crate) fn generator_command(
     profile: &crate::agents::AgentProfile,
     prompt: &str,
     repo_dir: Option<&str>,
