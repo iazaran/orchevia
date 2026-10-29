@@ -11,10 +11,10 @@ All notable changes are recorded here, following
 ### Added
 
 - **Check setup proves an agent profile works.** It replaces the profile **Test**
-  button, which only ran `--version`. The check sends one short prompt in a temporary folder and shows,
-  item by item, whether the CLI is installed, signed in and answering, reads a
-  file in its working folder and, at the profile's permission level, edits one
-  without asking. A signed-out CLI, a usage limit, a timeout and refused tools each
+  button, which only ran `--version`. The check sends one short prompt in a
+  temporary folder and shows, item by item, whether the CLI is installed, signed
+  in and answering, reads a file in its working folder and, at the profile's
+  permission level, edits one without asking. A signed-out CLI, a usage limit, a timeout and refused tools each
   name their fix. Run it per profile in **Agents**, or for every profile in
   **Environment → Agent setup check** and at the end of the setup wizard. It runs
   only when you click it and uses your plan like any other prompt.
@@ -23,6 +23,20 @@ All notable changes are recorded here, following
   checks its signature against the key built into the app, replaces this copy and
   restarts. It waits for running workflows to finish. Debian and Ubuntu keep
   updating through apt. Copies older than 0.1.24 update by hand once more.
+- **A weekly canary checks the newest Claude Code and Codex** against every
+  command line Orchevia sends them, built by Orchevia's own code and read by its
+  own output decoder, so a CLI update that renames, drops or ignores a flag is
+  caught before it reaches you. It runs signed out, with no secrets.
+- **Linux packages are launched before a release ships them:** the app from the
+  `.deb` and the AppImage must start on a clean system and open its database, as
+  the macOS DMG already did.
+- **Process-tree cleanup is tested on macOS too:** cancel, timeout, MCP server
+  shutdown and quitting stop the CLI's whole process tree, checked in the macOS CI
+  job.
+- **Every view and dialog is checked with axe-core**, including keyboard focus in
+  dialogs.
+- **`docs/smoke-tests.md`** keeps the desktop smoke-test matrix: what each
+  installer checks automatically and the manual steps for the rest.
 
 ### Changed
 
@@ -32,6 +46,35 @@ All notable changes are recorded here, following
 - **Saving a command to the project playbook** is offered only on steps whose
   label names test, lint or build, with that field preselected. Setup steps such
   as worktree creation are no longer offered as the project's test command.
+
+### Fixed
+
+- **Nested loops run as drawn** (for example a fix loop inside a review loop).
+  - An outer loop that restarts at a step before the inner loop no longer fails
+    with "Scheduler deadlock" once the inner loop goes round.
+  - Steps after a loop wait for its last pass, including a join another branch
+    also feeds. Before, a fix inside the inner loop, or a failing test routed into
+    the fix, could start them early, and the run still ended **Succeeded**.
+  - Exits and failure routes are no longer marked "skipped" while their loop can
+    still go round, so run history stops showing skips for steps that run later.
+
+  Visit limits (`maxVisits`) count the whole run, so an inner step's limit must
+  cover its rounds on every outer pass; **Nested loops** in `docs/execution.md`
+  explains this.
+
+- **A signed-out Claude Code step says why it failed.** It showed "CLI reported a
+  failed result."; it now shows Claude Code's own words, such as "Not logged in ·
+  Please run /login".
+- **Screen readers:**
+  - Git, GitHub and MCP step fields read their real labels, not just the
+    placeholder, and the memory export box has a name.
+  - Each run step's output area and its **Show full output** / **Collapse**
+    buttons name their step, instead of many identical "stdout output" regions.
+  - The open run, the open workflow and the chosen schedule cadence are announced
+    as selected, not shown by colour alone, and the Inbox button reads its unread
+    count ("Inbox, 2 unread").
+  - Creating an agent profile opens "New profile" rather than "Edit profile", and
+    heading levels no longer skip from h1 to h3.
 
 ## [0.1.23] - 2026-10-24
 
