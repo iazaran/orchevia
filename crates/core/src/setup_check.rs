@@ -451,6 +451,9 @@ folder containing exactly that text. Finally reply with only that text. Do nothi
 fn probe_command(profile: &AgentProfile, dir: &Path) -> Result<CommandSpec, String> {
     let mut probe = profile.clone();
     probe.working_dir_mode = WorkingDirMode::Node;
+    // Skills would be invoked by name before the prompt; the check tests the
+    // CLI, its sign-in and its permissions, not a skill.
+    probe.skills.clear();
     let mut spec = build_agent_command(&probe, PROBE_PROMPT, Some(&dir.to_string_lossy()))?;
     // `codex exec` refuses a folder that is not a Git repository.
     if profile.adapter == AdapterKind::Codex
@@ -695,6 +698,27 @@ printf '{{"type":"turn.completed","usage":{{"input_tokens":3,"output_tokens":1}}
         let lines: Vec<&str> = argv.lines().collect();
         assert_eq!(lines.last(), Some(&"-"));
         assert!(lines.contains(&"--skip-git-repo-check"), "{argv}");
+    }
+
+    #[test]
+    fn skills_are_not_invoked_by_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut skilled = profile(
+            AdapterKind::Claude,
+            "claude".into(),
+            PermissionLevel::FullAccess,
+        );
+        skilled.skills = vec!["code-review".into()];
+        let spec = probe_command(&skilled, dir.path()).unwrap();
+        let prompt = spec.stdin.unwrap();
+        assert!(
+            prompt.starts_with("This is an Orchevia setup check."),
+            "{prompt}"
+        );
+        assert_eq!(
+            spec.working_dir.as_deref(),
+            Some(&*dir.path().to_string_lossy())
+        );
     }
 
     #[test]
