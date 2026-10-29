@@ -50,6 +50,8 @@ pub enum EngineError {
     NotPaused(String),
     #[error("io error: {0}")]
     Io(String),
+    #[error("Orchevia is installing an update and restarts in a moment; start this run after the restart.")]
+    Updating,
 }
 
 impl From<DbError> for EngineError {
@@ -58,10 +60,24 @@ impl From<DbError> for EngineError {
     }
 }
 
-/// Registry of cancellation flags for in-flight runs.
+/// Registry of cancellation flags for in-flight runs. Its lock also admits
+/// new runs and continuations, so an update can stop admitting them and then
+/// see every run that got in first.
 #[derive(Debug, Default, Clone)]
 pub struct CancellationRegistry {
     inner: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    admission_closed: Arc<AtomicBool>,
+}
+
+/// Keeps new runs and continuations out until dropped (see
+/// [`CancellationRegistry::hold_admission`]).
+#[derive(Debug)]
+pub struct AdmissionHold(Arc<AtomicBool>);
+
+impl Drop for AdmissionHold {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl CancellationRegistry {
@@ -95,6 +111,24 @@ impl CancellationRegistry {
         self.flags().remove(run_id);
     }
 
+    /// Stop admitting runs and continuations, for an update about to restart
+    /// the app. Anything admitted earlier is already in the database when
+    /// this returns, so the caller can check for running runs afterwards.
+    pub fn hold_admission(&self) -> AdmissionHold {
+        let _admitting = self.flags();
+        self.admission_closed.store(true, Ordering::SeqCst);
+        AdmissionHold(Arc::clone(&self.admission_closed))
+    }
+
+    /// Call with the registry lock held.
+    fn admit(&self) -> Result<(), EngineError> {
+        if self.admission_closed.load(Ordering::SeqCst) {
+            Err(EngineError::Updating)
+        } else {
+            Ok(())
+        }
+    }
+
     fn decide_paused_run(
         &self,
         db: &SqliteDb,
@@ -106,6 +140,9 @@ impl CancellationRegistry {
         // Cancellation cannot miss the new flag between the database claim
         // and resumption. Failed or rejected decisions create no flag.
         let mut map = self.flags();
+        if approved {
+            self.admit()?;
+        }
         if !db.decide_paused_run(run_id, approved, note, expected_approval_id)? {
             return Ok(false);
         }
@@ -556,6 +593,7 @@ impl Engine {
         // Register before claiming, as with approval resumption; cancellation cannot miss it.
         {
             let mut flags = self.cancel.flags();
+            self.cancel.admit()?;
             if !self.db.continue_spend_run(run_id, pause_id, limit)? {
                 return Err(EngineError::NotPaused(run_id.into()));
             }
@@ -590,6 +628,7 @@ impl Engine {
             .ok_or_else(|| EngineError::UnknownRun(run_id.into()))?;
         {
             let mut flags = self.cancel.flags();
+            self.cancel.admit()?;
             if !self.db.continue_usage_run(run_id, pause_id, extension)? {
                 return Err(EngineError::NotPaused(run_id.into()));
             }
@@ -817,6 +856,8 @@ impl Engine {
                 .collect();
             return Err(EngineError::Validation(msgs.join("; ")));
         }
+        let _admitting = self.cancel.flags();
+        self.cancel.admit()?;
         self.db.create_run_with_execution(
             run_id,
             workflow,
@@ -5078,6 +5119,57 @@ mod tests {
             .start_run(&wf, run_id, &empty_inputs())
             .expect("start");
         engine.execute(wf, run_id.to_string()).await;
+    }
+
+    #[test]
+    fn an_update_hold_keeps_new_runs_out_until_released() {
+        let (db, engine) = harness();
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-hold".into(),
+            name: "Held".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                simple_node("end", NodeKind::End, 100.0),
+            ],
+            edges: vec![edge("e", "start", "end", None)],
+        };
+        db.upsert_workflow(&wf).expect("upsert");
+        let hold = engine.cancel.hold_admission();
+        let refused = engine.start_run(&wf, "during", &empty_inputs());
+        assert!(matches!(refused, Err(EngineError::Updating)), "{refused:?}");
+        assert!(db.get_run("during").unwrap().is_none());
+        drop(hold);
+        engine
+            .start_run(&wf, "after", &empty_inputs())
+            .expect("admitted again once the hold is released");
+    }
+
+    #[tokio::test]
+    async fn an_update_hold_refuses_an_approval_without_recording_it() {
+        let (db, engine) = harness();
+        let wf = vertical_slice();
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "held", &empty_inputs())
+            .expect("start");
+        engine.execute(wf.clone(), "held".to_string()).await;
+        let hold = engine.cancel.hold_admission();
+        let refused = engine.claim_approval("held", true, None, None, wf.clone());
+        assert!(matches!(refused, Err(EngineError::Updating)), "{refused:?}");
+        assert_eq!(
+            db.get_run("held").unwrap().unwrap().status,
+            RunStatus::Paused
+        );
+        // Nothing was recorded, so the same decision works after the hold.
+        drop(hold);
+        let resumed = engine
+            .claim_approval("held", true, None, None, wf.clone())
+            .expect("the approval is still open");
+        assert!(resumed.is_some());
     }
 
     #[tokio::test]

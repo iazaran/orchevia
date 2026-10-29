@@ -678,20 +678,7 @@ pub async fn install_update(
             _ => "This copy cannot update itself; download the new version instead.".into(),
         });
     }
-    let running = state
-        .db
-        .list_active_runs()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|run| run.status == orchevia_core::db::RunStatus::Running)
-        .count();
-    if running > 0 {
-        return Err(format!(
-            "Finish or cancel the {running} running workflow{} first: restarting would stop {}.",
-            if running == 1 { "" } else { "s" },
-            if running == 1 { "it" } else { "them" }
-        ));
-    }
+    no_running_runs(&state)?;
     let update = app
         .updater()
         .map_err(|e| format!("Could not prepare the update: {e}"))?
@@ -707,11 +694,37 @@ pub async fn install_update(
             update.version
         ));
     }
-    update
-        .download_and_install(|_, _| {}, || {})
+    let bytes = update
+        .download(|_, _| {}, || {})
         .await
+        .map_err(|e| format!("Could not download the update: {e}"))?;
+    // A schedule or the user may have started a run during the download.
+    // From here no run or continuation is admitted, and any admitted before
+    // is already recorded; the hold lifts if this returns early.
+    let _hold = state.cancel.hold_admission();
+    no_running_runs(&state)?;
+    update
+        .install(bytes)
         .map_err(|e| format!("Could not install the update: {e}"))?;
     app.restart()
+}
+
+fn no_running_runs(state: &State<'_, AppState>) -> Result<(), String> {
+    let running = state
+        .db
+        .list_active_runs()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|run| run.status == orchevia_core::db::RunStatus::Running)
+        .count();
+    if running == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "Finish or cancel the {running} running workflow{} first: restarting would stop {}.",
+        if running == 1 { "" } else { "s" },
+        if running == 1 { "it" } else { "them" }
+    ))
 }
 
 /// Quit from inside the app: on desktops without a tray (GNOME without the
