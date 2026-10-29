@@ -906,6 +906,7 @@ function KindEditor({
           <button
             key={t}
             className={`tool-chip${tab === t ? ' selected' : ''}`}
+            aria-pressed={tab === t}
             onClick={() => switchTab(t)}
           >
             {t}

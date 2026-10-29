@@ -90,11 +90,7 @@ export function InboxView(): React.JSX.Element {
           {unread} unread · approvals, failures, findings, feedback.
         </span>
         <div className="topbar-actions">
-          <button
-            className="btn"
-            aria-pressed={showRead}
-            onClick={() => setShowRead(!showRead)}
-          >
+          <button className="btn" onClick={() => setShowRead(!showRead)}>
             {showRead ? 'Show unread' : 'Show read history'}
           </button>
           <button

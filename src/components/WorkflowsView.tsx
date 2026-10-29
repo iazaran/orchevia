@@ -1637,6 +1637,7 @@ export function WorkflowsView(): React.JSX.Element {
             <button
               key={w.id}
               className={`wf-card${w.id === active?.id ? ' selected' : ''}`}
+              aria-current={w.id === active?.id ? 'true' : undefined}
               onClick={() => {
                 selectWorkflow(w.id);
               }}

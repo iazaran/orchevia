@@ -862,6 +862,7 @@ export function RunsView(): React.JSX.Element {
               <div key={run.id} className="run-row-wrap" style={{ position: 'relative' }}>
                 <button
                   className={`run-row${run.id === activeRunId ? ' selected' : ''}`}
+                  aria-current={run.id === activeRunId ? 'true' : undefined}
                   style={{ paddingRight: 44 }}
                   onClick={() => void selectRun(run.id)}
                   title={run.id}
