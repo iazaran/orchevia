@@ -714,12 +714,12 @@ export const SETUP_ISSUE_CODES: readonly string[] = [
 ];
 
 /**
- * Whether a script path names its own root (`/…`, `\…`, `C:\…`, `~/…`) instead
- * of resolving against the step's working folder. Mirrors Rust
- * `script_path_is_rooted` (textual, the same on every platform).
+ * Whether a script path names its own root (`/…` or `~/…`) instead of
+ * resolving against the step's working folder. Mirrors Rust
+ * `script_path_is_rooted`: on Linux and macOS `C:\…` is a relative name.
  */
 export function scriptPathIsRooted(path: string): boolean {
-  return /^(?:[/\\]|~\/|[A-Za-z]:[/\\])/.test(path.trim());
+  return /^(?:\/|~\/)/.test(path.trim());
 }
 
 /** The folder a Command step runs in: its own folder, else the workflow default. */

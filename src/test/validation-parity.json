@@ -319,6 +319,11 @@
           "nodeId": "templated"
         },
         { "code": "command-script-dir-required", "severity": "error", "nodeId": "nodir" },
+        {
+          "code": "command-script-dir-required",
+          "severity": "error",
+          "nodeId": "windows"
+        },
         { "code": "command-script-misplaced", "severity": "error", "nodeId": "agent" },
         { "code": "command-script-misplaced", "severity": "error", "nodeId": "git" }
       ]

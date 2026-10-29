@@ -727,11 +727,19 @@ describe('script-file Command steps', () => {
     expect(commandWorkingFolder({})).toBeUndefined();
     expect(resolveScriptPath('ci.sh', '/repo')).toBe('/repo/ci.sh');
     expect(resolveScriptPath('ci.sh')).toBe('ci.sh');
-    for (const rooted of ['/opt/x.sh', '\\\\srv\\x', 'C:\\x.ps1', 'd:/x', ' ~/x.sh']) {
+    for (const rooted of ['/opt/x.sh', ' ~/x.sh']) {
       expect(scriptPathIsRooted(rooted), rooted).toBe(true);
       expect(resolveScriptPath(rooted, '/repo')).toBe(rooted.trim());
     }
-    for (const relative of ['x.sh', './x.sh', '~x', '~', 'C:x'])
+    for (const relative of [
+      'x.sh',
+      './x.sh',
+      '~x',
+      '~',
+      'C:x',
+      'C:\\x.ps1',
+      '\\\\srv\\x',
+    ])
       expect(scriptPathIsRooted(relative), relative).toBe(false);
   });
 

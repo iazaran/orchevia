@@ -465,18 +465,13 @@ pub const SETUP_ISSUE_CODES: &[&str] = &[
     "mcp-server-required",
 ];
 
-/// Whether a script path names its own root (`/…`, `\…`, `C:\…`, `~/…`)
-/// instead of resolving against the step's working folder. Purely textual,
-/// so validation agrees on every platform and with the TypeScript twin.
+/// Whether a script path names its own root (`/…` or `~/…`) instead of
+/// resolving against the step's working folder. Purely textual, so validation
+/// agrees with the TypeScript twin. Orchevia runs on Linux and macOS, where
+/// `C:\…` and `\…` are relative names, as the engine treats them.
 pub fn script_path_is_rooted(path: &str) -> bool {
     let path = path.trim();
-    let bytes = path.as_bytes();
-    path.starts_with(['/', '\\'])
-        || path.starts_with("~/")
-        || (bytes.len() > 2
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && matches!(bytes[2], b'/' | b'\\'))
+    path.starts_with('/') || path.starts_with("~/")
 }
 
 /// Resolve a Command step's script path: `~/` against `home`, absolute paths
@@ -2906,17 +2901,22 @@ mod script_file_tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn rooted_paths_are_recognized_the_same_way_on_every_platform() {
-        for rooted in [
-            "/usr/bin/x.sh",
-            " ~/bin/x.sh",
-            "\\\\server\\x.ps1",
-            "C:\\x.ps1",
-            "d:/x",
-        ] {
+    fn only_slash_and_home_paths_are_rooted_as_in_the_engine() {
+        for rooted in ["/usr/bin/x.sh", " ~/bin/x.sh"] {
             assert!(script_path_is_rooted(rooted), "{rooted}");
         }
-        for relative in ["scripts/x.sh", "./x.sh", "../x.sh", "~x.sh", "~", "C:x"] {
+        // Windows-style names are relative on Linux and macOS, as in the engine.
+        for relative in [
+            "scripts/x.sh",
+            "./x.sh",
+            "../x.sh",
+            "~x.sh",
+            "~",
+            "C:x",
+            "C:\\x.ps1",
+            "\\\\server\\x.ps1",
+        ] {
+            assert!(!Path::new(relative.trim()).is_absolute(), "{relative}");
             assert!(!script_path_is_rooted(relative), "{relative}");
         }
     }
