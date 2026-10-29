@@ -79,8 +79,13 @@ left from that run.
 
 **In-place updates.** Install the previous release, open it, and update:
 
-- AppImage and macOS: accept the update Orchevia offers; it restarts on the new
-  version.
+- AppImage and macOS (0.1.24 or later, from a release built with the update
+  signing secret): **Environment → Updates → Check now**, then **Install and
+  restart**. It asks first, refuses while a workflow is running, and restarts on
+  the new version. The release's `latest.json` lists the AppImage and both macOS
+  bundles; the signatures were verified before publication.
+- A release built without the signing secret has no `latest.json`: **Install and
+  restart** says it could not fetch the update, and the download link still works.
 - `.deb`: `sudo apt update && sudo apt upgrade` from the signed apt repository.
 
 Workflows, runs and settings are all still there afterwards.

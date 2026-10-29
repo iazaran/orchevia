@@ -284,10 +284,18 @@ impl AgentOutput {
                     self.limit_exhausted = true;
                     self.error = Some(format!("CLI stopped before completing required work ({}). Adjust the CLI limit and recover deliberately; extending Orchevia's attempt budget does not change this CLI limit.", value["subtype"].as_str().unwrap_or("max_tokens")));
                 } else if value.get("is_error").and_then(Value::as_bool) == Some(true) {
-                    self.error = Some(
+                    // A signed-out or refused CLI puts its reason in `result`
+                    // ("Not logged in · Please run /login") with no `errors`.
+                    let reason = value.get("errors").map(Value::to_string).or_else(|| {
                         value
-                            .get("errors")
-                            .map(Value::to_string)
+                            .get("result")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_string)
+                    });
+                    self.error = Some(
+                        reason
                             .unwrap_or_else(|| "CLI reported a failed result.".into())
                             .chars()
                             .take(2000)
@@ -403,6 +411,22 @@ mod tests {
         out.finish();
         assert!(out.error.as_deref().unwrap().contains("budget reached"));
         assert!(!out.success());
+    }
+
+    #[test]
+    fn a_failed_result_without_errors_keeps_its_reason() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(b"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"Not logged in \xc2\xb7 Please run /login\"}\n");
+        out.finish();
+        assert!(!out.success());
+        assert_eq!(
+            out.error.as_deref(),
+            Some("Not logged in · Please run /login")
+        );
+        let mut bare = AgentOutput::tolerant(AdapterKind::Claude);
+        bare.push(b"{\"type\":\"result\",\"is_error\":true}\n");
+        bare.finish();
+        assert_eq!(bare.error.as_deref(), Some("CLI reported a failed result."));
     }
 
     #[test]

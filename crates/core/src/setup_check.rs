@@ -360,8 +360,7 @@ fn answer_failure(
     if succeeded {
         return None;
     }
-    // A failed Claude result carries its reason in the result text; the
-    // decoder's own error is then only "CLI reported a failed result."
+    // The decoder's generic error says less than any reply the CLI printed.
     let reply = Some(outcome.text.trim().to_string()).filter(|t| !t.is_empty());
     let message = outcome
         .error
