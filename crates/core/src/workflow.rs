@@ -2122,6 +2122,91 @@ mod tests {
         );
     }
 
+    /// start → implement → test → gate -true-> fix → test (inner loop);
+    /// gate -false-> review → outer -true-> `outer_to` (outer loop);
+    /// outer -false-> end. Every step but `unbounded` sets `maxVisits`.
+    fn nested_loop_workflow(outer_to: &str, unbounded: Option<&str>) -> Workflow {
+        use serde_json::json;
+        let gate = |id: &str, step: &str| {
+            json!({"id": id, "type": "condition", "config": {"condition": {"logic": "and",
+                "clauses": [{"left": format!("node.{step}.output"), "op": "contains", "right": "again"}]}}})
+        };
+        let command =
+            |id: &str| json!({"id": id, "type": "command", "config": {"executable": "echo"}});
+        let mut nodes = vec![
+            json!({"id": "start", "type": "start"}),
+            command("implement"),
+            command("test"),
+            gate("gate", "test"),
+            command("fix"),
+            command("review"),
+            gate("outer", "review"),
+            json!({"id": "end", "type": "end"}),
+        ];
+        for node in &mut nodes {
+            let id = node["id"].as_str().unwrap_or_default().to_string();
+            if !["start", "end"].contains(&id.as_str()) && unbounded != Some(id.as_str()) {
+                node["config"]["maxVisits"] = json!(4);
+            }
+        }
+        let edge = |id: &str, source: &str, target: &str, label: Option<&str>| json!({"id": id, "source": source, "target": target, "label": label});
+        let wf = json!({
+            "schemaVersion": CURRENT_SCHEMA_VERSION,
+            "id": "wf-nested",
+            "name": "Nested",
+            "nodes": nodes,
+            "edges": [
+                edge("e0", "start", "implement", None),
+                edge("e1", "implement", "test", None),
+                edge("e2", "test", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "test", None),
+                edge("e5", "gate", "review", Some("false")),
+                edge("e6", "review", "outer", None),
+                edge("e7", "outer", outer_to, Some("true")),
+                edge("e8", "outer", "end", Some("false")),
+            ],
+        });
+        Workflow::from_json(&wf.to_string()).expect("nested workflow")
+    }
+
+    #[test]
+    fn nested_loops_validate_and_every_repeated_step_needs_a_bound() {
+        // The outer loop restarts at the inner loop's first step, or at a
+        // step before it.
+        for outer_to in ["test", "implement"] {
+            let wf = nested_loop_workflow(outer_to, None);
+            let loops = find_loop_edges(&wf);
+            assert!(loops.contains("e4") && loops.contains("e7"), "{loops:?}");
+            let issues = validate_workflow(&wf);
+            assert!(
+                !issues
+                    .iter()
+                    .any(|i| i.severity == ValidationSeverity::Error),
+                "{outer_to}: {issues:?}"
+            );
+            let mut repeated = vec!["test", "gate", "fix", "review", "outer"];
+            if outer_to == "implement" {
+                repeated.push("implement");
+            }
+            for step in repeated {
+                let issues = validate_workflow(&nested_loop_workflow(outer_to, Some(step)));
+                assert!(
+                    issues
+                        .iter()
+                        .any(|i| i.code == "cycle-unbounded" && i.node_id.as_deref() == Some(step)),
+                    "{outer_to}/{step}: {issues:?}"
+                );
+            }
+        }
+        // A step before both loops runs once and needs no bound.
+        let issues = validate_workflow(&nested_loop_workflow("test", Some("implement")));
+        assert!(
+            !issues.iter().any(|i| i.code == "cycle-unbounded"),
+            "{issues:?}"
+        );
+    }
+
     #[test]
     fn duplicate_inputs_rejected() {
         let mut wf = linear_workflow();
