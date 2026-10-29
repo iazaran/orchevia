@@ -49,7 +49,10 @@ Please run /login") when it has no `errors`, so ordinary steps say why too.
 - `DesktopInfo.inPlaceUpdates` is true for `appimage` and `app` installs of a
   build whose public key is set. `install_update(version)` refuses other install
   kinds (apt and deb keep their own path) and any `running` run, checks the
-  signed update's version, installs it and restarts. The single-instance lock is
+  signed update's version and downloads it. It then holds admission
+  (`CancellationRegistry::hold_admission`: run starts and approval, spend and
+  usage continuations take the same lock and get `EngineError::Updating`),
+  checks for running runs again, installs and restarts. The single-instance lock is
   released by Tauri's exit cleanup before the restart.
 - Environment → Updates shows **Install and restart** (confirmation first); the
   download link stays.
@@ -105,6 +108,10 @@ the v0.1.23 rules it lacked. 16 vitest cases mirror the engine's traces.
   runs `<executable or bash> <path> <args…>`. Codes: `command-script-required`,
   `-templated`, `-dir-required`, `-misplaced`. Results record the exact argv as
   `command` metadata (reserved in fixtures), shown as "Ran …" / "Would run …".
+  A path left relative by a relative working folder is anchored at the app's
+  working folder, and a path that is not a regular file is refused before it is
+  opened. A `~/` script stays in Script file mode, because a plain argument
+  would not expand `~`.
 
 ## 6. Smaller changes
 
