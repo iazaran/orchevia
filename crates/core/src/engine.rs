@@ -217,6 +217,11 @@ struct Graph {
     incoming: HashMap<String, Vec<Edge>>,
     loop_edges: HashSet<String>,
     def_order: HashMap<String, usize>,
+    /// Every edge by id, with its position in the definition.
+    edges: HashMap<String, (usize, Edge)>,
+    /// Each loop-back edge id (in definition order) with the steps its loop
+    /// repeats; see `Graph::loop_bodies`.
+    loops: Vec<(String, HashSet<String>)>,
 }
 
 impl Graph {
@@ -245,12 +250,128 @@ impl Graph {
                 .push(edge.clone());
         }
         let loop_edges = find_loop_edges(workflow);
-        Ok(Self {
+        let edges = workflow
+            .edges
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| (edge.id.clone(), (index, edge.clone())))
+            .collect();
+        let mut graph = Self {
             nodes,
             outgoing,
             incoming,
             loop_edges,
             def_order,
+            edges,
+            loops: Vec::new(),
+        };
+        graph.loops = graph.loop_bodies(workflow);
+        Ok(graph)
+    }
+
+    /// The steps each loop repeats, per loop-back edge: its target, then every
+    /// step that reaches its source from the target without passing the
+    /// target again (the natural loop). A loop whose condition branches out
+    /// of it all land in another loop is nested in that one and joins its
+    /// body, also when both go back to the same step (a fix loop inside a
+    /// review loop that restarts at the tests). The inner loop never takes
+    /// in the outer loop's steps, so leaving it for the review is an exit.
+    fn loop_bodies(&self, workflow: &Workflow) -> Vec<(String, HashSet<String>)> {
+        let natural: Vec<(&Edge, HashSet<String>)> = workflow
+            .edges
+            .iter()
+            .filter(|edge| self.is_loop_edge(&edge.id))
+            .map(|edge| (edge, self.natural_loop(edge)))
+            .collect();
+        let mut bodies: Vec<HashSet<String>> = natural.iter().map(|(_, b)| b.clone()).collect();
+        // Grows monotonically, so this settles.
+        loop {
+            let mut changed = false;
+            for (inner, (inner_edge, inner_body)) in natural.iter().enumerate() {
+                for outer in 0..bodies.len() {
+                    if inner == outer
+                        || !bodies[outer].contains(&inner_edge.target)
+                        || bodies[inner].is_subset(&bodies[outer])
+                    {
+                        continue;
+                    }
+                    let nested = inner_body.iter().all(|id| {
+                        self.branches_out(id, inner_body)
+                            .all(|target| bodies[outer].contains(target))
+                    });
+                    if nested {
+                        let add = bodies[inner].clone();
+                        bodies[outer].extend(add);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        natural
+            .iter()
+            .zip(bodies)
+            .map(|((edge, _), body)| (edge.id.clone(), body))
+            .collect()
+    }
+
+    /// The loop a loop-back edge closes: its target plus every step that
+    /// reaches its source from the target without passing the target again.
+    fn natural_loop(&self, edge: &Edge) -> HashSet<String> {
+        let from_target = reachable_from_graph(self, &edge.target);
+        let mut body = HashSet::from([edge.target.clone()]);
+        let mut stack = vec![edge.source.clone()];
+        while let Some(id) = stack.pop() {
+            if !from_target.contains(&id) || !body.insert(id.clone()) {
+                continue;
+            }
+            for incoming in self.incoming.get(&id).into_iter().flatten() {
+                stack.push(incoming.source.clone());
+            }
+        }
+        body
+    }
+
+    /// Targets outside `body` that condition `id` branches to.
+    fn branches_out<'a>(
+        &'a self,
+        id: &str,
+        body: &'a HashSet<String>,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let is_condition = self.nodes.get(id).map(|n| n.kind) == Some(NodeKind::Condition);
+        self.outgoing
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(move |edge| {
+                is_condition
+                    && matches!(
+                        classify_edge_label(edge.label.as_deref()),
+                        EdgeKind::TrueBranch | EdgeKind::FalseBranch
+                    )
+                    && !body.contains(&edge.target)
+            })
+            .map(|edge| edge.target.as_str())
+    }
+
+    fn loop_body(&self, edge_id: &str) -> Option<&HashSet<String>> {
+        self.loops
+            .iter()
+            .find(|(id, _)| id == edge_id)
+            .map(|(_, body)| body)
+    }
+
+    /// Whether `source → target` leaves a loop that may still go round in
+    /// this pass: `source` is in the loop, `target` is not, and a step of the
+    /// loop has not finished. Such an exit is decided by the pass that takes
+    /// it, or as untaken once the loop settles.
+    fn exit_waits(&self, state: &RunState, source: &str, target: &str) -> bool {
+        self.loops.iter().any(|(_, body)| {
+            body.contains(source)
+                && !body.contains(target)
+                && body.iter().any(|id| !state.terminal.contains_key(id))
         })
     }
 
@@ -286,6 +407,9 @@ struct RunState {
     /// taken. A later visit of a looping source updates its entry instead of
     /// counting as another arrival at the target.
     resolved: HashMap<String, bool>,
+    /// Untaken exits of loops that may still go round, not yet resolved:
+    /// their targets keep waiting (see `Graph::exit_waits`).
+    held: HashSet<String>,
     /// While a live completion is routed: when that step finished. Skips it
     /// causes are recorded at that time, so resuming replays them right
     /// after it, before anything that finished later.
@@ -1393,7 +1517,7 @@ impl Engine {
         for edge in &taken_loop {
             let visits = state.visits.get(&edge.target).copied().unwrap_or(0);
             if visits < graph.max_visits(&edge.target) {
-                self.reset_cycle(graph, state, &edge.target, node_id);
+                self.reset_cycle(graph, state, edge);
                 self.resolve_edge(graph, state, run_id, &edge.target, None, true, record)?;
             } else {
                 effect.run_failed = Some(format!(
@@ -1435,23 +1559,17 @@ impl Engine {
                 record,
             )?;
         }
-        // Untaken branches resolve immediately — except while a loop
-        // continues: sibling targets must wait for the exit visit, otherwise
-        // they would be skipped prematurely and block the loop exit. A
-        // condition also continues a loop when its taken branch leads back to
-        // it (gate -true-> fix -> tests -> gate); then only exits, branches
-        // that cannot lead back, wait for the visit that takes them.
-        let loops_back = is_condition
-            && taken_loop.is_empty()
-            && taken_normal
-                .iter()
-                .any(|edge| can_reach_graph(graph, &edge.target, node_id));
+        // Untaken branches. After a taken loop-back the steps the loop repeats
+        // are decided again on its next pass, and its exits wait. Otherwise
+        // each untaken branch resolves now, except an exit of a loop that may
+        // still go round in this pass (gate -true-> fix -> tests -> gate keeps
+        // gate -false-> publish open; a fix loop inside a review loop keeps
+        // the review open): it waits for the pass that takes it, or resolves
+        // as untaken once the loop settles. The same holds for the skips this
+        // cascades into (see `resolve_edge`).
         if taken_loop.is_empty() {
             for edge in &untaken_normal {
                 if state.terminal.contains_key(&edge.target) {
-                    continue;
-                }
-                if loops_back && !can_reach_graph(graph, &edge.target, node_id) {
                     continue;
                 }
                 self.resolve_edge(
@@ -1463,6 +1581,14 @@ impl Engine {
                     false,
                     record,
                 )?;
+            }
+        } else {
+            for edge in &untaken_normal {
+                if !state.terminal.contains_key(&edge.target)
+                    && graph.exit_waits(state, node_id, &edge.target)
+                {
+                    state.held.insert(edge.id.clone());
+                }
             }
         }
         if outcome == NodeOutcome::Failed && !routed && taken_loop.is_empty() {
@@ -1478,11 +1604,51 @@ impl Engine {
                 format!("Node '{label}' failed and its failure route already ran.")
             });
         }
+        // A loop that can no longer go round in this pass releases its exits.
+        self.release_settled_exits(graph, state, run_id, record)?;
         Ok(effect)
     }
 
+    /// Resolve, as untaken, the held exits whose loops have settled: every
+    /// step they repeat finished this pass, so none can take the exit.
+    fn release_settled_exits(
+        &self,
+        graph: &Graph,
+        state: &mut RunState,
+        run_id: &str,
+        record: bool,
+    ) -> Result<(), EngineError> {
+        loop {
+            let mut settled: Vec<(usize, Edge)> = state
+                .held
+                .iter()
+                .filter_map(|id| graph.edges.get(id))
+                .filter(|(_, edge)| !graph.exit_waits(state, &edge.source, &edge.target))
+                .cloned()
+                .collect();
+            // Held ids no longer in the graph cannot be released; drop them.
+            state.held.retain(|id| graph.edges.contains_key(id));
+            if settled.is_empty() {
+                return Ok(());
+            }
+            settled.sort_by_key(|(index, _)| *index);
+            for (_, edge) in settled {
+                self.settle_edge(
+                    graph,
+                    state,
+                    run_id,
+                    &edge.target,
+                    Some(&edge.id),
+                    false,
+                    record,
+                )?;
+            }
+        }
+    }
+
     /// Resolve, as untaken, the edges still pending into nodes whose sources
-    /// have all finished. Returns whether anything changed.
+    /// have all finished, including exits still held for a loop: nothing can
+    /// run, so no loop can go round. Returns whether anything changed.
     fn release_waiting_exits(
         &self,
         graph: &Graph,
@@ -1513,21 +1679,23 @@ impl Engine {
             .collect();
         for (node_id, unresolved) in &waiting {
             for edge_id in unresolved {
-                self.resolve_edge(graph, state, run_id, node_id, Some(edge_id), false, true)?;
+                self.settle_edge(graph, state, run_id, node_id, Some(edge_id), false, true)?;
             }
             // Anything still counted (should not happen) resolves as before.
             while !state.terminal.contains_key(node_id)
                 && state.pending.get(node_id).copied().unwrap_or(0) > 0
             {
-                self.resolve_edge(graph, state, run_id, node_id, None, false, true)?;
+                self.settle_edge(graph, state, run_id, node_id, None, false, true)?;
             }
         }
+        self.release_settled_exits(graph, state, run_id, true)?;
         Ok(!waiting.is_empty())
     }
 
     /// Mark one incoming edge resolved for `target`; cascade skip when the
     /// node can no longer be taken. `edge_id` is None for a loop-back edge,
-    /// which is not counted in `pending`.
+    /// which is not counted in `pending`. An untaken exit of a loop that may
+    /// still go round is held instead, so the steps after the loop wait.
     #[allow(clippy::too_many_arguments)]
     fn resolve_edge(
         &self,
@@ -1542,8 +1710,44 @@ impl Engine {
         if state.terminal.contains_key(target) {
             return Ok(());
         }
-        // One arrival per edge per pass: a looping source visited again must
-        // not count as the arrival of another branch.
+        if let Some(id) = edge_id {
+            // One arrival per edge per pass: a looping source visited again
+            // must not count as the arrival of another branch.
+            if let Some(previous) = state.resolved.get_mut(id) {
+                *previous = taken;
+                return Ok(());
+            }
+            let leaves_running_loop = !taken
+                && graph
+                    .edges
+                    .get(id)
+                    .is_some_and(|(_, edge)| graph.exit_waits(state, &edge.source, target));
+            if leaves_running_loop {
+                state.held.insert(id.to_string());
+                return Ok(());
+            }
+        }
+        self.settle_edge(graph, state, run_id, target, edge_id, taken, record)
+    }
+
+    /// `resolve_edge` without holding loop exits.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_edge(
+        &self,
+        graph: &Graph,
+        state: &mut RunState,
+        run_id: &str,
+        target: &str,
+        edge_id: Option<&str>,
+        taken: bool,
+        record: bool,
+    ) -> Result<(), EngineError> {
+        if let Some(id) = edge_id {
+            state.held.remove(id);
+        }
+        if state.terminal.contains_key(target) {
+            return Ok(());
+        }
         if let Some(id) = edge_id {
             if state.resolved.insert(id.to_string(), taken).is_some() {
                 return Ok(());
@@ -1602,22 +1806,22 @@ impl Engine {
     }
 
     /// Prepare a loop target for re-execution: clear terminal marks for the
-    /// nodes on the cycle (reachable from the target and able to reach the
-    /// source), so they run again bounded by `max_visits`. Steps the earlier
-    /// pass skipped downstream of the cycle (a failure route it did not take,
-    /// the steps after a condition a failure skipped) are decided again by
-    /// the next pass. Other nodes off the cycle keep their state: exit-path
-    /// nodes resolve on the exit visit, and one-shot side nodes stay
-    /// completed. History rows stay in SQLite.
-    fn reset_cycle(&self, graph: &Graph, state: &mut RunState, target: &str, source: &str) {
+    /// steps the loop repeats (`Graph::loop_bodies`), so they run again
+    /// bounded by `max_visits`. An inner loop re-arms only itself, never the
+    /// outer loop's steps before or after it; an outer loop re-arms the loops
+    /// inside it. Steps the earlier pass skipped downstream of the cycle (a
+    /// failure route it did not take, the steps after a condition a failure
+    /// skipped) are decided again by the next pass. Other nodes off the cycle
+    /// keep their state: exit-path nodes resolve on the exit visit, and
+    /// one-shot side nodes stay completed. History rows stay in SQLite.
+    fn reset_cycle(&self, graph: &Graph, state: &mut RunState, loop_edge: &Edge) {
+        let target = loop_edge.target.as_str();
         let from_target = reachable_from_graph(graph, target);
-        let mut rearmed: HashSet<String> = from_target
-            .iter()
-            .filter(|id| can_reach_graph(graph, id, source) || id.as_str() == source)
-            .cloned()
-            .collect();
+        let mut rearmed: HashSet<String> =
+            graph.loop_body(&loop_edge.id).cloned().unwrap_or_default();
         // The source just completed; it rejoins the cycle as re-runnable.
-        rearmed.insert(source.to_string());
+        rearmed.insert(loop_edge.source.clone());
+        rearmed.insert(target.to_string());
         loop {
             let more: Vec<String> = from_target
                 .iter()
@@ -1665,10 +1869,12 @@ impl Engine {
         }
         // Recompute readiness: pending = non-loop incoming from
         // non-terminal sources, which resolve again; taken cleared (the loop
-        // edge re-sets it).
+        // edge re-sets it). An exit held into a re-armed step is decided
+        // again with it, so it is no longer held.
         for node_id in &rearmed {
             let mut pending = 0;
             for edge in graph.incoming.get(node_id).into_iter().flatten() {
+                state.held.remove(&edge.id);
                 if graph.is_loop_edge(&edge.id) || state.terminal.contains_key(&edge.source) {
                     continue;
                 }
@@ -4075,10 +4281,6 @@ fn reachable_from_graph(graph: &Graph, from: &str) -> HashSet<String> {
         }
     }
     seen
-}
-
-fn can_reach_graph(graph: &Graph, from: &str, target: &str) -> bool {
-    reachable_from_graph(graph, from).contains(target)
 }
 
 enum CommandOutcome {
@@ -7135,6 +7337,737 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         );
         let report = rows.iter().rev().find(|r| r.node_id == "report").unwrap();
         assert!(report.stdout.contains("lint-done"), "{rows:?}");
+    }
+
+    // Nested loops. Every earlier loop bug ended a run "Succeeded" without
+    // doing everything, so these assert which steps ran, in which order and
+    // how often, and which were skipped, not only how the run ended.
+
+    /// A command that prints the next line of `plan` on each visit (after
+    /// `delay` seconds) and fails when that line is `fail`.
+    fn scripted(
+        id: &str,
+        dir: &tempfile::TempDir,
+        plan: &[&str],
+        delay: &str,
+        max_visits: u32,
+    ) -> Node {
+        let file = dir.path().join(format!("{id}.plan"));
+        std::fs::write(&file, format!("{}\n", plan.join("\n"))).unwrap();
+        let script = r#"n=$(( $(cat "$1.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$1.n"; sleep "$2"; line=$(sed -n "${n}p" "$1"); echo "$line"; [ "$line" != fail ]"#;
+        let file = file.to_string_lossy().into_owned();
+        let mut node = command_node(id, "sh", &["-c", script, "orchevia", &file, delay], 100.0);
+        node.config.max_visits = Some(max_visits);
+        node
+    }
+
+    /// A condition that is true while `node.<step>.output` contains `needle`.
+    fn output_gate(id: &str, step: &str, needle: &str, max_visits: u32) -> Node {
+        Node {
+            config: NodeConfig {
+                condition: Some(ConditionConfig {
+                    logic: ConditionLogic::And,
+                    clauses: vec![ConditionClause {
+                        left: format!("node.{step}.output"),
+                        op: ConditionOp::Contains,
+                        right: needle.into(),
+                    }],
+                }),
+                max_visits: Some(max_visits),
+                ..NodeConfig::default()
+            },
+            ..always_false_gate(id)
+        }
+    }
+
+    /// The steps that ran, in the order they finished. A condition shows the
+    /// branch it took and a failed step is marked.
+    fn ran(db: &SqliteDb, run_id: &str) -> Vec<String> {
+        let mut rows: Vec<StoredNodeResult> = db
+            .list_node_results(run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|r| {
+                r.node_id != "run"
+                    && matches!(
+                        r.status.as_str(),
+                        "succeeded" | "failed" | "approved" | "rejected"
+                    )
+            })
+            .collect();
+        rows.sort_by(|a, b| a.finished_at.cmp(&b.finished_at).then(a.id.cmp(&b.id)));
+        rows.iter()
+            .map(|r| match (branch_of_row(r), r.status.as_str()) {
+                (Some(branch), _) => format!("{}:{branch}", r.node_id),
+                (None, "failed" | "rejected") => format!("{}:{}", r.node_id, r.status),
+                _ => r.node_id.clone(),
+            })
+            .collect()
+    }
+
+    /// The steps skipped, in the order the skips were recorded.
+    fn skipped_steps(db: &SqliteDb, run_id: &str) -> Vec<String> {
+        db.list_node_results(run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.status == "skipped")
+            .map(|r| r.node_id)
+            .collect()
+    }
+
+    fn run_error(db: &SqliteDb, run_id: &str) -> Option<String> {
+        db.list_node_results(run_id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node_id == "run")
+            .and_then(|r| r.error)
+    }
+
+    /// The nested review/fix shape:
+    ///
+    /// ```text
+    /// start → implement → test → gate -true-> fix → test        (inner loop)
+    ///                            gate -false-> review → outer
+    ///         outer -true-> implement                           (outer loop)
+    ///         outer -false-> publish → end
+    /// ```
+    ///
+    /// `gate` goes round while the test prints "red", `outer` while the
+    /// review prints "changes". Each condition shares its step's bound.
+    fn nested_loops(
+        id: &str,
+        dir: &tempfile::TempDir,
+        implement: (&[&str], u32),
+        test: (&[&str], u32),
+        fix: (&[&str], u32),
+        review: (&[&str], u32),
+    ) -> Workflow {
+        loop_wf(
+            id,
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                scripted("implement", dir, implement.0, "0", implement.1),
+                scripted("test", dir, test.0, "0", test.1),
+                output_gate("gate", "test", "red", test.1),
+                scripted("fix", dir, fix.0, "0", fix.1),
+                scripted("review", dir, review.0, "0", review.1),
+                output_gate("outer", "review", "changes", review.1),
+                command_node("publish", "echo", &["publish"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "implement", None),
+                edge("e1", "implement", "test", None),
+                edge("e2", "test", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "test", None),
+                edge("e5", "gate", "review", Some("false")),
+                edge("e6", "review", "outer", None),
+                edge("e7", "outer", "implement", Some("true")),
+                edge("e8", "outer", "publish", Some("false")),
+                edge("e9", "publish", "end", None),
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn a_fix_loop_inside_a_review_loop_waits_to_review_until_the_tests_pass() {
+        // The outer loop goes back to the start of the inner one (both loop to
+        // `test`). The inner exit `review` leads back through `outer`, yet it
+        // must wait for the inner loop, not be skipped on every fix.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let wf = loop_wf(
+            "wf-nested-shared",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                scripted(
+                    "test",
+                    &dir,
+                    &["red", "red", "green", "red", "green"],
+                    "0",
+                    5,
+                ),
+                output_gate("gate", "test", "red", 5),
+                scripted("fix", &dir, &["f1", "f2", "f3"], "0", 3),
+                scripted("review", &dir, &["changes", "ok"], "0", 2),
+                output_gate("outer", "review", "changes", 2),
+                command_node("publish", "echo", &["publish"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "test", None),
+                edge("e1", "test", "gate", None),
+                edge("e2", "gate", "fix", Some("true")),
+                edge("e3", "fix", "test", None),
+                edge("e4", "gate", "review", Some("false")),
+                edge("e5", "review", "outer", None),
+                edge("e6", "outer", "test", Some("true")),
+                edge("e7", "outer", "publish", Some("false")),
+                edge("e8", "publish", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-nested-shared").await;
+        let rows = db.list_node_results("run-nested-shared").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(
+            ran(&db, "run-nested-shared"),
+            [
+                "start",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:false",
+                "publish",
+                "end",
+            ]
+        );
+        // Only the fix each passing test made unnecessary is skipped.
+        assert_eq!(skipped_steps(&db, "run-nested-shared"), ["fix", "fix"]);
+    }
+
+    #[tokio::test]
+    async fn an_inner_loop_exit_through_the_outer_condition_finishes_the_run() {
+        // The known limit: the inner exit is the outer condition itself, which
+        // loops back to `plan`, a step before the inner loop.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let wf = loop_wf(
+            "wf-nested-exit",
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                scripted("plan", &dir, &["again", "done"], "0", 2),
+                scripted("test", &dir, &["red", "green", "red", "green"], "0", 4),
+                output_gate("gate", "test", "red", 4),
+                scripted("fix", &dir, &["f1", "f2"], "0", 2),
+                output_gate("outer", "plan", "again", 2),
+                command_node("publish", "echo", &["publish"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "plan", None),
+                edge("e1", "plan", "test", None),
+                edge("e2", "test", "gate", None),
+                edge("e3", "gate", "fix", Some("true")),
+                edge("e4", "fix", "test", None),
+                edge("e5", "gate", "outer", Some("false")),
+                edge("e6", "outer", "plan", Some("true")),
+                edge("e7", "outer", "publish", Some("false")),
+                edge("e8", "publish", "end", None),
+            ],
+        );
+        run_to_end(&db, &engine, wf, "run-nested-exit").await;
+        let rows = db.list_node_results("run-nested-exit").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(
+            ran(&db, "run-nested-exit"),
+            [
+                "start",
+                "plan",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "outer:true",
+                "plan",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "outer:false",
+                "publish",
+                "end",
+            ]
+        );
+        assert_eq!(skipped_steps(&db, "run-nested-exit"), ["fix", "fix"]);
+    }
+
+    #[tokio::test]
+    async fn both_loops_go_round_as_often_as_their_conditions_say() {
+        // Three outer passes needing 2, 0 and 1 fixes.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let wf = nested_loops(
+            "wf-nested-counts",
+            &dir,
+            (&["i1", "i2", "i3"], 3),
+            (&["red", "red", "green", "green", "red", "green"], 6),
+            (&["f1", "f2", "f3"], 3),
+            (&["changes", "changes", "ok"], 3),
+        );
+        run_to_end(&db, &engine, wf, "run-nested-counts").await;
+        let rows = db.list_node_results("run-nested-counts").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        let trace = ran(&db, "run-nested-counts");
+        assert_eq!(
+            trace,
+            [
+                "start",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "implement",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:false",
+                "publish",
+                "end",
+            ]
+        );
+        let count = |id: &str| trace.iter().filter(|step| *step == id).count();
+        assert_eq!(
+            (
+                count("implement"),
+                count("test"),
+                count("fix"),
+                count("review")
+            ),
+            (3, 6, 3, 3)
+        );
+        assert_eq!(
+            skipped_steps(&db, "run-nested-counts"),
+            ["fix", "fix", "fix"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inner_loop_bound_counts_visits_across_outer_passes() {
+        // fix (max 2) runs once on outer pass 1; pass 2 needs two fixes, and the
+        // second is over the bound.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let wf = nested_loops(
+            "wf-inner-exhausted",
+            &dir,
+            (&["i1", "i2"], 2),
+            (&["red", "green", "red", "red", "red"], 5),
+            (&["f1", "f2", "f3"], 2),
+            (&["changes", "ok"], 2),
+        );
+        run_to_end(&db, &engine, wf, "run-inner-exhausted").await;
+        let rows = db.list_node_results("run-inner-exhausted").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Failed,
+            "{rows:?}"
+        );
+        assert_eq!(
+            run_error(&db, "run-inner-exhausted").as_deref(),
+            Some("Loop limit exceeded at 'fix' (max 2 visits).")
+        );
+        assert_eq!(
+            ran(&db, "run-inner-exhausted"),
+            [
+                "start",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:true",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outer_loop_that_keeps_asking_for_changes_stops_at_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let wf = nested_loops(
+            "wf-outer-exhausted",
+            &dir,
+            (&["i1", "i2", "i3"], 2),
+            (&["red", "green", "red", "green"], 4),
+            (&["f1", "f2"], 2),
+            (&["changes", "changes"], 2),
+        );
+        run_to_end(&db, &engine, wf, "run-outer-exhausted").await;
+        let rows = db.list_node_results("run-outer-exhausted").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Failed,
+            "{rows:?}"
+        );
+        assert_eq!(
+            run_error(&db, "run-outer-exhausted").as_deref(),
+            Some("Loop limit exceeded at 'implement' (max 2 visits).")
+        );
+        assert_eq!(
+            ran(&db, "run-outer-exhausted"),
+            [
+                "start",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+            ]
+        );
+    }
+
+    /// Nested loops with a join after the outer loop:
+    ///
+    /// ```text
+    /// start → test (-failure-> fix) → gate -true-> fix → test   (inner loop)
+    ///                                 gate -false-> review → outer
+    ///         outer -true-> test                                (outer loop)
+    ///         outer -false-> report ← lint ← start
+    ///         report → end
+    /// ```
+    ///
+    /// A failing test routes straight into the fix. `gate` goes round while
+    /// the test prints "warn", `outer` while the review prints "changes".
+    fn nested_loops_with_join(
+        id: &str,
+        dir: &tempfile::TempDir,
+        test: &[&str],
+        gate_on: &str,
+        lint_secs: &str,
+    ) -> Workflow {
+        loop_wf(
+            id,
+            vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                scripted("test", dir, test, "0.3", 6),
+                output_gate("gate", "test", gate_on, 6),
+                scripted("fix", dir, &["f1", "f2", "f3"], "0", 3),
+                scripted("review", dir, &["changes", "ok"], "0", 2),
+                output_gate("outer", "review", "changes", 2),
+                command_node(
+                    "lint",
+                    "sh",
+                    &["-c", &format!("sleep {lint_secs}; echo lint-done")],
+                    100.0,
+                ),
+                command_node("report", "echo", &["{{node.lint.output}}"], 400.0),
+                simple_node("end", NodeKind::End, 500.0),
+            ],
+            vec![
+                edge("e0", "start", "test", None),
+                edge("e1", "start", "lint", None),
+                edge("e2", "test", "gate", None),
+                edge("e3", "test", "fix", Some("failure")),
+                edge("e4", "gate", "fix", Some("true")),
+                edge("e5", "fix", "test", None),
+                edge("e6", "gate", "review", Some("false")),
+                edge("e7", "review", "outer", None),
+                edge("e8", "outer", "test", Some("true")),
+                edge("e9", "outer", "report", Some("false")),
+                edge("e10", "lint", "report", None),
+                edge("e11", "report", "end", None),
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn a_failing_test_inside_the_inner_loop_routes_to_the_fix_and_the_join_waits() {
+        // lint finishes first. A failing test skips gate on that pass; the skip
+        // must stay inside the inner loop instead of reaching the join, which
+        // would then run on lint alone before the loops finish.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let wf = nested_loops_with_join(
+            "wf-nested-failure",
+            &dir,
+            &["fail", "ok", "fail", "ok"],
+            "warn",
+            "0",
+        );
+        run_to_end(&db, &engine, wf, "run-nested-failure").await;
+        let rows = db.list_node_results("run-nested-failure").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        let trace = ran(&db, "run-nested-failure");
+        let lint = trace.iter().position(|step| step == "lint").unwrap();
+        let report = trace.iter().position(|step| step == "report").unwrap();
+        assert!(lint < report, "{trace:?}");
+        let without_lint: Vec<&str> = trace
+            .iter()
+            .map(String::as_str)
+            .filter(|step| *step != "lint")
+            .collect();
+        assert_eq!(
+            without_lint,
+            [
+                "start",
+                "test:failed",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "test:failed",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:false",
+                "report",
+                "end",
+            ]
+        );
+        let skipped = skipped_steps(&db, "run-nested-failure");
+        assert!(
+            !skipped
+                .iter()
+                .any(|id| ["review", "outer", "report", "end"].contains(&id.as_str())),
+            "{skipped:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_join_after_nested_loops_counts_each_arrival_once() {
+        // gate loops on "red" now. With a fast lint the join must wait for the
+        // loops; with a slow lint it must wait for lint. Either way it runs
+        // once, after the outer loop, with lint's output.
+        for (lint_secs, run_id) in [("0", "run-nested-join-fast"), ("2", "run-nested-join-slow")] {
+            let dir = tempfile::tempdir().unwrap();
+            let (db, engine) = harness();
+            let wf = nested_loops_with_join(
+                "wf-nested-join",
+                &dir,
+                &["red", "green", "red", "green"],
+                "red",
+                lint_secs,
+            );
+            run_to_end(&db, &engine, wf, run_id).await;
+            let rows = db.list_node_results(run_id).unwrap();
+            assert_eq!(
+                db.list_runs(10).unwrap()[0].status,
+                RunStatus::Succeeded,
+                "{rows:?}"
+            );
+            let trace = ran(&db, run_id);
+            let without_lint: Vec<&str> = trace
+                .iter()
+                .map(String::as_str)
+                .filter(|step| *step != "lint")
+                .collect();
+            assert_eq!(
+                without_lint,
+                [
+                    "start",
+                    "test",
+                    "gate:true",
+                    "fix",
+                    "test",
+                    "gate:false",
+                    "review",
+                    "outer:true",
+                    "test",
+                    "gate:true",
+                    "fix",
+                    "test",
+                    "gate:false",
+                    "review",
+                    "outer:false",
+                    "report",
+                    "end",
+                ],
+                "{run_id}"
+            );
+            let lint = trace.iter().position(|step| step == "lint").unwrap();
+            let report = trace.iter().position(|step| step == "report").unwrap();
+            assert!(lint < report, "{run_id}: {trace:?}");
+            let report = rows.iter().find(|r| r.node_id == "report").unwrap();
+            assert!(report.stdout.contains("lint-done"), "{run_id}: {rows:?}");
+            let skipped = skipped_steps(&db, run_id);
+            assert!(
+                !skipped
+                    .iter()
+                    .any(|id| ["review", "outer", "report", "end"].contains(&id.as_str())),
+                "{run_id}: {skipped:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_route_out_of_the_inner_loop_ends_both_loops() {
+        // fix passes on outer pass 1 and fails on pass 2: its failure route
+        // (not taken on pass 1) runs, and the steps after both loops are skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut wf = nested_loops(
+            "wf-nested-rescue",
+            &dir,
+            (&["i1", "i2"], 2),
+            (&["red", "green", "red"], 3),
+            (&["f1", "fail"], 2),
+            (&["changes"], 2),
+        );
+        wf.nodes
+            .push(command_node("rescue", "echo", &["rescue"], 400.0));
+        wf.edges.push(edge("e10", "fix", "rescue", Some("failure")));
+        wf.edges.push(edge("e11", "rescue", "end", None));
+        run_to_end(&db, &engine, wf, "run-nested-rescue").await;
+        let rows = db.list_node_results("run-nested-rescue").unwrap();
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(
+            ran(&db, "run-nested-rescue"),
+            [
+                "start",
+                "implement",
+                "test",
+                "gate:true",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "implement",
+                "test",
+                "gate:true",
+                "fix:failed",
+                "rescue",
+                "end",
+            ]
+        );
+        assert_eq!(
+            skipped_steps(&db, "run-nested-rescue"),
+            ["fix", "review", "outer", "publish"]
+        );
+    }
+
+    #[tokio::test]
+    async fn approvals_inside_nested_loops_resume_to_the_same_result() {
+        // Every fix needs an approval, so the run pauses inside the inner loop
+        // on both outer passes and each resume replays history.
+        let dir = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut wf = nested_loops(
+            "wf-nested-approval",
+            &dir,
+            (&["i1", "i2"], 2),
+            (&["red", "red", "green", "red", "green"], 5),
+            (&["f1", "f2", "f3"], 3),
+            (&["changes", "ok"], 2),
+        );
+        let mut confirm = simple_node("confirm", NodeKind::Approval, 250.0);
+        confirm.config.max_visits = Some(3);
+        wf.nodes.push(confirm);
+        wf.edges.retain(|e| e.id != "e3");
+        wf.edges.push(edge("e3", "gate", "confirm", Some("true")));
+        wf.edges.push(edge("e10", "confirm", "fix", None));
+        run_to_end(&db, &engine, wf.clone(), "run-nested-approval").await;
+        let mut pauses = 0;
+        while db.list_runs(10).unwrap()[0].status == RunStatus::Paused && pauses < 10 {
+            pauses += 1;
+            engine
+                .approve_run("run-nested-approval", true, None, wf.clone())
+                .await
+                .expect("approve");
+        }
+        let rows = db.list_node_results("run-nested-approval").unwrap();
+        assert_eq!(pauses, 3, "{rows:?}");
+        assert_eq!(
+            db.list_runs(10).unwrap()[0].status,
+            RunStatus::Succeeded,
+            "{rows:?}"
+        );
+        assert_eq!(
+            ran(&db, "run-nested-approval"),
+            [
+                "start",
+                "implement",
+                "test",
+                "gate:true",
+                "confirm",
+                "fix",
+                "test",
+                "gate:true",
+                "confirm",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:true",
+                "implement",
+                "test",
+                "gate:true",
+                "confirm",
+                "fix",
+                "test",
+                "gate:false",
+                "review",
+                "outer:false",
+                "publish",
+                "end",
+            ]
+        );
+        assert_eq!(
+            skipped_steps(&db, "run-nested-approval"),
+            ["confirm", "fix", "confirm", "fix"]
+        );
     }
 
     #[tokio::test]
