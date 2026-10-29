@@ -345,3 +345,58 @@ test('macOS apps are signed as a whole and checked before they ship', () => {
     /if: needs\.changes\.outputs\.macos == 'true'\n\s+runs-on: macos-15\n[\s\S]*?run: bash scripts\/verify-macos-app\.sh target\/aarch64-apple-darwin\/release\/bundle --launch\n/,
   );
 });
+
+// Test functions of a top-level module, as libtest names them.
+function testsIn(file, module) {
+  const source = readFileSync(`crates/core/src/${file}.rs`, 'utf8');
+  const start = source.indexOf(`\nmod ${module} {`);
+  if (start === -1) return [];
+  const end = source.indexOf('\nmod ', start + 1);
+  return Array.from(
+    source
+      .slice(start, end === -1 ? undefined : end)
+      .matchAll(/#\[(?:tokio::)?test\]\s*(?:#\[[^\]]*\]\s*)*(?:async )?fn (\w+)/g),
+    (match) => match[1],
+  );
+}
+
+test('macOS CI runs the process-tree cleanup tests, and every filter selects tests', () => {
+  const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
+  const job = ci.slice(ci.indexOf('\n  macos:'), ci.indexOf('\n  result:'));
+  assert.match(
+    job,
+    /if: needs\.changes\.outputs\.macos == 'true'\n\s+runs-on: macos-15\n/,
+  );
+  const step = /- name: Process-tree cleanup tests\n\s+run: >-\n((?: {10}.*\n)+)/.exec(
+    job,
+  );
+  assert.ok(step, 'missing cleanup test step');
+  const command = step[1].trim().split(/\s+/);
+  const separator = command.indexOf('--');
+  assert.deepEqual(command.slice(0, separator), [
+    'cargo',
+    'test',
+    '-p',
+    'orchevia-core',
+    '--locked',
+    '--lib',
+  ]);
+  // libtest runs every test whose path contains one of the filters.
+  const selected = command.slice(separator + 1).flatMap((filter) => {
+    const [file = '', module = '', name = ''] = filter.split('::');
+    const tests = testsIn(file, module).filter((test) => test.startsWith(name));
+    assert.ok(tests.length > 0, `${filter} selects no test`);
+    return tests;
+  });
+  for (const name of [
+    'timeout_stops_descendants_in_the_process_group',
+    'app_exit_cleanup_stops_tracked_groups',
+    'a_finished_exchange_stops_everything_the_server_started',
+    'timeout_returns_promptly_while_a_grandchild_holds_the_pipe',
+    'noisy_login_shell_reports_path_promptly_and_its_jobs_are_stopped',
+    'cancel_and_timeout_stop_descendants_and_keep_partial_output',
+  ])
+    assert.ok(selected.includes(name), name);
+  // A cleanup failure stops the job before the long packaging step.
+  assert.ok(job.indexOf('Process-tree cleanup tests') < job.indexOf('pnpm tauri build'));
+});

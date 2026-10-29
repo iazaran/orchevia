@@ -442,6 +442,56 @@ fn run_with_timeout(
     }
 }
 
+/// Process checks for the cleanup tests that do not rely on the `killpg` probe
+/// those tests verify. `ps -o stat= -p <pid>` prints just the state with both
+/// procps (Linux) and BSD `ps` (macOS). A zombie has exited and only waits for
+/// its parent, so it counts as stopped: macOS `killpg` already skips zombies,
+/// while Linux still finds them until they are reaped.
+#[cfg(all(test, unix))]
+pub(crate) mod test_support {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    /// The process id a test script wrote to `file` (`echo $! > file`).
+    pub(crate) fn recorded_pid(file: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(pid) = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no process id recorded in {}",
+                file.display()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Whether `pid` is still running (not exited, not a zombie).
+    pub(crate) fn running(pid: u32) -> bool {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps is available on Linux and macOS");
+        let state = String::from_utf8_lossy(&output.stdout);
+        let state = state.trim();
+        output.status.success() && !state.is_empty() && !state.starts_with('Z')
+    }
+
+    /// Whether `pid` stops running within three seconds.
+    pub(crate) fn stops(pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while running(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !running(pid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,13 +689,15 @@ mod tests {
     fn timeout_stops_descendants_in_the_process_group() {
         let dir = tempfile::tempdir().expect("tempdir");
         let group_file = dir.path().join("group");
+        let sleeper_file = dir.path().join("sleeper");
         let spec = CommandSpec {
             executable: "sh".into(),
             args: vec![
                 "-c".into(),
                 format!(
-                    "echo $$ > {}; sleep 30 & printf started; wait",
-                    shell_escape::escape(group_file.to_string_lossy())
+                    "echo $$ > {}; sleep 30 & echo $! > {}; printf started; wait",
+                    shell_escape::escape(group_file.to_string_lossy()),
+                    shell_escape::escape(sleeper_file.to_string_lossy())
                 ),
             ],
             working_dir: None,
@@ -654,13 +706,14 @@ mod tests {
         let result = run_command(&spec, Some(Duration::from_millis(300))).expect("run");
         assert!(result.timed_out);
         assert_eq!(result.stdout, "started");
-        let group: u32 = std::fs::read_to_string(&group_file)
-            .expect("group")
-            .trim()
-            .parse()
-            .expect("pid");
+        let group = test_support::recorded_pid(&group_file);
         assert!(
             wait_until_group_gone(group),
+            "grandchild survived the timeout"
+        );
+        let sleeper = test_support::recorded_pid(&sleeper_file);
+        assert!(
+            test_support::stops(sleeper),
             "grandchild survived the timeout"
         );
     }
@@ -668,14 +721,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn app_exit_cleanup_stops_tracked_groups() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sleeper_file = dir.path().join("sleeper");
         let mut child = {
             let mut cmd = std::process::Command::new("sh");
-            cmd.args(["-c", "sleep 30 & wait"]);
+            cmd.args([
+                "-c",
+                &format!(
+                    "sleep 30 & echo $! > {}; wait",
+                    shell_escape::escape(sleeper_file.to_string_lossy())
+                ),
+            ]);
             isolate_process_group(&mut cmd);
             cmd.spawn().expect("spawn")
         };
         let mut group = ProcessGroup::new(Some(child.id()));
         assert!(process_group_alive(child.id()));
+        // Both probes see the live grandchild, so neither can pass by default.
+        let sleeper = test_support::recorded_pid(&sleeper_file);
+        assert!(test_support::running(sleeper));
         let tracked = LIVE_GROUPS.lock().expect("registry").clone();
         assert!(tracked.contains(&child.id()));
         // Exit cleanup signals the tracked list; scoped here so parallel
@@ -683,6 +747,7 @@ mod tests {
         terminate_groups(&[child.id()]);
         let _ = child.wait();
         assert!(wait_until_group_gone(child.id()));
+        assert!(test_support::stops(sleeper), "grandchild survived app exit");
         group.release();
         assert!(!LIVE_GROUPS.lock().expect("registry").contains(&child.id()));
     }

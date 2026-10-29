@@ -53,6 +53,18 @@ test('bundle inputs also package and verify the macOS app', () => {
   );
 });
 
+test('the process-group code also runs the macOS cleanup tests; other core code does not', () => {
+  assert.deepEqual(classifyChanges(['crates/core/src/process.rs']), {
+    ...none,
+    rust: true,
+    desktop: true,
+    macos: true,
+  });
+  for (const path of ['crates/core/src/mcp.rs', 'crates/core/src/tools.rs']) {
+    assert.deepEqual(classifyChanges([path]), { ...none, rust: true, desktop: true });
+  }
+});
+
 test('shared contracts, locks, and delivery scripts validate both stacks', () => {
   for (const path of [
     'Cargo.lock',

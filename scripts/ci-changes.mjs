@@ -33,10 +33,13 @@ export function classifyChanges(paths) {
     } else if (path.startsWith('crates/') || path.startsWith('src-tauri/')) {
       changes.rust = changes.desktop = true;
       // Configuration, icons and manifests shape the signed bundle; Rust source does not.
+      // The macOS job also runs the process-tree cleanup tests, so the process-group
+      // code itself is a macOS input too.
       if (
-        path.startsWith('src-tauri/') &&
-        !path.startsWith('src-tauri/src/') &&
-        !path.startsWith('src-tauri/tests/')
+        (path.startsWith('src-tauri/') &&
+          !path.startsWith('src-tauri/src/') &&
+          !path.startsWith('src-tauri/tests/')) ||
+        path === 'crates/core/src/process.rs'
       )
         changes.macos = true;
     } else if (

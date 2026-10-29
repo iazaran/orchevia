@@ -683,13 +683,15 @@ done
         let dir = tempfile::tempdir().expect("tempdir");
         let script = dir.path().join("stuck-mcp.sh");
         let group_file = dir.path().join("group");
+        let sleeper_file = dir.path().join("sleeper");
         // Never answers; a background grandchild inherits stdout, so killing
         // only the direct child would leave `read_line` blocked for 30 s.
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho $$ > {}\nsleep 30 &\nwait\n",
-                shell_escape::escape(group_file.to_string_lossy())
+                "#!/bin/sh\necho $$ > {}\nsleep 30 &\necho $! > {}\nwait\n",
+                shell_escape::escape(group_file.to_string_lossy()),
+                shell_escape::escape(sleeper_file.to_string_lossy())
             ),
         )
         .expect("write");
@@ -722,5 +724,48 @@ done
             !crate::process::process_group_alive(group),
             "grandchild survived"
         );
+        let sleeper = crate::process::test_support::recorded_pid(&sleeper_file);
+        assert!(
+            crate::process::test_support::stops(sleeper),
+            "grandchild survived"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_exchange_stops_everything_the_server_started() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut config) = fixture_config();
+        let group_file = dir.path().join("group");
+        let sleeper_file = dir.path().join("sleeper");
+        // A server that leaves a helper running, as `npx` leaves `node`.
+        let script = dir.path().join("server-with-helper.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nsleep 30 &\necho $! > {}\nexec {}\n",
+                shell_escape::escape(group_file.to_string_lossy()),
+                shell_escape::escape(sleeper_file.to_string_lossy()),
+                shell_escape::escape(config.command.as_str().into())
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        config.command = script.to_string_lossy().into_owned();
+        let tools =
+            list_tools(&config, Duration::from_secs(10), &cancel_flag()).expect("list tools");
+        assert_eq!(tools.len(), 1);
+        let group = crate::process::test_support::recorded_pid(&group_file);
+        let sleeper = crate::process::test_support::recorded_pid(&sleeper_file);
+        assert!(
+            crate::process::test_support::stops(sleeper),
+            "the server's helper survived shutdown"
+        );
+        // Linux still counts the helper until it is reaped.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while crate::process::process_group_alive(group) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!crate::process::process_group_alive(group));
     }
 }

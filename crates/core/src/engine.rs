@@ -9548,9 +9548,11 @@ mod integration_tests {
         for cancel in [true, false] {
             let dir = tempfile::tempdir().unwrap();
             let group_file = dir.path().join("group");
+            let sleeper_file = dir.path().join("sleeper");
             let script = format!(
-                "echo $$ > {}; sleep 30 & echo started; wait",
-                shell_escape::escape(group_file.to_string_lossy())
+                "echo $$ > {}; sleep 30 & echo $! > {}; echo started; wait",
+                shell_escape::escape(group_file.to_string_lossy()),
+                shell_escape::escape(sleeper_file.to_string_lossy())
             );
             let flag = Arc::new(AtomicBool::new(false));
             let cancel_flag = Arc::clone(&flag);
@@ -9588,6 +9590,12 @@ mod integration_tests {
             let group = group_of(&group_file).await;
             assert!(
                 group_gone(group).await,
+                "descendant survived (cancel={cancel})"
+            );
+            // Checked with `ps` too, independent of the group probe.
+            let sleeper = crate::process::test_support::recorded_pid(&sleeper_file);
+            assert!(
+                crate::process::test_support::stops(sleeper),
                 "descendant survived (cancel={cancel})"
             );
         }

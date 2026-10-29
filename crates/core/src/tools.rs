@@ -945,10 +945,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let shell = dir.path().join("fake-shell");
         let job = dir.path().join("job.pid");
+        let sleeper_file = dir.path().join("sleeper.pid");
         write_executable(
             &shell,
             &format!(
-                "#!/bin/sh\necho 'Last login: today'\necho 'rc warning' >&2\nsleep 30 &\necho $$ > {}\nfor script; do :; done\nPATH=\"/orchevia-login-test/bin:$PATH\" /bin/sh -c \"$script\"\necho 'bye from zlogout'\n",
+                "#!/bin/sh\necho 'Last login: today'\necho 'rc warning' >&2\nsleep 30 &\necho $! > {}\necho $$ > {}\nfor script; do :; done\nPATH=\"/orchevia-login-test/bin:$PATH\" /bin/sh -c \"$script\"\necho 'bye from zlogout'\n",
+                shell_escape::escape(sleeper_file.to_string_lossy()),
                 shell_escape::escape(job.to_string_lossy())
             ),
         );
@@ -978,6 +980,11 @@ mod tests {
         }
         assert!(
             !crate::process::process_group_alive(group),
+            "rc job survived"
+        );
+        let sleeper = crate::process::test_support::recorded_pid(&sleeper_file);
+        assert!(
+            crate::process::test_support::stops(sleeper),
             "rc job survived"
         );
     }
