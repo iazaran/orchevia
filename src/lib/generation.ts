@@ -5,6 +5,7 @@
 
 import type { AgentProfile } from './agents';
 import {
+  commandArgv,
   isValidInputName,
   type ValidationIssue,
   type Workflow,
@@ -206,16 +207,18 @@ export function describeGeneratedStep(
       (args.length > 0 ? ' · ' + args.join(' · ') : '')
     );
   }
-  if (node.type === 'command')
+  if (node.type === 'command') {
+    const [executable, ...args] = commandArgv(node.config);
     return (
-      'CLI: ' +
+      (node.config.scriptFile === undefined ? 'CLI: ' : 'Script: ') +
       [
-        node.config.executable ?? 'missing',
-        ...(node.config.args ?? []).map((arg) =>
-          /\s|["']/.test(arg) || !arg ? JSON.stringify(arg) : arg,
-        ),
+        node.config.executable === undefined && node.config.scriptFile === undefined
+          ? 'missing'
+          : (executable ?? 'missing'),
+        ...args.map((arg) => (/\s|["']/.test(arg) || !arg ? JSON.stringify(arg) : arg)),
       ].join(' ')
     );
+  }
   if (node.type === 'approval') return 'Human approval';
   if (node.type === 'condition') return 'True / false decision';
   return '';

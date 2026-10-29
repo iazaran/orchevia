@@ -26,6 +26,7 @@ import {
   NODE_KIND_META,
   arrangeWorkflowPositions,
   bypassedEdgeIds,
+  commandArgv,
   newId,
   nextBranchLabel,
   removeFromWorkflow,
@@ -42,11 +43,7 @@ import { OrcheviaFlowNode, type CanvasNodeData } from './FlowNode';
 const nodeTypes = { orchevia: OrcheviaFlowNode };
 
 function nodeDetail(n: WorkflowNode): string {
-  if (n.type === 'command') {
-    const exe = n.config.executable ?? '';
-    const args = (n.config.args ?? []).join(' ');
-    return `${exe} ${args}`.trim();
-  }
+  if (n.type === 'command') return commandArgv(n.config).join(' ').trim();
   if (n.type === 'approval') return n.config.message ?? 'Approval required';
   if (n.type === 'agent') {
     const prompt = (n.config.prompt ?? '').split('\n')[0] ?? '';

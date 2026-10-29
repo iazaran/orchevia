@@ -1,5 +1,5 @@
 import type { EditObservation, Preference, ProjectMemoryContext } from './generation';
-import type { Workflow, WorkflowNode } from './workflow';
+import { commandArgv, type Workflow, type WorkflowNode } from './workflow';
 import { renderPromptStrict } from './agents';
 
 function hasControlCharacters(value: string): boolean {
@@ -203,10 +203,24 @@ function commandText(node: WorkflowNode, repoDir?: string): string {
   const args = node.config.args ?? [];
   const quote = (s: string): string =>
     /^[A-Za-z0-9_./:-]+$/.test(s) ? s : "'" + s.replaceAll("'", "'\"'\"'") + "'";
+  // A script path stays as written (relative to the folder below); a leading
+  // `~/` stays unquoted so the shell still expands it.
+  const scriptPath = (s: string): string =>
+    s.startsWith('~/') ? '~/' + quote(s.slice(2)) : quote(s);
+  const argv = commandArgv(node.config);
   const command =
-    node.config.executable === 'sh' && args.length === 2 && args[0] === '-c'
+    node.config.scriptFile === undefined &&
+    node.config.executable === 'sh' &&
+    args.length === 2 &&
+    args[0] === '-c'
       ? (args[1] ?? '')
-      : [node.config.executable ?? '', ...args].map(quote).join(' ');
+      : argv
+          .map((arg, i) =>
+            i === 1 && node.config.scriptFile !== undefined
+              ? scriptPath(arg)
+              : quote(arg),
+          )
+          .join(' ');
   const directory = node.config.workingDir?.trim();
   if (directory && repoDir?.trim() && directory !== repoDir.trim()) {
     const quoted = "'" + directory.replaceAll("'", "'\"'\"'") + "'";

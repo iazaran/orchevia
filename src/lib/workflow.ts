@@ -99,6 +99,13 @@ export interface NodeConfig {
   executable?: string;
   args?: string[];
   workingDir?: string;
+  /**
+   * Command steps only: run `<executable, or bash> <scriptFile> <args…>`.
+   * Relative paths resolve against the step's working folder (node
+   * `workingDir`, else `defaults.repoDir`); `~/` is the home folder. Not
+   * templated. Present-but-blank means "script mode, path still to choose".
+   */
+  scriptFile?: string;
   message?: string;
   agentProfileId?: string;
   agentRole?: string;
@@ -639,6 +646,10 @@ export const VALIDATION_CODES = [
   'command-executable-required',
   'command-executable-suspicious',
   'command-timeout-invalid',
+  'command-script-required',
+  'command-script-templated',
+  'command-script-dir-required',
+  'command-script-misplaced',
   'agent-session-group-invalid',
   'agent-session-variable-invalid',
   'agent-session-turns-invalid',
@@ -697,9 +708,124 @@ export type ValidationCode = (typeof VALIDATION_CODES)[number];
  */
 export const SETUP_ISSUE_CODES: readonly string[] = [
   'git-dir-required',
+  'command-script-dir-required',
   'ticket-server-required',
   'mcp-server-required',
 ];
+
+/**
+ * Whether a script path names its own root (`/…`, `\…`, `C:\…`, `~/…`) instead
+ * of resolving against the step's working folder. Mirrors Rust
+ * `script_path_is_rooted` (textual, the same on every platform).
+ */
+export function scriptPathIsRooted(path: string): boolean {
+  return /^(?:[/\\]|~\/|[A-Za-z]:[/\\])/.test(path.trim());
+}
+
+/** The folder a Command step runs in: its own folder, else the workflow default. */
+export function commandWorkingFolder(
+  config: Pick<NodeConfig, 'workingDir'>,
+  defaults?: WorkflowDefaults,
+): string | undefined {
+  const own = (config.workingDir ?? '').trim();
+  if (own !== '') return own;
+  const fallback = (defaults?.repoDir ?? '').trim();
+  return fallback === '' ? undefined : fallback;
+}
+
+/**
+ * A script path as the engine resolves it: relative paths join the working
+ * folder when one is known; rooted paths (and `~/…`, expanded by the engine)
+ * stay as written.
+ */
+export function resolveScriptPath(path: string, workingFolder?: string): string {
+  const script = path.trim();
+  const folder = (workingFolder ?? '').trim().replace(/[/\\]+$/, '');
+  if (script === '' || folder === '' || scriptPathIsRooted(script)) return script;
+  return `${folder}/${script}`;
+}
+
+/**
+ * A script picked with the system file picker, relative to the working folder
+ * when it lies inside it (so the workflow stays portable), else absolute.
+ */
+export function scriptPathFromPicked(picked: string, workingFolder?: string): string {
+  const folder = (workingFolder ?? '').trim().replace(/[/\\]+$/, '');
+  for (const separator of ['/', '\\']) {
+    const prefix = folder + separator;
+    if (folder !== '' && picked.startsWith(prefix) && picked.length > prefix.length)
+      return picked.slice(prefix.length);
+  }
+  return picked;
+}
+
+/**
+ * The program and arguments a Command step runs (mirrors the engine):
+ * `executable args…`, or with a script file `<executable, or bash> <script>
+ * args…`. Pass the working folder to show a relative script resolved.
+ */
+export function commandArgv(config: NodeConfig, workingFolder?: string): string[] {
+  const args = config.args ?? [];
+  if (config.scriptFile === undefined) return [config.executable ?? '', ...args];
+  const interpreter = (config.executable ?? '').trim() || 'bash';
+  return [interpreter, resolveScriptPath(config.scriptFile, workingFolder), ...args];
+}
+
+const INTERPRETERS = [
+  'bash',
+  'sh',
+  'zsh',
+  'dash',
+  'fish',
+  'python',
+  'python3',
+  'node',
+  'deno',
+  'bun',
+  'ruby',
+  'perl',
+  'php',
+  'pwsh',
+  'powershell',
+];
+
+/**
+ * Switch a Command step to "Script file" without dropping anything: an
+ * interpreter running a file (`bash scripts/ci.sh --fast`) keeps running that
+ * file; anything else keeps its executable ("Run with") and arguments and
+ * waits for a script path.
+ */
+export function toScriptMode(config: NodeConfig): NodeConfig {
+  if (config.scriptFile !== undefined) return config;
+  const exe = (config.executable ?? '').trim();
+  const [first, ...rest] = config.args ?? [];
+  const interpreter = exe === '' || INTERPRETERS.includes(exe.split(/[/\\]/).pop() ?? '');
+  if (
+    interpreter &&
+    first !== undefined &&
+    first.trim() !== '' &&
+    !first.startsWith('-') &&
+    !first.includes('{{')
+  )
+    return { ...config, scriptFile: first.trim(), args: rest };
+  return { ...config, scriptFile: '' };
+}
+
+/**
+ * Switch a Command step back to "Command": the script becomes the
+ * interpreter's first argument, so the step still runs the same file.
+ */
+export function toCommandMode(config: NodeConfig): NodeConfig {
+  if (config.scriptFile === undefined) return config;
+  const { scriptFile, ...rest } = config;
+  const script = scriptFile.trim();
+  if (script === '') return rest;
+  return {
+    ...rest,
+    executable: (config.executable ?? '').trim() || 'bash',
+    args: [script, ...(config.args ?? [])],
+  };
+}
 
 /** Routing meaning of an edge label; unknown labels route like success. */
 export type EdgeKind = 'success' | 'failure' | 'true' | 'false' | 'unknown';
@@ -1035,10 +1161,12 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
     switch (node.type) {
       case 'command': {
         const exe = (config.executable ?? '').trim();
-        if (exe === '')
+        const script = config.scriptFile;
+        // A script file runs with `bash` when no interpreter is named.
+        if (exe === '' && script === undefined)
           error(
             'command-executable-required',
-            'Command node requires an executable.',
+            'Command node requires an executable or a script file.',
             at,
           );
         else if (exe === 'compose')
@@ -1053,6 +1181,22 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
             `Command timeout must be between 1 second and 12 hours (${String(MAX_TIMEOUT_SECS)}).`,
             at,
           );
+        if (script !== undefined && script.trim() === '')
+          error('command-script-required', 'Choose the script file this step runs.', at);
+        else if (script !== undefined) {
+          if (script.includes('{{'))
+            error(
+              'command-script-templated',
+              'Script file paths are not templated: use a fixed path and pass values as arguments.',
+              at,
+            );
+          if (!scriptPathIsRooted(script) && needsDir(node))
+            error(
+              'command-script-dir-required',
+              'A relative script path needs a working folder: set one on the step or set a workflow default (select the canvas background to edit Workflow settings).',
+              at,
+            );
+        }
         retry();
         break;
       }
@@ -1279,6 +1423,8 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
         'Required tools only apply to AI Agent nodes.',
         at,
       );
+    if (node.type !== 'command' && config.scriptFile !== undefined)
+      error('command-script-misplaced', 'Only Command steps run script files.', at);
   }
 
   const seenInputs = new Set<string>();

@@ -313,6 +313,7 @@ impl RunOptions {
                         "agentActivity",
                         "simulated",
                         "reusedFrom",
+                        "command",
                     ]
                     .iter()
                     .any(|k| o.contains_key(*k))

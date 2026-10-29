@@ -116,6 +116,12 @@ pub struct NodeConfig {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    /// Command nodes only: a script to run as `<executable or bash> <script>
+    /// <args…>`, so `executable` becomes the interpreter. Relative paths
+    /// resolve against the effective working folder (node `working_dir`, else
+    /// `defaults.repo_dir`); `~/` is the home folder. Never templated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     // -- AI Agent node (Milestone 2) -------------------------------------
@@ -396,6 +402,10 @@ pub const VALIDATION_CODES: &[&str] = &[
     "command-executable-required",
     "command-executable-suspicious",
     "command-timeout-invalid",
+    "command-script-required",
+    "command-script-templated",
+    "command-script-dir-required",
+    "command-script-misplaced",
     "agent-session-group-invalid",
     "agent-session-variable-invalid",
     "agent-session-turns-invalid",
@@ -450,9 +460,52 @@ pub const VALIDATION_CODES: &[&str] = &[
 /// carry them into the editor as setup items instead of being refused.
 pub const SETUP_ISSUE_CODES: &[&str] = &[
     "git-dir-required",
+    "command-script-dir-required",
     "ticket-server-required",
     "mcp-server-required",
 ];
+
+/// Whether a script path names its own root (`/…`, `\…`, `C:\…`, `~/…`)
+/// instead of resolving against the step's working folder. Purely textual,
+/// so validation agrees on every platform and with the TypeScript twin.
+pub fn script_path_is_rooted(path: &str) -> bool {
+    let path = path.trim();
+    let bytes = path.as_bytes();
+    path.starts_with(['/', '\\'])
+        || path.starts_with("~/")
+        || (bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
+}
+
+/// Resolve a Command step's script path: `~/` against `home`, absolute paths
+/// as they are, and anything else against the step's working folder.
+pub fn resolve_script_file(
+    path: &str,
+    working_dir: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("This step has no script file to run.".to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home
+            .map(|home| home.join(rest))
+            .ok_or_else(|| format!("Cannot expand '~' in '{path}': HOME is not set."));
+    }
+    let candidate = std::path::Path::new(path);
+    if candidate.is_absolute() {
+        return Ok(candidate.to_path_buf());
+    }
+    match working_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
+        Some(dir) => Ok(std::path::Path::new(dir).join(candidate)),
+        None => Err(format!(
+            "Script file '{path}' is relative, but this step has no working folder: set one on the step or set a workflow default."
+        )),
+    }
+}
 
 impl Workflow {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
@@ -773,11 +826,12 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
         match node.kind {
             NodeKind::Command => {
                 let exe = node.config.executable.as_deref().unwrap_or("").trim();
-                if exe.is_empty() {
+                // A script file runs with `bash` when no interpreter is named.
+                if exe.is_empty() && node.config.script_file.is_none() {
                     push_error(
                         &mut issues,
                         "command-executable-required",
-                        "Command node requires an executable.".to_string(),
+                        "Command node requires an executable or a script file.".to_string(),
                         Some(node.id.clone()),
                     );
                 } else if exe == "compose" {
@@ -798,6 +852,9 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                             Some(node.id.clone()),
                         );
                     }
+                }
+                if let Some(script) = node.config.script_file.as_deref() {
+                    validate_script_file(wf, node, script, &mut issues);
                 }
                 validate_retry(node, &mut issues);
                 validate_max_visits(node, &mut issues);
@@ -1155,6 +1212,14 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 &mut issues,
                 "agent-required-tools-misplaced",
                 "Required tools only apply to AI Agent nodes.".to_string(),
+                Some(node.id.clone()),
+            );
+        }
+        if node.kind != NodeKind::Command && node.config.script_file.is_some() {
+            push_error(
+                &mut issues,
+                "command-script-misplaced",
+                "Only Command steps run script files.".to_string(),
                 Some(node.id.clone()),
             );
         }
@@ -1543,6 +1608,46 @@ fn validate_github_op(
                 );
             }
         }
+    }
+}
+
+/// Validate a Command step's script path (its existence is checked when the
+/// step runs, on the machine that runs it).
+fn validate_script_file(
+    wf: &Workflow,
+    node: &Node,
+    script: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if script.trim().is_empty() {
+        push_error(
+            issues,
+            "command-script-required",
+            "Choose the script file this step runs.".to_string(),
+            Some(node.id.clone()),
+        );
+        return;
+    }
+    if script.contains("{{") {
+        push_error(
+            issues,
+            "command-script-templated",
+            "Script file paths are not templated: use a fixed path and pass values as arguments."
+                .to_string(),
+            Some(node.id.clone()),
+        );
+    }
+    let has_dir = |dir: Option<&str>| dir.is_some_and(|d| !d.trim().is_empty());
+    if !script_path_is_rooted(script)
+        && !has_dir(node.config.working_dir.as_deref())
+        && !has_dir(wf.defaults.as_ref().and_then(|d| d.repo_dir.as_deref()))
+    {
+        push_error(
+            issues,
+            "command-script-dir-required",
+            "A relative script path needs a working folder: set one on the step or set a workflow default (select the canvas background to edit Workflow settings).".to_string(),
+            Some(node.id.clone()),
+        );
     }
 }
 
@@ -2792,5 +2897,61 @@ mod parity_tests {
                 "{code} is not a run-start check in engine.rs"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod script_file_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn rooted_paths_are_recognized_the_same_way_on_every_platform() {
+        for rooted in [
+            "/usr/bin/x.sh",
+            " ~/bin/x.sh",
+            "\\\\server\\x.ps1",
+            "C:\\x.ps1",
+            "d:/x",
+        ] {
+            assert!(script_path_is_rooted(rooted), "{rooted}");
+        }
+        for relative in ["scripts/x.sh", "./x.sh", "../x.sh", "~x.sh", "~", "C:x"] {
+            assert!(!script_path_is_rooted(relative), "{relative}");
+        }
+    }
+
+    #[test]
+    fn script_paths_resolve_against_the_working_folder_and_home() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            resolve_script_file(" scripts/ci.sh ", Some("/repo"), Some(home)),
+            Ok(PathBuf::from("/repo/scripts/ci.sh"))
+        );
+        assert_eq!(
+            resolve_script_file("~/bin/ci.sh", Some("/repo"), Some(home)),
+            Ok(PathBuf::from("/home/me/bin/ci.sh"))
+        );
+        assert_eq!(
+            resolve_script_file("/opt/ci.sh", None, None),
+            Ok(PathBuf::from("/opt/ci.sh"))
+        );
+        let relative = resolve_script_file("ci.sh", Some("  "), Some(home)).unwrap_err();
+        assert!(relative.contains("no working folder"), "{relative}");
+        let no_home = resolve_script_file("~/ci.sh", Some("/repo"), None).unwrap_err();
+        assert!(no_home.contains("HOME"), "{no_home}");
+        assert!(resolve_script_file(" ", Some("/repo"), Some(home)).is_err());
+    }
+
+    #[test]
+    fn script_file_round_trips_as_camel_case() {
+        let config: NodeConfig = serde_json::from_value(serde_json::json!({
+            "executable": "python3", "scriptFile": "tools/check.py", "args": ["--fast"]
+        }))
+        .unwrap();
+        assert_eq!(config.script_file.as_deref(), Some("tools/check.py"));
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["scriptFile"], "tools/check.py");
+        assert!(serde_json::to_value(NodeConfig::default()).unwrap()["scriptFile"].is_null());
     }
 }

@@ -136,6 +136,22 @@ describe('describeGeneratedStep', () => {
         config: { executable: 'cargo', args: ['test'] },
       }),
     ).toBe('CLI: cargo test');
+    expect(
+      describeGeneratedStep({
+        id: 'script',
+        type: 'command',
+        position: { x: 0, y: 0 },
+        config: { scriptFile: 'scripts/ci.sh', args: ['--all checks'] },
+      }),
+    ).toBe('Script: bash scripts/ci.sh "--all checks"');
+    expect(
+      describeGeneratedStep({
+        id: 'blank',
+        type: 'command',
+        position: { x: 0, y: 0 },
+        config: {},
+      }),
+    ).toBe('CLI: missing');
   });
 });
 

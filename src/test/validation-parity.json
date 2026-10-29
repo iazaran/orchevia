@@ -11,6 +11,10 @@
     "command-executable-required",
     "command-executable-suspicious",
     "command-timeout-invalid",
+    "command-script-required",
+    "command-script-templated",
+    "command-script-dir-required",
+    "command-script-misplaced",
     "agent-session-group-invalid",
     "agent-session-variable-invalid",
     "agent-session-turns-invalid",
@@ -59,7 +63,12 @@
     "unreachable-node",
     "dead-end-node"
   ],
-  "setupCodes": ["git-dir-required", "ticket-server-required", "mcp-server-required"],
+  "setupCodes": [
+    "git-dir-required",
+    "command-script-dir-required",
+    "ticket-server-required",
+    "mcp-server-required"
+  ],
   "exemptions": [
     {
       "code": "input-required",
@@ -236,6 +245,121 @@
         { "code": "retry-delay-invalid", "severity": "error", "nodeId": "slow" },
         { "code": "loop-limit-invalid", "severity": "error", "nodeId": "busy" }
       ]
+    },
+    {
+      "name": "script files on Command steps",
+      "workflow": {
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "bash",
+            "type": "command",
+            "config": { "scriptFile": "scripts/ci.sh", "workingDir": "/repo" }
+          },
+          { "id": "blank", "type": "command", "config": { "scriptFile": " " } },
+          {
+            "id": "templated",
+            "type": "command",
+            "config": {
+              "executable": "python3",
+              "scriptFile": "{{input.dir}}/check.py",
+              "workingDir": "/repo"
+            }
+          },
+          { "id": "nodir", "type": "command", "config": { "scriptFile": "ci.sh" } },
+          { "id": "home", "type": "command", "config": { "scriptFile": "~/bin/ci.sh" } },
+          {
+            "id": "absolute",
+            "type": "command",
+            "config": {
+              "executable": "sh",
+              "scriptFile": "/opt/ci.sh",
+              "args": ["--fast"]
+            }
+          },
+          {
+            "id": "windows",
+            "type": "command",
+            "config": { "executable": "pwsh", "scriptFile": "C:\\ci\\run.ps1" }
+          },
+          {
+            "id": "agent",
+            "type": "agent",
+            "config": { "agentProfileId": "p1", "prompt": "Work", "scriptFile": "ci.sh" }
+          },
+          {
+            "id": "git",
+            "type": "git",
+            "config": {
+              "workingDir": "/repo",
+              "gitOp": { "op": "status" },
+              "scriptFile": ""
+            }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "bash" },
+          { "id": "e2", "source": "bash", "target": "blank" },
+          { "id": "e3", "source": "blank", "target": "templated" },
+          { "id": "e4", "source": "templated", "target": "nodir" },
+          { "id": "e5", "source": "nodir", "target": "home" },
+          { "id": "e6", "source": "home", "target": "absolute" },
+          { "id": "e7", "source": "absolute", "target": "windows" },
+          { "id": "e8", "source": "windows", "target": "agent" },
+          { "id": "e9", "source": "agent", "target": "git" },
+          { "id": "e10", "source": "git", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "command-script-required", "severity": "error", "nodeId": "blank" },
+        {
+          "code": "command-script-templated",
+          "severity": "error",
+          "nodeId": "templated"
+        },
+        { "code": "command-script-dir-required", "severity": "error", "nodeId": "nodir" },
+        { "code": "command-script-misplaced", "severity": "error", "nodeId": "agent" },
+        { "code": "command-script-misplaced", "severity": "error", "nodeId": "git" }
+      ]
+    },
+    {
+      "name": "relative scripts use the workflow default folder, but not a blank one",
+      "workflow": {
+        "defaults": { "repoDir": " " },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          {
+            "id": "nodir",
+            "type": "command",
+            "config": { "scriptFile": "./ci.sh", "workingDir": " " }
+          },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "nodir" },
+          { "id": "e2", "source": "nodir", "target": "end" }
+        ]
+      },
+      "issues": [
+        { "code": "command-script-dir-required", "severity": "error", "nodeId": "nodir" }
+      ]
+    },
+    {
+      "name": "a workflow default folder serves relative scripts",
+      "workflow": {
+        "defaults": { "repoDir": "/repo" },
+        "nodes": [
+          { "id": "start", "type": "start" },
+          { "id": "ci", "type": "command", "config": { "scriptFile": "scripts/ci.sh" } },
+          { "id": "end", "type": "end" }
+        ],
+        "edges": [
+          { "id": "e1", "source": "start", "target": "ci" },
+          { "id": "e2", "source": "ci", "target": "end" }
+        ]
+      },
+      "issues": []
     },
     {
       "name": "retries only count on Command and Agent steps; loop bounds on every step",

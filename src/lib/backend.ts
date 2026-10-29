@@ -122,6 +122,8 @@ import type {
   Workflow,
 } from './workflow';
 import {
+  commandArgv,
+  commandWorkingFolder,
   createSampleWorkflow,
   validateWorkflowLocal,
   MAX_ATTEMPTS_LIMIT,
@@ -642,6 +644,36 @@ class TauriBackend implements Backend {
   }
 }
 
+/** Display-only command line for the browser mock (the core shell-escapes). */
+function mockCommandPreview(executable: string, args: string[]): string {
+  return [executable, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' ');
+}
+
+/**
+ * What a Command step runs, as the engine records it: arguments rendered with
+ * the run's variables, a relative script joined to the working folder.
+ */
+function mockStepCommand(
+  workflow: Workflow,
+  node: Workflow['nodes'][number],
+  inputs: Record<string, string>,
+): string {
+  const vars: Record<string, string> = {
+    'workflow.id': workflow.id,
+    'workflow.name': workflow.name,
+  };
+  for (const [name, value] of Object.entries(inputs)) vars['input.' + name] = value;
+  const args = (node.config.args ?? []).map((arg) => {
+    const rendered = renderPromptStrict(arg, vars);
+    return 'rendered' in rendered ? rendered.rendered : arg;
+  });
+  const [executable = '', ...rest] = commandArgv(
+    { ...node.config, args },
+    commandWorkingFolder(node.config, workflow.defaults),
+  );
+  return mockCommandPreview(executable, rest);
+}
+
 /**
  * Browser-only development backend. Persists workflows in localStorage and
  * simulates command execution deterministically (no processes spawned).
@@ -1060,7 +1092,14 @@ class MockBackend implements Backend {
           row.attempt = attempt;
           row.durationMs = 0;
           row.exitCode = fixture.exitCode ?? (status === 'succeeded' ? 0 : 1);
-          row.structuredJson = JSON.stringify({ ...fixture.structured, simulated: true });
+          row.structuredJson = JSON.stringify({
+            ...fixture.structured,
+            simulated: true,
+            // What a Command step would have run (never looked up).
+            ...(node.type === 'command'
+              ? { command: mockStepCommand(workflow, node, run.inputs ?? {}) }
+              : {}),
+          });
           if (status !== 'retrying') break;
           const delay = Math.min(
             60000,
@@ -1287,9 +1326,10 @@ class MockBackend implements Backend {
         continue;
       }
       if (node.type === 'command') {
-        const exe = node.config.executable ?? '';
-        const prefix = `mock$ ${exe} ${(node.config.args ?? []).join(' ')}`;
+        const command = mockStepCommand(workflow, node, run.inputs ?? {});
+        const prefix = `mock$ ${command}`;
         const live = this.startResult(runId, nodeId, prefix + '\n');
+        live.structuredJson = JSON.stringify({ command });
         await new Promise((resolve) => {
           this.timers.set(runId, setTimeout(resolve, 350));
         });
@@ -1978,7 +2018,7 @@ class MockBackend implements Backend {
   }
 
   async previewCommand(executable: string, args: string[]): Promise<string> {
-    return [executable, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' ');
+    return mockCommandPreview(executable, args);
   }
 
   async listAdapters(): Promise<AdapterInfo[]> {

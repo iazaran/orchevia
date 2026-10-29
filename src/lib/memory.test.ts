@@ -165,6 +165,28 @@ it('promotes only successful saved commands and observes concrete edits', () => 
     { scope: 'repo:/a', field: 'testCommand', from: 'make test', to: 'make check' },
   ]);
 });
+it('promotes a script-file step as the command that runs it', () => {
+  const workflow = createEmptyWorkflow('Scripts');
+  workflow.defaults = { repoDir: '/a' };
+  workflow.inputs = [{ name: 'suite', default: 'unit' }];
+  workflow.nodes.push({
+    id: 'test',
+    type: 'command',
+    label: 'Tests',
+    position: { x: 0, y: 100 },
+    config: { scriptFile: 'scripts/test all.sh', args: ['--suite', '{{input.suite}}'] },
+  });
+  // Relative to the repository, with the interpreter it really runs under.
+  expect(successfulCommand(workflow, 'test', 'succeeded', { suite: 'e2e' })).toBe(
+    "bash 'scripts/test all.sh' --suite e2e",
+  );
+  const node = workflow.nodes.at(-1);
+  if (!node) throw new Error('fixture');
+  node.config = { executable: 'python3', scriptFile: '~/bin/check.py', workingDir: '/b' };
+  expect(successfulCommand(workflow, 'test', 'succeeded', {})).toBe(
+    "cd '/b' && python3 ~/bin/check.py",
+  );
+});
 
 it('new concrete project check commands become reviewable observations', () => {
   const previous = createEmptyWorkflow('Project checks');

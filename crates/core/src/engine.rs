@@ -2061,6 +2061,21 @@ async fn execute_fixture_task(
             .count(),
         Err(_) => return TaskOutcome::Failed,
     };
+    // What a Command step would have run (the script file is not looked up).
+    let planned = (task.node.kind == NodeKind::Command)
+        .then(|| {
+            build_vars(
+                db,
+                &task.workflow_id,
+                &task.workflow_name,
+                &task.run_id,
+                &task.inputs,
+            )
+            .ok()
+            .and_then(|vars| command_invocation(task, &vars, false).ok())
+        })
+        .flatten()
+        .map(|(exe, args)| command_preview(&exe, &args));
     let retry = task.node.config.retry.as_ref();
     let max_attempts = retry.map(|r| r.max_attempts.clamp(1, 10)).unwrap_or(1);
     for attempt in 1..=max_attempts {
@@ -2092,6 +2107,9 @@ async fn execute_fixture_task(
             metadata = serde_json::json!({});
         }
         metadata["simulated"] = serde_json::json!(true);
+        if let Some(command) = &planned {
+            metadata["command"] = serde_json::json!(command);
+        }
         let result = db.record_node_result(NewNodeResult {
             run_id: &task.run_id,
             node_id: &task.node.id,
@@ -2206,17 +2224,18 @@ async fn execute_node_task(
         NodeKind::Ticket => execute_ticket_task(&db, &task, &node_id, &flag).await,
         NodeKind::Mcp => execute_mcp_task(&db, &task, &node_id, &flag).await,
         NodeKind::Command => {
-            let exe = task.node.config.executable.clone().unwrap_or_default();
-            let vars = match build_vars(
+            let invocation = build_vars(
                 &db,
                 &task.workflow_id,
                 &task.workflow_name,
                 &task.run_id,
                 &task.inputs,
-            ) {
-                Ok(vars) => vars,
+            )
+            .map_err(|error| error.to_string())
+            .and_then(|vars| command_invocation(&task, &vars, true));
+            let (exe, args) = match invocation {
+                Ok(invocation) => invocation,
                 Err(error) => {
-                    let error = error.to_string();
                     let _ = db.record_node_result(NewNodeResult::simple(
                         &task.run_id,
                         &node_id,
@@ -2227,22 +2246,7 @@ async fn execute_node_task(
                     return TaskOutcome::Failed;
                 }
             };
-            let mut args = Vec::new();
-            for argument in &task.node.config.args {
-                let (rendered, missing) = render_prompt(argument, &vars);
-                if !missing.is_empty() {
-                    let error = format!("Missing command variables: {}.", missing.join(", "));
-                    let _ = db.record_node_result(NewNodeResult::simple(
-                        &task.run_id,
-                        &node_id,
-                        "failed",
-                        None,
-                        Some(&error),
-                    ));
-                    return TaskOutcome::Failed;
-                }
-                args.push(rendered);
-            }
+            let command = command_preview(&exe, &args);
             let timeout = task
                 .node
                 .config
@@ -2267,6 +2271,7 @@ async fn execute_node_task(
                 stdin: None,
                 decode: None,
                 output_note: None,
+                command: Some(&command),
                 extend_on_output: task.node.config.extend_on_output,
                 flag: &flag,
                 // Command nodes never consume the Agent-attempt budget.
@@ -2278,6 +2283,75 @@ async fn execute_node_task(
         }
         NodeKind::Agent => execute_agent_task(&db, &task, &node_id, &flag).await,
     }
+}
+
+/// The program and arguments a Command step runs: `executable args…`, or
+/// with a script file `<executable, or bash> <resolved script> args…`.
+/// Arguments render against run variables; the script path never does.
+/// `check_file` refuses a missing or unreadable script before anything runs.
+fn command_invocation(
+    task: &TaskInput,
+    vars: &HashMap<String, String>,
+    check_file: bool,
+) -> Result<(String, Vec<String>), String> {
+    let config = &task.node.config;
+    let mut args = Vec::new();
+    for argument in &config.args {
+        let (rendered, missing) = render_prompt(argument, vars);
+        if !missing.is_empty() {
+            return Err(format!(
+                "Missing command variables: {}.",
+                missing.join(", ")
+            ));
+        }
+        args.push(rendered);
+    }
+    let executable = config.executable.clone().unwrap_or_default();
+    let Some(script) = config.script_file.as_deref() else {
+        return Ok((executable, args));
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute());
+    let path =
+        crate::workflow::resolve_script_file(script, command_working_dir(task), home.as_deref())?;
+    if check_file {
+        check_script_file(&path)?;
+    }
+    let interpreter = if executable.trim().is_empty() {
+        "bash".to_string()
+    } else {
+        executable
+    };
+    let mut argv = vec![path.to_string_lossy().into_owned()];
+    argv.extend(args);
+    Ok((interpreter, argv))
+}
+
+/// A script must be a readable file; the error names the resolved path.
+fn check_script_file(path: &std::path::Path) -> Result<(), String> {
+    let shown = path.display();
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("Script file not found: {shown}"))
+        }
+        Err(error) => Err(format!("Cannot read script file {shown}: {error}")),
+        Ok(meta) if meta.is_dir() => Err(format!("Script file is a folder: {shown}")),
+        Ok(_) => std::fs::File::open(path)
+            .map(drop)
+            .map_err(|error| format!("Cannot read script file {shown}: {error}")),
+    }
+}
+
+/// Shell-escaped display of what a Command step runs (no shell is used).
+fn command_preview(executable: &str, args: &[String]) -> String {
+    crate::process::CommandSpec {
+        executable: executable.to_string(),
+        args: args.to_vec(),
+        working_dir: None,
+        stdin: None,
+    }
+    .preview()
 }
 
 fn execute_condition_task(db: &Arc<SqliteDb>, task: &TaskInput, node_id: &str) -> TaskOutcome {
@@ -2563,6 +2637,7 @@ async fn execute_agent_task(
         stdin: spec.stdin.as_deref(),
         decode,
         output_note: output_note.as_deref(),
+        command: None,
         extend_on_output: task.node.config.extend_on_output,
         flag,
         // Enforced attempt budget for this Agent task (retries count).
@@ -3631,6 +3706,8 @@ struct RetryRequest<'a> {
     decode: Option<AdapterKind>,
     /// Why an Agent node fell back to text output, recorded with each attempt.
     output_note: Option<&'a str>,
+    /// What a Command step runs (shell-escaped display), recorded with each attempt.
+    command: Option<&'a str>,
     extend_on_output: bool,
     flag: &'a Arc<AtomicBool>,
     /// Enforced Agent-attempt budget for Agent tasks (None for commands and
@@ -3776,6 +3853,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         stdin,
         decode,
         output_note,
+        command,
         extend_on_output,
         flag,
         usage,
@@ -3992,6 +4070,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(note) = output_note {
                     metadata["agentOutputNote"] = serde_json::json!(note);
                 }
+                if let Some(command) = command {
+                    metadata["command"] = serde_json::json!(command);
+                }
                 if let Some(severity) = crate::review::reported_severity(&stdout) {
                     metadata["severity"] = serde_json::json!(severity);
                 }
@@ -4091,6 +4172,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 stamp_agent_meta(&mut metadata, &agent_meta);
                 if let Some(note) = output_note {
                     metadata["agentOutputNote"] = serde_json::json!(note);
+                }
+                if let Some(command) = command {
+                    metadata["command"] = serde_json::json!(command);
                 }
                 let metadata = metadata.to_string();
                 persist_command_result(
@@ -8122,6 +8206,119 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
         let result = results.iter().find(|r| r.node_id == "tests").unwrap();
         assert_eq!(result.status, "succeeded", "{result:?}");
         assert_eq!(result.stdout, "one two three");
+    }
+
+    /// Start → script → End, with the repository as the workflow default.
+    fn script_workflow(repo: &std::path::Path, script: Node) -> Workflow {
+        Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "script-file".into(),
+            name: "Script".into(),
+            defaults: Some(WorkflowDefaults {
+                repo_dir: Some(repo.to_string_lossy().into_owned()),
+                branch: None,
+            }),
+            limits: None,
+            inputs: vec![WorkflowInput {
+                name: "who".into(),
+                label: None,
+                default: Some("you".into()),
+                required: false,
+            }],
+            nodes: vec![
+                simple_node("start", NodeKind::Start, 0.0),
+                script,
+                simple_node("end", NodeKind::End, 200.0),
+            ],
+            edges: vec![
+                edge("e1", "start", "script", None),
+                edge("e2", "script", "end", None),
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn command_steps_run_a_script_file_with_its_interpreter_and_arguments() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join("scripts")).unwrap();
+        // Not executable: the interpreter runs it, so no chmod is needed.
+        std::fs::write(
+            repo.path().join("scripts/greet.sh"),
+            "printf '%s|' \"$0\" \"$@\"\nprintf '%s' \"$(pwd)\"\n",
+        )
+        .unwrap();
+        let mut script = command_node("script", "", &["one two", "{{input.who}}"], 100.0);
+        script.config.executable = None;
+        script.config.script_file = Some("scripts/greet.sh".into());
+        let wf = script_workflow(repo.path(), script);
+        assert!(validate_workflow(&wf)
+            .iter()
+            .all(|i| i.severity != ValidationSeverity::Error));
+        let (db, engine) = harness();
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "script", &empty_inputs()).unwrap();
+        engine.execute(wf, "script".into()).await;
+        let rows = db.list_node_results("script").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "script").unwrap();
+        assert_eq!(row.status, "succeeded", "{row:?}");
+        let resolved = repo.path().join("scripts/greet.sh");
+        let cwd = std::fs::canonicalize(repo.path()).unwrap();
+        assert_eq!(
+            row.stdout,
+            format!("{}|one two|you|{}", resolved.display(), cwd.display())
+        );
+        // Run details record the real argv: interpreter, resolved path, args.
+        let meta: serde_json::Value = serde_json::from_str(&row.structured_json).unwrap();
+        assert_eq!(
+            meta["command"],
+            command_preview(
+                "bash",
+                &[
+                    resolved.to_string_lossy().into_owned(),
+                    "one two".into(),
+                    "you".into()
+                ]
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_script_file_fails_the_step_naming_the_resolved_path() {
+        let repo = tempfile::tempdir().unwrap();
+        let mut script = command_node("script", "sh", &[], 100.0);
+        script.config.script_file = Some("scripts/missing.sh".into());
+        let wf = script_workflow(repo.path(), script);
+        let (db, engine) = harness();
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "missing", &empty_inputs()).unwrap();
+        engine.execute(wf, "missing".into()).await;
+        assert_eq!(
+            db.get_run("missing").unwrap().unwrap().status,
+            RunStatus::Failed
+        );
+        let rows = db.list_node_results("missing").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "script").unwrap();
+        assert_eq!(row.status, "failed");
+        let error = row.error.clone().unwrap_or_default();
+        let resolved = repo.path().join("scripts/missing.sh");
+        assert_eq!(
+            error,
+            format!("Script file not found: {}", resolved.display())
+        );
+        // A folder is not a script either.
+        std::fs::create_dir(repo.path().join("scripts")).unwrap();
+        let mut folder = command_node("script", "sh", &[], 100.0);
+        folder.config.script_file = Some("scripts".into());
+        let wf = script_workflow(repo.path(), folder);
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "folder", &empty_inputs()).unwrap();
+        engine.execute(wf, "folder".into()).await;
+        let rows = db.list_node_results("folder").unwrap();
+        let row = rows.iter().find(|r| r.node_id == "script").unwrap();
+        assert!(
+            row.error.as_deref().unwrap_or("").contains("is a folder"),
+            "{row:?}"
+        );
     }
 
     #[test]

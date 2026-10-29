@@ -10,8 +10,15 @@ import {
   createSampleWorkflow,
   CURRENT_SCHEMA_VERSION,
   bypassedEdgeIds,
+  commandArgv,
+  commandWorkingFolder,
   removeFromWorkflow,
+  resolveScriptPath,
+  scriptPathFromPicked,
+  scriptPathIsRooted,
   sparedAnchors,
+  toCommandMode,
+  toScriptMode,
   nextBranchLabel,
   planExecutionOrder,
   setWorkflowDefaults,
@@ -691,5 +698,71 @@ describe('sparedAnchors', () => {
     expect([...sparedAnchors(wf, new Set([end.id, 'end-2']))]).toEqual([end.id]);
     expect(sparedAnchors(wf, new Set(['end-2'])).size).toBe(0);
     expect([...sparedAnchors(wf, new Set([start.id]))]).toEqual([start.id]);
+  });
+});
+
+describe('script-file Command steps', () => {
+  it('runs the script with its interpreter, bash when none is named', () => {
+    expect(commandArgv({ executable: 'make', args: ['test'] })).toEqual(['make', 'test']);
+    expect(commandArgv({ scriptFile: 'scripts/ci.sh', args: ['--fast'] })).toEqual([
+      'bash',
+      'scripts/ci.sh',
+      '--fast',
+    ]);
+    expect(
+      commandArgv({ executable: 'python3', scriptFile: 'tools/x.py' }, '/repo/'),
+    ).toEqual(['python3', '/repo/tools/x.py']);
+    expect(commandArgv({ scriptFile: '~/bin/x.sh' }, '/repo')).toEqual([
+      'bash',
+      '~/bin/x.sh',
+    ]);
+  });
+
+  it('resolves only relative paths against the working folder', () => {
+    expect(commandWorkingFolder({ workingDir: ' ' }, { repoDir: '/repo' })).toBe('/repo');
+    expect(commandWorkingFolder({ workingDir: '/own' }, { repoDir: '/repo' })).toBe(
+      '/own',
+    );
+    expect(commandWorkingFolder({})).toBeUndefined();
+    expect(resolveScriptPath('ci.sh', '/repo')).toBe('/repo/ci.sh');
+    expect(resolveScriptPath('ci.sh')).toBe('ci.sh');
+    for (const rooted of ['/opt/x.sh', '\\\\srv\\x', 'C:\\x.ps1', 'd:/x', ' ~/x.sh']) {
+      expect(scriptPathIsRooted(rooted), rooted).toBe(true);
+      expect(resolveScriptPath(rooted, '/repo')).toBe(rooted.trim());
+    }
+    for (const relative of ['x.sh', './x.sh', '~x', '~', 'C:x'])
+      expect(scriptPathIsRooted(relative), relative).toBe(false);
+  });
+
+  it('stores picked scripts relative to the working folder when inside it', () => {
+    expect(scriptPathFromPicked('/repo/scripts/ci.sh', '/repo')).toBe('scripts/ci.sh');
+    expect(scriptPathFromPicked('/repo/scripts/ci.sh', '/repo/')).toBe('scripts/ci.sh');
+    expect(scriptPathFromPicked('/repository/ci.sh', '/repo')).toBe('/repository/ci.sh');
+    expect(scriptPathFromPicked('/elsewhere/ci.sh')).toBe('/elsewhere/ci.sh');
+  });
+
+  it('switches modes without dropping the command', () => {
+    const bash = { executable: 'bash', args: ['scripts/ci.sh', '--fast'] };
+    const script = toScriptMode(bash);
+    expect(script).toEqual({
+      executable: 'bash',
+      scriptFile: 'scripts/ci.sh',
+      args: ['--fast'],
+    });
+    expect(toCommandMode(script)).toEqual(bash);
+    // `bash -c '…'` and other tools keep everything and wait for a path.
+    const inline = { executable: 'bash', args: ['-c', 'make test'] };
+    expect(toScriptMode(inline)).toEqual({ ...inline, scriptFile: '' });
+    expect(toCommandMode({ ...inline, scriptFile: '' })).toEqual(inline);
+    expect(toScriptMode({ executable: 'npm', args: ['test'] })).toEqual({
+      executable: 'npm',
+      args: ['test'],
+      scriptFile: '',
+    });
+    // A blank interpreter means bash, so the file keeps running under bash.
+    expect(toCommandMode({ scriptFile: 'ci.sh' })).toEqual({
+      executable: 'bash',
+      args: ['ci.sh'],
+    });
   });
 });

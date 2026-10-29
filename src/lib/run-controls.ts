@@ -190,6 +190,7 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
             'agentActivity',
             'simulated',
             'reusedFrom',
+            'command',
           ].includes(key),
         )
       )

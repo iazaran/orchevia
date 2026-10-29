@@ -106,6 +106,29 @@ it('round trips opaque IDs, positions, references and literal text', () => {
   expect(doc.nodes[1]?.config.message).toContain(`literal node.${start.id}.output`);
   expect(decodeDocument(session.json, [], {}, wf, session.nodeIds)).toEqual(wf);
 });
+it('round trips script-file Command steps in both formats', () => {
+  const wf = createEmptyWorkflow('Scripts');
+  wf.nodes.splice(1, 0, {
+    id: 'ci',
+    type: 'command',
+    label: 'CI',
+    position: { x: 0, y: 100 },
+    config: { executable: 'python3', scriptFile: 'tools/ci.py', args: ['--all'] },
+  });
+  const session = encodeDocument(wf, []);
+  const doc = JSON.parse(session.json) as {
+    nodes: { key: string; config: { scriptFile?: string } }[];
+  };
+  expect(doc.nodes.find((n) => n.key === 'ci')?.config.scriptFile).toBe('tools/ci.py');
+  expect(decodeDocument(session.json, [], {}, wf, session.nodeIds)).toEqual(wf);
+  // A fresh Simple JSON import (no base workflow) keeps it too.
+  const imported = decodeDocument(session.json, [], {});
+  expect(imported.nodes.find((n) => n.label === 'CI')?.config.scriptFile).toBe(
+    'tools/ci.py',
+  );
+  // Advanced JSON is the runtime definition itself.
+  expect(decodeDocument(JSON.stringify(wf), [], {})).toEqual(wf);
+});
 it('rejects duplicate keys, malformed config and dangling references', () => {
   const doc = {
     version: 1,
@@ -201,6 +224,7 @@ it('rejects malformed typed config, operations, inputs, defaults and graph label
     ...[
       { args: 42 },
       { executable: 42 },
+      { scriptFile: 42 },
       { args: [42] },
       { retry: { maxAttempts: '3' } },
       { condition: { logic: 'and', clauses: [{ left: 1, op: 'equals', right: '' }] } },

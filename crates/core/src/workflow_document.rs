@@ -54,6 +54,7 @@ const CONFIG_KEYS: &[&str] = &[
     "executable",
     "args",
     "workingDir",
+    "scriptFile",
     "message",
     "prompt",
     "sessionGroup",
@@ -534,7 +535,7 @@ mod tests {
             }
         }
         let profile:AgentProfile=serde_json::from_value(serde_json::json!({"id":"p","name":"Exact reviewer","adapter":"codex","role":"deepReview"})).unwrap();
-        let config:NodeConfig=serde_json::from_value(serde_json::json!({"executable":"sh","args":["-c","echo {{node.start.output}}"],"workingDir":"/tmp","message":"literal node.start.output","prompt":"Read {{node.start.output}}","inputRefs":["start"],"agentProfileId":"p","timeoutSecs":3600,"extendOnOutput":true,"retry":{"maxAttempts":3,"delayMs":10,"backoff":true},"maxVisits":2,"requiredTools":["mcp__jira","Bash(git status *)"],"condition":{"logic":"and","clauses":[{"left":"node.start.output","op":"equals","right":"yes"}]},"gitOp":{"op":"checkout","name":"branch","allowDirty":true},"githubOp":{"op":"createPr","title":"Title","body":"Body","base":"main","head":"branch","draft":true},"ticketKey":"KEY-1","mcpServerId":"server","mcpTool":"tool","mcpArgs":{"query":"{{node.start.output}}"}})).unwrap();
+        let config:NodeConfig=serde_json::from_value(serde_json::json!({"executable":"sh","args":["-c","echo {{node.start.output}}"],"workingDir":"/tmp","scriptFile":"scripts/run.sh","message":"literal node.start.output","prompt":"Read {{node.start.output}}","inputRefs":["start"],"agentProfileId":"p","timeoutSecs":3600,"extendOnOutput":true,"retry":{"maxAttempts":3,"delayMs":10,"backoff":true},"maxVisits":2,"requiredTools":["mcp__jira","Bash(git status *)"],"condition":{"logic":"and","clauses":[{"left":"node.start.output","op":"equals","right":"yes"}]},"gitOp":{"op":"checkout","name":"branch","allowDirty":true},"githubOp":{"op":"createPr","title":"Title","body":"Body","base":"main","head":"branch","draft":true},"ticketKey":"KEY-1","mcpServerId":"server","mcpTool":"tool","mcpArgs":{"query":"{{node.start.output}}"}})).unwrap();
         for (i, kind) in [
             NodeKind::Start,
             NodeKind::Command,
