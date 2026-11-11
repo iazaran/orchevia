@@ -260,17 +260,37 @@ workflow definitions. `runWorkflow(workflowId, inputs, options)` accepts optiona
   while explicit overrides still apply.
 
 Saved workflows may carry optional `limits` (`maxAgentAttempts`,
-`maxToolCalls`, `maxSubagents`, `spendLimitUsd`) and per-Agent-node
+`maxToolCalls`, `maxSubagents`, `spendLimitUsd`, and since v0.2.0
+`maxCorrectionRounds`, 1–5, default 2) and per-Agent-node
 `maxToolCalls` / `maxSubagents` allowances; all are mirrored in validation,
 Simple JSON (document v1) and generation assistance, and require no schema
 migration. Stored runs include `execution.options`, optional
 `execution.recoveredFrom`, per-node `execution.recoveryChoices`, snapshotted
 `execution.resolvedLimits`, a persisted `execution.consumedAgentAttempts` counter, and optional `execution.spendPause` / `execution.usagePause` guards,
-each with its unique `id`. Existing SQLite databases migrate additively with
+each with its unique `id`. Since v0.2.0 `execution.feedback` holds the feedback
+cutoff (`publicationStarted: {nodeId, label, at}`), the correction `rounds` made,
+an optional `pause: {id, reason}` and `closed` once the run claimed its finish.
+Dry-run `fixtures` also accept `feedback:<AI step id>` keys for feedback checks. Existing SQLite databases migrate additively with
 ordinary execution defaults. Fixtures cannot set reserved execution metadata.
 New commands remain thin Backend → Tauri → core calls: `previewRecovery`,
-`recoverRun`, `continueSpendRun`, `continueUsageRun`, `usageSummary`, and
-`adapterCapabilities`.
+`recoverRun`, `continueSpendRun`, `continueUsageRun`, `usageSummary`,
+`adapterCapabilities`, and since v0.2.0 `submitStepFeedback`, `listRunFeedback` and
+`continueFeedbackRun` (see [Feedback during a run](execution.md#feedback-during-a-run-v020)).
+
+## Publishing steps (v0.2.0)
+
+`config.publishes` (optional boolean, schema stays 6) says a step publishes outside
+the machine: a push, a pull request, a comment, a release. GitHub `createPr` and
+`postComment` publish unless it is `false`; any other working step only when it is
+`true`. Start, End, Condition and Approval steps cannot set it
+(`publish-misplaced`). Feedback sent during a run is handled before the first
+publishing step starts. A Command step whose program and arguments plainly publish
+(`git push`, `gh pr create|comment|merge|review`, `gh release create`, `gh issue
+comment`, `glab mr create`, `npm|pnpm|yarn publish`, `cargo publish`, `twine
+upload`, `docker push`, also behind `env` or `bash -c`) without the flag gets the
+`publish-unmarked` warning; a script file's contents are not read. The built-in
+templates mark their push steps, and compiled drafts mark matching Command steps
+themselves. Simple JSON carries the flag.
 
 Recovery previews include a source fingerprint and per-node allowed choices.
 Submission requires those decisions and a request id for idempotence. Retained

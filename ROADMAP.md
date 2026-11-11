@@ -1,18 +1,19 @@
 # Roadmap
 
 Orchevia focuses on repeatable developer workflows using local CLI agents and
-integrations. The 0.1.x beta line focuses on reliable orchestration, readable
-workflow authoring and practical adoption. Source, installers and the project page
-are public.
+integrations. The 0.2 line adds a run you can read and steer while it works: step
+cards that say what each step is doing and achieved, and feedback on a step that is
+checked, applied and rerun before anything is published. Source, installers and the
+project page are public.
 
 ## Implemented
 
 | Area            | Current capabilities                                                                                                                                                                         |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps                                                              |
+| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps, publishing-step marker                                      |
 | Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, tool permissions, command previews, real setup check                                                             |
-| Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard                                                            |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools, CLI fallback                                                                                                  |
+| Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard, feedback on steps during a run with correction rounds     |
+| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools with an on-request server check, CLI fallback                                                                  |
 | Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history                                                                            |
 | Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode                                                                          |
 | Onboarding      | Tool detection, setup wizard, install/auth guidance, setup check for every profile, system/light/dark themes                                                                                 |
@@ -30,8 +31,11 @@ concrete use case, fit the existing architecture, and include tests and document
 
 ## Next improvements to validate with real use
 
-- MCP server diagnostics as direct as the agent setup check, with small real-tool
-  smoke tests.
+- Feedback during real runs: whether checks decide well, how often a correction is
+  needed, and whether the correction-round limit fits; a way to send feedback from
+  the canvas as well as the Runs page.
+- Readable runs against more CLI versions: keep the recorded event fixtures current
+  and add Codex task-list and MCP-call shapes once recorded.
 - Workflow recipes exercised in different languages, using each project's test
   command and accepted project knowledge.
 - Exercise dry-run fixtures, deliberate recovery and reported-spend guards against
@@ -40,7 +44,8 @@ concrete use case, fit the existing architecture, and include tests and document
   architectures (cancel, timeout, MCP shutdown and app exit are tested in CI on Linux
   and Apple Silicon); tools that detach into their own session remain out of reach.
 - Keep the manual rows of the [desktop smoke-test matrix](docs/smoke-tests.md)
-  current for every release, including the first in-place update from 0.1.24.
+  current for every release, including the first in-place update from 0.1.24 to
+  0.2.0.
 
 ## Product boundaries
 
