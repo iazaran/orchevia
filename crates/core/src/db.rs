@@ -742,18 +742,11 @@ impl SqliteDb {
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
-        Ok(conn.execute(
-            "UPDATE run_feedback SET status = ?1, decision = ?2, updated_at = ?3 \
-             WHERE run_id = ?4 AND status IN (?5, ?6, ?7)",
-            params![
-                feedback::NOT_PROCESSED,
-                reason,
-                Utc::now().to_rfc3339(),
-                run_id,
-                feedback::PENDING,
-                feedback::CHECKING,
-                feedback::CORRECTING
-            ],
+        Ok(Self::close_feedback_in(
+            &conn,
+            run_id,
+            reason,
+            &Utc::now().to_rfc3339(),
         )?)
     }
 
@@ -1044,19 +1037,61 @@ impl SqliteDb {
              VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?7, 1, 0, '{}')",
             params![id, node_id, if approved { "approved" } else { "rejected" }, if approved { Some(0) } else { None }, note, if approved { None } else { Some("Rejected by user.") }, now],
         )?;
+        if !approved {
+            Self::close_feedback_in(
+                &tx,
+                id,
+                "The approval was rejected before this feedback was handled. Recover the run to handle it there.",
+                &now,
+            )?;
+        }
         tx.commit()?;
         Ok(true)
     }
 
     pub fn cancel_paused_run(&self, id: &str) -> DbResult<bool> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
-        Ok(conn.execute(
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        let cancelled = tx.execute(
             "UPDATE runs SET status = 'cancelled', finished_at = ?1 WHERE id = ?2 AND status = 'paused'",
-            params![Utc::now().to_rfc3339(), id],
-        )? > 0)
+            params![now, id],
+        )? > 0;
+        if cancelled {
+            Self::close_feedback_in(
+                &tx,
+                id,
+                "The run was cancelled before this feedback was handled.",
+                &now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(cancelled)
+    }
+
+    /// Open feedback of a run that ends without handling it.
+    fn close_feedback_in(
+        conn: &Connection,
+        run_id: &str,
+        reason: &str,
+        now: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "UPDATE run_feedback SET status = ?1, decision = ?2, updated_at = ?3 \
+             WHERE run_id = ?4 AND status IN (?5, ?6, ?7)",
+            params![
+                feedback::NOT_PROCESSED,
+                reason,
+                now,
+                run_id,
+                feedback::PENDING,
+                feedback::CHECKING,
+                feedback::CORRECTING
+            ],
+        )
     }
 
     pub fn list_runs(&self, limit: i64) -> DbResult<Vec<StoredRun>> {
@@ -3515,6 +3550,30 @@ mod feedback_tests {
         assert_eq!(carried[0].status, feedback::PENDING);
         assert_eq!(carried[0].carried_from, Some(1));
         assert_eq!(carried[0].text, "a");
+    }
+
+    #[test]
+    fn cancelling_or_rejecting_a_paused_run_closes_its_feedback() {
+        let db = db_with_run(RunStatus::Running);
+        db.submit_feedback("run-1", "impl", None, "a")
+            .expect("submit");
+        db.finish_run("run-1", RunStatus::Paused).expect("pause");
+        assert!(db.cancel_paused_run("run-1").expect("cancel"));
+        let item = &db.list_feedback("run-1").expect("list")[0];
+        assert_eq!(item.status, feedback::NOT_PROCESSED);
+        assert!(item.decision.contains("cancelled"));
+        let db = db_with_run(RunStatus::Running);
+        db.submit_feedback("run-1", "impl", None, "a")
+            .expect("submit");
+        db.record_node_result(NewNodeResult::simple("run-1", "gate", "paused", None, None))
+            .expect("paused row");
+        db.finish_run("run-1", RunStatus::Paused).expect("pause");
+        assert!(db
+            .decide_paused_run("run-1", false, "", None)
+            .expect("reject"));
+        let item = &db.list_feedback("run-1").expect("list")[0];
+        assert_eq!(item.status, feedback::NOT_PROCESSED);
+        assert!(item.decision.contains("rejected"));
     }
 
     #[test]

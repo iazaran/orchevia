@@ -821,13 +821,19 @@ export function replayGraph(
   const correction: { gate: { roots: Set<string>; gated: Set<string> } | null } = {
     gate: null,
   };
-  const resetForCorrection = (roots: string[], affected: string[]): void => {
+  const resetForCorrection = (
+    roots: string[],
+    affected: string[],
+    refreshed: string[],
+  ): void => {
     const reset = new Set([...roots, ...affected].filter((id) => nodes.has(id)));
     reset.forEach((id) => {
       terminal.delete(id);
       unrecorded.delete(id);
       visits.set(id, 0);
     });
+    // Reached only through a loop-back edge: a fresh allowance, no rerun.
+    refreshed.filter((id) => nodes.has(id)).forEach((id) => visits.set(id, 0));
     for (const edge of workflow.edges) {
       if (reset.has(edge.source) || reset.has(edge.target)) held.delete(edge.id);
       if (!loopEdges.has(edge.id) && reset.has(edge.source)) resolved.delete(edge.id);
@@ -922,7 +928,7 @@ export function replayGraph(
           ? value.filter((v): v is string => typeof v === 'string')
           : [];
       };
-      resetForCorrection(list('roots'), list('affected'));
+      resetForCorrection(list('roots'), list('affected'), list('refreshed'));
       continue;
     }
     const outcome = TERMINAL_STATUSES[row.status];

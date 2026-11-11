@@ -424,3 +424,146 @@ describe('mock feedback and recovery', () => {
     );
   });
 });
+
+describe('mock correction inside a fix loop', () => {
+  it('reruns what follows the corrected review in order, like the engine', async () => {
+    const wf: Workflow = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: 'wf-review-loop',
+      name: 'Review loop',
+      nodes: [
+        { id: 'start', type: 'start', position: at, config: {} },
+        {
+          id: 'impl',
+          type: 'agent',
+          position: at,
+          config: { agentProfileId: 'fake', prompt: 'x' },
+        },
+        {
+          id: 'tests',
+          type: 'command',
+          position: at,
+          config: { executable: 'x', maxVisits: 3 },
+        },
+        {
+          id: 'review',
+          type: 'agent',
+          position: at,
+          config: { agentProfileId: 'fake', prompt: 'Review it.', maxVisits: 3 },
+        },
+        {
+          id: 'gate',
+          type: 'condition',
+          position: at,
+          config: {
+            maxVisits: 3,
+            condition: {
+              logic: 'and',
+              clauses: [{ left: 'node.review.output', op: 'contains', right: 'CHANGES' }],
+            },
+          },
+        },
+        {
+          id: 'fix',
+          type: 'agent',
+          position: at,
+          config: { agentProfileId: 'fake', prompt: 'Fix it.', maxVisits: 3 },
+        },
+        { id: 'approve', type: 'approval', position: at, config: {} },
+        {
+          id: 'push',
+          type: 'command',
+          position: at,
+          config: { executable: 'x', publishes: true },
+        },
+        { id: 'end', type: 'end', position: at, config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'impl' },
+        { id: 'e2', source: 'impl', target: 'tests' },
+        { id: 'e3', source: 'tests', target: 'review' },
+        { id: 'e4', source: 'review', target: 'gate' },
+        { id: 'e5', source: 'gate', target: 'fix', label: 'true' },
+        { id: 'e6', source: 'fix', target: 'tests' },
+        { id: 'e7', source: 'gate', target: 'approve', label: 'false' },
+        { id: 'e8', source: 'approve', target: 'push' },
+        { id: 'e9', source: 'push', target: 'end' },
+      ],
+    };
+    backend = __setMockBackendForTests();
+    await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+    await backend.saveWorkflow(wf);
+    const ok = (stdout: string): { status: string; stdout: string } => ({
+      status: 'succeeded',
+      stdout,
+    });
+    const { runId } = await backend.runWorkflow(
+      wf.id,
+      {},
+      {
+        dryRun: true,
+        fixtures: {
+          impl: [ok('v1')],
+          tests: [ok('ok 1'), ok('ok 2')],
+          review: [ok('clean 1'), ok('CHANGES needed'), ok('clean 2')],
+          fix: [ok('fixed')],
+          push: [ok('pushed')],
+          'feedback:review': [ok(decisionText('change'))],
+        },
+      },
+    );
+    await vi.runAllTimersAsync();
+    await backend.submitStepFeedback(runId, 'review', 'Check the old config path too.');
+    await approve(runId);
+    const rows = await backend.getRunResults(runId);
+    const marker = rows.find((r) => r.nodeId === '__feedback');
+    expect(JSON.parse(marker?.structuredJson ?? '{}')).toMatchObject({
+      feedbackRound: { refreshed: ['tests'] },
+    });
+    const after = rows
+      .filter(
+        (r) => r.id > (marker?.id ?? 0) && ['succeeded', 'approved'].includes(r.status),
+      )
+      .map((r) =>
+        r.stdout === 'true' || r.stdout === 'false'
+          ? `${r.nodeId}:${r.stdout}`
+          : r.nodeId,
+      );
+    expect(after).toEqual([
+      'review',
+      'gate:true',
+      'fix',
+      'tests',
+      'review',
+      'gate:false',
+    ]);
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+  });
+});
+
+describe('mock carried feedback after a rejection', () => {
+  it('closes feedback on rejection and corrects a step the recovery reused', async () => {
+    const runId = await start(approvalWorkflow());
+    await backend.submitStepFeedback(runId, 'impl', 'Keep old keys.');
+    await backend.approveRun(runId, false);
+    await vi.runAllTimersAsync();
+    const [closed] = await backend.listRunFeedback(runId);
+    expect(closed?.status).toBe('not-processed');
+    expect(closed?.decision).toContain('rejected');
+    const plan = await backend.previewRecovery(runId);
+    const choices = Object.fromEntries(
+      plan.nodes.map((n) => [n.nodeId, n.choices.includes('reuse') ? 'reuse' : 'replay']),
+    ) as Record<string, 'reuse' | 'replay'>;
+    const { runId: recovered } = await backend.recoverRun(
+      runId,
+      choices,
+      plan.fingerprint,
+      'req-carry',
+    );
+    await vi.runAllTimersAsync();
+    const [carried] = await backend.listRunFeedback(recovered);
+    expect(carried?.status).toBe('addressed');
+    expect(outputs(await backend.getRunResults(recovered), 'impl')).toEqual(['v1', 'v2']);
+  });
+});

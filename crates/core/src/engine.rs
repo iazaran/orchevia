@@ -207,6 +207,10 @@ const MAX_PARALLEL_NODES: usize = 4;
 pub struct Engine {
     db: Arc<SqliteDb>,
     cancel: CancellationRegistry,
+    /// Tests: runs once right before the first publishing step is claimed,
+    /// to land feedback in the race window deterministically.
+    #[cfg(test)]
+    pub(crate) before_publication_claim: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Routing-relevant outcome of a node execution.
@@ -490,7 +494,7 @@ impl RunState {
 
 /// The steps a correction round starts with and reruns, as its marker row
 /// records them.
-fn correction_round_of(row: &StoredNodeResult) -> Option<(Vec<String>, Vec<String>)> {
+fn correction_round_of(row: &StoredNodeResult) -> Option<crate::feedback::CorrectionPlan> {
     if row.node_id != crate::feedback::ROUND_NODE || row.status != "correcting" {
         return None;
     }
@@ -506,7 +510,11 @@ fn correction_round_of(row: &StoredNodeResult) -> Option<(Vec<String>, Vec<Strin
             })
             .unwrap_or_default()
     };
-    Some((list("roots"), list("affected")))
+    Some(crate::feedback::CorrectionPlan {
+        roots: list("roots"),
+        affected: list("affected"),
+        refreshed: list("refreshed"),
+    })
 }
 
 /// What a feedback round decided for the scheduler.
@@ -761,7 +769,12 @@ impl Engine {
     }
 
     pub fn new(db: Arc<SqliteDb>, cancel: CancellationRegistry) -> Self {
-        Self { db, cancel }
+        Self {
+            db,
+            cancel,
+            #[cfg(test)]
+            before_publication_claim: Mutex::new(None),
+        }
     }
 
     pub fn cancel_run(&self, run_id: &str) -> Result<bool, EngineError> {
@@ -1224,8 +1237,8 @@ impl Engine {
         finished.sort_by(|a, b| a.finished_at.cmp(&b.finished_at).then(a.id.cmp(&b.id)));
         for row in finished {
             // A feedback correction round resets routing where it started.
-            if let Some((roots, affected)) = correction_round_of(row) {
-                self.reset_for_correction(&graph, &mut state, &roots, &affected);
+            if let Some(plan) = correction_round_of(row) {
+                self.reset_for_correction(&graph, &mut state, &plan);
                 continue;
             }
             let outcome = outcome_of_status(&row.status);
@@ -1304,11 +1317,19 @@ impl Engine {
                 .collect();
             ready.sort_by_key(|id| graph.def_order.get(id).copied().unwrap_or(usize::MAX));
 
-            let spend = run_controls::reported_spend(
-                workflow,
-                &self.db.list_node_results(run_id)?,
-                run.execution.options.dry_run,
-            );
+            let tick_rows = self.db.list_node_results(run_id)?;
+            let spend =
+                run_controls::reported_spend(workflow, &tick_rows, run.execution.options.dry_run);
+            // A recovered run's reuse and skip choices stop applying to a step
+            // once a feedback correction reruns it.
+            let superseded = run_controls::superseded_by_corrections(&tick_rows);
+            let choices: HashMap<String, RecoveryChoice> = run
+                .execution
+                .recovery_choices
+                .iter()
+                .filter(|(id, _)| !superseded.contains_key(*id))
+                .map(|(id, choice)| (id.clone(), *choice))
+                .collect();
             let guarded = run
                 .execution
                 .resolved_limits
@@ -1320,7 +1341,7 @@ impl Engine {
                     graph.nodes.get(id).is_some_and(|n| {
                         run_controls::effectful(n.kind)
                             && !matches!(
-                                run.execution.recovery_choices.get(id),
+                                choices.get(id),
                                 Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                             )
                     })
@@ -1332,7 +1353,7 @@ impl Engine {
                     graph.nodes.get(id).is_some_and(|n| {
                         !run_controls::effectful(n.kind)
                             || matches!(
-                                run.execution.recovery_choices.get(id),
+                                choices.get(id),
                                 Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                             )
                     })
@@ -1358,7 +1379,7 @@ impl Engine {
                     graph.nodes.get(id).is_some_and(|n| {
                         n.kind == NodeKind::Agent
                             && !matches!(
-                                run.execution.recovery_choices.get(id),
+                                choices.get(id),
                                 Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                             )
                     })
@@ -1428,7 +1449,14 @@ impl Engine {
                     .find(|id| graph.nodes.get(*id).map(|n| n.kind) == Some(NodeKind::Approval))
                 {
                     let approval_visit = state.visits.get(approval).copied().unwrap_or(0) + 1;
-                    if let Some(seed) = self.db.recovery_result(run_id, approval, approval_visit)? {
+                    let seed = if superseded.contains_key(approval) {
+                        // Asked again after a correction, never re-approved
+                        // from the recovered run's history.
+                        None
+                    } else {
+                        self.db.recovery_result(run_id, approval, approval_visit)?
+                    };
+                    if let Some(seed) = seed {
                         let metadata=serde_json::json!({"reusedFrom":{"runId":seed.run_id,"resultId":seed.id}}).to_string();
                         self.db.record_node_result(NewNodeResult {
                             run_id,
@@ -1522,6 +1550,7 @@ impl Engine {
                 // so parallel Agent nodes cannot each spend the same
                 // remaining allowance.
                 let mut usage_reserved: u32 = 0;
+                let mut claim_refused = false;
                 for id in ready.iter().take(capacity) {
                     let id_owned = id.clone();
                     let kind = graph.nodes.get(&id_owned).map(|n| n.kind);
@@ -1531,7 +1560,7 @@ impl Engine {
                     if kind == Some(NodeKind::Agent)
                         && !dry
                         && !matches!(
-                            run.execution.recovery_choices.get(&id_owned),
+                            choices.get(&id_owned),
                             Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                         )
                         && usage_max.is_some_and(|max| {
@@ -1549,12 +1578,24 @@ impl Engine {
                     })?;
                     // The first publishing step is the feedback cutoff. Feedback
                     // that landed first holds it until the next tick handles it.
+                    #[cfg(test)]
+                    if crate::workflow::publishes(&node) {
+                        let hook = self
+                            .before_publication_claim
+                            .lock()
+                            .ok()
+                            .and_then(|mut hook| hook.take());
+                        if let Some(hook) = hook {
+                            hook();
+                        }
+                    }
                     if crate::workflow::publishes(&node)
                         && !self.db.claim_feedback_cutoff(
                             run_id,
                             Some((&node.id, node.label.as_deref().unwrap_or(&node.id))),
                         )?
                     {
+                        claim_refused = true;
                         continue;
                     }
                     let db = Arc::clone(&self.db);
@@ -1567,7 +1608,10 @@ impl Engine {
                         workflow_defaults: workflow.defaults.clone(),
                         run_id: run_id.to_string(),
                         inputs: run.inputs.clone(),
-                        execution: run.execution.clone(),
+                        execution: RunExecution {
+                            recovery_choices: choices.clone(),
+                            ..run.execution.clone()
+                        },
                     };
                     set.spawn(async move {
                         let outcome = execute_node_task(db, owned, task_flag).await;
@@ -1578,13 +1622,18 @@ impl Engine {
                     if kind == Some(NodeKind::Agent)
                         && !dry
                         && !matches!(
-                            run.execution.recovery_choices.get(id),
+                            choices.get(id),
                             Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                         )
                     {
                         usage_reserved += 1;
                     }
                     in_flight.insert(id.clone());
+                }
+                // Feedback landed just before the claim: handle it next tick
+                // instead of mistaking the held step for a deadlock.
+                if claim_refused && in_flight.is_empty() {
+                    continue 'schedule;
                 }
             }
 
@@ -2154,17 +2203,26 @@ impl Engine {
         &self,
         graph: &Graph,
         state: &mut RunState,
-        roots: &[String],
-        affected: &[String],
+        plan: &crate::feedback::CorrectionPlan,
     ) {
+        let roots = &plan.roots;
         let reset: HashSet<String> = roots
             .iter()
-            .chain(affected)
+            .chain(&plan.affected)
             .filter(|id| graph.nodes.contains_key(*id))
             .cloned()
             .collect();
         for id in &reset {
             state.terminal.remove(id);
+            state.visits.insert(id.clone(), 0);
+        }
+        // Steps only a loop-back edge leads to keep their results; if the
+        // rerun steps send the loop round, it re-arms them with room to run.
+        for id in plan
+            .refreshed
+            .iter()
+            .filter(|id| graph.nodes.contains_key(*id))
+        {
             state.visits.insert(id.clone(), 0);
         }
         for (_, edge) in graph.edges.values() {
@@ -2404,7 +2462,8 @@ impl Engine {
                     )?;
                 }
                 if !changed.is_empty() {
-                    let (roots, affected) = fb::correction_plan(workflow, &changed);
+                    let plan = fb::correction_plan(workflow, &changed);
+                    let (roots, affected) = (&plan.roots, &plan.affected);
                     let names = |ids: &[String]| {
                         ids.iter()
                             .map(|id| format!("\"{}\"", label(id)))
@@ -2413,7 +2472,7 @@ impl Engine {
                     };
                     let summary = format!(
                         "Correction round {round}: {} runs again with the feedback, then {} step{} that use{} its work.",
-                        names(&roots),
+                        names(roots),
                         affected.len(),
                         if affected.len() == 1 { "" } else { "s" },
                         if affected.len() == 1 { "s" } else { "" },
@@ -2423,6 +2482,7 @@ impl Engine {
                         "targets": changed,
                         "roots": roots,
                         "affected": affected,
+                        "refreshed": plan.refreshed,
                         "feedbackIds": changed_ids,
                     }});
                     self.db.record_correction_round(
@@ -2431,19 +2491,21 @@ impl Engine {
                         &summary,
                         &structured.to_string(),
                     )?;
-                    self.reset_for_correction(graph, state, &roots, &affected);
+                    self.reset_for_correction(graph, state, &plan);
                     return Ok(FeedbackStep::Continue);
                 }
             }
         }
-        // 3. Anything left waiting needs the person: pause before the checkpoint.
-        if self.db.has_waiting_feedback(run_id)? {
-            let attention = self
-                .db
-                .list_feedback(run_id)?
-                .iter()
-                .filter(|i| i.status == fb::NEEDS_ATTENTION && !i.acknowledged)
-                .count();
+        // 3. Feedback that needs the person pauses the run before the
+        // checkpoint. Feedback that arrived during a check is still pending:
+        // the next tick handles it.
+        let attention = self
+            .db
+            .list_feedback(run_id)?
+            .iter()
+            .filter(|i| i.status == fb::NEEDS_ATTENTION && !i.acknowledged)
+            .count();
+        if attention > 0 {
             return Ok(FeedbackStep::Pause(format!(
                 "{attention} feedback message{} need{} your attention before this run publishes or finishes. Read {} on the steps, then continue as it is or cancel the run.",
                 if attention == 1 { "" } else { "s" },

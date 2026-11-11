@@ -201,4 +201,20 @@ describe('feedback rows and run progress', () => {
     });
     expect(runProgress(workflow, []).toGo).toBe(4);
   });
+
+  it('counts steps a correction round reruns as still to run', () => {
+    const workflow = ticketWorkflow();
+    const marker = row(4, '__feedback', 'Correction round 1', 'correcting');
+    marker.structuredJson = JSON.stringify({
+      feedbackRound: { roots: ['review'], affected: ['coderabbit', 'summary'] },
+    });
+    const progress = runProgress(workflow, [
+      row(1, 'review', 'x'),
+      row(2, 'coderabbit', 'x'),
+      row(3, 'summary', 'x'),
+      marker,
+      row(5, 'review', 'x', 'running'),
+    ]);
+    expect(progress).toMatchObject({ done: 0, running: ['review'], toGo: 2 });
+  });
 });

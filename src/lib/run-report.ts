@@ -172,6 +172,24 @@ export function runProgress(
   const latest = new Map<string, string>();
   const running: string[] = [];
   for (const row of results) {
+    // A correction round reruns its steps: their earlier results no longer
+    // count as done.
+    if (row.nodeId === '__feedback' && row.status === 'correcting') {
+      try {
+        const data: unknown = JSON.parse(row.structuredJson ?? '{}');
+        const round =
+          typeof data === 'object' && data !== null
+            ? (data as { feedbackRound?: { roots?: unknown; affected?: unknown } })
+                .feedbackRound
+            : undefined;
+        for (const ids of [round?.roots, round?.affected])
+          if (Array.isArray(ids))
+            for (const id of ids) if (typeof id === 'string') latest.delete(id);
+      } catch {
+        // A malformed marker changes nothing.
+      }
+      continue;
+    }
     if (!work.has(row.nodeId) || isBookkeeping(row)) continue;
     latest.set(row.nodeId, row.status);
   }

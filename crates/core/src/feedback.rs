@@ -7,7 +7,7 @@
 //! that is already running: it waits for the run's next checkpoint (a
 //! publishing step, an Approval step or the end).
 
-use crate::run_controls::{dependency_pairs, downstream_closure};
+use crate::run_controls::{closure_over, dependency_pairs, downstream_closure};
 use crate::workflow::{find_loop_edges, NodeKind, Workflow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -351,29 +351,41 @@ Feedback (the person's own words):\n{}\n",
     out
 }
 
-/// Which corrected steps run first (`roots`) and which steps a correction
-/// reruns (`affected`): every step using the targets' work, directly or
-/// through others. A target that uses another target's work reruns as part
-/// of that correction, still with its own feedback.
-pub fn correction_plan(workflow: &Workflow, targets: &[String]) -> (Vec<String>, Vec<String>) {
+/// What a correction round does, as its marker row records it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorrectionPlan {
+    /// Corrected steps that run first.
+    pub roots: Vec<String>,
+    /// Steps that use their work through ordinary edges or data references:
+    /// they wait for the roots and run again by normal routing.
+    pub affected: Vec<String>,
+    /// Steps reached only through a loop-back edge: they keep their results
+    /// and only get a fresh visit allowance, so the loop can go round again
+    /// if the rerun steps send it round.
+    pub refreshed: Vec<String>,
+}
+
+/// Plan a correction of `targets`. A target that uses another target's work
+/// reruns as part of that correction, still with its own feedback.
+pub fn correction_plan(workflow: &Workflow, targets: &[String]) -> CorrectionPlan {
     let order = |id: &str| workflow.nodes.iter().position(|n| n.id == id);
+    let loops = find_loop_edges(workflow);
+    let forward = crate::run_controls::dependency_pairs_except(workflow, &loops);
     let mut roots: Vec<String> = targets
         .iter()
         .filter(|target| {
             let others: HashSet<String> = targets.iter().filter(|t| t != target).cloned().collect();
-            !downstream_closure(workflow, &others).contains(*target)
+            !closure_over(&forward, &others).contains(*target)
         })
         .cloned()
         .collect();
     if roots.is_empty() {
-        // Every target uses another's work (they share a loop): start with
-        // the earliest defined.
         if let Some(first) = targets.iter().min_by_key(|t| order(t)) {
             roots.push(first.clone());
         }
     }
     let seeds: HashSet<String> = targets.iter().cloned().collect();
-    let mut affected: Vec<String> = downstream_closure(workflow, &seeds)
+    let mut affected: Vec<String> = closure_over(&forward, &seeds)
         .into_iter()
         .chain(targets.iter().cloned())
         .filter(|id| !roots.contains(id))
@@ -382,7 +394,16 @@ pub fn correction_plan(workflow: &Workflow, targets: &[String]) -> (Vec<String>,
         .collect();
     affected.sort_by_key(|id| order(id));
     roots.sort_by_key(|id| order(id));
-    (roots, affected)
+    let mut refreshed: Vec<String> = downstream_closure(workflow, &seeds)
+        .into_iter()
+        .filter(|id| !roots.contains(id) && !affected.contains(id))
+        .collect();
+    refreshed.sort_by_key(|id| order(id));
+    CorrectionPlan {
+        roots,
+        affected,
+        refreshed,
+    }
 }
 
 #[cfg(test)]
@@ -561,23 +582,28 @@ mod tests {
     #[test]
     fn a_correction_reruns_what_uses_the_work_and_leaves_parallel_work() {
         let wf = coding();
-        let (roots, affected) = correction_plan(&wf, &["impl".into()]);
-        assert_eq!(roots, ["impl"]);
+        let plan = correction_plan(&wf, &["impl".into()]);
+        assert_eq!(plan.roots, ["impl"]);
         assert_eq!(
-            affected,
+            plan.affected,
             ["tests", "review", "gate", "fix", "summary", "push", "end"]
         );
+        assert!(plan.refreshed.is_empty());
         assert!(
-            !affected.contains(&"lint".to_string()),
+            !plan.affected.contains(&"lint".to_string()),
             "parallel lint stays"
         );
         // A target downstream of another reruns inside its correction.
-        let (roots, affected) = correction_plan(&wf, &["review".into(), "impl".into()]);
-        assert_eq!(roots, ["impl"]);
-        assert!(affected.contains(&"review".to_string()));
-        // Targets sharing a loop: the earliest starts.
-        let (roots, _) = correction_plan(&wf, &["fix".into(), "review".into()]);
-        assert_eq!(roots, ["review"]);
+        let plan = correction_plan(&wf, &["review".into(), "impl".into()]);
+        assert_eq!(plan.roots, ["impl"]);
+        assert!(plan.affected.contains(&"review".to_string()));
+        // Correcting the review inside the fix loop reruns what follows it;
+        // the tests before it only get a fresh allowance in case the loop
+        // goes round again, and never run alongside the gate.
+        let plan = correction_plan(&wf, &["review".into()]);
+        assert_eq!(plan.roots, ["review"]);
+        assert_eq!(plan.affected, ["gate", "fix", "push", "end"]);
+        assert_eq!(plan.refreshed, ["tests"]);
     }
 
     #[test]
@@ -618,9 +644,10 @@ mod parity_tests {
                     .map(|v| v.as_str().unwrap_or("").to_string())
                     .collect()
             };
-            let (roots, affected) = correction_plan(&workflow, &list("targets"));
-            assert_eq!(roots, list("roots"), "{case}");
-            assert_eq!(affected, list("affected"), "{case}");
+            let plan = correction_plan(&workflow, &list("targets"));
+            assert_eq!(plan.roots, list("roots"), "{case}");
+            assert_eq!(plan.affected, list("affected"), "{case}");
+            assert_eq!(plan.refreshed, list("refreshed"), "{case}");
         }
         for case in fixture["decisions"].as_array().expect("decisions") {
             let decision = parse_decision(case["text"].as_str().unwrap_or(""));

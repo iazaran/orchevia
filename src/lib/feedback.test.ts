@@ -24,6 +24,7 @@ describe('feedback rules (shared with the core)', () => {
       expect(correctionPlan(workflow, plan.targets)).toEqual({
         roots: plan.roots,
         affected: plan.affected,
+        refreshed: plan.refreshed,
       });
   });
 

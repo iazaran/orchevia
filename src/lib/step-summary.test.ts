@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import sharedDigest from '../test/agent-digest-claude.json';
+import sharedTestCommands from '../test/test-commands.json';
 import {
   digestOf,
   displayPath,
@@ -46,7 +47,7 @@ describe('digestOf', () => {
     );
     expect(digest?.files).toEqual([{ path: '/work/repo/notes.txt', change: 'added' }]);
     expect(digest?.commands.map((c) => [c.command, c.status, c.exitCode])).toEqual([
-      ['ls', 'succeeded', 0],
+      ['ls', 'succeeded', undefined],
       ['false', 'failed', 1],
     ]);
     expect(digest?.tasks.every((t) => t.status === 'completed')).toBe(true);
@@ -98,24 +99,10 @@ describe('parseTestCounts', () => {
   });
 });
 
-it('recognises the same test runners as the core', () => {
-  for (const yes of [
-    'cargo test -p orchevia-core',
-    'pnpm test',
-    'npx vitest run',
-    'python -m pytest -q',
-    'go test ./...',
-    './gradlew test',
-    'cd app && npm run test -- --ci',
-  ])
+it('recognises the same test runs as the core (shared list)', () => {
+  for (const yes of sharedTestCommands.tests)
     expect(looksLikeTestCommand(yes), yes).toBe(true);
-  for (const no of [
-    'cargo build',
-    'echo testing',
-    'pnpm testify',
-    'rg jest-config',
-    'latest',
-  ])
+  for (const no of sharedTestCommands.other)
     expect(looksLikeTestCommand(no), no).toBe(false);
 });
 
@@ -223,6 +210,17 @@ describe('summarizeStep', () => {
     expect(passed.facts).toEqual([
       { kind: 'tests', text: 'Tests passed: 12 passed', tone: 'ok' },
     ]);
+    // A runner that reports failures did not pass, whatever the exit code.
+    expect(
+      summarizeStep(
+        row({ exitCode: 0, stdout: ' Tests  2 failed | 10 passed (12)' }),
+        tests,
+      ).facts[0],
+    ).toEqual({
+      kind: 'tests',
+      text: 'Tests failed (exit 0): 10 passed, 2 failed',
+      tone: 'bad',
+    });
     const failed = summarizeStep(row({ status: 'failed', exitCode: 1 }), tests);
     expect(failed.facts[0]).toEqual({
       kind: 'tests',

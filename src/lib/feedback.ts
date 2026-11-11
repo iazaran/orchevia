@@ -193,30 +193,49 @@ export function parseDecision(text: string): Decision {
 }
 
 /**
- * Which corrected steps run first and which steps a correction reruns.
- * Mirrors `correction_plan`.
+ * What a correction round does: the corrected steps that run first, the
+ * steps using their work through ordinary edges or data references (rerun
+ * after them), and the steps only a loop-back edge reaches (a fresh visit
+ * allowance, no rerun). Mirrors `correction_plan`.
  */
 export function correctionPlan(
   workflow: Workflow,
   targets: string[],
-): { roots: string[]; affected: string[] } {
+): { roots: string[]; affected: string[]; refreshed: string[] } {
   const order = (id: string): number => workflow.nodes.findIndex((n) => n.id === id);
+  const loops = loopEdges(workflow);
+  const forward = dependencyPairs({
+    ...workflow,
+    edges: workflow.edges.filter((e) => !loops.has(e.id)),
+  });
+  const closure = (seeds: Set<string>): Set<string> => {
+    const reached = new Set<string>();
+    const frontier = [...seeds];
+    for (let id = frontier.pop(); id !== undefined; id = frontier.pop())
+      for (const [source, target] of forward)
+        if (source === id && !reached.has(target)) {
+          reached.add(target);
+          frontier.push(target);
+        }
+    return reached;
+  };
   let roots = targets.filter(
-    (target) =>
-      !downstreamClosure(workflow, new Set(targets.filter((t) => t !== target))).has(
-        target,
-      ),
+    (target) => !closure(new Set(targets.filter((t) => t !== target))).has(target),
   );
   if (roots.length === 0) {
     const first = [...targets].sort((a, b) => order(a) - order(b))[0];
     roots = first === undefined ? [] : [first];
   }
-  const affected = [
-    ...new Set([...downstreamClosure(workflow, new Set(targets)), ...targets]),
-  ].filter((id) => !roots.includes(id));
+  const affected = [...new Set([...closure(new Set(targets)), ...targets])].filter(
+    (id) => !roots.includes(id),
+  );
   affected.sort((a, b) => order(a) - order(b));
   roots.sort((a, b) => order(a) - order(b));
-  return { roots, affected };
+  const refreshed = [...downstreamClosure(workflow, new Set(targets))].filter(
+    (id) => !roots.includes(id) && !affected.includes(id),
+  );
+  refreshed.sort((a, b) => order(a) - order(b));
+  return { roots, affected, refreshed };
 }
 
 /** A step feedback is handled before: a publishing step, an approval or End. */

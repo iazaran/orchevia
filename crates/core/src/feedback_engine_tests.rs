@@ -735,3 +735,216 @@ async fn recovering_after_a_correction_reuses_the_corrected_result() {
         Some("ok 2")
     );
 }
+
+#[tokio::test]
+async fn correcting_a_review_inside_a_fix_loop_reruns_what_follows_it_in_order() {
+    let h = harness("change");
+    let wf = Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-review-loop","name":"Review loop",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"impl","type":"agent","config":{"agentProfileId":"fake","prompt":"Change it."}},
+          {"id":"tests","type":"command","config":{"executable":"never-runs","args":[],"maxVisits":3}},
+          {"id":"review","type":"agent","config":{"agentProfileId":"fake","prompt":"Review it.","maxVisits":3}},
+          {"id":"gate","type":"condition","config":{"maxVisits":3,"condition":{"logic":"and","clauses":[{"left":"node.review.output","op":"contains","right":"CHANGES"}]}}},
+          {"id":"fix","type":"agent","config":{"agentProfileId":"fake","prompt":"Fix it.","maxVisits":3}},
+          {"id":"approve","type":"approval"},
+          {"id":"push","type":"command","config":{"executable":"never-runs","args":[],"publishes":true}},
+          {"id":"end","type":"end"}],
+        "edges":[
+          {"id":"e1","source":"start","target":"impl"},
+          {"id":"e2","source":"impl","target":"tests"},
+          {"id":"e3","source":"tests","target":"review"},
+          {"id":"e4","source":"review","target":"gate"},
+          {"id":"e5","source":"gate","target":"fix","label":"true"},
+          {"id":"e6","source":"fix","target":"tests"},
+          {"id":"e7","source":"gate","target":"approve","label":"false"},
+          {"id":"e8","source":"approve","target":"push"},
+          {"id":"e9","source":"push","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow");
+    let ok = |s: &str| json!({"status":"succeeded","stdout":s});
+    let options: RunOptions = serde_json::from_value(json!({"dryRun": true, "fixtures": {
+        "impl": [ok("v1")],
+        "tests": [ok("ok 1"), ok("ok 2")],
+        "review": [ok("clean 1"), ok("CHANGES needed"), ok("clean 2")],
+        "fix": [ok("fixed")],
+        "push": [ok("pushed")],
+        "feedback:review": [ok(&check_reply_text("change"))]
+    }}))
+    .expect("options");
+    start(&h, &wf, "fb-review-loop", options)
+        .await
+        .expect("run");
+    assert_eq!(run_status(&h, "fb-review-loop"), RunStatus::Paused);
+    h.engine
+        .submit_feedback(
+            "fb-review-loop",
+            "review",
+            None,
+            "Check the old config path too.",
+        )
+        .expect("submit");
+    h.engine
+        .approve_run("fb-review-loop", true, None, wf.clone())
+        .await
+        .expect("approve");
+    let rows = h.db.list_node_results("fb-review-loop").expect("rows");
+    let marker = rows
+        .iter()
+        .find(|r| r.node_id == feedback::ROUND_NODE)
+        .expect("round marker");
+    assert_eq!(
+        metadata(marker)["feedbackRound"]["refreshed"],
+        json!(["tests"])
+    );
+    let after: Vec<String> = rows
+        .iter()
+        .filter(|r| r.id > marker.id && matches!(r.status.as_str(), "succeeded" | "approved"))
+        .map(|r| match r.stdout.trim() {
+            "true" | "false" => format!("{}:{}", r.node_id, r.stdout.trim()),
+            _ => r.node_id.clone(),
+        })
+        .collect();
+    // The tests rerun only after the fix, as the loop sends them round.
+    assert_eq!(
+        after,
+        [
+            "review",
+            "gate:true",
+            "fix",
+            "tests",
+            "review",
+            "gate:false"
+        ],
+        "{rows:#?}"
+    );
+    assert_eq!(
+        run_status(&h, "fb-review-loop"),
+        RunStatus::Paused,
+        "approval asked again"
+    );
+    h.engine
+        .approve_run("fb-review-loop", true, None, wf.clone())
+        .await
+        .expect("approve again");
+    assert_eq!(run_status(&h, "fb-review-loop"), RunStatus::Succeeded);
+    assert_eq!(outputs(&h, "fb-review-loop", "push"), ["pushed"]);
+}
+
+#[tokio::test]
+async fn carried_feedback_corrects_a_step_the_recovery_reused() {
+    let h = harness("change");
+    let wf = approval_workflow(None);
+    start(&h, &wf, "fb-carry", fixtures()).await.expect("run");
+    h.engine
+        .submit_feedback("fb-carry", "impl", None, "Keep old keys.")
+        .expect("submit");
+    // Rejecting fails the run; its waiting feedback is not processed.
+    h.engine
+        .approve_run("fb-carry", false, None, wf.clone())
+        .await
+        .expect("reject");
+    assert_eq!(run_status(&h, "fb-carry"), RunStatus::Failed);
+    assert_eq!(
+        h.db.list_feedback("fb-carry").expect("feedback")[0].status,
+        feedback::NOT_PROCESSED
+    );
+    let plan = h.engine.preview_recovery("fb-carry").expect("plan");
+    let choices: std::collections::HashMap<String, crate::run_controls::RecoveryChoice> = plan
+        .nodes
+        .iter()
+        .map(|n| {
+            (
+                n.node_id.clone(),
+                if n.choices
+                    .contains(&crate::run_controls::RecoveryChoice::Reuse)
+                {
+                    crate::run_controls::RecoveryChoice::Reuse
+                } else {
+                    crate::run_controls::RecoveryChoice::Replay
+                },
+            )
+        })
+        .collect();
+    let id = h
+        .engine
+        .recover_run(
+            "fb-carry",
+            "fb-carried",
+            &choices,
+            &plan.fingerprint,
+            "req-carry",
+        )
+        .expect("recover");
+    let snapshot = h.db.get_run_workflow(&id).expect("wf").expect("snapshot");
+    Arc::clone(&h.engine).execute(snapshot, id.clone()).await;
+    // The carried feedback was checked at the approval; the reused step then
+    // ran for real (its next fixture), not from the failed run's history.
+    let carried = h.db.list_feedback(&id).expect("feedback");
+    assert_eq!(carried[0].status, feedback::ADDRESSED, "{carried:#?}");
+    assert_eq!(outputs(&h, &id, "impl"), ["v1", "v2"]);
+    assert_eq!(
+        run_status(&h, &id),
+        RunStatus::Paused,
+        "the approval is asked"
+    );
+}
+
+#[tokio::test]
+async fn feedback_landing_just_before_the_publishing_claim_is_handled_first() {
+    let h = harness("satisfied");
+    let wf = coding_workflow("0", "0");
+    let db = Arc::clone(&h.db);
+    // Lands after the tick saw no waiting feedback, right before the claim.
+    h.engine
+        .before_publication_claim
+        .lock()
+        .expect("hook")
+        .replace(Box::new(move || {
+            db.submit_feedback("fb-race", "impl", None, "Just in time.")
+                .expect("submit");
+        }));
+    start(&h, &wf, "fb-race", RunOptions::default())
+        .await
+        .expect("run");
+    assert_eq!(run_status(&h, "fb-race"), RunStatus::Succeeded);
+    let items = h.db.list_feedback("fb-race").expect("feedback");
+    assert_eq!(items[0].status, feedback::SATISFIED, "{items:#?}");
+    let rows = h.db.list_node_results("fb-race").expect("rows");
+    let check = rows.iter().find(|r| r.status == "checked").expect("check");
+    let push = rows.iter().find(|r| r.node_id == "push").expect("push");
+    assert!(check.id < push.id, "checked before publishing");
+}
+
+#[tokio::test]
+async fn feedback_sent_during_a_check_waits_for_the_next_pass_without_pausing() {
+    let h = harness("satisfied");
+    std::fs::write(h.dir.path().join("check-delay"), "1").expect("delay");
+    let wf = coding_workflow("0.4", "0");
+    let run = start(&h, &wf, "fb-during", RunOptions::default());
+    feedback_while_testing(&h, "fb-during", "impl").await;
+    wait_until(&h, "fb-during", "check running", |rows| {
+        rows.iter()
+            .any(|r| r.node_id == "impl" && r.status == "running")
+    })
+    .await;
+    h.engine
+        .submit_feedback("fb-during", "tests", None, "And the old env var name?")
+        .expect("second");
+    run.await.expect("run");
+    assert_eq!(run_status(&h, "fb-during"), RunStatus::Succeeded);
+    let items = h.db.list_feedback("fb-during").expect("feedback");
+    assert!(
+        items.iter().all(|i| i.status == feedback::SATISFIED),
+        "{items:#?}"
+    );
+    let checks =
+        h.db.list_node_results("fb-during")
+            .expect("rows")
+            .into_iter()
+            .filter(|r| r.status == "checked")
+            .count();
+    assert_eq!(checks, 2, "each message checked in its own pass");
+}

@@ -440,9 +440,19 @@ pub fn superseded_by_corrections(rows: &[StoredNodeResult]) -> HashMap<String, i
 /// `{{node.A…}}` references and ticket variables. Shared by recovery and
 /// feedback corrections.
 pub fn dependency_pairs(workflow: &Workflow) -> Vec<(String, String)> {
+    dependency_pairs_except(workflow, &HashSet::new())
+}
+
+/// [`dependency_pairs`] without the edges in `skip` (loop-back edges, when a
+/// correction must not re-arm a loop that may not go round again).
+pub fn dependency_pairs_except(
+    workflow: &Workflow,
+    skip: &HashSet<String>,
+) -> Vec<(String, String)> {
     let mut dependencies: Vec<(String, String)> = workflow
         .edges
         .iter()
+        .filter(|e| !skip.contains(&e.id))
         .map(|e| (e.source.clone(), e.target.clone()))
         .collect();
     for node in &workflow.nodes {
@@ -468,11 +478,15 @@ pub fn dependency_pairs(workflow: &Workflow) -> Vec<(String, String)> {
 /// Every step that uses the work of `seeds`, directly or through others
 /// (the seeds themselves only when a loop leads back to them).
 pub fn downstream_closure(workflow: &Workflow, seeds: &HashSet<String>) -> HashSet<String> {
-    let dependencies = dependency_pairs(workflow);
+    closure_over(&dependency_pairs(workflow), seeds)
+}
+
+/// Every step reached from `seeds` through `dependencies`.
+pub fn closure_over(dependencies: &[(String, String)], seeds: &HashSet<String>) -> HashSet<String> {
     let mut reached: HashSet<String> = HashSet::new();
     let mut frontier: Vec<String> = seeds.iter().cloned().collect();
     while let Some(id) = frontier.pop() {
-        for (source, target) in &dependencies {
+        for (source, target) in dependencies.iter() {
             if *source == id && reached.insert(target.clone()) {
                 frontier.push(target.clone());
             }

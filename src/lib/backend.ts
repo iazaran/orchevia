@@ -1114,7 +1114,10 @@ class MockBackend implements Backend {
         };
       }
       const execution = run.execution;
-      const choice = execution?.recoveryChoices?.[nodeId];
+      // Reuse and skip choices stop applying once a feedback correction
+      // reruns the step (`superseded_by_corrections` in the engine).
+      const superseded = supersededByCorrections(results).has(nodeId);
+      const choice = superseded ? undefined : execution?.recoveryChoices?.[nodeId];
       const spend = reportedSpend(workflow, results, execution?.options.dryRun);
       if (
         typeof execution?.options.spendLimitUsd === 'number' &&
@@ -1224,9 +1227,11 @@ class MockBackend implements Backend {
         continue;
       }
       if (node.type === 'approval') {
-        const seed = this.recoverySeeds.get(runId)?.filter((r) => r.nodeId === nodeId)[
-          graph.visits.get(nodeId) ?? 0
-        ];
+        const seed = superseded
+          ? undefined
+          : this.recoverySeeds.get(runId)?.filter((r) => r.nodeId === nodeId)[
+              graph.visits.get(nodeId) ?? 0
+            ];
         if (seed) {
           const row = this.pushResult(runId, nodeId, 'approved', seed.stdout);
           row.structuredJson = JSON.stringify({
@@ -2001,7 +2006,7 @@ class MockBackend implements Backend {
           });
         }
         if (changed.length > 0) {
-          const { roots, affected } = correctionPlan(workflow, changed);
+          const { roots, affected, refreshed } = correctionPlan(workflow, changed);
           const marker = this.pushResult(
             runId,
             ROUND_NODE,
@@ -2014,6 +2019,7 @@ class MockBackend implements Backend {
               targets: changed,
               roots,
               affected,
+              refreshed,
               feedbackIds: changedIds,
             },
           });
@@ -2023,10 +2029,12 @@ class MockBackend implements Backend {
         }
       }
     }
-    if (this.feedbackWaiting(runId)) {
-      const attention = (this.feedback.get(runId) ?? []).filter(
-        (i) => i.status === 'needs-attention' && !i.acknowledged,
-      ).length;
+    // Feedback that arrived during a check is still pending: the next pass
+    // handles it. Only feedback that needs the person pauses the run.
+    const attention = (this.feedback.get(runId) ?? []).filter(
+      (i) => i.status === 'needs-attention' && !i.acknowledged,
+    ).length;
+    if (attention > 0) {
       const reason = `${String(attention)} feedback message${attention === 1 ? '' : 's'} need${attention === 1 ? 's' : ''} your attention before this run publishes or finishes. Read ${attention === 1 ? 'it' : 'them'} on the steps, then continue as it is or cancel the run.`;
       const guard = this.pushResult(runId, GUARD_NODE, 'guardPaused', '');
       guard.error = reason;
@@ -2427,6 +2435,11 @@ class MockBackend implements Backend {
     if (!approved) {
       run.status = 'failed';
       run.finishedAt = new Date().toISOString();
+      this.closeOpenFeedback(
+        runId,
+        'The approval was rejected before this feedback was handled. Recover the run to handle it there.',
+      );
+      this.persist();
       return;
     }
     run.status = 'running';

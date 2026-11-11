@@ -168,12 +168,127 @@ export function parseTestCounts(
   return null;
 }
 
-const TEST_RUNNERS =
-  /(^|[\s/;&|(])(cargo (test|nextest)|(npm|pnpm|yarn)( run)? test|bun test|deno test|vitest|jest|pytest|python -m unittest|go test|phpunit|pest|rspec|mvn test|(gradle|gradlew) test|dotnet test|mix test|make test|ctest|swift test)($|[\s;&|)])/i;
+const TEST_RUNNERS = [
+  'cargo test',
+  'cargo nextest',
+  'npm test',
+  'npm run test',
+  'pnpm test',
+  'pnpm run test',
+  'pnpm vitest',
+  'pnpm jest',
+  'yarn vitest',
+  'yarn jest',
+  'yarn test',
+  'yarn run test',
+  'bun test',
+  'deno test',
+  'vitest',
+  'jest',
+  'pytest',
+  'unittest',
+  'go test',
+  'phpunit',
+  'pest',
+  'rspec',
+  'mvn test',
+  'gradle test',
+  'gradlew test',
+  'dotnet test',
+  'mix test',
+  'make test',
+  'ctest',
+  'swift test',
+];
+const RUN_WRAPPERS = [
+  'npx ',
+  'bunx ',
+  'pnpm exec ',
+  'pnpm dlx ',
+  'yarn dlx ',
+  'uv run ',
+  'poetry run ',
+  'pipenv run ',
+  'time ',
+  'env ',
+  'python -m ',
+  'python3 -m ',
+];
 
-/** Mirrors `is_test_command` in the core. */
+/** Mirrors `shell_segments`: split outside quotes; whether only `&&` follows. */
+function shellSegments(command: string): [string, boolean][] {
+  const chars = Array.from(command);
+  const segments: [string, string][] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i] ?? '';
+    const next = chars[i + 1];
+    if (quote !== null) {
+      if (c === quote) quote = null;
+      current += c;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+      current += c;
+    } else if (c === '&' && next === '&') {
+      segments.push([current, '&&']);
+      current = '';
+      i++;
+    } else if (c === '|' && next === '|') {
+      segments.push([current, '||']);
+      current = '';
+      i++;
+    } else if (c === '|') {
+      segments.push([current, '|']);
+      current = '';
+    } else if (c === ';' || c === '\n') {
+      segments.push([current, ';']);
+      current = '';
+    } else current += c;
+  }
+  segments.push([current, '']);
+  return segments.map(([segment], index) => [
+    segment,
+    segments.slice(index).every(([, after]) => after === '' || after === '&&'),
+  ]);
+}
+
+/** Mirrors `command_core`. */
+function commandCore(segment: string): string {
+  let rest = segment.trim().toLowerCase();
+  for (;;) {
+    const before = rest;
+    const match = /^(\S+)\s+(.*)$/s.exec(rest);
+    const first = match?.[1];
+    if (first !== undefined && first.includes('=') && /^[a-z_]/.test(first))
+      rest = (match?.[2] ?? '').trimStart();
+    for (const wrapper of RUN_WRAPPERS)
+      if (rest.startsWith(wrapper)) rest = rest.slice(wrapper.length).trimStart();
+    if (rest === before) break;
+  }
+  const match = /^(\S+)(\s.*)?$/s.exec(rest);
+  if (match === null) return rest;
+  const program = (match[1] ?? '').split('/').pop() ?? '';
+  return match[2] === undefined ? program : `${program} ${match[2].trimStart()}`;
+}
+
+/**
+ * A known test runner in command position whose exit status reaches the end
+ * of the command. Mirrors `is_test_command` (shared cases in
+ * `src/test/test-commands.json`).
+ */
 export function looksLikeTestCommand(command: string): boolean {
-  return TEST_RUNNERS.test(command);
+  return shellSegments(command).some(([segment, reliable]) => {
+    const core = commandCore(segment);
+    return (
+      reliable &&
+      TEST_RUNNERS.some(
+        (runner) =>
+          core.startsWith(runner) &&
+          (core.length === runner.length || /\s/.test(core[runner.length] ?? '')),
+      )
+    );
+  });
 }
 
 function plural(n: number, word: string): string {
@@ -424,9 +539,14 @@ export function summarizeStep(
     const command = str(metadata.command);
     const counts = parseTestCounts(`${row.stdout}\n${row.stderr}`);
     const testLike =
-      counts !== null || looksLikeTestCommand(command || stepPurpose(node));
+      counts !== null ||
+      looksLikeTestCommand(
+        command || [node.config.executable ?? '', ...(node.config.args ?? [])].join(' '),
+      );
     const exit = row.exitCode;
     if (testLike && exit !== undefined) {
+      // The runner's own count of failures wins over a zero exit code.
+      const failedTests = (counts?.failed ?? 0) > 0;
       const tally =
         counts === null
           ? ''
@@ -438,7 +558,7 @@ export function summarizeStep(
               .filter((p) => p !== '')
               .join(', ')}`;
       facts.push(
-        exit === 0
+        exit === 0 && !failedTests
           ? { kind: 'tests', text: `Tests passed${tally}`, tone: 'ok' }
           : {
               kind: 'tests',

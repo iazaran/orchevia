@@ -38,6 +38,8 @@ pub struct AgentDigest {
     /// Some files, commands or tasks were left out to stay bounded.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    #[serde(skip)]
+    next_seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -60,6 +62,10 @@ pub struct DigestCommand {
     /// A known test runner (`cargo test`, `pnpm test`, `pytest`, …).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub test: bool,
+    /// Stable id while the CLI runs, so a result finds its command after
+    /// older ones were dropped to stay bounded.
+    #[serde(skip)]
+    seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -78,8 +84,12 @@ fn is_zero(n: &u32) -> bool {
 /// A tool call waiting for its result.
 #[derive(Debug, Clone)]
 enum PendingTool {
-    Command(usize),
-    File { path: String, change: &'static str },
+    /// A digest command by its stable id.
+    Command(u64),
+    File {
+        path: String,
+        change: &'static str,
+    },
     TaskCreate(String),
 }
 
@@ -132,45 +142,148 @@ fn unwrap_shell(command: &str) -> String {
     rest.to_string()
 }
 
-/// Whether a shell command runs a known test runner. Used only to label a
-/// command whose exit status the CLI reported; never to infer a result.
-pub fn is_test_command(command: &str) -> bool {
-    let lower = command.to_lowercase();
-    const RUNNERS: [&str; 26] = [
-        "cargo test",
-        "cargo nextest",
-        "npm test",
-        "npm run test",
-        "pnpm test",
-        "pnpm run test",
-        "yarn test",
-        "yarn run test",
-        "bun test",
-        "deno test",
-        "vitest",
-        "jest",
-        "pytest",
-        "python -m unittest",
-        "go test",
-        "phpunit",
-        "pest",
-        "rspec",
-        "mvn test",
-        "gradle test",
-        "gradlew test",
-        "dotnet test",
-        "mix test",
-        "make test",
-        "ctest",
-        "swift test",
-    ];
-    RUNNERS.iter().any(|runner| {
-        lower.match_indices(runner).any(|(at, _)| {
-            let before = lower[..at].chars().next_back();
-            let after = lower[at + runner.len()..].chars().next();
-            before.is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
-                && after.is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+const TEST_RUNNERS: [&str; 30] = [
+    "cargo test",
+    "cargo nextest",
+    "npm test",
+    "npm run test",
+    "pnpm test",
+    "pnpm run test",
+    "pnpm vitest",
+    "pnpm jest",
+    "yarn vitest",
+    "yarn jest",
+    "yarn test",
+    "yarn run test",
+    "bun test",
+    "deno test",
+    "vitest",
+    "jest",
+    "pytest",
+    "unittest",
+    "go test",
+    "phpunit",
+    "pest",
+    "rspec",
+    "mvn test",
+    "gradle test",
+    "gradlew test",
+    "dotnet test",
+    "mix test",
+    "make test",
+    "ctest",
+    "swift test",
+];
+
+/// Wrappers that run the command after them.
+const RUN_WRAPPERS: [&str; 12] = [
+    "npx ",
+    "bunx ",
+    "pnpm exec ",
+    "pnpm dlx ",
+    "yarn dlx ",
+    "uv run ",
+    "poetry run ",
+    "pipenv run ",
+    "time ",
+    "env ",
+    "python -m ",
+    "python3 -m ",
+];
+
+/// Split a shell command at `&&`, `||`, `|`, `;` and newlines outside
+/// quotes. Each segment comes with whether only `&&` follows it, so its exit
+/// status reaches the end of the command.
+fn shell_segments(command: &str) -> Vec<(String, bool)> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut segments: Vec<(String, &str)> = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match (quote, c) {
+            (Some(q), _) if c == q => {
+                quote = None;
+                current.push(c);
+            }
+            (Some(_), _) => current.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                current.push(c);
+            }
+            (None, '&') if next == Some('&') => {
+                segments.push((std::mem::take(&mut current), "&&"));
+                i += 1;
+            }
+            (None, '|') if next == Some('|') => {
+                segments.push((std::mem::take(&mut current), "||"));
+                i += 1;
+            }
+            (None, '|') => segments.push((std::mem::take(&mut current), "|")),
+            (None, ';' | '\n') => segments.push((std::mem::take(&mut current), ";")),
+            _ => current.push(c),
+        }
+        i += 1;
+    }
+    segments.push((current, ""));
+    (0..segments.len())
+        .map(|index| {
+            let reliable = segments[index..]
+                .iter()
+                .all(|(_, after)| after.is_empty() || *after == "&&");
+            (segments[index].0.clone(), reliable)
         })
+        .collect()
+}
+
+/// A segment's command with environment assignments and wrappers removed,
+/// and its program reduced to its file name.
+fn command_core(segment: &str) -> String {
+    let mut rest = segment.trim().to_lowercase();
+    loop {
+        let before = rest.clone();
+        if let Some((first, tail)) = rest.split_once(char::is_whitespace) {
+            let assignment = first.contains('=')
+                && first
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            if assignment {
+                rest = tail.trim_start().to_string();
+            }
+        }
+        for wrapper in RUN_WRAPPERS {
+            if let Some(tail) = rest.strip_prefix(wrapper) {
+                rest = tail.trim_start().to_string();
+            }
+        }
+        if rest == before {
+            break;
+        }
+    }
+    match rest.split_once(char::is_whitespace) {
+        Some((program, tail)) => {
+            format!("{} {tail}", program.rsplit('/').next().unwrap_or(program))
+        }
+        None => rest.rsplit('/').next().unwrap_or(&rest).to_string(),
+    }
+}
+
+/// Whether a shell command runs a known test runner whose exit status the
+/// command's own status reports: the runner in command position, followed by
+/// nothing but `&&`. Used only to label a command whose status the CLI
+/// reported; never to infer a result. Mirrored by `looksLikeTestCommand`
+/// (shared cases in `src/test/test-commands.json`).
+pub fn is_test_command(command: &str) -> bool {
+    shell_segments(command).iter().any(|(segment, reliable)| {
+        let core = command_core(segment);
+        *reliable
+            && TEST_RUNNERS.iter().any(|runner| {
+                core.strip_prefix(runner)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+            })
     })
 }
 
@@ -200,7 +313,7 @@ impl AgentDigest {
         });
     }
 
-    fn command(&mut self, command: &str) -> usize {
+    fn command(&mut self, command: &str) -> u64 {
         let command = unwrap_shell(command);
         if self.commands.len() >= MAX_DIGEST_COMMANDS {
             self.truncated = true;
@@ -212,13 +325,19 @@ impl AgentDigest {
                 .unwrap_or_default();
             self.commands.remove(drop);
         }
+        self.next_seq += 1;
         self.commands.push(DigestCommand {
             test: is_test_command(&command),
             command: command.chars().take(300).collect(),
             status: "running".into(),
             exit_code: None,
+            seq: self.next_seq,
         });
-        self.commands.len() - 1
+        self.next_seq
+    }
+
+    fn command_mut(&mut self, seq: u64) -> Option<&mut DigestCommand> {
+        self.commands.iter_mut().find(|c| c.seq == seq)
     }
 
     fn task(&mut self, id: &str, text: &str, status: &str) {
@@ -582,18 +701,20 @@ impl AgentOutput {
             _ => String::new(),
         };
         match pending {
-            PendingTool::Command(index) => {
-                if let Some(command) = self.digest.commands.get_mut(index) {
+            PendingTool::Command(seq) => {
+                if let Some(command) = self.digest.command_mut(seq) {
                     command.status = if failed { "failed" } else { "succeeded" }.into();
-                    command.exit_code = if failed {
-                        content
-                            .split("Exit code ")
-                            .nth(1)
-                            .and_then(|rest| rest.split_whitespace().next())
-                            .and_then(|code| code.parse().ok())
-                    } else {
-                        Some(0)
-                    };
+                    // Claude reports a failed call's code in its text; a
+                    // success carries no code, so none is invented.
+                    command.exit_code = failed
+                        .then(|| {
+                            content
+                                .split("Exit code ")
+                                .nth(1)
+                                .and_then(|rest| rest.split_whitespace().next())
+                                .and_then(|code| code.parse().ok())
+                        })
+                        .flatten();
                 }
             }
             PendingTool::File { path, change } if !failed => {
@@ -650,7 +771,7 @@ impl AgentOutput {
                     return;
                 }
                 self.pending_tools.remove(&id);
-                if let Some(entry) = digest.commands.get_mut(index) {
+                if let Some(entry) = digest.command_mut(index) {
                     let code = item["exit_code"]
                         .as_i64()
                         .and_then(|c| i32::try_from(c).ok());
@@ -938,7 +1059,7 @@ mod tests {
         assert_eq!(
             commands(digest),
             [
-                ("ls".into(), "succeeded".into(), Some(0)),
+                ("ls".into(), "succeeded".into(), None),
                 ("false".into(), "failed".into(), Some(1)),
             ]
         );
@@ -1078,26 +1199,31 @@ mod tests {
     }
 
     #[test]
-    fn test_runners_are_recognised_by_whole_words() {
-        for yes in [
-            "cargo test -p orchevia-core",
-            "pnpm test",
-            "npx vitest run",
-            "python -m pytest -q",
-            "go test ./...",
-            "./gradlew test",
-            "cd app && npm run test -- --ci",
-        ] {
-            assert!(is_test_command(yes), "{yes}");
+    fn a_late_result_never_lands_on_another_command_after_the_cap() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"slow\",\"name\":\"Bash\",\"input\":{\"command\":\"sleep 5\"}}]}}\n");
+        for n in 0..70 {
+            out.push(format!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"c{n}\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo {n}\"}}}}]}}}}\n{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"c{n}\",\"is_error\":false,\"content\":\"{n}\"}}]}}}}\n").as_bytes());
         }
-        for no in [
-            "cargo build",
-            "echo testing",
-            "pnpm testify",
-            "rg jest-config",
-            "latest",
-        ] {
-            assert!(!is_test_command(no), "{no}");
+        // The slow command was dropped to stay bounded; its failure is not
+        // pinned on whichever command took its place.
+        out.push(b"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"slow\",\"is_error\":true,\"content\":\"Exit code 2\"}]}}\n");
+        assert!(out.digest.truncated);
+        assert!(out.digest.commands.iter().all(|c| c.status == "succeeded"));
+    }
+
+    #[test]
+    fn test_runs_match_the_shared_list() {
+        let shared: Value =
+            serde_json::from_str(include_str!("../../../src/test/test-commands.json"))
+                .expect("shared test commands");
+        for command in shared["tests"].as_array().expect("tests") {
+            let command = command.as_str().unwrap_or("");
+            assert!(is_test_command(command), "{command}");
+        }
+        for command in shared["other"].as_array().expect("other") {
+            let command = command.as_str().unwrap_or("");
+            assert!(!is_test_command(command), "{command}");
         }
         assert_eq!(unwrap_shell("/usr/bin/zsh -lc 'ls -la'"), "ls -la");
         assert_eq!(unwrap_shell("bash -c \"cargo test\""), "cargo test");

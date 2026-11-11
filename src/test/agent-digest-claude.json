@@ -1,12 +1,32 @@
 {
-  "files": [{ "path": "/work/repo/notes.txt", "change": "added" }],
+  "files": [
+    {
+      "path": "/work/repo/notes.txt",
+      "change": "added"
+    }
+  ],
   "commands": [
-    { "command": "ls", "status": "succeeded", "exitCode": 0 },
-    { "command": "false", "status": "failed", "exitCode": 1 }
+    {
+      "command": "ls",
+      "status": "succeeded"
+    },
+    {
+      "command": "false",
+      "status": "failed",
+      "exitCode": 1
+    }
   ],
   "tasks": [
-    { "id": "1", "text": "Create and edit notes.txt", "status": "completed" },
-    { "id": "2", "text": "Run shell commands ls and false", "status": "completed" }
+    {
+      "id": "1",
+      "text": "Create and edit notes.txt",
+      "status": "completed"
+    },
+    {
+      "id": "2",
+      "text": "Run shell commands ls and false",
+      "status": "completed"
+    }
   ],
   "message": "notes.txt now says \"hello world\", and `ls` listed it as the only file. `false` exited with code 1, which is what that command always does.\n\nDONE"
 }
