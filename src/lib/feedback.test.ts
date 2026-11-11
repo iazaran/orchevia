@@ -15,6 +15,8 @@ describe('feedback rules (shared with the core)', () => {
   it('sends feedback to the same AI step', () => {
     for (const { node, target } of fixture.targets)
       expect(feedbackTarget(workflow, node), node).toBe(target);
+    // An AI step that did not run on this path is passed over.
+    expect(feedbackTarget(workflow, 'push', (id) => id !== 'review')).toBe('impl');
   });
 
   it('plans the same correction', () => {

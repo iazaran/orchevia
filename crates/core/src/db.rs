@@ -435,7 +435,7 @@ impl SqliteDb {
             )));
         }
         let started: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM node_results WHERE run_id = ?1 AND node_id = ?2",
+            "SELECT COUNT(*) FROM node_results WHERE run_id = ?1 AND node_id = ?2 AND status != 'skipped'",
             params![run_id, node_id],
             |r| r.get(0),
         )?;
@@ -3340,11 +3340,20 @@ mod feedback_tests {
         assert_eq!(item.status, feedback::PENDING);
         assert_eq!(item.text, "Keep the old config.");
         assert!(db.has_waiting_feedback("run-1").expect("waiting"));
+        db.record_node_result(NewNodeResult::simple(
+            "run-1",
+            "skipped-step",
+            "skipped",
+            None,
+            None,
+        ))
+        .expect("skip row");
         for (node, text) in [
             ("tests", "x"),
             ("impl", "   "),
             ("run", "x"),
             ("__feedback", "x"),
+            ("skipped-step", "x"),
         ] {
             assert!(
                 db.submit_feedback("run-1", node, None, text).is_err(),

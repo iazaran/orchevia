@@ -382,3 +382,45 @@ describe('mock feedback in loops and across restarts', () => {
     expect(item?.decision).toContain('restarted');
   });
 });
+
+describe('mock feedback and recovery', () => {
+  it('reuses the corrected result when recovering a run that failed after a correction', async () => {
+    const runId = await start(approvalWorkflow());
+    await backend.submitStepFeedback(runId, 'impl', 'Keep old keys.');
+    await approve(runId);
+    await backend.approveRun(runId, false);
+    await vi.runAllTimersAsync();
+    expect((await backend.getRun(runId))?.status).toBe('failed');
+    const plan = await backend.previewRecovery(runId);
+    const choices = Object.fromEntries(
+      plan.nodes.map((n) => [n.nodeId, n.choices.includes('reuse') ? 'reuse' : 'replay']),
+    ) as Record<string, 'reuse' | 'replay'>;
+    const { runId: recovered } = await backend.recoverRun(
+      runId,
+      choices,
+      plan.fingerprint,
+      'req-1',
+    );
+    await vi.runAllTimersAsync();
+    const rows = await backend.getRunResults(recovered);
+    expect(outputs(rows, 'impl')[0]).toBe('v2');
+    expect(outputs(rows, 'tests')[0]).toBe('ok 2');
+  });
+
+  it('refuses feedback on a skipped step', async () => {
+    const wf = approvalWorkflow();
+    wf.nodes.push({
+      id: 'island',
+      type: 'command',
+      position: at,
+      config: { executable: 'x' },
+    });
+    const runId = await start(wf);
+    expect((await backend.getRunResults(runId)).some((r) => r.nodeId === 'island')).toBe(
+      true,
+    );
+    await expect(backend.submitStepFeedback(runId, 'island', 'x')).rejects.toThrow(
+      'once it has started',
+    );
+  });
+});

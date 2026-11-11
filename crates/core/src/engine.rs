@@ -602,8 +602,12 @@ impl Engine {
             }
         }
         let invalidated = run_controls::invalidated_nodes(&workflow, &changed_rows);
+        // A feedback correction superseded the results before it: reuse
+        // only what the last round left for each step.
+        let superseded = run_controls::superseded_by_corrections(&rows);
         let seeds: Vec<_> = rows
             .iter()
+            .filter(|r| superseded.get(&r.node_id).is_none_or(|after| r.id > *after))
             .filter(|r| {
                 (r.status == "succeeded" && choices.get(&r.node_id) == Some(&RecoveryChoice::Reuse))
                     || (r.status == "approved"
@@ -1390,6 +1394,11 @@ impl Engine {
                     && self.db.has_waiting_feedback(run_id)?
                 {
                     if in_flight.is_empty() && ready.iter().all(checkpoint) {
+                        // A check is an agent attempt: never past a reached
+                        // spend target.
+                        if guarded {
+                            return Ok(RunOutcome::SpendPaused(spend.reported_usd));
+                        }
                         match self
                             .feedback_round(workflow, &graph, &mut state, &run, run_id, flag)
                             .await?
@@ -2298,8 +2307,14 @@ impl Engine {
                 )?;
             } else {
                 let mut groups: Vec<(String, Vec<fb::RunFeedback>)> = Vec::new();
+                // Only an AI step that ran on this run's path can be corrected.
+                let ran = |id: &str| {
+                    rows.iter().any(|r| {
+                        r.node_id == id && matches!(r.status.as_str(), "succeeded" | "failed")
+                    })
+                };
                 for item in pending {
-                    match fb::feedback_target(workflow, &item.node_id) {
+                    match fb::feedback_target(workflow, &item.node_id, &ran) {
                         Some(target) => match groups.iter_mut().find(|(t, _)| *t == target) {
                             Some((_, group)) => group.push(item),
                             None => groups.push((target, vec![item])),

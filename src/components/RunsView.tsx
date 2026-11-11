@@ -1517,6 +1517,7 @@ export function RunsView(): React.JSX.Element {
                       (activeRun.status === 'running' || activeRun.status === 'paused') &&
                       latestForStep &&
                       !isBookkeeping(r) &&
+                      r.status !== 'skipped' &&
                       workflowNode !== undefined &&
                       workflowNode.type !== 'start' &&
                       workflowNode.type !== 'end';

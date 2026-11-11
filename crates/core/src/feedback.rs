@@ -145,9 +145,17 @@ pub fn validate_text(text: &str) -> Result<String, String> {
 /// and data references count first; loop-back edges (the fix step of a
 /// loop) only when nothing else reaches an AI step. Ties go to the step
 /// defined later, which is closer to the step the feedback is about.
-pub fn feedback_target(workflow: &Workflow, node_id: &str) -> Option<String> {
+///
+/// `ran` says whether an AI step ran on this run's path; one that did not
+/// (on a branch the run skipped) is passed over.
+pub fn feedback_target(
+    workflow: &Workflow,
+    node_id: &str,
+    ran: &dyn Fn(&str) -> bool,
+) -> Option<String> {
     let kind_of = |id: &str| workflow.nodes.iter().find(|n| n.id == id).map(|n| n.kind);
-    if kind_of(node_id) == Some(NodeKind::Agent) {
+    let agent = |id: &str| kind_of(id) == Some(NodeKind::Agent) && ran(id);
+    if agent(node_id) {
         return Some(node_id.to_string());
     }
     let order = |id: &str| workflow.nodes.iter().position(|n| n.id == id);
@@ -184,7 +192,7 @@ pub fn feedback_target(workflow: &Workflow, node_id: &str) -> Option<String> {
             }
             if let Some(agent) = next
                 .iter()
-                .filter(|id| kind_of(id) == Some(NodeKind::Agent))
+                .filter(|id| agent(id))
                 .max_by_key(|id| order(id))
             {
                 return Some(agent.clone());
@@ -468,16 +476,29 @@ mod tests {
     #[test]
     fn an_ai_step_handles_its_own_feedback_and_others_go_to_the_nearest_one() {
         let wf = coding();
-        assert_eq!(feedback_target(&wf, "impl").as_deref(), Some("impl"));
+        let all = |_: &str| true;
+        assert_eq!(feedback_target(&wf, "impl", &all).as_deref(), Some("impl"));
         // Tests use the implementation (ordinary edge) before the fix loop.
-        assert_eq!(feedback_target(&wf, "tests").as_deref(), Some("impl"));
+        assert_eq!(feedback_target(&wf, "tests", &all).as_deref(), Some("impl"));
         // Past the review and the condition, the review is nearest.
-        assert_eq!(feedback_target(&wf, "push").as_deref(), Some("review"));
+        assert_eq!(
+            feedback_target(&wf, "push", &all).as_deref(),
+            Some("review")
+        );
         // A data reference counts like an edge.
-        assert_eq!(feedback_target(&wf, "summary").as_deref(), Some("impl"));
+        assert_eq!(
+            feedback_target(&wf, "summary", &all).as_deref(),
+            Some("impl")
+        );
         // Lint only follows Start: nothing can correct it.
-        assert_eq!(feedback_target(&wf, "lint"), None);
-        assert_eq!(feedback_target(&wf, "missing"), None);
+        assert_eq!(feedback_target(&wf, "lint", &all), None);
+        assert_eq!(feedback_target(&wf, "missing", &all), None);
+        // A review that did not run on this path is passed over.
+        let no_review = |id: &str| id != "review";
+        assert_eq!(
+            feedback_target(&wf, "push", &no_review).as_deref(),
+            Some("impl")
+        );
     }
 
     #[test]
@@ -583,7 +604,7 @@ mod parity_tests {
         for case in fixture["targets"].as_array().expect("targets") {
             let node = case["node"].as_str().unwrap_or("");
             assert_eq!(
-                feedback_target(&workflow, node).as_deref(),
+                feedback_target(&workflow, node, &|_| true).as_deref(),
                 case["target"].as_str(),
                 "{node}"
             );

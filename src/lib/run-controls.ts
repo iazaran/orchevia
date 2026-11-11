@@ -424,6 +424,25 @@ export function dependencyPairs(workflow: Workflow): [string, string][] {
   return dependencies;
 }
 
+/**
+ * For each step a feedback correction round reran, the id of the last such
+ * round's marker row. Mirrors `superseded_by_corrections`.
+ */
+export function supersededByCorrections(rows: StoredNodeResult[]): Map<string, number> {
+  const superseded = new Map<string, number>();
+  for (const row of rows) {
+    if (row.nodeId !== '__feedback' || row.status !== 'correcting') continue;
+    const round = resultMetadata(row).feedbackRound;
+    if (!isRecord(round)) continue;
+    for (const key of ['roots', 'affected']) {
+      const ids: unknown = round[key];
+      if (Array.isArray(ids))
+        for (const id of ids) if (typeof id === 'string') superseded.set(id, row.id);
+    }
+  }
+  return superseded;
+}
+
 /** Every step using the work of `seeds`. Mirrors `downstream_closure`. */
 export function downstreamClosure(workflow: Workflow, seeds: Set<string>): Set<string> {
   const dependencies = dependencyPairs(workflow);

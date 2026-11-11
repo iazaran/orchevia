@@ -2,6 +2,7 @@ import {
   validateRunOptions,
   recoveryPlan,
   recoveryInvalidated,
+  supersededByCorrections,
   isEffectful,
   resultMetadata,
   replayGraph,
@@ -1611,12 +1612,16 @@ class MockBackend implements Backend {
     this.results.set(childId, []);
     this.runWorkflows.set(childId, structuredClone(workflow));
     const invalidated = recoveryInvalidated(workflow, rows, changed);
+    // A feedback correction superseded the results before it.
+    const superseded = supersededByCorrections(rows);
     this.recoverySeeds.set(
       childId,
       structuredClone(
         rows.filter(
           (r) =>
-            (r.status === 'succeeded' && choices[r.nodeId] === 'reuse') ||
+            (r.id > (superseded.get(r.nodeId) ?? 0) &&
+              r.status === 'succeeded' &&
+              choices[r.nodeId] === 'reuse') ||
             (r.status === 'approved' &&
               !invalidated.has(r.nodeId) &&
               workflow.nodes.some((n) => n.id === r.nodeId && n.type === 'approval')),
@@ -1737,7 +1742,7 @@ class MockBackend implements Backend {
     if (
       nodeId.startsWith('__') ||
       nodeId === 'run' ||
-      !rows.some((r) => r.nodeId === nodeId)
+      !rows.some((r) => r.nodeId === nodeId && r.status !== 'skipped')
     )
       throw new Error('Feedback can be added to a step once it has started.');
     if (
@@ -1913,8 +1918,10 @@ class MockBackend implements Backend {
         );
       } else {
         const groups = new Map<string, RunFeedback[]>();
+        const ran = (id: string): boolean =>
+          rows.some((r) => r.nodeId === id && ['succeeded', 'failed'].includes(r.status));
         for (const item of pending) {
-          const target = feedbackTarget(workflow, item.nodeId);
+          const target = feedbackTarget(workflow, item.nodeId, ran);
           if (target === null)
             this.updateFeedback([item.id], {
               status: 'needs-attention',

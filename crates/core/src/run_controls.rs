@@ -414,6 +414,28 @@ pub fn recovery_plan(
     }
 }
 
+/// For each step a feedback correction round reran, the id of the last such
+/// round's marker row: results before it were superseded.
+pub fn superseded_by_corrections(rows: &[StoredNodeResult]) -> HashMap<String, i64> {
+    let mut superseded = HashMap::new();
+    for row in rows {
+        if row.node_id != crate::feedback::ROUND_NODE || row.status != "correcting" {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&row.structured_json) else {
+            continue;
+        };
+        for key in ["roots", "affected"] {
+            for id in value["feedbackRound"][key].as_array().into_iter().flatten() {
+                if let Some(id) = id.as_str() {
+                    superseded.insert(id.to_string(), row.id);
+                }
+            }
+        }
+    }
+    superseded
+}
+
 /// Every "B uses A's work" pair: graph edges, `contextRefs`, `inputRefs`,
 /// `{{node.A…}}` references and ticket variables. Shared by recovery and
 /// feedback corrections.

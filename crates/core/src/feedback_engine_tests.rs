@@ -53,7 +53,8 @@ case "$input" in
   *"Feedback to apply"*)
     printf '%s\n' '{"type":"result","is_error":false,"result":"CORRECTED","usage":{"input_tokens":1}}' ;;
   *)
-    printf '%s\n' '{"type":"result","is_error":false,"result":"ORIGINAL","usage":{"input_tokens":1}}' ;;
+    sleep "$(cat "$dir/original-delay" 2>/dev/null || echo 0)"
+    printf '%s\n' '{"type":"result","is_error":false,"result":"ORIGINAL","total_cost_usd":0.01,"usage":{"input_tokens":1}}' ;;
 esac
 "#
     .replace("@DIR@", &shell_escape::escape(path.to_string_lossy()));
@@ -633,5 +634,104 @@ async fn a_correction_gives_a_fix_loop_fresh_passes() {
     assert_eq!(
         h.db.list_feedback("fb-loop").expect("feedback")[0].status,
         feedback::ADDRESSED
+    );
+}
+
+#[tokio::test]
+async fn a_reached_spend_target_pauses_before_a_feedback_check() {
+    let h = harness("change");
+    std::fs::write(h.dir.path().join("original-delay"), "0.6").expect("delay");
+    let wf = Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-spend","name":"Spend",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"impl","type":"agent","config":{"agentProfileId":"fake","prompt":"Change it."}},
+          {"id":"end","type":"end"}],
+        "edges":[{"id":"e1","source":"start","target":"impl"},{"id":"e2","source":"impl","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow");
+    let options: RunOptions =
+        serde_json::from_value(json!({"spendLimitUsd": 0.005})).expect("options");
+    let run = start(&h, &wf, "fb-spend", options);
+    wait_until(&h, "fb-spend", "impl running", |rows| {
+        status_of(rows, "impl").as_deref() == Some("running")
+    })
+    .await;
+    h.engine
+        .submit_feedback("fb-spend", "impl", None, "Keep old keys.")
+        .expect("submit");
+    run.await.expect("run");
+    let run = h.db.get_run("fb-spend").expect("get").expect("run");
+    assert_eq!(run.status, RunStatus::Paused);
+    assert!(
+        run.execution.spend_pause.is_some(),
+        "paused at the spend target"
+    );
+    let rows = h.db.list_node_results("fb-spend").expect("rows");
+    assert!(rows.iter().all(|r| r.status != "checked"), "no check ran");
+    assert_eq!(
+        h.db.list_feedback("fb-spend").expect("feedback")[0].status,
+        feedback::PENDING
+    );
+}
+
+#[tokio::test]
+async fn recovering_after_a_correction_reuses_the_corrected_result() {
+    let h = harness("change");
+    let wf = approval_workflow(None);
+    start(&h, &wf, "fb-recover", fixtures()).await.expect("run");
+    h.engine
+        .submit_feedback("fb-recover", "impl", None, "Keep old keys.")
+        .expect("submit");
+    h.engine
+        .approve_run("fb-recover", true, None, wf.clone())
+        .await
+        .expect("approve");
+    // Asked again after the correction; rejecting fails the run.
+    h.engine
+        .approve_run("fb-recover", false, None, wf.clone())
+        .await
+        .expect("reject");
+    assert_eq!(run_status(&h, "fb-recover"), RunStatus::Failed);
+    let plan = h.engine.preview_recovery("fb-recover").expect("plan");
+    let choices: std::collections::HashMap<String, crate::run_controls::RecoveryChoice> = plan
+        .nodes
+        .iter()
+        .map(|n| {
+            (
+                n.node_id.clone(),
+                if n.choices
+                    .contains(&crate::run_controls::RecoveryChoice::Reuse)
+                {
+                    crate::run_controls::RecoveryChoice::Reuse
+                } else {
+                    crate::run_controls::RecoveryChoice::Replay
+                },
+            )
+        })
+        .collect();
+    let id = h
+        .engine
+        .recover_run(
+            "fb-recover",
+            "fb-recovered",
+            &choices,
+            &plan.fingerprint,
+            "req-1",
+        )
+        .expect("recover");
+    let wf_run = h.db.get_run_workflow(&id).expect("wf").expect("snapshot");
+    let engine = Arc::clone(&h.engine);
+    engine.execute(wf_run, id.clone()).await;
+    // The first visit reuses what the correction produced, not the
+    // superseded first result.
+    assert_eq!(
+        outputs(&h, &id, "impl").first().map(String::as_str),
+        Some("v2")
+    );
+    assert_eq!(
+        outputs(&h, &id, "tests").first().map(String::as_str),
+        Some("ok 2")
     );
 }

@@ -107,13 +107,18 @@ function loopEdges(workflow: Workflow): Set<string> {
 /**
  * The AI step that handles feedback on `nodeId`: itself when it is one,
  * otherwise the nearest AI step whose work it uses (edges and data
- * references first, loop-back edges last; ties go to the later step).
- * Mirrors `feedback_target`.
+ * references first, loop-back edges last; ties go to the later step), passing
+ * over AI steps that did not run on this run's path. Mirrors `feedback_target`.
  */
-export function feedbackTarget(workflow: Workflow, nodeId: string): string | null {
+export function feedbackTarget(
+  workflow: Workflow,
+  nodeId: string,
+  ran: (id: string) => boolean = () => true,
+): string | null {
   const kind = (id: string): string | undefined =>
     workflow.nodes.find((n) => n.id === id)?.type;
-  if (kind(nodeId) === 'agent') return nodeId;
+  const agent = (id: string): boolean => kind(id) === 'agent' && ran(id);
+  if (agent(nodeId)) return nodeId;
   const order = (id: string): number => workflow.nodes.findIndex((n) => n.id === id);
   const loops = loopEdges(workflow);
   const ordinary: [string, string][] = [
@@ -138,7 +143,7 @@ export function feedbackTarget(workflow: Workflow, nodeId: string): string | nul
             seen.add(source);
             next.push(source);
           }
-      const agents = next.filter((id) => kind(id) === 'agent');
+      const agents = next.filter(agent);
       if (agents.length > 0)
         return agents.reduce((best, id) => (order(id) > order(best) ? id : best));
       frontier = next;
