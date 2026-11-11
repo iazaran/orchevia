@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   reportFields,
   reportResult,
+  runProgress,
   stepCounts,
   stepLabel,
   timelineBarStatus,
@@ -153,5 +154,50 @@ describe('step names and timeline colours', () => {
     expect(timelineBarStatus('retrying')).toBe('paused');
     expect(timelineBarStatus('skipped')).toBe('cancelled');
     expect(timelineBarStatus('running')).toBe('running');
+  });
+});
+
+describe('feedback rows and run progress', () => {
+  it('never takes a feedback check or round as the report or a step', () => {
+    const workflow = ticketWorkflow();
+    const results = [
+      row(1, 'summary', 'Report text'),
+      row(2, 'summary', 'DECISION satisfied', 'checked'),
+      row(3, '__feedback', 'Correcting review', 'correcting'),
+    ];
+    expect(reportResult(workflow, results)?.id).toBe(1);
+    expect(stepCounts(results).total).toBe(1);
+    expect(stepLabel('__feedback', undefined)).toBe('Feedback round');
+    expect(timelineBarStatus('checked')).toBe('cancelled');
+    expect(timelineBarStatus('correcting')).toBe('paused');
+  });
+
+  it('counts each step by its latest result and lists parallel work', () => {
+    const workflow = ticketWorkflow();
+    workflow.nodes.push({
+      id: 'gate',
+      type: 'approval',
+      label: 'Approve',
+      position: { x: 0, y: 0 },
+      config: {},
+    });
+    const progress = runProgress(workflow, [
+      row(1, 'review', 'x', 'failed'),
+      row(2, 'review', 'x', 'succeeded'),
+      row(3, 'coderabbit', '', 'running'),
+      row(4, 'summary', '', 'running'),
+      row(5, 'review', 'x', 'checked'),
+      row(6, 'gate', '', 'paused'),
+    ]);
+    expect(progress).toEqual({
+      total: 4,
+      done: 1,
+      failed: 0,
+      skipped: 0,
+      running: ['coderabbit', 'summary'],
+      waiting: ['Approve'],
+      toGo: 0,
+    });
+    expect(runProgress(workflow, []).toGo).toBe(4);
   });
 });

@@ -35,6 +35,7 @@ export function reportResult(
       (row) =>
         row.stdout.trim() !== '' &&
         row.status !== 'skipped' &&
+        !isBookkeeping(row) &&
         !ROUTING.has(nodes.get(row.nodeId)?.type ?? ''),
     )
     .reverse();
@@ -85,6 +86,14 @@ export function reportFields(text: string): { fields: ReportField[]; rest: strin
   return { fields, rest: lines.slice(index).join('\n').trim() };
 }
 
+/**
+ * Rows the engine writes about a step rather than as one: guard pauses,
+ * feedback rounds (`__feedback`) and feedback checks (`checked`).
+ */
+export function isBookkeeping(row: StoredNodeResult): boolean {
+  return row.nodeId.startsWith('__') || row.status === 'checked';
+}
+
 /** How many recorded steps ended in each outcome, for the run header. */
 export function stepCounts(results: StoredNodeResult[]): {
   total: number;
@@ -93,7 +102,7 @@ export function stepCounts(results: StoredNodeResult[]): {
   rejected: number;
 } {
   return {
-    total: results.length,
+    total: results.filter((row) => !isBookkeeping(row)).length,
     skipped: results.filter((row) => row.status === 'skipped').length,
     failed: results.filter((row) => row.status === 'failed').length,
     rejected: results.filter((row) => row.status === 'rejected').length,
@@ -104,6 +113,7 @@ export function stepCounts(results: StoredNodeResult[]): {
 const GUARD_LABELS: Record<string, string> = {
   __spend_guard: 'Spend guard',
   __usage_guard: 'Usage guard',
+  __feedback: 'Feedback round',
 };
 
 /** A step's display name: its label, a guard's name, or the node id. */
@@ -121,10 +131,70 @@ export function timelineBarStatus(status: string): string {
       return 'failed';
     case 'guardPaused':
     case 'retrying':
+    case 'correcting':
       return 'paused';
     case 'skipped':
+    case 'checked':
       return 'cancelled';
     default:
       return status;
   }
+}
+
+export interface RunProgress {
+  /** Working steps in the workflow (every step but Start and End). */
+  total: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  /** Labels of the steps running now; more than one means parallel work. */
+  running: string[];
+  /** Labels of the steps waiting for a decision. */
+  waiting: string[];
+  /** Steps that have not finished yet and are not running. */
+  toGo: number;
+}
+
+/**
+ * Where a run stands, from each step's latest result. A step a loop or a
+ * correction runs again counts once, by its latest result.
+ */
+export function runProgress(
+  workflow: Workflow,
+  results: StoredNodeResult[],
+): RunProgress {
+  const work = new Map(
+    workflow.nodes
+      .filter((node) => node.type !== 'start' && node.type !== 'end')
+      .map((node) => [node.id, node.label ?? node.id]),
+  );
+  const latest = new Map<string, string>();
+  const running: string[] = [];
+  for (const row of results) {
+    if (!work.has(row.nodeId) || isBookkeeping(row)) continue;
+    latest.set(row.nodeId, row.status);
+  }
+  const count = (statuses: string[]): number =>
+    [...latest.values()].filter((status) => statuses.includes(status)).length;
+  for (const [id, status] of latest) {
+    if (status === 'running' || status === 'retrying') running.push(work.get(id) ?? id);
+  }
+  const waiting = [...latest]
+    .filter(([, status]) => status === 'paused')
+    .map(([id]) => work.get(id) ?? id);
+  const done = count(['succeeded', 'approved']);
+  const failed = count(['failed', 'rejected', 'cancelled']);
+  const skipped = count(['skipped']);
+  return {
+    total: work.size,
+    done,
+    failed,
+    skipped,
+    running,
+    waiting,
+    toGo: Math.max(
+      0,
+      work.size - done - failed - skipped - running.length - waiting.length,
+    ),
+  };
 }

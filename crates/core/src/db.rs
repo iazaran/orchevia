@@ -1131,13 +1131,29 @@ impl SqliteDb {
     /// Replace a running row's captured streams; later snapshots include both
     /// streams so the UI sees a coherent prefix on every poll.
     pub fn update_node_output(&self, id: i64, stdout: &str, stderr: &str) -> DbResult<()> {
+        self.update_node_progress(id, stdout, stderr, None)
+    }
+
+    /// [`Self::update_node_output`] plus the live agent digest, merged into
+    /// the row's metadata so markers written at its start survive.
+    pub fn update_node_progress(
+        &self,
+        id: i64,
+        stdout: &str,
+        stderr: &str,
+        digest: Option<&str>,
+    ) -> DbResult<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         let changed = conn.execute(
-            "UPDATE node_results SET stdout = ?1, stderr = ?2 WHERE id = ?3 AND status = 'running'",
-            params![stdout, stderr, id],
+            "UPDATE node_results SET stdout = ?1, stderr = ?2, structured_json = CASE \
+             WHEN ?4 IS NULL THEN structured_json \
+             ELSE json_set(CASE WHEN json_valid(structured_json) THEN structured_json ELSE '{}' END, \
+             '$.agentDigest', json(?4)) END \
+             WHERE id = ?3 AND status = 'running'",
+            params![stdout, stderr, id, digest],
         )?;
         if changed == 0 {
             return Err(DbError::NotFound(format!("running node result {id}")));
@@ -2454,6 +2470,28 @@ mod tests {
         assert_eq!(rows[0].stdout, "partial");
         assert_eq!(rows[0].stderr, "warning");
         assert!(rows[0].finished_at.is_some());
+    }
+
+    #[test]
+    fn live_progress_merges_the_digest_into_the_row_metadata() {
+        let db = SqliteDb::open_in_memory().expect("open");
+        db.upsert_workflow(&sample_workflow("wf-1"))
+            .expect("upsert");
+        db.create_run("run-1", "wf-1", &std::collections::HashMap::new())
+            .expect("create run");
+        let id = db.start_node_result("run-1", "cmd", 1).expect("start node");
+        db.update_node_progress(id, "Tool: Bash", "", Some(r#"{"doing":"Running ls"}"#))
+            .expect("progress");
+        let rows = db.list_node_results("run-1").expect("results");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&rows[0].structured_json).expect("json");
+        assert_eq!(metadata["agentDigest"]["doing"], "Running ls");
+        // Output without a digest leaves the metadata alone.
+        db.update_node_output(id, "Tool: Bash\nmore", "")
+            .expect("output");
+        let rows = db.list_node_results("run-1").expect("results");
+        assert!(rows[0].structured_json.contains("Running ls"));
+        assert_eq!(rows[0].stdout, "Tool: Bash\nmore");
     }
 
     #[test]

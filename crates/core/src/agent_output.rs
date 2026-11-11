@@ -1,11 +1,251 @@
 //! Incremental decoding for managed CLI conversations. No provider calls here.
 use crate::agents::AdapterKind;
 use crate::permissions::{claude_denials, denial_message, PermissionDenial};
+use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_TEXT: usize = 200_000;
 const MAX_EVENT_BYTES: usize = 4_000_000;
+const MAX_DIGEST_FILES: usize = 100;
+const MAX_DIGEST_COMMANDS: usize = 60;
+const MAX_DIGEST_TASKS: usize = 40;
+
+/// What a CLI did, built only from its own events: tool inputs, tool results
+/// and items. Never from what the agent wrote about itself, except `message`,
+/// which the run page labels as the agent's words. Bounded, so a long
+/// conversation keeps a small summary.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDigest {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<DigestFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<DigestCommand>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<DigestTask>,
+    /// The latest action while the CLI runs ("Editing src/a.ts"); cleared
+    /// when it finishes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doing: Option<String>,
+    /// The agent's latest message, shortened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reads: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub searches: u32,
+    /// Some files, commands or tasks were left out to stay bounded.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DigestFile {
+    pub path: String,
+    /// `added`, `edited` or `deleted`, as the CLI reported the change.
+    pub change: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DigestCommand {
+    pub command: String,
+    /// `running`, `succeeded`, `failed` or `unknown`: the result the CLI
+    /// reported for this command (Codex exit code, Claude `is_error`).
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// A known test runner (`cargo test`, `pnpm test`, `pytest`, …).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub test: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DigestTask {
+    pub id: String,
+    pub text: String,
+    /// `pending`, `in_progress` or `completed`.
+    pub status: String,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// A tool call waiting for its result.
+#[derive(Debug, Clone)]
+enum PendingTool {
+    Command(usize),
+    File { path: String, change: &'static str },
+    TaskCreate(String),
+}
+
+fn shorten(text: &str, max: usize) -> String {
+    let text = text.trim();
+    let first = text.lines().next().unwrap_or("").trim();
+    let mut out: String = first.chars().take(max).collect();
+    if first.chars().count() > max || text.lines().count() > 1 {
+        out.push('…');
+    }
+    out
+}
+
+/// The agent's latest words, kept whole up to 500 characters.
+fn shorten_message(text: &str) -> String {
+    let text = text.trim();
+    let mut out: String = text.chars().take(500).collect();
+    if text.chars().count() > 500 {
+        out.push('…');
+    }
+    out
+}
+
+/// The last two path components, enough to recognise a file.
+fn short_path(path: &str) -> String {
+    let parts: Vec<&str> = path.rsplit('/').filter(|p| !p.is_empty()).take(2).collect();
+    parts.into_iter().rev().collect::<Vec<_>>().join("/")
+}
+
+/// Codex wraps each command in the user's shell (`/usr/bin/zsh -lc 'ls'`);
+/// show the command itself.
+fn unwrap_shell(command: &str) -> String {
+    let trimmed = command.trim();
+    let mut parts = trimmed.splitn(3, ' ');
+    let (Some(shell), Some(flag), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
+        return trimmed.to_string();
+    };
+    let name = shell.rsplit('/').next().unwrap_or(shell);
+    if !matches!(name, "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish")
+        || !matches!(flag, "-c" | "-lc" | "-lic" | "-ic")
+    {
+        return trimmed.to_string();
+    }
+    let rest = rest.trim();
+    for quote in ['\'', '"'] {
+        if rest.len() >= 2 && rest.starts_with(quote) && rest.ends_with(quote) {
+            return rest[1..rest.len() - 1].to_string();
+        }
+    }
+    rest.to_string()
+}
+
+/// Whether a shell command runs a known test runner. Used only to label a
+/// command whose exit status the CLI reported; never to infer a result.
+pub fn is_test_command(command: &str) -> bool {
+    let lower = command.to_lowercase();
+    const RUNNERS: [&str; 26] = [
+        "cargo test",
+        "cargo nextest",
+        "npm test",
+        "npm run test",
+        "pnpm test",
+        "pnpm run test",
+        "yarn test",
+        "yarn run test",
+        "bun test",
+        "deno test",
+        "vitest",
+        "jest",
+        "pytest",
+        "python -m unittest",
+        "go test",
+        "phpunit",
+        "pest",
+        "rspec",
+        "mvn test",
+        "gradle test",
+        "gradlew test",
+        "dotnet test",
+        "mix test",
+        "make test",
+        "ctest",
+        "swift test",
+    ];
+    RUNNERS.iter().any(|runner| {
+        lower.match_indices(runner).any(|(at, _)| {
+            let before = lower[..at].chars().next_back();
+            let after = lower[at + runner.len()..].chars().next();
+            before.is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+                && after.is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+        })
+    })
+}
+
+impl AgentDigest {
+    pub fn is_empty(&self) -> bool {
+        *self == AgentDigest::default()
+    }
+
+    fn file(&mut self, path: &str, change: &str) {
+        if path.trim().is_empty() {
+            return;
+        }
+        if let Some(existing) = self.files.iter_mut().find(|f| f.path == path) {
+            // A file created in this run stays "added" after later edits.
+            if existing.change != "added" || change == "deleted" {
+                existing.change = change.to_string();
+            }
+            return;
+        }
+        if self.files.len() >= MAX_DIGEST_FILES {
+            self.truncated = true;
+            return;
+        }
+        self.files.push(DigestFile {
+            path: path.to_string(),
+            change: change.to_string(),
+        });
+    }
+
+    fn command(&mut self, command: &str) -> usize {
+        let command = unwrap_shell(command);
+        if self.commands.len() >= MAX_DIGEST_COMMANDS {
+            self.truncated = true;
+            // Keep test runs: drop the oldest other command first.
+            let drop = self
+                .commands
+                .iter()
+                .position(|c| !c.test)
+                .unwrap_or_default();
+            self.commands.remove(drop);
+        }
+        self.commands.push(DigestCommand {
+            test: is_test_command(&command),
+            command: command.chars().take(300).collect(),
+            status: "running".into(),
+            exit_code: None,
+        });
+        self.commands.len() - 1
+    }
+
+    fn task(&mut self, id: &str, text: &str, status: &str) {
+        if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+            if !text.trim().is_empty() {
+                task.text = shorten(text, 200);
+            }
+            if !status.is_empty() {
+                task.status = status.to_string();
+            }
+            return;
+        }
+        if self.tasks.len() >= MAX_DIGEST_TASKS {
+            self.truncated = true;
+            return;
+        }
+        self.tasks.push(DigestTask {
+            id: id.to_string(),
+            text: shorten(text, 200),
+            status: if status.is_empty() {
+                "pending".into()
+            } else {
+                status.to_string()
+            },
+        });
+    }
+}
 
 pub(crate) struct AgentOutput {
     adapter: AdapterKind,
@@ -39,6 +279,9 @@ pub(crate) struct AgentOutput {
     /// no verified equivalent shape, so Codex subagents stay unobserved.
     subagents: u64,
     tool_ids: HashSet<String>,
+    /// What the CLI did, from its own events (see [`AgentDigest`]).
+    pub digest: AgentDigest,
+    pending_tools: HashMap<String, PendingTool>,
 }
 
 impl AgentOutput {
@@ -61,6 +304,8 @@ impl AgentOutput {
             tool_calls: 0,
             subagents: 0,
             tool_ids: HashSet::new(),
+            digest: AgentDigest::default(),
+            pending_tools: HashMap::new(),
         }
     }
 
@@ -177,6 +422,306 @@ impl AgentOutput {
         }
     }
 
+    /// Update the digest from one event. Descendant (subagent) tool calls
+    /// count, because their edits and commands are real; only top-level
+    /// messages become the step's message.
+    fn digest_event(&mut self, value: &Value) {
+        let top = !value
+            .get("parent_tool_use_id")
+            .is_some_and(|v| !v.is_null());
+        match (self.adapter, value["type"].as_str()) {
+            (AdapterKind::Claude, Some("assistant")) => {
+                let Some(blocks) = value.pointer("/message/content").and_then(Value::as_array)
+                else {
+                    return;
+                };
+                for block in blocks {
+                    match block["type"].as_str() {
+                        Some("tool_use") => self.claude_tool_use(block),
+                        Some("text") if top => {
+                            if let Some(text) = block["text"].as_str() {
+                                if !text.trim().is_empty() {
+                                    self.digest.message = Some(shorten_message(text));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (AdapterKind::Claude, Some("user")) => {
+                let Some(blocks) = value.pointer("/message/content").and_then(Value::as_array)
+                else {
+                    return;
+                };
+                for block in blocks {
+                    if block["type"] == "tool_result" {
+                        self.claude_tool_result(block, &value["tool_use_result"]);
+                    }
+                }
+            }
+            (AdapterKind::Claude, Some("result")) if top => self.digest.doing = None,
+            (AdapterKind::Codex, Some(kind @ ("item.started" | "item.completed"))) => {
+                self.codex_item(&value["item"], kind == "item.completed", top);
+            }
+            (AdapterKind::Codex, Some("turn.completed" | "turn.failed")) => {
+                self.digest.doing = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn claude_tool_use(&mut self, block: &Value) {
+        let name = block["name"].as_str().unwrap_or("");
+        let input = &block["input"];
+        let id = block["id"].as_str().unwrap_or("").to_string();
+        let text = |key: &str| input[key].as_str().unwrap_or("").to_string();
+        let digest = &mut self.digest;
+        match name {
+            "Edit" | "MultiEdit" | "NotebookEdit" | "Write" => {
+                let path = if name == "NotebookEdit" {
+                    text("notebook_path")
+                } else {
+                    text("file_path")
+                };
+                digest.doing = Some(format!("Editing {}", short_path(&path)));
+                self.pending_tools.insert(
+                    id,
+                    PendingTool::File {
+                        path,
+                        change: "edited",
+                    },
+                );
+            }
+            "Bash" => {
+                let command = text("command");
+                digest.doing = Some(format!("Running {}", shorten(&command, 120)));
+                let index = digest.command(&command);
+                self.pending_tools.insert(id, PendingTool::Command(index));
+            }
+            "Read" => {
+                digest.reads += 1;
+                digest.doing = Some(format!("Reading {}", short_path(&text("file_path"))));
+            }
+            "Grep" | "Glob" => {
+                digest.searches += 1;
+                digest.doing = Some(format!("Searching for {}", shorten(&text("pattern"), 80)));
+            }
+            "TodoWrite" => {
+                if let Some(todos) = input["todos"].as_array() {
+                    digest.tasks.clear();
+                    for (index, todo) in todos.iter().enumerate() {
+                        digest.task(
+                            &(index + 1).to_string(),
+                            todo["content"].as_str().unwrap_or(""),
+                            todo["status"].as_str().unwrap_or("pending"),
+                        );
+                    }
+                }
+                digest.doing = Some("Updating its task list".into());
+            }
+            "TaskCreate" => {
+                self.pending_tools
+                    .insert(id, PendingTool::TaskCreate(text("subject")));
+                digest.doing = Some("Updating its task list".into());
+            }
+            "TaskUpdate" => {
+                let task_id = input["taskId"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| input["taskId"].as_u64().map(|n| n.to_string()))
+                    .unwrap_or_default();
+                if digest.tasks.iter().any(|t| t.id == task_id) {
+                    digest.task(&task_id, &text("subject"), &text("status"));
+                }
+                if let Some(active) = input["activeForm"].as_str() {
+                    digest.doing = Some(shorten(active, 120));
+                }
+            }
+            "Task" | "Agent" => {
+                digest.doing = Some(format!(
+                    "Delegating: {}",
+                    shorten(&text("description"), 100)
+                ));
+            }
+            "WebFetch" => digest.doing = Some(format!("Reading {}", shorten(&text("url"), 100))),
+            "WebSearch" => {
+                digest.doing = Some(format!(
+                    "Searching the web for {}",
+                    shorten(&text("query"), 80)
+                ));
+            }
+            // Loading deferred tools is housekeeping, not progress.
+            "ToolSearch" => {}
+            other if other.starts_with("mcp__") => {
+                let mut parts = other.trim_start_matches("mcp__").splitn(2, "__");
+                let server = parts.next().unwrap_or("");
+                let tool = parts.next().unwrap_or("");
+                digest.doing = Some(format!("Calling {server} → {tool}"));
+            }
+            other if !other.is_empty() => digest.doing = Some(format!("Using {other}")),
+            _ => {}
+        }
+    }
+
+    fn claude_tool_result(&mut self, block: &Value, detail: &Value) {
+        let Some(id) = block["tool_use_id"].as_str() else {
+            return;
+        };
+        let Some(pending) = self.pending_tools.remove(id) else {
+            return;
+        };
+        let failed = block["is_error"].as_bool() == Some(true);
+        let content = match &block["content"] {
+            Value::String(text) => text.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        match pending {
+            PendingTool::Command(index) => {
+                if let Some(command) = self.digest.commands.get_mut(index) {
+                    command.status = if failed { "failed" } else { "succeeded" }.into();
+                    command.exit_code = if failed {
+                        content
+                            .split("Exit code ")
+                            .nth(1)
+                            .and_then(|rest| rest.split_whitespace().next())
+                            .and_then(|code| code.parse().ok())
+                    } else {
+                        Some(0)
+                    };
+                }
+            }
+            PendingTool::File { path, change } if !failed => {
+                // A Write result says whether it created the file.
+                let change = if detail["type"] == "create" {
+                    "added"
+                } else {
+                    change
+                };
+                self.digest.file(&path, change);
+            }
+            PendingTool::File { .. } => {}
+            PendingTool::TaskCreate(subject) if !failed => {
+                let task_id = detail["task"]["id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| {
+                        content
+                            .split("Task #")
+                            .nth(1)
+                            .and_then(|rest| rest.split_whitespace().next())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| (self.digest.tasks.len() + 1).to_string());
+                self.digest.task(&task_id, &subject, "pending");
+            }
+            PendingTool::TaskCreate(_) => {}
+        }
+    }
+
+    /// Codex `exec --json` items. `command_execution` and `file_change` shapes
+    /// were checked against Codex 0.166.0 (fixture); `todo_list`,
+    /// `mcp_tool_call` and `web_search` follow its documented item types.
+    fn codex_item(&mut self, item: &Value, completed: bool, top: bool) {
+        let id = item["id"].as_str().unwrap_or("").to_string();
+        let digest = &mut self.digest;
+        match item["type"].as_str() {
+            Some("command_execution") => {
+                let command = item["command"].as_str().unwrap_or("");
+                let index = match self.pending_tools.get(&id) {
+                    Some(PendingTool::Command(index)) if !id.is_empty() => *index,
+                    _ => {
+                        let index = digest.command(command);
+                        if !id.is_empty() {
+                            self.pending_tools
+                                .insert(id.clone(), PendingTool::Command(index));
+                        }
+                        index
+                    }
+                };
+                if !completed {
+                    digest.doing =
+                        Some(format!("Running {}", shorten(&unwrap_shell(command), 120)));
+                    return;
+                }
+                self.pending_tools.remove(&id);
+                if let Some(entry) = digest.commands.get_mut(index) {
+                    let code = item["exit_code"]
+                        .as_i64()
+                        .and_then(|c| i32::try_from(c).ok());
+                    entry.exit_code = code;
+                    entry.status = match (code, item["status"].as_str()) {
+                        (Some(0), _) => "succeeded",
+                        (Some(_), _) | (None, Some("failed")) => "failed",
+                        _ => "unknown",
+                    }
+                    .into();
+                }
+            }
+            Some("file_change") => {
+                let changes = item["changes"].as_array().cloned().unwrap_or_default();
+                if !completed {
+                    if let Some(path) = changes.first().and_then(|c| c["path"].as_str()) {
+                        digest.doing = Some(format!("Editing {}", short_path(path)));
+                    }
+                    return;
+                }
+                if item["status"].as_str().is_some_and(|s| s != "completed") {
+                    return;
+                }
+                for change in changes {
+                    let kind = match change["kind"].as_str() {
+                        Some("add") => "added",
+                        Some("delete") => "deleted",
+                        _ => "edited",
+                    };
+                    digest.file(change["path"].as_str().unwrap_or(""), kind);
+                }
+            }
+            Some("todo_list") => {
+                if let Some(items) = item["items"].as_array() {
+                    digest.tasks.clear();
+                    for (index, todo) in items.iter().enumerate() {
+                        let status = if todo["completed"].as_bool() == Some(true) {
+                            "completed"
+                        } else {
+                            "pending"
+                        };
+                        digest.task(
+                            &(index + 1).to_string(),
+                            todo["text"].as_str().unwrap_or(""),
+                            status,
+                        );
+                    }
+                }
+            }
+            Some("mcp_tool_call") if !completed => {
+                digest.doing = Some(format!(
+                    "Calling {} → {}",
+                    item["server"].as_str().unwrap_or(""),
+                    item["tool"].as_str().unwrap_or("")
+                ));
+            }
+            Some("web_search") if !completed => {
+                digest.doing = Some(format!(
+                    "Searching the web for {}",
+                    shorten(item["query"].as_str().unwrap_or(""), 80)
+                ));
+            }
+            Some("agent_message") if completed && top => {
+                if let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) {
+                    digest.message = Some(shorten_message(text));
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn response(&mut self, text: &str) {
         self.text = Some(text.chars().take(MAX_TEXT).collect());
         if text.chars().count() > MAX_TEXT {
@@ -205,6 +750,7 @@ impl AgentOutput {
         // Count observable descendant tools, but never replace top-level
         // response, session or token totals with a descendant's envelope.
         self.observe_tools(&value);
+        self.digest_event(&value);
         // Subagent events cannot replace the top-level response/session.
         if value
             .get("parent_tool_use_id")
@@ -365,6 +911,199 @@ impl AgentOutput {
 mod tests {
     use super::*;
     use crate::agents::AdapterKind;
+
+    fn commands(digest: &AgentDigest) -> Vec<(String, String, Option<i32>)> {
+        digest
+            .commands
+            .iter()
+            .map(|c| (c.command.clone(), c.status.clone(), c.exit_code))
+            .collect()
+    }
+
+    #[test]
+    fn a_recorded_claude_code_stream_becomes_a_digest() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(include_bytes!("fixtures/claude-code-2.1.303-stream.jsonl"));
+        out.finish();
+        assert!(out.success(), "{:?}", out.error);
+        let digest = &out.digest;
+        // Written, then edited: still a file this run added.
+        assert_eq!(
+            digest.files,
+            [DigestFile {
+                path: "/work/repo/notes.txt".into(),
+                change: "added".into()
+            }]
+        );
+        assert_eq!(
+            commands(digest),
+            [
+                ("ls".into(), "succeeded".into(), Some(0)),
+                ("false".into(), "failed".into(), Some(1)),
+            ]
+        );
+        let tasks: Vec<_> = digest
+            .tasks
+            .iter()
+            .map(|t| (t.id.as_str(), t.status.as_str()))
+            .collect();
+        assert_eq!(tasks, [("1", "completed"), ("2", "completed")]);
+        assert_eq!(digest.tasks[0].text, "Create and edit notes.txt");
+        assert_eq!(digest.doing, None, "a finished run is doing nothing");
+        assert!(digest.message.as_deref().unwrap().contains("hello world"));
+        assert!(!digest.truncated);
+    }
+
+    /// The run page reads this exact shape (`src/lib/step-summary.ts`); the
+    /// shared file pins it on both sides.
+    #[test]
+    fn the_digest_shape_matches_the_shared_fixture() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(include_bytes!("fixtures/claude-code-2.1.303-stream.jsonl"));
+        out.finish();
+        let shared: Value =
+            serde_json::from_str(include_str!("../../../src/test/agent-digest-claude.json"))
+                .expect("shared digest fixture");
+        assert_eq!(
+            serde_json::to_value(&out.digest).expect("serialize"),
+            shared
+        );
+    }
+
+    #[test]
+    fn a_recorded_codex_stream_becomes_a_digest() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Codex);
+        out.push(include_bytes!("fixtures/codex-0.166.0-stream.jsonl"));
+        out.finish();
+        assert!(out.success(), "{:?}", out.error);
+        let digest = &out.digest;
+        assert_eq!(
+            digest.files,
+            [DigestFile {
+                path: "/work/repo/notes.txt".into(),
+                change: "added".into()
+            }]
+        );
+        let ran = commands(digest);
+        assert!(
+            ran.contains(&("ls".into(), "succeeded".into(), Some(0))),
+            "{ran:?}"
+        );
+        assert!(
+            ran.contains(&("false".into(), "failed".into(), Some(1))),
+            "{ran:?}"
+        );
+        assert!(
+            ran.iter().all(|(c, _, _)| !c.starts_with("/usr/bin/zsh")),
+            "the shell wrapper is removed: {ran:?}"
+        );
+        assert!(ran.iter().all(|(_, status, _)| status != "running"));
+        assert_eq!(digest.message.as_deref(), Some("DONE"));
+        assert_eq!(digest.doing, None);
+    }
+
+    #[test]
+    fn a_live_stream_says_what_the_cli_is_doing_now() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test -p core\"}}]}}\n");
+        assert_eq!(
+            out.digest.doing.as_deref(),
+            Some("Running cargo test -p core")
+        );
+        assert_eq!(out.digest.commands[0].status, "running");
+        assert!(out.digest.commands[0].test);
+        out.push(b"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"is_error\":true,\"content\":\"Exit code 101\\nerror: test failed\"}]}}\n");
+        assert_eq!(out.digest.commands[0].status, "failed");
+        assert_eq!(out.digest.commands[0].exit_code, Some(101));
+        // A refused or failed edit changed nothing, so it is not listed.
+        out.push(b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t2\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/r/src/lib.rs\"}}]}}\n");
+        assert_eq!(out.digest.doing.as_deref(), Some("Editing src/lib.rs"));
+        out.push(b"{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t2\",\"is_error\":true,\"content\":\"denied\"}]}}\n");
+        assert!(out.digest.files.is_empty());
+        // Codex reports a running command when it starts.
+        let mut codex = AgentOutput::tolerant(AdapterKind::Codex);
+        codex.push(b"{\"type\":\"item.started\",\"item\":{\"id\":\"c1\",\"type\":\"command_execution\",\"command\":\"bash -lc 'pnpm test'\",\"status\":\"in_progress\"}}\n");
+        assert_eq!(codex.digest.doing.as_deref(), Some("Running pnpm test"));
+        assert_eq!(codex.digest.commands.len(), 1);
+        codex.push(b"{\"type\":\"item.completed\",\"item\":{\"id\":\"c1\",\"type\":\"command_execution\",\"command\":\"bash -lc 'pnpm test'\",\"exit_code\":0,\"status\":\"completed\"}}\n");
+        assert_eq!(
+            codex.digest.commands.len(),
+            1,
+            "start and end are one command"
+        );
+        assert_eq!(codex.digest.commands[0].status, "succeeded");
+    }
+
+    #[test]
+    fn older_todo_lists_and_codex_todo_items_become_tasks() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Claude);
+        out.push(b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"TodoWrite\",\"input\":{\"todos\":[{\"content\":\"Fix parser\",\"status\":\"completed\"},{\"content\":\"Add test\",\"status\":\"in_progress\"}]}}]}}\n");
+        let tasks: Vec<_> = out
+            .digest
+            .tasks
+            .iter()
+            .map(|t| (t.text.as_str(), t.status.as_str()))
+            .collect();
+        assert_eq!(
+            tasks,
+            [("Fix parser", "completed"), ("Add test", "in_progress")]
+        );
+        let mut codex = AgentOutput::tolerant(AdapterKind::Codex);
+        codex.push(b"{\"type\":\"item.completed\",\"item\":{\"id\":\"l\",\"type\":\"todo_list\",\"items\":[{\"text\":\"Read code\",\"completed\":true},{\"text\":\"Patch\",\"completed\":false}]}}\n");
+        let tasks: Vec<_> = codex
+            .digest
+            .tasks
+            .iter()
+            .map(|t| t.status.as_str())
+            .collect();
+        assert_eq!(tasks, ["completed", "pending"]);
+    }
+
+    #[test]
+    fn the_digest_stays_bounded_and_keeps_test_runs() {
+        let mut out = AgentOutput::tolerant(AdapterKind::Codex);
+        out.push(b"{\"type\":\"item.completed\",\"item\":{\"id\":\"t\",\"type\":\"command_execution\",\"command\":\"cargo test\",\"exit_code\":0}}\n");
+        for n in 0..200 {
+            out.push(format!("{{\"type\":\"item.completed\",\"item\":{{\"id\":\"c{n}\",\"type\":\"command_execution\",\"command\":\"echo {n}\",\"exit_code\":0}}}}\n{{\"type\":\"item.completed\",\"item\":{{\"id\":\"f{n}\",\"type\":\"file_change\",\"status\":\"completed\",\"changes\":[{{\"path\":\"/r/f{n}.txt\",\"kind\":\"update\"}}]}}}}\n").as_bytes());
+        }
+        let digest = &out.digest;
+        assert!(digest.truncated);
+        assert_eq!(digest.commands.len(), MAX_DIGEST_COMMANDS);
+        assert_eq!(digest.files.len(), MAX_DIGEST_FILES);
+        assert!(digest
+            .commands
+            .iter()
+            .any(|c| c.command == "cargo test" && c.test));
+        assert_eq!(digest.commands.last().unwrap().command, "echo 199");
+    }
+
+    #[test]
+    fn test_runners_are_recognised_by_whole_words() {
+        for yes in [
+            "cargo test -p orchevia-core",
+            "pnpm test",
+            "npx vitest run",
+            "python -m pytest -q",
+            "go test ./...",
+            "./gradlew test",
+            "cd app && npm run test -- --ci",
+        ] {
+            assert!(is_test_command(yes), "{yes}");
+        }
+        for no in [
+            "cargo build",
+            "echo testing",
+            "pnpm testify",
+            "rg jest-config",
+            "latest",
+        ] {
+            assert!(!is_test_command(no), "{no}");
+        }
+        assert_eq!(unwrap_shell("/usr/bin/zsh -lc 'ls -la'"), "ls -la");
+        assert_eq!(unwrap_shell("bash -c \"cargo test\""), "cargo test");
+        assert_eq!(unwrap_shell("git status"), "git status");
+        assert_eq!(short_path("/a/b/c/d.rs"), "c/d.rs");
+    }
 
     #[test]
     fn review_usage_codex_subagent_observation_stays_unknown() {

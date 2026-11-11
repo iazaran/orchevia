@@ -1428,8 +1428,12 @@ it('reads a paused run as still going and its approval prompt as a prompt', asyn
   // Once decided, the waiting row reads as history next to the decision.
   await userEvent.setup().click(rowsInList[1]!);
   const steps = await screen.findByRole('list', { name: 'Steps' });
-  await waitFor(() => expect(within(steps).getAllByRole('listitem')).toHaveLength(2));
-  const [asked, decision] = within(steps).getAllByRole('listitem');
+  const stepCards = (): HTMLElement[] =>
+    within(steps)
+      .getAllByRole('listitem')
+      .filter((item) => item.classList.contains('run-step'));
+  await waitFor(() => expect(stepCards()).toHaveLength(2));
+  const [asked, decision] = stepCards();
   expect(asked).toHaveClass('step-waited');
   expect(within(asked!).getByText('waited')).toBeInTheDocument();
   expect(decision).toHaveTextContent('approved');
@@ -1521,4 +1525,190 @@ it('titles a run of a deleted workflow with the name saved in the run', async ()
   await waitFor(() => expect(screen.queryByText('wf-gone')).toBeNull());
   // The header and both list rows.
   expect(screen.getAllByText('Nightly checks')).toHaveLength(3);
+});
+
+async function renderRun(
+  run: StoredRun,
+  results: StoredNodeResult[],
+  workflow: Workflow,
+): Promise<void> {
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(useAppStore.getState().runResults[id] ?? []),
+  );
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue(workflow);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await screen.findAllByText(results[0]?.nodeId === 'impl' ? 'Implement' : 'Tests', {
+    selector: '.run-step-title',
+  });
+}
+
+const readableWorkflow: Workflow = {
+  schemaVersion: 6,
+  id: 'readable-wf',
+  name: 'Readable',
+  defaults: { repoDir: '/work/repo' },
+  edges: [],
+  nodes: [
+    {
+      id: 'impl',
+      type: 'agent',
+      label: 'Implement',
+      position: { x: 0, y: 0 },
+      config: { prompt: 'Fix the login bug.\nKeep it small.' },
+    },
+    {
+      id: 'tests',
+      type: 'command',
+      label: 'Tests',
+      position: { x: 0, y: 0 },
+      config: { executable: 'pnpm', args: ['test'] },
+    },
+  ],
+};
+
+function readableRow(overrides: Partial<StoredNodeResult>): StoredNodeResult {
+  return {
+    id: 1,
+    runId: 'readable',
+    nodeId: 'impl',
+    status: 'succeeded',
+    stdout: '',
+    stderr: '',
+    startedAt: '2026-11-11T10:00:00Z',
+    ...overrides,
+  };
+}
+
+it('leads each step with what it did and keeps logs under Details', async () => {
+  await renderRun(
+    {
+      id: 'readable',
+      workflowId: 'readable-wf',
+      status: 'succeeded',
+      startedAt: '2026-11-11T10:00:00Z',
+    },
+    [
+      readableRow({
+        stdout: 'Fixed the session check.',
+        stderr: 'deprecation warning',
+        structuredJson: JSON.stringify({
+          agentActivity: 'Tool: Edit\nTool: Bash',
+          agentDigest: {
+            files: [{ path: '/work/repo/src/login.ts', change: 'edited' }],
+            commands: [
+              { command: 'cargo test', status: 'succeeded', exitCode: 0, test: true },
+            ],
+          },
+        }),
+      }),
+      readableRow({
+        id: 2,
+        nodeId: 'tests',
+        exitCode: 0,
+        stdout: ' Tests  12 passed (12)\n' + 'line\n'.repeat(10),
+        structuredJson: '{"command":"pnpm test"}',
+      }),
+    ],
+    readableWorkflow,
+  );
+  const [impl, tests] = screen
+    .getAllByRole('listitem')
+    .filter((item) => item.classList.contains('run-step'));
+  if (impl === undefined || tests === undefined) throw new Error('two steps expected');
+  expect(within(impl).getByText('Fix the login bug.')).toBeInTheDocument();
+  expect(within(impl).getByText('Changed 1 file (1 edited)')).toBeInTheDocument();
+  expect(within(impl).getByText('Tests passed: cargo test')).toBeInTheDocument();
+  // The agent's answer stays in view; its activity and stderr are in Details.
+  expect(
+    within(impl).getByRole('region', { name: 'Result output, step 1' }),
+  ).toHaveTextContent('Fixed the session check.');
+  const details = within(impl).getByText('Details and log').closest('details');
+  expect(details).not.toHaveAttribute('open');
+  expect(details).toHaveTextContent('deprecation warning');
+  expect(within(tests).getByText('Tests passed: 12 passed')).toBeInTheDocument();
+  expect(within(tests).getByText('Details and log').closest('details')).toHaveTextContent(
+    'pnpm test',
+  );
+  expect(screen.getByText('2 of 2 steps done')).toBeInTheDocument();
+});
+
+it('shows what running steps do now, including parallel ones', async () => {
+  await renderRun(
+    {
+      id: 'readable',
+      workflowId: 'readable-wf',
+      status: 'running',
+      startedAt: '2026-11-11T10:00:00Z',
+    },
+    [
+      readableRow({
+        status: 'running',
+        structuredJson: JSON.stringify({
+          agentDigest: {
+            doing: 'Editing src/login.ts',
+            message: 'Checking the cookie path.',
+          },
+        }),
+      }),
+      readableRow({ id: 2, nodeId: 'tests', status: 'running' }),
+    ],
+    readableWorkflow,
+  );
+  expect(
+    screen.getByText('Running now in parallel: Implement, Tests'),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Editing src/login.ts')).toBeInTheDocument();
+  expect(screen.getByText('Checking the cookie path.')).toBeInTheDocument();
+  expect(screen.getByText('Running…')).toBeInTheDocument();
+});
+
+it('opens Details for a failed step and labels loop visits and corrections', async () => {
+  await renderRun(
+    {
+      id: 'readable',
+      workflowId: 'readable-wf',
+      status: 'failed',
+      startedAt: '2026-11-11T10:00:00Z',
+    },
+    [
+      readableRow({ nodeId: 'tests', exitCode: 0, stdout: 'ok' }),
+      readableRow({
+        id: 2,
+        nodeId: 'tests',
+        status: 'failed',
+        exitCode: 1,
+        stdout: 'x\n'.repeat(20),
+        stderr: 'boom',
+      }),
+      readableRow({
+        id: 3,
+        structuredJson: '{"correction":{"feedbackIds":[7],"round":1}}',
+        stdout: 'Kept the old config keys.',
+      }),
+    ],
+    readableWorkflow,
+  );
+  const cards = screen
+    .getAllByRole('listitem')
+    .filter((item) => item.classList.contains('run-step'));
+  const failed = cards[1];
+  if (failed === undefined) throw new Error('failed step expected');
+  expect(within(failed).getByText('Visit 2')).toBeInTheDocument();
+  expect(within(failed).getByText('Tests failed (exit 1)')).toBeInTheDocument();
+  expect(within(failed).getByText('Details and log').closest('details')).toHaveAttribute(
+    'open',
+  );
+  expect(screen.getByText('Correction for feedback #7')).toBeInTheDocument();
 });

@@ -4098,6 +4098,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     }
                     metadata["agentUsage"] = decoded.usage.clone();
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    if !decoded.digest.is_empty() {
+                        metadata["agentDigest"] = serde_json::json!(decoded.digest);
+                    }
                     if !decoded.permission_denials.is_empty() {
                         // Its own failure kind: the run view offers to add
                         // the suggested rules to this profile.
@@ -4228,6 +4231,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     decoded.finish();
                     metadata["agentUsage"] = decoded.usage.clone();
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    if !decoded.digest.is_empty() {
+                        metadata["agentDigest"] = serde_json::json!(decoded.digest);
+                    }
                 }
                 stamp_agent_meta(&mut metadata, &agent_meta);
                 if let Some(note) = output_note {
@@ -4670,16 +4676,24 @@ async fn run_command_with_output(
                         guard.stderr.len(),
                     );
                     if current != last_persisted {
-                        let stdout = agent_output
+                        let decoded = agent_output.as_ref().and_then(|s| s.lock().ok());
+                        let digest = decoded
                             .as_ref()
-                            .and_then(|s| s.lock().ok())
-                            .map(|s| s.activity.clone())
-                            .unwrap_or_else(|| {
-                                truncate_chars(String::from_utf8_lossy(&guard.stdout).into_owned())
-                            });
+                            .filter(|s| !s.digest.is_empty())
+                            .and_then(|s| serde_json::to_string(&s.digest).ok());
+                        let stdout =
+                            decoded
+                                .as_ref()
+                                .map(|s| s.activity.clone())
+                                .unwrap_or_else(|| {
+                                    truncate_chars(
+                                        String::from_utf8_lossy(&guard.stdout).into_owned(),
+                                    )
+                                });
+                        drop(decoded);
                         let stderr =
                             truncate_chars(String::from_utf8_lossy(&guard.stderr).into_owned());
-                        let _ = db.update_node_output(id, &stdout, &stderr);
+                        let _ = db.update_node_progress(id, &stdout, &stderr, digest.as_deref());
                         last_persisted = current;
                     }
                 }
