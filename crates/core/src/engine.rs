@@ -2842,7 +2842,7 @@ impl Engine {
                 .find(|i| i.node_id != target)
                 .map(|i| i.node_id.clone());
             let written_label = written_on.as_deref().map(|id| graph_label(workflow, id));
-            let written_result = written_on.as_deref().map(&latest);
+            let written_result = written_on.as_deref().map(latest);
             let prompt = fb::check_prompt(&fb::CheckPrompt {
                 step_label: &graph_label(workflow, target),
                 instructions: &instructions,
