@@ -75,6 +75,11 @@ when an agent acts on a different repository than expected.
 
 Inspect validation errors, fill required inputs for this workflow, and press
 **Run**. Approval pauses the run durably; approve or reject it under **Runs**.
+Each step card in **Runs** says what the step is doing and what it changed; its raw
+output sits under **Details and log**. If a step's work needs a change, open
+**Feedback** on it while the run is going: the step checks your note before the run
+publishes, reaches an approval or finishes, and reruns with it when needed (see
+[Feedback during a run](./execution.md#feedback-during-a-run-v020)).
 If a step fails, inspect its stderr and partial output before deciding to rerun.
 Cancellation stops the active child; it does not undo file edits or external writes.
 

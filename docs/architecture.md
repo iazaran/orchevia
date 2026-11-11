@@ -131,6 +131,29 @@
   Frontend: goal bar with preview/accept/retry/discard, Templates gallery,
   Memory view (suggestions, prefs, history), role-change observation.
 
+## Readable runs and feedback (v0.2.0)
+
+- `agent_output.rs`: besides parsing CLI output, builds a bounded `AgentDigest` from
+  the CLI's own events (files changed, commands with their reported exit status, the
+  task list, the current action). The engine stores it as `agentDigest` result
+  metadata and refreshes it on the live row; `is_test_command` decides which commands
+  count as test runs (shared cases with the UI in `src/test/test-commands.json`).
+- `feedback.rs`: feedback items and statuses, who handles feedback on a step
+  (`feedback_target`), the check prompt and its decision block, and the correction
+  plan (`roots`, `affected`, `refreshed`).
+- Engine: publishing steps, Approval steps and End are feedback checkpoints. While
+  feedback waits they are held; once nothing else runs, `feedback_round` checks it
+  (a `checked` row on the AI step) and starts a correction round, marked by a
+  `__feedback` row that replay applies at the same point. The first publishing
+  dispatch claims the feedback cutoff under the same database lock as submissions.
+- `db.rs`: `run_feedback` table; the cutoff, round count and feedback pause live in
+  the run's execution JSON.
+- `mcp.rs`: `check_server` runs the MCP handshake and `tools/list` for **Check
+  server**, without calling a tool.
+- Frontend: `StepFeedback.tsx` (composer, per-step list, pause dialog),
+  `lib/step-summary.ts` (step cards from the digest) and `lib/feedback.ts`; the mock
+  mirrors the engine's rounds through `replayGraph`.
+
 ## Data flow of a run
 
 1. User clicks ▶ Run (explicit action — nothing auto-executes), optionally filling
@@ -152,7 +175,8 @@
    history — including after an app restart, since progress lives in the DB.
 6. On startup, runs still marked `running` from a previous session are failed with
    “application restarted…”, because their child processes are gone and silently
-   resuming external work would be unsafe. `paused` runs stay resumable.
+   resuming external work would be unsafe; their open feedback is marked not
+   processed. `paused` runs stay resumable.
 
 ## Persistence
 
@@ -162,9 +186,10 @@
   `runs(id, workflow_id, status, started_at, finished_at, inputs JSON)`,
   `node_results(run_id, node_id, status, exit_code, stdout, stderr, error,
 attempt, duration_ms, structured_json, …)`,
-  `agent_profiles(id, name, definition, …)`, `known_folders(path, last_used)`.
+  `agent_profiles(id, name, definition, …)`, `known_folders(path, last_used)`,
+  `run_feedback(run_id, node_id, text, status, …)`.
 - Workflow `definition` is the versioned JSON document (see `workflow-schema.md`,
-  currently schema v3). Execution semantics: [execution.md](./execution.md).
+  currently schema v6). Execution semantics: [execution.md](./execution.md).
 
 ## Frontend
 
