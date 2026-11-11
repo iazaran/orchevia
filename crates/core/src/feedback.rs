@@ -123,6 +123,33 @@ pub struct FeedbackPause {
     pub reason: String,
 }
 
+/// Whether the step correcting `item` has run (or been skipped) since the
+/// correction round that named the item began, so the item can be closed.
+pub fn correction_finished(item: &RunFeedback, rows: &[crate::db::StoredNodeResult]) -> bool {
+    let Some(target) = item.target_node_id.as_deref() else {
+        return true;
+    };
+    let marker = rows.iter().rev().find(|row| {
+        row.node_id == ROUND_NODE
+            && row.status == "correcting"
+            && serde_json::from_str::<serde_json::Value>(&row.structured_json)
+                .ok()
+                .and_then(|m| m["feedbackRound"]["feedbackIds"].as_array().cloned())
+                .is_some_and(|ids| ids.iter().any(|id| id.as_i64() == Some(item.id)))
+    });
+    let Some(marker) = marker else {
+        return true;
+    };
+    rows.iter().any(|row| {
+        row.id > marker.id
+            && row.node_id == target
+            && matches!(
+                row.status.as_str(),
+                "succeeded" | "failed" | "skipped" | "cancelled"
+            )
+    })
+}
+
 /// Trimmed feedback text, or why it cannot be accepted.
 pub fn validate_text(text: &str) -> Result<String, String> {
     let text = text.trim();

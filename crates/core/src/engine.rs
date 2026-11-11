@@ -522,6 +522,7 @@ enum FeedbackStep {
     Continue,
     Pause(String),
     UsagePaused { consumed: u32, limit: u32 },
+    SpendPaused(f64),
     Cancelled,
 }
 
@@ -1322,12 +1323,12 @@ impl Engine {
                 run_controls::reported_spend(workflow, &tick_rows, run.execution.options.dry_run);
             // A recovered run's reuse and skip choices stop applying to a step
             // once a feedback correction reruns it.
-            let superseded = run_controls::superseded_by_corrections(&tick_rows);
+            let superseded = run_controls::corrected_steps(&tick_rows);
             let choices: HashMap<String, RecoveryChoice> = run
                 .execution
                 .recovery_choices
                 .iter()
-                .filter(|(id, _)| !superseded.contains_key(*id))
+                .filter(|(id, _)| !superseded.contains(*id))
                 .map(|(id, choice)| (id.clone(), *choice))
                 .collect();
             let guarded = run
@@ -1412,7 +1413,8 @@ impl Engine {
                 let finishing =
                     in_flight.is_empty() && ready.is_empty() && all_terminal(&graph, &state);
                 if (finishing || ready.iter().any(checkpoint))
-                    && self.db.has_waiting_feedback(run_id)?
+                    && (self.db.has_waiting_feedback(run_id)?
+                        || self.finished_corrections(run_id)? > 0)
                 {
                     if in_flight.is_empty() && ready.iter().all(checkpoint) {
                         // A check is an agent attempt: never past a reached
@@ -1430,6 +1432,9 @@ impl Engine {
                             }
                             FeedbackStep::UsagePaused { consumed, limit } => {
                                 return Ok(RunOutcome::UsagePaused { consumed, limit });
+                            }
+                            FeedbackStep::SpendPaused(total) => {
+                                return Ok(RunOutcome::SpendPaused(total));
                             }
                             FeedbackStep::Cancelled => {
                                 fail_fast = Some(FailFast::Cancelled);
@@ -1449,7 +1454,7 @@ impl Engine {
                     .find(|id| graph.nodes.get(*id).map(|n| n.kind) == Some(NodeKind::Approval))
                 {
                     let approval_visit = state.visits.get(approval).copied().unwrap_or(0) + 1;
-                    let seed = if superseded.contains_key(approval) {
+                    let seed = if superseded.contains(approval) {
                         // Asked again after a correction, never re-approved
                         // from the recovered run's history.
                         None
@@ -1578,8 +1583,15 @@ impl Engine {
                     })?;
                     // The first publishing step is the feedback cutoff. Feedback
                     // that landed first holds it until the next tick handles it.
+                    // Only a real dispatch publishes: a step recovery skips or
+                    // reuses never opens the cutoff.
+                    let publishing = crate::workflow::publishes(&node)
+                        && !matches!(
+                            choices.get(&id_owned),
+                            Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                        );
                     #[cfg(test)]
-                    if crate::workflow::publishes(&node) {
+                    if publishing {
                         let hook = self
                             .before_publication_claim
                             .lock()
@@ -1589,7 +1601,7 @@ impl Engine {
                             hook();
                         }
                     }
-                    if crate::workflow::publishes(&node)
+                    if publishing
                         && !self.db.claim_feedback_cutoff(
                             run_id,
                             Some((&node.id, node.label.as_deref().unwrap_or(&node.id))),
@@ -1633,6 +1645,30 @@ impl Engine {
                 // Feedback landed just before the claim: handle it next tick
                 // instead of mistaking the held step for a deadlock.
                 if claim_refused && in_flight.is_empty() {
+                    // Only a correction that has not run blocks publishing, and
+                    // nothing else can run: it cannot run before this step, so
+                    // the person decides.
+                    if !self.db.has_waiting_feedback(run_id)?
+                        && self.finished_corrections(run_id)? == 0
+                    {
+                        let open: Vec<i64> = self
+                            .db
+                            .list_feedback(run_id)?
+                            .iter()
+                            .filter(|i| i.status == crate::feedback::CORRECTING)
+                            .map(|i| i.id)
+                            .collect();
+                        self.db.update_feedback(
+                            &open,
+                            &crate::db::FeedbackPatch {
+                                status: Some(crate::feedback::NEEDS_ATTENTION),
+                                decision: Some(
+                                    "Its correction could not run before the next publishing step.",
+                                ),
+                                ..crate::db::FeedbackPatch::default()
+                            },
+                        )?;
+                    }
                     continue 'schedule;
                 }
             }
@@ -2193,6 +2229,25 @@ impl Engine {
         }
     }
 
+    /// Corrections whose step has run again since their round began.
+    fn finished_corrections(&self, run_id: &str) -> Result<usize, EngineError> {
+        let items = self.db.list_feedback(run_id)?;
+        if !items
+            .iter()
+            .any(|i| i.status == crate::feedback::CORRECTING)
+        {
+            return Ok(0);
+        }
+        let rows = self.db.list_node_results(run_id)?;
+        Ok(items
+            .iter()
+            .filter(|i| {
+                i.status == crate::feedback::CORRECTING
+                    && crate::feedback::correction_finished(i, &rows)
+            })
+            .count())
+    }
+
     /// Start a correction round in the routing state: the corrected steps
     /// (`roots`) run again first, and every step that uses their work
     /// (`affected`) waits for them and then runs by normal routing, with a
@@ -2290,8 +2345,12 @@ impl Engine {
         };
         let items = self.db.list_feedback(run_id)?;
         let rows = self.db.list_node_results(run_id)?;
-        // 1. Corrections that ran: addressed, or the person must look.
-        for item in items.iter().filter(|i| i.status == fb::CORRECTING) {
+        // 1. Corrections whose step has run again: addressed, or the person
+        // must look. One still to run (after an approval, say) stays open.
+        for item in items
+            .iter()
+            .filter(|i| i.status == fb::CORRECTING && fb::correction_finished(i, &rows))
+        {
             let target = item.target_node_id.clone().unwrap_or_default();
             let correction = rows.iter().rev().find(|row| {
                 row.node_id == target
@@ -2305,7 +2364,7 @@ impl Engine {
                 Some(row) if row.status == "succeeded" => (
                     fb::ADDRESSED,
                     format!(
-                        "Corrected by \"{}\"; the steps that use its work ran again.",
+                        "Corrected by \"{}\"; the steps that use its work run again after it.",
                         label(&target)
                     ),
                     Some(row.id),
@@ -2324,7 +2383,10 @@ impl Engine {
                 ),
                 None => (
                     fb::NEEDS_ATTENTION,
-                    format!("The correction by \"{}\" never ran.", label(&target)),
+                    format!(
+                        "The correction by \"{}\" did not run: the run took another route.",
+                        label(&target)
+                    ),
                     None,
                 ),
             };
@@ -2393,10 +2455,31 @@ impl Engine {
                 let round = rounds + 1;
                 let mut changed: Vec<String> = Vec::new();
                 let mut changed_ids: Vec<i64> = Vec::new();
+                // Why the round stopped before checking every group. Changes
+                // already decided still start their round below; unchecked
+                // feedback stays pending for the next pass.
+                let mut stopped: Option<FeedbackStep> = None;
+                let spend_limit = run
+                    .execution
+                    .resolved_limits
+                    .spend_limit_usd
+                    .or(run.execution.options.spend_limit_usd);
                 for (target, group) in groups {
                     let ids: Vec<i64> = group.iter().map(|i| i.id).collect();
                     if flag.load(Ordering::SeqCst) {
-                        return Ok(FeedbackStep::Cancelled);
+                        stopped = Some(FeedbackStep::Cancelled);
+                        break;
+                    }
+                    // Every check is an agent attempt: never past a reached
+                    // spend target, even partway through a round.
+                    let spent = run_controls::reported_spend(
+                        workflow,
+                        &self.db.list_node_results(run_id)?,
+                        run.execution.options.dry_run,
+                    );
+                    if spend_limit.is_some_and(|limit| spent.reported_usd >= limit) {
+                        stopped = Some(FeedbackStep::SpendPaused(spent.reported_usd));
+                        break;
                     }
                     self.db.update_feedback(
                         &ids,
@@ -2419,7 +2502,8 @@ impl Engine {
                                     ..FeedbackPatch::default()
                                 },
                             )?;
-                            return Ok(pending_again);
+                            stopped = Some(pending_again);
+                            break;
                         }
                     };
                     let (status, text, round_of) = match &decision {
@@ -2492,7 +2576,10 @@ impl Engine {
                         &structured.to_string(),
                     )?;
                     self.reset_for_correction(graph, state, &plan);
-                    return Ok(FeedbackStep::Continue);
+                    return Ok(stopped.unwrap_or(FeedbackStep::Continue));
+                }
+                if let Some(step) = stopped {
+                    return Ok(step);
                 }
             }
         }
@@ -5319,7 +5406,9 @@ fn build_vars(
     }
     let mut visits: HashMap<String, u32> = HashMap::new();
     let rows = db.list_node_results(run_id)?;
-    for row in &rows {
+    // A feedback check is a row about a step, not one of its results: it
+    // never becomes the step's output, status or severity.
+    for row in rows.iter().filter(|r| r.status != "checked") {
         insert_row_vars(&mut vars, row);
         if is_terminal_status(&row.status)
             && matches!(

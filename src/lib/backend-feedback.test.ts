@@ -567,3 +567,137 @@ describe('mock carried feedback after a rejection', () => {
     expect(outputs(await backend.getRunResults(recovered), 'impl')).toEqual(['v1', 'v2']);
   });
 });
+
+describe('mock corrections across approvals and skipped publishing', () => {
+  const two = (): Workflow => ({
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    id: 'wf-two',
+    name: 'Two approvals',
+    nodes: [
+      { id: 'start', type: 'start', position: at, config: {} },
+      {
+        id: 'a',
+        type: 'agent',
+        position: at,
+        config: { agentProfileId: 'fake', prompt: 'A' },
+      },
+      { id: 'first', type: 'approval', position: at, config: {} },
+      {
+        id: 'b',
+        type: 'agent',
+        position: at,
+        config: { agentProfileId: 'fake', prompt: 'B' },
+      },
+      { id: 'second', type: 'approval', position: at, config: {} },
+      {
+        id: 'push',
+        type: 'command',
+        position: at,
+        config: { executable: 'x', publishes: true },
+      },
+      { id: 'end', type: 'end', position: at, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'first' },
+      { id: 'e3', source: 'first', target: 'b' },
+      { id: 'e4', source: 'b', target: 'second' },
+      { id: 'e5', source: 'second', target: 'push' },
+      { id: 'e6', source: 'push', target: 'end' },
+    ],
+  });
+
+  it('keeps a later correction open across an approval it must wait for', async () => {
+    backend = __setMockBackendForTests();
+    await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+    const wf = two();
+    await backend.saveWorkflow(wf);
+    const ok = (stdout: string): { status: string; stdout: string } => ({
+      status: 'succeeded',
+      stdout,
+    });
+    const { runId } = await backend.runWorkflow(
+      wf.id,
+      {},
+      {
+        dryRun: true,
+        fixtures: {
+          a: [ok('a1'), ok('a2')],
+          b: [ok('b1'), ok('b2')],
+          push: [ok('pushed')],
+          'feedback:a': [ok(decisionText('change'))],
+          'feedback:b': [ok(decisionText('change'))],
+        },
+      },
+    );
+    await vi.runAllTimersAsync();
+    await approve(runId);
+    const onA = await backend.submitStepFeedback(runId, 'a', 'Fix A.');
+    const onB = await backend.submitStepFeedback(runId, 'b', 'Fix B.');
+    await approve(runId);
+    const status = async (id: number): Promise<string | undefined> =>
+      (await backend.listRunFeedback(runId)).find((i) => i.id === id)?.status;
+    expect(await status(onA.id)).toBe('addressed');
+    expect(await status(onB.id)).toBe('correcting');
+    await approve(runId);
+    expect(await status(onB.id)).toBe('addressed');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(outputs(await backend.getRunResults(runId), 'push')).toEqual(['pushed']);
+  });
+});
+
+it('does not close the feedback window for a publishing step recovery skips', async () => {
+  const wf = approvalWorkflow();
+  wf.nodes.push({
+    id: 'lint',
+    type: 'command',
+    position: at,
+    config: { executable: 'x' },
+  });
+  wf.edges = [
+    { id: 'e1', source: 'start', target: 'impl' },
+    { id: 'e2', source: 'impl', target: 'tests' },
+    { id: 'e3', source: 'tests', target: 'push' },
+    { id: 'e4', source: 'push', target: 'approve' },
+    { id: 'e5', source: 'approve', target: 'end' },
+    { id: 'e6', source: 'start', target: 'lint' },
+    { id: 'e7', source: 'lint', target: 'approve' },
+  ];
+  backend = __setMockBackendForTests();
+  await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+  await backend.saveWorkflow(wf);
+  const { runId } = await backend.runWorkflow(
+    wf.id,
+    {},
+    {
+      dryRun: true,
+      fixtures: {
+        ...(fixtures(['change']) as Record<string, { status: string; stdout: string }[]>),
+        lint: [{ status: 'succeeded', stdout: 'lint ok' }],
+      },
+    },
+  );
+  await vi.runAllTimersAsync();
+  await backend.approveRun(runId, false);
+  const plan = await backend.previewRecovery(runId);
+  const choices = Object.fromEntries(
+    plan.nodes.map((n) => [
+      n.nodeId,
+      n.nodeId === 'push' ? 'skip' : n.choices.includes('reuse') ? 'reuse' : 'replay',
+    ]),
+  ) as Record<string, 'reuse' | 'replay' | 'skip'>;
+  const { runId: recovered } = await backend.recoverRun(
+    runId,
+    choices,
+    plan.fingerprint,
+    'req-skip',
+  );
+  await vi.runAllTimersAsync();
+  expect((await backend.getRun(recovered))?.status).toBe('paused');
+  expect((await backend.getRun(recovered))?.execution?.feedback?.publicationStarted).toBe(
+    undefined,
+  );
+  const item = await backend.submitStepFeedback(recovered, 'impl', 'Still in time.');
+  expect(item.status).toBe('pending');
+});

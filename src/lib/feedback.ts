@@ -3,7 +3,12 @@
 // decision block of a check and which steps a correction reruns. The shared
 // fixture `src/test/feedback-parity.json` pins the two sides together.
 import { downstreamClosure, dependencyPairs } from './run-controls';
-import { isPublicationStep, type Workflow, type WorkflowNode } from './workflow';
+import {
+  isPublicationStep,
+  type StoredNodeResult,
+  type Workflow,
+  type WorkflowNode,
+} from './workflow';
 
 export const MAX_FEEDBACK_CHARS = 4000;
 export const MAX_FEEDBACK_PER_RUN = 50;
@@ -71,6 +76,34 @@ export const FEEDBACK_STATUS_LABELS: Record<FeedbackStatus, string> = {
   late: 'Arrived after publishing',
   'not-processed': 'Not processed',
 };
+
+/**
+ * Whether the step correcting `item` has run (or been skipped) since the
+ * correction round that named it began. Mirrors `correction_finished`.
+ */
+export function correctionFinished(item: RunFeedback, rows: StoredNodeResult[]): boolean {
+  const target = item.targetNodeId;
+  if (target === undefined) return true;
+  const marker = [...rows].reverse().find((row) => {
+    if (row.nodeId !== ROUND_NODE || row.status !== 'correcting') return false;
+    try {
+      const data = JSON.parse(row.structuredJson ?? '{}') as {
+        feedbackRound?: { feedbackIds?: unknown };
+      };
+      const ids = data.feedbackRound?.feedbackIds;
+      return Array.isArray(ids) && ids.includes(item.id);
+    } catch {
+      return false;
+    }
+  });
+  if (marker === undefined) return true;
+  return rows.some(
+    (row) =>
+      row.id > marker.id &&
+      row.nodeId === target &&
+      ['succeeded', 'failed', 'skipped', 'cancelled'].includes(row.status),
+  );
+}
 
 /** Trimmed text, or why it cannot be sent. Mirrors `validate_text`. */
 export function validateFeedbackText(text: string): string {

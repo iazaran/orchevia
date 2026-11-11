@@ -28,9 +28,11 @@ All notable changes are recorded here, following
   - Feedback that arrives after publishing started is recorded but not applied: what
     was pushed or posted cannot be recalled.
   - A run makes at most two correction rounds by default (1–5 in **Usage limits**).
-    Past that, or when a check cannot decide, a correction fails or no AI step can act
-    on the feedback, the run pauses before publishing; **Review feedback pause** lets
-    you continue as it is or cancel. Checks and corrections count as agent attempts.
+    Past that, or when a check cannot decide, a correction fails while the run carries
+    on, or no AI step can act on the feedback, the run pauses before publishing;
+    **Review feedback pause** lets you continue as it is or cancel. A correction that
+    fails with nowhere to go fails the run like any step; recovery carries its
+    feedback over. Checks and corrections count as agent attempts and spend.
   - Feedback survives pauses and approvals. If Orchevia is closed mid-run, the run
     fails as before, its feedback reads not processed, and **Recover failed run**
     carries it into the new run.

@@ -495,28 +495,37 @@ impl SqliteDb {
     }
 
     /// Feedback still to handle, or handled badly and not yet seen at a pause.
-    fn feedback_waiting(conn: &Connection, run_id: &str) -> rusqlite::Result<bool> {
+    /// Feedback to check, or handled badly and not yet seen at a pause; with
+    /// `corrections`, also feedback whose correction round is still running.
+    fn feedback_waiting(
+        conn: &Connection,
+        run_id: &str,
+        corrections: bool,
+    ) -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM run_feedback WHERE run_id = ?1 AND \
-             (status IN (?2, ?3, ?4) OR (status = ?5 AND acknowledged = 0)))",
+             (status IN (?2, ?3) OR (?6 AND status = ?4) OR (status = ?5 AND acknowledged = 0)))",
             params![
                 run_id,
                 feedback::PENDING,
                 feedback::CHECKING,
                 feedback::CORRECTING,
-                feedback::NEEDS_ATTENTION
+                feedback::NEEDS_ATTENTION,
+                corrections
             ],
             |r| r.get(0),
         )
     }
 
-    /// Whether the run has feedback its next checkpoint must handle first.
+    /// Whether the run has feedback to check or that needs the person.
+    /// Corrections still running are the engine's to judge: they hold a
+    /// checkpoint only once their step has run again.
     pub fn has_waiting_feedback(&self, run_id: &str) -> DbResult<bool> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
-        Ok(Self::feedback_waiting(&conn, run_id)?)
+        Ok(Self::feedback_waiting(&conn, run_id, false)?)
     }
 
     /// Claim a feedback window transition when no feedback waits. `finish`
@@ -534,7 +543,8 @@ impl SqliteDb {
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
         let tx = conn.transaction()?;
-        if Self::feedback_waiting(&tx, run_id)? {
+        // Publishing and finishing also wait for corrections in progress.
+        if Self::feedback_waiting(&tx, run_id, true)? {
             return Ok(false);
         }
         let value: String = tx.query_row(

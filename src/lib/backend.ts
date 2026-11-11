@@ -3,6 +3,7 @@ import {
   recoveryPlan,
   recoveryInvalidated,
   supersededByCorrections,
+  correctedSteps,
   isEffectful,
   resultMetadata,
   replayGraph,
@@ -38,6 +39,7 @@ import {
   feedbackTarget,
   GUARD_NODE,
   isCheckpoint,
+  correctionFinished,
   MAX_FEEDBACK_PER_RUN,
   OPEN_STATUSES,
   parseDecision,
@@ -46,7 +48,7 @@ import {
   type FeedbackStatus,
   type RunFeedback,
 } from './feedback';
-import { isPublicationStep } from './workflow';
+import { isPublicationStep, type WorkflowNode } from './workflow';
 import {
   encodeDocument,
   decodeDocument,
@@ -1086,13 +1088,35 @@ class MockBackend implements Backend {
       // Feedback checkpoints, as in the engine: other ready work first, then
       // the waiting feedback, before any publishing step, approval or end.
       let nodeId = graph.ready[0];
-      if (this.feedbackWaiting(runId)) {
-        const others = graph.ready.filter(
-          (id) => !isCheckpoint(workflow.nodes.find((n) => n.id === id)),
-        );
+      const nodeOf = (id: string): WorkflowNode | undefined =>
+        workflow.nodes.find((n) => n.id === id);
+      if (this.feedbackWaiting(runId) || this.finishedCorrections(runId) > 0) {
+        const others = graph.ready.filter((id) => !isCheckpoint(nodeOf(id)));
         if (others.length > 0) nodeId = others[0];
         else {
           if (this.mockFeedbackRound(workflow, run) === 'pause') return;
+          continue;
+        }
+      } else if (
+        (this.feedback.get(runId) ?? []).some((item) => item.status === 'correcting')
+      ) {
+        // Publishing and finishing wait for corrections in progress, as the
+        // engine's cutoff claim does.
+        const free = graph.ready.filter((id) => {
+          const step = nodeOf(id);
+          return step === undefined || !isPublicationStep(step);
+        });
+        if (free.length > 0) nodeId = free[0];
+        else {
+          // Nothing else can run: the corrections cannot run before this
+          // step, so the person decides.
+          const open = (this.feedback.get(runId) ?? [])
+            .filter((item) => item.status === 'correcting')
+            .map((item) => item.id);
+          this.updateFeedback(open, {
+            status: 'needs-attention',
+            decision: 'Its correction could not run before the next publishing step.',
+          });
           continue;
         }
       }
@@ -1105,7 +1129,20 @@ class MockBackend implements Backend {
       }
       const node = workflow.nodes.find((n) => n.id === nodeId);
       if (!node) continue;
-      if (isPublicationStep(node) && run.execution) {
+
+      const execution = run.execution;
+      // Reuse and skip choices stop applying once a feedback correction
+      // reruns the step (`superseded_by_corrections` in the engine).
+      const superseded = correctedSteps(results).has(nodeId);
+      const choice = superseded ? undefined : execution?.recoveryChoices?.[nodeId];
+      // Only a real dispatch publishes: a skipped or reused step never opens
+      // the cutoff.
+      if (
+        isPublicationStep(node) &&
+        run.execution &&
+        choice !== 'skip' &&
+        choice !== 'reuse'
+      ) {
         run.execution.feedback ??= {};
         run.execution.feedback.publicationStarted ??= {
           nodeId,
@@ -1113,11 +1150,6 @@ class MockBackend implements Backend {
           at: new Date().toISOString(),
         };
       }
-      const execution = run.execution;
-      // Reuse and skip choices stop applying once a feedback correction
-      // reruns the step (`superseded_by_corrections` in the engine).
-      const superseded = supersededByCorrections(results).has(nodeId);
-      const choice = superseded ? undefined : execution?.recoveryChoices?.[nodeId];
       const spend = reportedSpend(workflow, results, execution?.options.dryRun);
       if (
         typeof execution?.options.spendLimitUsd === 'number' &&
@@ -1804,12 +1836,22 @@ class MockBackend implements Backend {
   }
 
   /** Mirrors `has_waiting_feedback`. */
+  /** Mirrors `has_waiting_feedback`: to check, or needing the person. */
   private feedbackWaiting(runId: string): boolean {
     return (this.feedback.get(runId) ?? []).some(
       (item) =>
-        OPEN_STATUSES.includes(item.status) ||
+        item.status === 'pending' ||
+        item.status === 'checking' ||
         (item.status === 'needs-attention' && !item.acknowledged),
     );
+  }
+
+  /** Mirrors `finished_corrections`: corrections whose step ran again. */
+  private finishedCorrections(runId: string): number {
+    const rows = this.results.get(runId) ?? [];
+    return (this.feedback.get(runId) ?? []).filter(
+      (item) => item.status === 'correcting' && correctionFinished(item, rows),
+    ).length;
   }
 
   private updateFeedback(
@@ -1875,7 +1917,10 @@ class MockBackend implements Backend {
     const label = (id: string): string =>
       workflow.nodes.find((n) => n.id === id)?.label ?? id;
     const items = this.feedback.get(runId) ?? [];
-    for (const item of items.filter((i) => i.status === 'correcting')) {
+    // Corrections whose step ran again; one still to run stays open.
+    for (const item of items.filter(
+      (i) => i.status === 'correcting' && correctionFinished(i, rows),
+    )) {
       const target = item.targetNodeId ?? '';
       const correction = [...rows].reverse().find((row) => {
         const meta = resultMetadata(row).correction;
@@ -1891,7 +1936,7 @@ class MockBackend implements Backend {
       if (correction?.status === 'succeeded')
         this.updateFeedback([item.id], {
           status: 'addressed',
-          decision: `Corrected by "${label(target)}"; the steps that use its work ran again.`,
+          decision: `Corrected by "${label(target)}"; the steps that use its work run again after it.`,
           correctionResultId: correction.id,
         });
       else
@@ -1899,7 +1944,7 @@ class MockBackend implements Backend {
           status: 'needs-attention',
           decision:
             correction === undefined
-              ? `The correction by "${label(target)}" never ran.`
+              ? `The correction by "${label(target)}" did not run: the run took another route.`
               : `The correction by "${label(target)}" did not finish${correction.error ? `: ${correction.error}` : ''}.`,
           ...(correction === undefined ? {} : { correctionResultId: correction.id }),
         });
@@ -3238,7 +3283,8 @@ function mockVariables(
   }
   for (const [name, value] of Object.entries(inputs)) vars[`input.${name}`] = value;
   const visits = new Map<string, number>();
-  for (const r of priorResults) {
+  // A feedback check is a row about a step, not one of its results.
+  for (const r of priorResults.filter((row) => row.status !== 'checked')) {
     vars[`node.${r.nodeId}`] = r.stdout;
     vars[`node.${r.nodeId}.output`] = r.stdout;
     vars[`node.${r.nodeId}.status`] = r.status;

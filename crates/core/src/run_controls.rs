@@ -414,26 +414,62 @@ pub fn recovery_plan(
     }
 }
 
-/// For each step a feedback correction round reran, the id of the last such
-/// round's marker row: results before it were superseded.
+/// For each step a feedback correction round reran (or refreshed and ran
+/// again after it), the id of the last such round's marker row: results
+/// before it were superseded.
 pub fn superseded_by_corrections(rows: &[StoredNodeResult]) -> HashMap<String, i64> {
     let mut superseded = HashMap::new();
     for row in rows {
-        if row.node_id != crate::feedback::ROUND_NODE || row.status != "correcting" {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&row.structured_json) else {
+        let Some((reruns, refreshed)) = round_steps(row) else {
             continue;
         };
-        for key in ["roots", "affected"] {
-            for id in value["feedbackRound"][key].as_array().into_iter().flatten() {
-                if let Some(id) = id.as_str() {
-                    superseded.insert(id.to_string(), row.id);
-                }
+        for id in reruns {
+            superseded.insert(id, row.id);
+        }
+        for id in refreshed {
+            if rows.iter().any(|later| {
+                later.id > row.id
+                    && later.node_id == id
+                    && matches!(
+                        later.status.as_str(),
+                        "succeeded" | "failed" | "approved" | "rejected"
+                    )
+            }) {
+                superseded.insert(id, row.id);
             }
         }
     }
     superseded
+}
+
+/// Every step a correction round named (rerun or refreshed). In a recovered
+/// run their reuse and skip choices and approval seeds stop applying, since
+/// they run again on the corrected work.
+pub fn corrected_steps(rows: &[StoredNodeResult]) -> HashSet<String> {
+    rows.iter()
+        .filter_map(round_steps)
+        .flat_map(|(reruns, refreshed)| reruns.into_iter().chain(refreshed))
+        .collect()
+}
+
+/// A correction round's marker: the steps it reruns and those it refreshes.
+fn round_steps(row: &StoredNodeResult) -> Option<(Vec<String>, Vec<String>)> {
+    if row.node_id != crate::feedback::ROUND_NODE || row.status != "correcting" {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(&row.structured_json).ok()?;
+    let list = |keys: &[&str]| -> Vec<String> {
+        keys.iter()
+            .flat_map(|key| {
+                value["feedbackRound"][*key]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter_map(|id| id.as_str().map(str::to_string))
+            .collect()
+    };
+    Some((list(&["roots", "affected"]), list(&["refreshed"])))
 }
 
 /// Every "B uses A's work" pair: graph edges, `contextRefs`, `inputRefs`,

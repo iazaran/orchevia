@@ -386,8 +386,11 @@ running. Once nothing else runs, the engine handles the feedback:
    an approval, spend or usage pause replays the round from the marker row. In a
    recovered run, a step the round reruns runs for real even if recovery chose to
    reuse it, and an approval it covers is asked again.
-5. **Addressed.** At the next checkpoint the feedback is marked addressed, or needs
-   your attention if the correction failed.
+5. **Addressed.** At the first checkpoint after the corrected step ran again, the
+   feedback is marked addressed, or needs your attention if the correction failed
+   and the run carried on along its failure route. An approval the corrected steps
+   must pass first (an approval between two corrected steps) is asked as usual; the
+   later step's feedback stays _being addressed_ until that step reruns.
 
 **Approvals.** Feedback adds no approval of its own: when corrections and the steps
 after them finish, the run continues by itself. An Approval step the author placed
@@ -395,14 +398,21 @@ still behaves as usual; one that the correction affects is asked again, because 
 work it approved changed.
 
 **Bounds.** A run makes at most `limits.maxCorrectionRounds` correction rounds (1–5,
-default 2). Feedback past the limit, a check that cannot decide, a failed correction
-or feedback no AI step can handle **pause the run before the checkpoint**. Its
-**Review feedback pause** dialog lists what needs attention and **Continue as it is**
-goes on, publishing included; Cancel stops the run. An approval cannot clear a
-feedback pause. Checks and corrections count toward the agent-attempt budget, the
-spend guard and usage like any other attempt.
+default 2). Feedback past the limit, a check that cannot decide, a correction that
+failed while the run carried on, a correction that cannot run before the next
+publishing step, or feedback no AI step can handle **pause the run before the
+checkpoint**. Its **Review feedback pause** dialog lists what needs attention and
+**Continue as it is** goes on, publishing included; Cancel stops the run. An
+approval cannot clear a feedback pause. A correction is an ordinary execution of its
+step: if it fails with no failure route, the run fails like any failed step, its
+feedback reads _not processed_, and recovery carries it over. Checks and corrections
+count toward the agent-attempt budget, the spend guard and usage like any other
+attempt; the spend target is checked before every check. When the budget or the
+spend target stops a round partway, the changes already decided still start their
+correction (resumed with the run) and unchecked feedback waits for the next pass.
 
-**Cutoff.** The first publishing step's dispatch is the feedback cutoff. Submitting
+**Cutoff.** The first publishing step's dispatch is the feedback cutoff (a step
+recovery skips or reuses publishes nothing and opens no cutoff). Submitting
 feedback and claiming that dispatch happen under the same database lock, so each
 message lands wholly before it (and is handled first) or after it. Feedback after
 the cutoff is recorded as **arrived after publishing**: what was already pushed,

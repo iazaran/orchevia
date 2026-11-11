@@ -215,7 +215,7 @@ const RUN_WRAPPERS = [
   'python3 -m ',
 ];
 
-/** Mirrors `shell_segments`: split outside quotes; whether only `&&` follows. */
+/** Mirrors `shell_segments`: split outside quotes; whether the segment's status is the command's. */
 function shellSegments(command: string): [string, boolean][] {
   const chars = Array.from(command);
   const segments: [string, string][] = [];
@@ -244,12 +244,18 @@ function shellSegments(command: string): [string, boolean][] {
     } else if (c === ';' || c === '\n') {
       segments.push([current, ';']);
       current = '';
+    } else if (c === '&' && chars[i - 1] !== '>' && next !== '>') {
+      // A lone `&` sends the command to the background; `2>&1` and `&>`
+      // are redirections.
+      segments.push([current, '&']);
+      current = '';
     } else current += c;
   }
   segments.push([current, '']);
   return segments.map(([segment], index) => [
     segment,
-    segments.slice(index).every(([, after]) => after === '' || after === '&&'),
+    segments.slice(0, index).every(([, after]) => after !== '||') &&
+      segments.slice(index).every(([, after]) => after === '' || after === '&&'),
   ]);
 }
 

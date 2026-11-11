@@ -191,9 +191,9 @@ const RUN_WRAPPERS: [&str; 12] = [
     "python3 -m ",
 ];
 
-/// Split a shell command at `&&`, `||`, `|`, `;` and newlines outside
-/// quotes. Each segment comes with whether only `&&` follows it, so its exit
-/// status reaches the end of the command.
+/// Split a shell command at `&&`, `||`, `|`, `;`, newlines and a background
+/// `&` outside quotes. Each segment comes with whether its exit status is
+/// the command's: no `||` before it, and only `&&` after it.
 fn shell_segments(command: &str) -> Vec<(String, bool)> {
     let chars: Vec<char> = command.chars().collect();
     let mut segments: Vec<(String, &str)> = Vec::new();
@@ -223,6 +223,14 @@ fn shell_segments(command: &str) -> Vec<(String, bool)> {
             }
             (None, '|') => segments.push((std::mem::take(&mut current), "|")),
             (None, ';' | '\n') => segments.push((std::mem::take(&mut current), ";")),
+            // A lone `&` sends the command to the background; `2>&1` and
+            // `&>` are redirections.
+            (None, '&')
+                if i.checked_sub(1).and_then(|p| chars.get(p)) != Some(&'>')
+                    && next != Some('>') =>
+            {
+                segments.push((std::mem::take(&mut current), "&"));
+            }
             _ => current.push(c),
         }
         i += 1;
@@ -230,9 +238,12 @@ fn shell_segments(command: &str) -> Vec<(String, bool)> {
     segments.push((current, ""));
     (0..segments.len())
         .map(|index| {
-            let reliable = segments[index..]
-                .iter()
-                .all(|(_, after)| after.is_empty() || *after == "&&");
+            // It ran (nothing before it is `||`), in the foreground, and its
+            // status is the command's (only `&&` after it).
+            let reliable = segments[..index].iter().all(|(_, after)| *after != "||")
+                && segments[index..]
+                    .iter()
+                    .all(|(_, after)| after.is_empty() || *after == "&&");
             (segments[index].0.clone(), reliable)
         })
         .collect()

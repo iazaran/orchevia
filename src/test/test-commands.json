@@ -1,5 +1,5 @@
 {
-  "about": "Read by is_test_command (crates/core/src/agent_output.rs) and looksLikeTestCommand (src/lib/step-summary.ts). A test run is a known runner in command position whose exit status reaches the end of the command: nothing but && may follow it.",
+  "about": "Read by is_test_command (crates/core/src/agent_output.rs) and looksLikeTestCommand (src/lib/step-summary.ts). A test run is a known runner in command position that certainly ran in the foreground and whose exit status is the command's: no || before it, nothing but && after it, not sent to the background.",
   "tests": [
     "cargo test -p orchevia-core",
     "pnpm test",
@@ -15,7 +15,11 @@
     "env RUST_LOG=debug cargo nextest run",
     "make test",
     "jest --ci",
-    "bun test"
+    "bun test",
+    "pnpm test 2>&1",
+    "pytest &> out.log",
+    "echo start; cargo test",
+    "sleep 1 & cargo test"
   ],
   "other": [
     "cargo build",
@@ -31,6 +35,10 @@
     "cargo test 2>&1 | tail -20",
     "pnpm test || true",
     "cargo test; echo done",
-    "pytest -q\necho after"
+    "pytest -q\necho after",
+    "true || cargo test",
+    "cargo test &",
+    "cargo test & wait",
+    "false || pnpm test && echo ok"
   ]
 }

@@ -344,7 +344,10 @@ export function composeAgentContext(
   for (const [index, id] of refs.entries()) {
     if (seen.has(id)) throw new Error(`Duplicate context reference '${id}'.`);
     seen.add(id);
-    const row = [...rows].reverse().find((r) => r.nodeId === id);
+    // A feedback check is not one of the step's results.
+    const row = [...rows]
+      .reverse()
+      .find((r) => r.nodeId === id && r.status !== 'checked');
     if (!row || !['succeeded', 'failed', 'cancelled', 'skipped'].includes(row.status))
       throw new Error(`Context reference '${id}' needs a completed node result.`);
     const chars = Array.from(

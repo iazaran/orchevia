@@ -424,23 +424,56 @@ export function dependencyPairs(workflow: Workflow): [string, string][] {
   return dependencies;
 }
 
+function roundSteps(
+  row: StoredNodeResult,
+): { reruns: string[]; refreshed: string[] } | null {
+  if (row.nodeId !== '__feedback' || row.status !== 'correcting') return null;
+  const round = resultMetadata(row).feedbackRound;
+  if (!isRecord(round)) return null;
+  const list = (keys: string[]): string[] =>
+    keys.flatMap((key) => {
+      const ids: unknown = round[key];
+      return Array.isArray(ids)
+        ? ids.filter((id): id is string => typeof id === 'string')
+        : [];
+    });
+  return { reruns: list(['roots', 'affected']), refreshed: list(['refreshed']) };
+}
+
 /**
- * For each step a feedback correction round reran, the id of the last such
- * round's marker row. Mirrors `superseded_by_corrections`.
+ * For each step a feedback correction round reran (or refreshed and ran
+ * again after it), the id of the last such round's marker row. Mirrors
+ * `superseded_by_corrections`.
  */
 export function supersededByCorrections(rows: StoredNodeResult[]): Map<string, number> {
   const superseded = new Map<string, number>();
   for (const row of rows) {
-    if (row.nodeId !== '__feedback' || row.status !== 'correcting') continue;
-    const round = resultMetadata(row).feedbackRound;
-    if (!isRecord(round)) continue;
-    for (const key of ['roots', 'affected']) {
-      const ids: unknown = round[key];
-      if (Array.isArray(ids))
-        for (const id of ids) if (typeof id === 'string') superseded.set(id, row.id);
-    }
+    const steps = roundSteps(row);
+    if (steps === null) continue;
+    for (const id of steps.reruns) superseded.set(id, row.id);
+    for (const id of steps.refreshed)
+      if (
+        rows.some(
+          (later) =>
+            later.id > row.id &&
+            later.nodeId === id &&
+            ['succeeded', 'failed', 'approved', 'rejected'].includes(later.status),
+        )
+      )
+        superseded.set(id, row.id);
   }
   return superseded;
+}
+
+/** Every step a correction round named. Mirrors `corrected_steps`. */
+export function correctedSteps(rows: StoredNodeResult[]): Set<string> {
+  const steps = new Set<string>();
+  for (const row of rows) {
+    const named = roundSteps(row);
+    if (named !== null)
+      [...named.reruns, ...named.refreshed].forEach((id) => steps.add(id));
+  }
+  return steps;
 }
 
 /** Every step using the work of `seeds`. Mirrors `downstream_closure`. */

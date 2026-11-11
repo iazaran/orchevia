@@ -948,3 +948,422 @@ async fn feedback_sent_during_a_check_waits_for_the_next_pass_without_pausing() 
             .count();
     assert_eq!(checks, 2, "each message checked in its own pass");
 }
+
+#[tokio::test]
+async fn a_feedback_check_never_becomes_the_steps_output_for_later_steps() {
+    let h = harness("satisfied");
+    let wf = Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-vars","name":"Vars",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"impl","type":"agent","config":{"agentProfileId":"fake","prompt":"Change it."}},
+          {"id":"tests","type":"command","config":{"executable":"sh","args":["-c","sleep 0.6; echo ok"]}},
+          {"id":"push","type":"command","config":{"executable":"echo","args":["pushed"],"publishes":true}},
+          {"id":"summary","type":"agent","config":{"agentProfileId":"fake","prompt":"Summarize: {{node.impl.output}} status {{node.impl.status}}","contextRefs":["impl"]}},
+          {"id":"end","type":"end"}],
+        "edges":[
+          {"id":"e1","source":"start","target":"impl"},
+          {"id":"e2","source":"impl","target":"tests"},
+          {"id":"e3","source":"tests","target":"push"},
+          {"id":"e4","source":"push","target":"summary"},
+          {"id":"e5","source":"summary","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow");
+    let run = start(&h, &wf, "fb-vars", RunOptions::default());
+    feedback_while_testing(&h, "fb-vars", "impl").await;
+    run.await.expect("run");
+    assert_eq!(run_status(&h, "fb-vars"), RunStatus::Succeeded);
+    let prompts = std::fs::read_to_string(h.dir.path().join("prompts.log")).expect("log");
+    let summary = prompts
+        .split("----\n")
+        .filter(|p| p.contains("Summarize:"))
+        .last()
+        .expect("summary prompt");
+    assert!(
+        summary.contains("Summarize: ORIGINAL status succeeded"),
+        "{summary}"
+    );
+    assert!(
+        !summary.contains("Old config keys are still read."),
+        "{summary}"
+    );
+}
+
+/// start → a (AI) → first (approval) → b (AI) → second (approval) → push → end
+fn two_approvals() -> Workflow {
+    Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-two","name":"Two approvals",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"a","type":"agent","config":{"agentProfileId":"fake","prompt":"Do A."}},
+          {"id":"first","type":"approval"},
+          {"id":"b","type":"agent","config":{"agentProfileId":"fake","prompt":"Do B."}},
+          {"id":"second","type":"approval"},
+          {"id":"push","type":"command","config":{"executable":"never-runs","args":[],"publishes":true}},
+          {"id":"end","type":"end"}],
+        "edges":[
+          {"id":"e1","source":"start","target":"a"},
+          {"id":"e2","source":"a","target":"first"},
+          {"id":"e3","source":"first","target":"b"},
+          {"id":"e4","source":"b","target":"second"},
+          {"id":"e5","source":"second","target":"push"},
+          {"id":"e6","source":"push","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow")
+}
+
+#[tokio::test]
+async fn an_approval_between_two_corrections_keeps_the_later_one_open() {
+    let h = harness("change");
+    let wf = two_approvals();
+    let ok = |s: &str| json!({"status":"succeeded","stdout":s});
+    let change = check_reply_text("change");
+    let options: RunOptions = serde_json::from_value(json!({"dryRun": true, "fixtures": {
+        "a": [ok("a1"), ok("a2")],
+        "b": [ok("b1"), ok("b2")],
+        "push": [ok("pushed")],
+        "feedback:a": [ok(&change)],
+        "feedback:b": [ok(&change)]
+    }}))
+    .expect("options");
+    start(&h, &wf, "fb-two", options).await.expect("run");
+    h.engine
+        .approve_run("fb-two", true, None, wf.clone())
+        .await
+        .expect("first");
+    assert_eq!(
+        run_status(&h, "fb-two"),
+        RunStatus::Paused,
+        "at the second approval"
+    );
+    let on_a = h
+        .engine
+        .submit_feedback("fb-two", "a", None, "Fix A.")
+        .expect("a");
+    let on_b = h
+        .engine
+        .submit_feedback("fb-two", "b", None, "Fix B.")
+        .expect("b");
+    h.engine
+        .approve_run("fb-two", true, None, wf.clone())
+        .await
+        .expect("second");
+    // A was corrected; B cannot rerun before the first approval is asked
+    // again, so its feedback stays being addressed, not "never ran".
+    assert_eq!(run_status(&h, "fb-two"), RunStatus::Paused);
+    let status = |id: i64| {
+        h.db.list_feedback("fb-two")
+            .expect("feedback")
+            .into_iter()
+            .find(|i| i.id == id)
+            .map(|i| i.status)
+    };
+    assert_eq!(status(on_a.id).as_deref(), Some(feedback::ADDRESSED));
+    assert_eq!(status(on_b.id).as_deref(), Some(feedback::CORRECTING));
+    h.engine
+        .approve_run("fb-two", true, None, wf.clone())
+        .await
+        .expect("first again");
+    assert_eq!(status(on_b.id).as_deref(), Some(feedback::ADDRESSED));
+    let rows = h.db.list_node_results("fb-two").expect("rows");
+    let b2 = rows.iter().find(|r| r.stdout == "b2").expect("b corrected");
+    assert_eq!(metadata(b2)["correction"]["feedbackIds"], json!([on_b.id]));
+    h.engine
+        .approve_run("fb-two", true, None, wf.clone())
+        .await
+        .expect("second again");
+    assert_eq!(run_status(&h, "fb-two"), RunStatus::Succeeded);
+    assert_eq!(outputs(&h, "fb-two", "push"), ["pushed"]);
+}
+
+#[tokio::test]
+async fn a_skipped_publishing_step_does_not_close_the_feedback_window() {
+    let h = harness("change");
+    let mut wf = approval_workflow(None);
+    // push before the approval, and a parallel lint branch that keeps the
+    // approval reachable when the push is skipped.
+    wf.nodes.push(
+        serde_json::from_value(json!({"id":"lint","type":"command","position":{"x":0,"y":0},"config":{"executable":"never-runs","args":[]}}))
+            .expect("lint"),
+    );
+    wf.edges = serde_json::from_value(json!([
+        {"id":"e1","source":"start","target":"impl"},
+        {"id":"e2","source":"impl","target":"tests"},
+        {"id":"e3","source":"tests","target":"push"},
+        {"id":"e4","source":"push","target":"approve"},
+        {"id":"e5","source":"approve","target":"end"},
+        {"id":"e6","source":"start","target":"lint"},
+        {"id":"e7","source":"lint","target":"approve"}]))
+    .expect("edges");
+    let mut options = fixtures();
+    options.fixtures.insert(
+        "lint".into(),
+        serde_json::from_value(json!([{"status":"succeeded","stdout":"lint ok"}])).expect("lint"),
+    );
+    start(&h, &wf, "fb-skip", options).await.expect("run");
+    h.engine
+        .approve_run("fb-skip", false, None, wf.clone())
+        .await
+        .expect("reject");
+    let plan = h.engine.preview_recovery("fb-skip").expect("plan");
+    let choices: std::collections::HashMap<String, crate::run_controls::RecoveryChoice> = plan
+        .nodes
+        .iter()
+        .map(|n| {
+            let choice = if n.node_id == "push" {
+                crate::run_controls::RecoveryChoice::Skip
+            } else if n
+                .choices
+                .contains(&crate::run_controls::RecoveryChoice::Reuse)
+            {
+                crate::run_controls::RecoveryChoice::Reuse
+            } else {
+                crate::run_controls::RecoveryChoice::Replay
+            };
+            (n.node_id.clone(), choice)
+        })
+        .collect();
+    let id = h
+        .engine
+        .recover_run(
+            "fb-skip",
+            "fb-skipped",
+            &choices,
+            &plan.fingerprint,
+            "req-skip",
+        )
+        .expect("recover");
+    let snapshot = h.db.get_run_workflow(&id).expect("wf").expect("snapshot");
+    Arc::clone(&h.engine).execute(snapshot, id.clone()).await;
+    assert_eq!(run_status(&h, &id), RunStatus::Paused, "at the approval");
+    let run = h.db.get_run(&id).expect("get").expect("run");
+    assert!(run.execution.feedback.publication_started.is_none());
+    let item = h
+        .engine
+        .submit_feedback(&id, "impl", None, "Still in time.")
+        .expect("submit");
+    assert_eq!(item.status, feedback::PENDING, "nothing was published");
+}
+
+#[tokio::test]
+async fn a_round_stopped_by_the_attempt_budget_keeps_the_changes_it_decided() {
+    let h = harness("change");
+    std::fs::write(h.dir.path().join("original-delay"), "0.5").expect("delay");
+    let wf = Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-budget","name":"Budget",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"a","type":"agent","config":{"agentProfileId":"fake","prompt":"Do A."}},
+          {"id":"b","type":"agent","config":{"agentProfileId":"fake","prompt":"Do B."}},
+          {"id":"push","type":"command","config":{"executable":"echo","args":["pushed"],"publishes":true}},
+          {"id":"end","type":"end"}],
+        "edges":[
+          {"id":"e1","source":"start","target":"a"},
+          {"id":"e2","source":"a","target":"b"},
+          {"id":"e3","source":"b","target":"push"},
+          {"id":"e4","source":"push","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow");
+    let options: RunOptions =
+        serde_json::from_value(json!({"maxAgentAttempts": 3})).expect("options");
+    let run = start(&h, &wf, "fb-budget", options);
+    wait_until(&h, "fb-budget", "b running", |rows| {
+        status_of(rows, "a").as_deref() == Some("succeeded")
+            && status_of(rows, "b").as_deref() == Some("running")
+    })
+    .await;
+    let on_a = h
+        .engine
+        .submit_feedback("fb-budget", "a", None, "Fix A.")
+        .expect("a");
+    let on_b = h
+        .engine
+        .submit_feedback("fb-budget", "b", None, "Fix B.")
+        .expect("b");
+    run.await.expect("run");
+    // The third attempt checked A; checking B hit the budget. A's change
+    // still started its round, recorded before the pause.
+    let paused = h.db.get_run("fb-budget").expect("get").expect("run");
+    assert!(
+        paused.execution.usage_pause.is_some(),
+        "paused at the budget"
+    );
+    let items = h.db.list_feedback("fb-budget").expect("feedback");
+    let status = |id: i64| items.iter().find(|i| i.id == id).map(|i| i.status.clone());
+    assert_eq!(status(on_a.id).as_deref(), Some(feedback::CORRECTING));
+    assert_eq!(status(on_b.id).as_deref(), Some(feedback::PENDING));
+    let rows = h.db.list_node_results("fb-budget").expect("rows");
+    assert!(rows.iter().any(|r| r.node_id == feedback::ROUND_NODE));
+    let pause = paused.execution.usage_pause.expect("pause");
+    h.engine
+        .continue_usage_run("fb-budget", pause.id, Some(20))
+        .await
+        .expect("continue");
+    assert_eq!(run_status(&h, "fb-budget"), RunStatus::Succeeded);
+    let items = h.db.list_feedback("fb-budget").expect("feedback");
+    assert!(
+        items.iter().all(|i| i.status == feedback::ADDRESSED),
+        "{items:#?}"
+    );
+    assert_eq!(outputs(&h, "fb-budget", "a"), ["ORIGINAL", "CORRECTED"]);
+    assert_eq!(outputs(&h, "fb-budget", "push").len(), 1);
+}
+
+#[tokio::test]
+async fn a_check_that_reaches_the_spend_target_stops_the_round_there() {
+    let h = harness("change");
+    std::fs::write(h.dir.path().join("original-delay"), "0.5").expect("delay");
+    // Each check reports USD 1, past the 0.5 target.
+    let reply: Value = serde_json::from_str(&check_reply("change")).expect("reply");
+    let mut costly = reply.clone();
+    costly["total_cost_usd"] = json!(1.0);
+    std::fs::write(h.dir.path().join("check.jsonl"), format!("{costly}\n")).expect("reply");
+    let wf = Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-spend2","name":"Spend",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"a","type":"agent","config":{"agentProfileId":"fake","prompt":"Do A."}},
+          {"id":"b","type":"agent","config":{"agentProfileId":"fake","prompt":"Do B."}},
+          {"id":"end","type":"end"}],
+        "edges":[
+          {"id":"e1","source":"start","target":"a"},
+          {"id":"e2","source":"a","target":"b"},
+          {"id":"e3","source":"b","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow");
+    let options: RunOptions =
+        serde_json::from_value(json!({"spendLimitUsd": 0.5})).expect("options");
+    let run = start(&h, &wf, "fb-spend2", options);
+    wait_until(&h, "fb-spend2", "b running", |rows| {
+        status_of(rows, "a").as_deref() == Some("succeeded")
+            && status_of(rows, "b").as_deref() == Some("running")
+    })
+    .await;
+    let on_a = h
+        .engine
+        .submit_feedback("fb-spend2", "a", None, "Fix A.")
+        .expect("a");
+    let on_b = h
+        .engine
+        .submit_feedback("fb-spend2", "b", None, "Fix B.")
+        .expect("b");
+    run.await.expect("run");
+    let paused = h.db.get_run("fb-spend2").expect("get").expect("run");
+    assert!(
+        paused.execution.spend_pause.is_some(),
+        "paused at the spend target"
+    );
+    let rows = h.db.list_node_results("fb-spend2").expect("rows");
+    assert_eq!(
+        rows.iter().filter(|r| r.status == "checked").count(),
+        1,
+        "one check only"
+    );
+    let items = h.db.list_feedback("fb-spend2").expect("feedback");
+    let status = |id: i64| items.iter().find(|i| i.id == id).map(|i| i.status.clone());
+    assert_eq!(status(on_a.id).as_deref(), Some(feedback::CORRECTING));
+    assert_eq!(status(on_b.id).as_deref(), Some(feedback::PENDING));
+}
+
+#[tokio::test]
+async fn a_loop_step_a_correction_sends_round_runs_for_real_in_a_recovered_run() {
+    let h = harness("change");
+    let wf = Workflow::from_json(
+        &json!({"schemaVersion":6,"id":"wf-loop-recover","name":"Loop recover",
+        "nodes":[
+          {"id":"start","type":"start"},
+          {"id":"impl","type":"agent","config":{"agentProfileId":"fake","prompt":"Change it."}},
+          {"id":"tests","type":"command","config":{"executable":"never-runs","args":[],"maxVisits":3}},
+          {"id":"review","type":"agent","config":{"agentProfileId":"fake","prompt":"Review it.","maxVisits":3}},
+          {"id":"gate","type":"condition","config":{"maxVisits":3,"condition":{"logic":"and","clauses":[{"left":"node.review.output","op":"contains","right":"CHANGES"}]}}},
+          {"id":"fix","type":"agent","config":{"agentProfileId":"fake","prompt":"Fix it.","maxVisits":3}},
+          {"id":"approve","type":"approval"},
+          {"id":"push","type":"command","config":{"executable":"never-runs","args":[],"publishes":true}},
+          {"id":"end","type":"end"}],
+        "edges":[
+          {"id":"e1","source":"start","target":"impl"},
+          {"id":"e2","source":"impl","target":"tests"},
+          {"id":"e3","source":"tests","target":"review"},
+          {"id":"e4","source":"review","target":"gate"},
+          {"id":"e5","source":"gate","target":"fix","label":"true"},
+          {"id":"e6","source":"fix","target":"tests"},
+          {"id":"e7","source":"gate","target":"approve","label":"false"},
+          {"id":"e8","source":"approve","target":"push"},
+          {"id":"e9","source":"push","target":"end"}]})
+        .to_string(),
+    )
+    .expect("workflow");
+    let ok = |s: &str| json!({"status":"succeeded","stdout":s});
+    // The source run goes round the fix loop once, so every step can be
+    // reused; its approval is rejected.
+    let options: RunOptions = serde_json::from_value(json!({"dryRun": true, "fixtures": {
+        "impl": [ok("v1")],
+        "tests": [ok("ok 1"), ok("ok 2"), ok("ok 3")],
+        "review": [ok("CHANGES 1"), ok("clean 1"), ok("CHANGES 2"), ok("clean 2")],
+        "fix": [ok("fixed 1"), ok("fixed 2")],
+        "push": [ok("pushed")],
+        "feedback:review": [ok(&check_reply_text("change"))]
+    }}))
+    .expect("options");
+    start(&h, &wf, "fb-lr", options).await.expect("run");
+    h.engine
+        .approve_run("fb-lr", false, None, wf.clone())
+        .await
+        .expect("reject");
+    // Reuse the implementation, tests and review, as recovery does once
+    // its choices are validated (created directly: the dialog refuses to
+    // reuse tests while the fix step, skipped on the last pass, replays).
+    let source = h.db.get_run("fb-lr").expect("get").expect("run");
+    let reuse = ["impl", "tests", "review"];
+    let seeds: Vec<StoredNodeResult> =
+        h.db.list_node_results("fb-lr")
+            .expect("rows")
+            .into_iter()
+            .filter(|r| r.status == "succeeded" && reuse.contains(&r.node_id.as_str()))
+            .collect();
+    let execution = crate::run_controls::RunExecution {
+        options: source.execution.options.clone(),
+        recovered_from: Some("fb-lr".into()),
+        recovery_choices: reuse
+            .iter()
+            .map(|id| (id.to_string(), crate::run_controls::RecoveryChoice::Reuse))
+            .collect(),
+        ..Default::default()
+    };
+    let id =
+        h.db.create_recovery_run("fb-lr-2", &source, &wf, &execution, &seeds, "req-lr")
+            .expect("recover");
+    let snapshot = h.db.get_run_workflow(&id).expect("wf").expect("snapshot");
+    Arc::clone(&h.engine).execute(snapshot, id.clone()).await;
+    assert_eq!(run_status(&h, &id), RunStatus::Paused, "at the approval");
+    h.engine
+        .submit_feedback(&id, "review", None, "Check the old path.")
+        .expect("submit");
+    h.engine
+        .approve_run(&id, true, None, wf.clone())
+        .await
+        .expect("approve");
+    // The tests were reused for both earlier passes; after the corrected
+    // review's fix the loop sends them round and they run for real (their
+    // next fixture) instead of asking for a third reused result.
+    assert_eq!(outputs(&h, &id, "tests"), ["ok 1", "ok 2", "ok 3"]);
+    let rows = h.db.list_node_results(&id).expect("rows");
+    let last_tests = rows
+        .iter()
+        .rev()
+        .find(|r| r.node_id == "tests")
+        .expect("tests");
+    assert!(
+        metadata(last_tests).get("reusedFrom").is_none(),
+        "{last_tests:#?}"
+    );
+    assert_eq!(
+        run_status(&h, &id),
+        RunStatus::Paused,
+        "approval asked again"
+    );
+}

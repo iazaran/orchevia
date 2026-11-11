@@ -127,9 +127,11 @@ today's output view.
 - **Approvals.** No new approval. An already-decided Approval step inside the
   affected set is asked again; one outside keeps its decision.
 - **Bounds.** `WorkflowLimits.maxCorrectionRounds` (1–5, default 2). Reaching
-  it with feedback still pending, a check needing attention, or a failed
-  correction pauses the run before the checkpoint (`RunExecution.feedback.pause`,
-  the spend/usage pause pattern). **Continue** proceeds as it is; cancel stops.
+  it with feedback still pending, a check needing attention, or a correction that
+  failed while the run carried on pauses the run before the checkpoint
+  (`RunExecution.feedback.pause`, the spend/usage pause pattern). **Continue**
+  proceeds as it is; cancel stops. A correction that fails with no failure route
+  fails the run like any step; recovery carries its feedback over.
 - **Accounting.** Checks and corrections count toward the agent-attempt budget
   and spend guard like any attempt; unknown usage stays unknown. Dry runs use
   fixtures (`feedback:<agentStepId>` for checks; corrections take the step's
@@ -225,6 +227,14 @@ building and reviewing it:
   approval closes waiting feedback in the same transaction. A round pauses only for
   feedback that needs the person; feedback sent during a check waits for the next
   pass.
+- **Second review round.** A check row never becomes its step's output, status,
+  severity or handoff context. A round stopped by the attempt budget, the spend
+  target (checked before every check) or a cancel still starts the corrections it
+  decided. Only corrections whose step has run again hold a checkpoint or close; one
+  still waiting behind an approval stays open, and one that cannot run before the
+  next publishing step is surfaced for attention instead of looping. Steps a round
+  refreshes also drop recovery choices, and a publishing step recovery skips or
+  reuses opens no cutoff. A test run needs no `||` before it and no background `&`.
 - **Evidence for "tests passed".** One rule on both sides (shared
   `src/test/test-commands.json`): a runner in command position, outside quotes,
   followed by nothing but `&&`. Claude successes carry no invented exit code, a
