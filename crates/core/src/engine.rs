@@ -589,8 +589,9 @@ impl Engine {
                 )));
             }
         }
-        // Replay/skip choices invalidate dependent reuse, even upstream of the original failure.
-        let mut changed_rows = rows.clone();
+        // Replay/skip choices invalidate dependent reuse, even upstream of the
+        // original failure. Results a correction superseded no longer count.
+        let mut changed_rows = run_controls::current_results(&rows);
         for (id, choice) in choices {
             if *choice != RecoveryChoice::Reuse {
                 let mut row = rows.last().cloned().ok_or_else(|| {
@@ -598,6 +599,9 @@ impl Engine {
                 })?;
                 row.node_id = id.clone();
                 row.status = "failed".into();
+                // After every recorded result, so no correction marker
+                // supersedes it.
+                row.id = i64::MAX;
                 changed_rows.push(row);
             }
         }
@@ -639,8 +643,25 @@ impl Engine {
             consumed_agent_attempts: 0,
             usage_pause: None,
             // A new run: its own cutoff and rounds. Unhandled feedback of
-            // the failed run is carried over as pending.
-            feedback: crate::feedback::FeedbackState::default(),
+            // the failed run is carried over as pending. A reused publishing
+            // step stands for what the failed run already published, so a
+            // run that reuses one starts past its cutoff: a correction would
+            // publish it again.
+            feedback: crate::feedback::FeedbackState {
+                publication_started: workflow
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        crate::workflow::publishes(n)
+                            && choices.get(&n.id) == Some(&RecoveryChoice::Reuse)
+                    })
+                    .map(|n| crate::feedback::PublicationStart {
+                        node_id: n.id.clone(),
+                        label: n.label.clone().unwrap_or_else(|| n.id.clone()),
+                        at: chrono::Utc::now().to_rfc3339(),
+                    }),
+                ..crate::feedback::FeedbackState::default()
+            },
         };
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
@@ -1556,7 +1577,13 @@ impl Engine {
                 // remaining allowance.
                 let mut usage_reserved: u32 = 0;
                 let mut claim_refused = false;
-                for id in ready.iter().take(capacity) {
+                let mut dispatched = 0;
+                // Every ready step is considered: a publishing step whose
+                // claim is refused takes no capacity from steps after it.
+                for id in &ready {
+                    if dispatched >= capacity {
+                        break;
+                    }
                     let id_owned = id.clone();
                     let kind = graph.nodes.get(&id_owned).map(|n| n.kind);
                     if kind == Some(NodeKind::Approval) {
@@ -1641,34 +1668,15 @@ impl Engine {
                         usage_reserved += 1;
                     }
                     in_flight.insert(id.clone());
+                    dispatched += 1;
                 }
                 // Feedback landed just before the claim: handle it next tick
                 // instead of mistaking the held step for a deadlock.
                 if claim_refused && in_flight.is_empty() {
-                    // Only a correction that has not run blocks publishing, and
-                    // nothing else can run: it cannot run before this step, so
-                    // the person decides.
-                    if !self.db.has_waiting_feedback(run_id)?
-                        && self.finished_corrections(run_id)? == 0
-                    {
-                        let open: Vec<i64> = self
-                            .db
-                            .list_feedback(run_id)?
-                            .iter()
-                            .filter(|i| i.status == crate::feedback::CORRECTING)
-                            .map(|i| i.id)
-                            .collect();
-                        self.db.update_feedback(
-                            &open,
-                            &crate::db::FeedbackPatch {
-                                status: Some(crate::feedback::NEEDS_ATTENTION),
-                                decision: Some(
-                                    "Its correction could not run before the next publishing step.",
-                                ),
-                                ..crate::db::FeedbackPatch::default()
-                            },
-                        )?;
-                    }
+                    self.stall_unrunnable_corrections(
+                        run_id,
+                        "Its correction could not run before the next publishing step.",
+                    )?;
                     continue 'schedule;
                 }
             }
@@ -1690,6 +1698,10 @@ impl Engine {
                 if all_terminal(&graph, &state) {
                     // Feedback that arrived just now is handled before the end.
                     if !self.db.claim_feedback_cutoff(run_id, None)? {
+                        self.stall_unrunnable_corrections(
+                            run_id,
+                            "Its correction could not run before the run finished.",
+                        )?;
                         continue 'schedule;
                     }
                     return Ok(RunOutcome::Finished(RunStatus::Succeeded));
@@ -2229,6 +2241,31 @@ impl Engine {
         }
     }
 
+    /// When only corrections that have not run hold publishing or the end,
+    /// and nothing else can run, they cannot run before it: the person
+    /// decides. The next tick pauses for them.
+    fn stall_unrunnable_corrections(&self, run_id: &str, reason: &str) -> Result<(), EngineError> {
+        if self.db.has_waiting_feedback(run_id)? || self.finished_corrections(run_id)? > 0 {
+            return Ok(());
+        }
+        let open: Vec<i64> = self
+            .db
+            .list_feedback(run_id)?
+            .iter()
+            .filter(|i| i.status == crate::feedback::CORRECTING)
+            .map(|i| i.id)
+            .collect();
+        self.db.update_feedback(
+            &open,
+            &crate::db::FeedbackPatch {
+                status: Some(crate::feedback::NEEDS_ATTENTION),
+                decision: Some(reason),
+                ..crate::db::FeedbackPatch::default()
+            },
+        )?;
+        Ok(())
+    }
+
     /// Corrections whose step has run again since their round began.
     fn finished_corrections(&self, run_id: &str) -> Result<usize, EngineError> {
         let items = self.db.list_feedback(run_id)?;
@@ -2252,8 +2289,11 @@ impl Engine {
     /// (`roots`) run again first, and every step that uses their work
     /// (`affected`) waits for them and then runs by normal routing, with a
     /// fresh visit allowance. Arrivals from steps outside the round keep
-    /// their decision; arrivals from steps that rerun are made again. Replay
-    /// applies the same reset at the round's marker row.
+    /// their decision; arrivals from steps that rerun are made again. A step
+    /// routing passed by, with no arrival from a step that reruns, stays
+    /// skipped. Steps after a loop the reruns send round again wait for
+    /// that loop to decide again. Replay applies the same reset at the
+    /// round's marker row.
     fn reset_for_correction(
         &self,
         graph: &Graph,
@@ -2261,12 +2301,37 @@ impl Engine {
         plan: &crate::feedback::CorrectionPlan,
     ) {
         let roots = &plan.roots;
-        let reset: HashSet<String> = roots
+        let named: HashSet<String> = roots
             .iter()
             .chain(&plan.affected)
             .filter(|id| graph.nodes.contains_key(*id))
             .cloned()
             .collect();
+        // A skipped step that only uses the corrected work by reference, and
+        // that no rerunning step routes to, cannot be reached by the reruns.
+        let mut passed_by: HashSet<String> = HashSet::new();
+        loop {
+            let more: Vec<String> = named
+                .iter()
+                .filter(|id| {
+                    !roots.contains(*id)
+                        && !passed_by.contains(*id)
+                        && state.terminal.get(*id) == Some(&NodeOutcome::Skipped)
+                        && graph.incoming.get(*id).into_iter().flatten().all(|edge| {
+                            graph.is_loop_edge(&edge.id)
+                                || ((!named.contains(&edge.source)
+                                    || passed_by.contains(&edge.source))
+                                    && state.resolved.get(&edge.id) != Some(&true))
+                        })
+                })
+                .cloned()
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            passed_by.extend(more);
+        }
+        let reset: HashSet<String> = named.difference(&passed_by).cloned().collect();
         for id in &reset {
             state.terminal.remove(id);
             state.visits.insert(id.clone(), 0);
@@ -2280,13 +2345,80 @@ impl Engine {
         {
             state.visits.insert(id.clone(), 0);
         }
+        // The loops the reruns can send round again, and the steps after
+        // them: those were decided by the loop's earlier pass, so they wait
+        // for it to decide again instead of running on that decision.
+        let mut looped: HashSet<String> = HashSet::new();
+        let mut sent_round: HashSet<&str> = HashSet::new();
+        loop {
+            let mut grew = false;
+            for edge_id in &graph.loop_edges {
+                let Some((_, edge)) = graph.edges.get(edge_id) else {
+                    continue;
+                };
+                if sent_round.contains(edge_id.as_str())
+                    || !(reset.contains(&edge.source) || looped.contains(&edge.source))
+                {
+                    continue;
+                }
+                sent_round.insert(edge_id);
+                looped.extend(graph.loop_body(edge_id).cloned().unwrap_or_default());
+                looped.insert(edge.source.clone());
+                looped.insert(edge.target.clone());
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut after: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = looped.iter().cloned().collect();
+        while let Some(id) = frontier.pop() {
+            for edge in graph.outgoing.get(&id).into_iter().flatten() {
+                if !graph.is_loop_edge(&edge.id)
+                    && !looped.contains(&edge.target)
+                    && !reset.contains(&edge.target)
+                    && plan.refreshed.contains(&edge.target)
+                    && after.insert(edge.target.clone())
+                {
+                    frontier.push(edge.target.clone());
+                }
+            }
+        }
+        for id in &after {
+            state.terminal.remove(id);
+        }
         for (_, edge) in graph.edges.values() {
-            if reset.contains(&edge.source) || reset.contains(&edge.target) {
+            let again = after.contains(&edge.target)
+                && (looped.contains(&edge.source) || after.contains(&edge.source));
+            if reset.contains(&edge.source) || reset.contains(&edge.target) || again {
                 state.held.remove(&edge.id);
             }
-            if !graph.is_loop_edge(&edge.id) && reset.contains(&edge.source) {
+            if !graph.is_loop_edge(&edge.id) && (reset.contains(&edge.source) || again) {
                 state.resolved.remove(&edge.id);
             }
+        }
+        for id in after.iter().filter(|id| !reset.contains(*id)) {
+            let incoming: Vec<&Edge> = graph
+                .incoming
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter(|edge| !graph.is_loop_edge(&edge.id))
+                .collect();
+            state.pending.insert(
+                id.clone(),
+                incoming
+                    .iter()
+                    .filter(|edge| !state.resolved.contains_key(&edge.id))
+                    .count(),
+            );
+            state.taken.insert(
+                id.clone(),
+                incoming
+                    .iter()
+                    .any(|edge| state.resolved.get(&edge.id) == Some(&true)),
+            );
         }
         for id in &reset {
             let incoming: Vec<&Edge> = graph

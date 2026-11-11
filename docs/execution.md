@@ -323,14 +323,18 @@ engine recorded:
   Claude Code 2.1.303 and Codex 0.166.0 streams, kept as test fixtures.
 - **Command steps** report their exit code; a test command (or output with a
   cargo, vitest, jest or pytest summary) reads "Tests passed: 12 passed" or "Tests
-  failed (exit 1)". A summary that counts failures reads as failed even with exit
-  code 0. Simulated rows claim nothing about a real process.
+  failed (exit 1)". Every runner summary in the output counts, so a failure one
+  runner reports is never hidden by another's pass, and a summary that counts
+  failures reads as failed even with exit code 0. Simulated rows claim nothing about
+  a real process.
 - **What counts as a test run** (for agents and Command steps alike): a known runner
   in command position (after `cd … &&`, environment assignments, `npx`, `python -m`
   and similar wrappers), with nothing but `&&` after it, so its exit status is the
   command's. `cargo test | tail`, `pnpm test || true` and `cat vitest.config.ts` are
-  ordinary commands. Claude reports a failed call's exit code; a successful call has
-  none, and none is shown.
+  ordinary commands, and so is a runner that only builds, lists or describes tests
+  (`cargo test --no-run`, `pytest --collect-only`, `vitest list`, `--help`).
+  Claude reports a failed call's exit code; a successful call has none, and none is
+  shown.
 - **Conditions, approvals, feedback checks** state the branch taken, the decision,
   or the check's verdict.
 
@@ -380,8 +384,11 @@ running. Once nothing else runs, the engine handles the feedback:
    through ordinary edges or data references reruns after them by normal routing, with
    a fresh visit allowance. Steps that only a loop's way back leads to (the tests
    before a corrected review in a fix loop) keep their results and get a fresh
-   allowance: they rerun only if the corrected work sends the loop round again. Steps
-   outside the round keep their results, including parallel branches. Original
+   allowance: they rerun only if the corrected work sends the loop round again. The
+   steps after such a loop (the push after a corrected fix step) wait for the loop to
+   decide again; its earlier pass no longer decides them. A step routing skipped that
+   only reads the corrected work by reference stays skipped. Steps outside the round
+   keep their results, including parallel branches. Original
    results stay in history; corrected ones and the reruns are labelled. Resuming after
    an approval, spend or usage pause replays the round from the marker row. In a
    recovered run, a step the round reruns runs for real even if recovery chose to
@@ -412,7 +419,9 @@ spend target stops a round partway, the changes already decided still start thei
 correction (resumed with the run) and unchecked feedback waits for the next pass.
 
 **Cutoff.** The first publishing step's dispatch is the feedback cutoff (a step
-recovery skips or reuses publishes nothing and opens no cutoff). Submitting
+recovery skips publishes nothing and opens no cutoff). A recovered run that reuses a
+publishing step's result starts past its cutoff: the failed run already published
+it, and a correction would publish it again. Submitting
 feedback and claiming that dispatch happen under the same database lock, so each
 message lands wholly before it (and is handled first) or after it. Feedback after
 the cutoff is recorded as **arrived after publishing**: what was already pushed,

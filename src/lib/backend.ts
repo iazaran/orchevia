@@ -2,7 +2,7 @@ import {
   validateRunOptions,
   recoveryPlan,
   recoveryInvalidated,
-  supersededByCorrections,
+  currentResults,
   correctedSteps,
   isEffectful,
   resultMetadata,
@@ -15,6 +15,7 @@ import {
   type RunOptions,
   type RecoveryChoice,
   type RecoveryPlan,
+  type RunExecution,
 } from './run-controls';
 import { reportedSeverity } from './severity';
 import { errorMessage } from './errors';
@@ -707,6 +708,15 @@ class TauriBackend implements Backend {
 }
 
 /** Display-only command line for the browser mock (the core shell-escapes). */
+/** The run's spend target: the resolved limit, else the run option. */
+function spendLimitOf(execution: RunExecution): number | undefined {
+  return (
+    execution.resolvedLimits?.spendLimitUsd ??
+    execution.options.spendLimitUsd ??
+    undefined
+  );
+}
+
 function mockCommandPreview(executable: string, args: string[]): string {
   return [executable, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' ');
 }
@@ -1101,10 +1111,20 @@ class MockBackend implements Backend {
         (this.feedback.get(runId) ?? []).some((item) => item.status === 'correcting')
       ) {
         // Publishing and finishing wait for corrections in progress, as the
-        // engine's cutoff claim does.
+        // engine's cutoff claim does. Only a real dispatch publishes: a step
+        // recovery skips or reuses goes on.
+        const corrected = correctedSteps(results);
         const free = graph.ready.filter((id) => {
           const step = nodeOf(id);
-          return step === undefined || !isPublicationStep(step);
+          const choice = corrected.has(id)
+            ? undefined
+            : run.execution?.recoveryChoices?.[id];
+          return (
+            step === undefined ||
+            !isPublicationStep(step) ||
+            choice === 'skip' ||
+            choice === 'reuse'
+          );
         });
         if (free.length > 0) nodeId = free[0];
         else {
@@ -1115,7 +1135,10 @@ class MockBackend implements Backend {
             .map((item) => item.id);
           this.updateFeedback(open, {
             status: 'needs-attention',
-            decision: 'Its correction could not run before the next publishing step.',
+            decision:
+              graph.ready.length === 0
+                ? 'Its correction could not run before the run finished.'
+                : 'Its correction could not run before the next publishing step.',
           });
           continue;
         }
@@ -1135,33 +1158,16 @@ class MockBackend implements Backend {
       // reruns the step (`superseded_by_corrections` in the engine).
       const superseded = correctedSteps(results).has(nodeId);
       const choice = superseded ? undefined : execution?.recoveryChoices?.[nodeId];
-      // Only a real dispatch publishes: a skipped or reused step never opens
-      // the cutoff.
-      if (
-        isPublicationStep(node) &&
-        run.execution &&
-        choice !== 'skip' &&
-        choice !== 'reuse'
-      ) {
-        run.execution.feedback ??= {};
-        run.execution.feedback.publicationStarted ??= {
-          nodeId,
-          label: node.label ?? nodeId,
-          at: new Date().toISOString(),
-        };
-      }
       const spend = reportedSpend(workflow, results, execution?.options.dryRun);
+      const spendLimit = execution && spendLimitOf(execution);
       if (
-        typeof execution?.options.spendLimitUsd === 'number' &&
-        spend.reportedUsd >= execution.options.spendLimitUsd &&
+        typeof spendLimit === 'number' &&
+        spend.reportedUsd >= spendLimit &&
         isEffectful(node.type) &&
         choice !== 'reuse' &&
         choice !== 'skip'
       ) {
-        const pause = this.pushResult(runId, '__spend_guard', 'guardPaused', '');
-        execution.spendPause = { id: pause.id, reportedUsd: spend.reportedUsd };
-        run.status = 'paused';
-        this.persist();
+        this.pauseForSpend(run, spend.reportedUsd);
         return;
       }
       // Enforced Agent-attempt budget (mock mirrors native dispatch gating).
@@ -1177,16 +1183,24 @@ class MockBackend implements Backend {
         const consumed = countAgentAttempts(workflow, this.results.get(runId) ?? []);
         if (execution) execution.consumedAgentAttempts = consumed;
         if (consumed >= usageMax && execution) {
-          const pause = this.pushResult(runId, '__usage_guard', 'guardPaused', '');
-          execution.usagePause = {
-            id: pause.id,
-            consumedAttempts: consumed,
-            limitAttempts: usageMax,
-          };
-          run.status = 'paused';
-          this.persist();
+          this.pauseForUsage(run, consumed, usageMax);
           return;
         }
+      }
+      // Only a real dispatch publishes, once the guards let it run: a skipped
+      // or reused step never opens the cutoff.
+      if (
+        isPublicationStep(node) &&
+        run.execution &&
+        choice !== 'skip' &&
+        choice !== 'reuse'
+      ) {
+        run.execution.feedback ??= {};
+        run.execution.feedback.publicationStarted ??= {
+          nodeId,
+          label: node.label ?? nodeId,
+          at: new Date().toISOString(),
+        };
       }
       if (isEffectful(node.type) && choice === 'skip') {
         this.pushResult(runId, nodeId, 'skipped', '');
@@ -1629,6 +1643,11 @@ class MockBackend implements Backend {
       return { runId: existing.runId };
     }
     const childId = `run-mock-${String(this.counter++)}`;
+    // A reused publishing step stands for what the failed run already
+    // published: the new run starts past its cutoff, as in the engine.
+    const reusedPublication = workflow.nodes.find(
+      (n) => isPublicationStep(n) && choices[n.id] === 'reuse',
+    );
     const execution = {
       options: structuredClone(source.execution?.options ?? {}),
       recoveredFrom: runId,
@@ -1637,6 +1656,17 @@ class MockBackend implements Backend {
       // results are never re-charged.
       resolvedLimits: structuredClone(source.execution?.resolvedLimits ?? {}),
       consumedAgentAttempts: 0,
+      ...(reusedPublication
+        ? {
+            feedback: {
+              publicationStarted: {
+                nodeId: reusedPublication.id,
+                label: reusedPublication.label ?? reusedPublication.id,
+                at: new Date().toISOString(),
+              },
+            },
+          }
+        : {}),
     };
     this.runs.unshift({
       id: childId,
@@ -1648,17 +1678,15 @@ class MockBackend implements Backend {
     });
     this.results.set(childId, []);
     this.runWorkflows.set(childId, structuredClone(workflow));
-    const invalidated = recoveryInvalidated(workflow, rows, changed);
     // A feedback correction superseded the results before it.
-    const superseded = supersededByCorrections(rows);
+    const current = currentResults(rows);
+    const invalidated = recoveryInvalidated(workflow, current, changed);
     this.recoverySeeds.set(
       childId,
       structuredClone(
-        rows.filter(
+        current.filter(
           (r) =>
-            (r.id > (superseded.get(r.nodeId) ?? 0) &&
-              r.status === 'succeeded' &&
-              choices[r.nodeId] === 'reuse') ||
+            (r.status === 'succeeded' && choices[r.nodeId] === 'reuse') ||
             (r.status === 'approved' &&
               !invalidated.has(r.nodeId) &&
               workflow.nodes.some((n) => n.id === r.nodeId && n.type === 'approval')),
@@ -1911,6 +1939,29 @@ class MockBackend implements Backend {
    * A dry run reads `feedback:<step>` fixtures; otherwise, with no agent to
    * ask, the check says so and treats the feedback as needing a change.
    */
+  /** Pause before work past the run's spend target, as the engine does. */
+  private pauseForSpend(run: StoredRun, reportedUsd: number): void {
+    const pause = this.pushResult(run.id, '__spend_guard', 'guardPaused', '');
+    if (run.execution) run.execution.spendPause = { id: pause.id, reportedUsd };
+    run.status = 'paused';
+    this.persist();
+  }
+
+  /** Pause before an agent attempt past the run's budget, as the engine does. */
+  private pauseForUsage(run: StoredRun, consumed: number, limit: number): void {
+    const pause = this.pushResult(run.id, '__usage_guard', 'guardPaused', '');
+    if (run.execution) {
+      run.execution.consumedAgentAttempts = consumed;
+      run.execution.usagePause = {
+        id: pause.id,
+        consumedAttempts: consumed,
+        limitAttempts: limit,
+      };
+    }
+    run.status = 'paused';
+    this.persist();
+  }
+
   private mockFeedbackRound(workflow: Workflow, run: StoredRun): 'continue' | 'pause' {
     const runId = run.id;
     const rows = this.results.get(runId) ?? [];
@@ -1985,10 +2036,36 @@ class MockBackend implements Backend {
         const round = rounds + 1;
         const changed: string[] = [];
         const changedIds: number[] = [];
+        // Why the round stopped before checking every group, as in the
+        // engine: changes already decided still start their round; unchecked
+        // feedback stays pending for the next pass.
+        let stopped:
+          | { kind: 'spend'; usd: number }
+          | { kind: 'usage'; consumed: number; limit: number }
+          | null = null;
+        const spendLimit = spendLimitOf(execution);
+        const usageMax = execution.resolvedLimits?.maxAgentAttempts;
         for (const [target, group] of [...groups].sort(
           ([a], [b]) => order(a) - order(b),
         )) {
           const ids = group.map((i) => i.id);
+          // Every check is an agent attempt: never past a reached spend
+          // target or the attempt budget, even partway through a round.
+          const sofar = this.results.get(runId) ?? [];
+          const spent = reportedSpend(workflow, sofar, execution.options.dryRun);
+          if (typeof spendLimit === 'number' && spent.reportedUsd >= spendLimit) {
+            stopped = { kind: 'spend', usd: spent.reportedUsd };
+            break;
+          }
+          const consumed = countAgentAttempts(workflow, sofar);
+          if (
+            execution.options.dryRun !== true &&
+            usageMax !== undefined &&
+            consumed >= usageMax
+          ) {
+            stopped = { kind: 'usage', consumed, limit: usageMax };
+            break;
+          }
           let text: string;
           let failed = false;
           let checkRow: StoredNodeResult;
@@ -2018,7 +2095,8 @@ class MockBackend implements Backend {
             ? ({ kind: 'unclear', reason: 'The check did not finish.' } as const)
             : parseDecision(text);
           checkRow.structuredJson = JSON.stringify({
-            simulated: true,
+            // Like any agent attempt: only a dry run's is simulated.
+            ...(execution.options.dryRun === true ? { simulated: true } : {}),
             feedbackCheck: {
               feedbackIds: ids,
               decision: decision.kind,
@@ -2070,8 +2148,16 @@ class MockBackend implements Backend {
           });
           execution.feedback.rounds = round;
           this.persist();
-          return 'continue';
         }
+        if (stopped?.kind === 'spend') {
+          this.pauseForSpend(run, stopped.usd);
+          return 'pause';
+        }
+        if (stopped?.kind === 'usage') {
+          this.pauseForUsage(run, stopped.consumed, stopped.limit);
+          return 'pause';
+        }
+        if (changed.length > 0) return 'continue';
       }
     }
     // Feedback that arrived during a check is still pending: the next pass

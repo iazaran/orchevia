@@ -119,53 +119,43 @@ const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
 
 /**
  * Test counts printed by common runners (cargo, vitest, jest, pytest), summed
- * over every summary line. Null when no summary was printed.
+ * over every summary line of every runner, so one runner's failure is never
+ * hidden by another's pass. Null when no summary was printed.
  */
 export function parseTestCounts(
   text: string,
 ): { passed: number; failed: number; skipped: number } | null {
   const clean = text.replace(ANSI, '');
-  const total = { passed: 0, failed: 0, skipped: 0 };
+  const total = { passed: 0, failed: 0, skipped: 0, summaries: 0 };
   const add = (passed: string | undefined, failed?: string, skipped?: string): void => {
+    total.summaries += 1;
     total.passed += Number(passed ?? 0);
     total.failed += Number(failed ?? 0);
     total.skipped += Number(skipped ?? 0);
   };
+  const counts = (summary: string): void => {
+    const part = (word: string): string | undefined =>
+      new RegExp(`(\\d+) ${word}`).exec(summary)?.[1];
+    add(part('passed'), part('failed'), part('skipped'));
+  };
   // cargo: "test result: ok. 12 passed; 0 failed; 1 ignored; …"
-  const cargo = [
-    ...clean.matchAll(
-      /test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored/g,
-    ),
-  ];
-  for (const m of cargo) add(m[1], m[2], m[3]);
-  if (cargo.length > 0) return total;
+  for (const m of clean.matchAll(
+    /test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored/g,
+  ))
+    add(m[1], m[2], m[3]);
   // vitest: "Tests  1 failed | 11 passed | 2 skipped (14)"
-  const vitest = /^\s*Tests\s+((?:\d+ \w+(?: \| )?)+)\s*\(\d+\)/m.exec(clean);
-  if (vitest?.[1] !== undefined) {
-    const part = (word: string): string | undefined =>
-      new RegExp(`(\\d+) ${word}`).exec(vitest[1] ?? '')?.[1];
-    add(part('passed'), part('failed'), part('skipped'));
-    return total;
-  }
+  for (const m of clean.matchAll(/^\s*Tests\s+((?:\d+ \w+(?: \| )?)+)\s*\(\d+\)/gm))
+    counts(m[1] ?? '');
   // jest: "Tests:       1 failed, 2 skipped, 11 passed, 14 total"
-  const jest = /^Tests:\s+(.*\d+ total)/m.exec(clean);
-  if (jest?.[1] !== undefined) {
-    const part = (word: string): string | undefined =>
-      new RegExp(`(\\d+) ${word}`).exec(jest[1] ?? '')?.[1];
-    add(part('passed'), part('failed'), part('skipped'));
-    return total;
-  }
+  for (const m of clean.matchAll(/^Tests:\s+(.*\d+ total)/gm)) counts(m[1] ?? '');
   // pytest: "==== 2 failed, 10 passed, 1 skipped in 0.42s ===="
-  const pytest = /^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s(?: \([^)]*\))? =+$/m.exec(
-    clean,
-  );
-  if (pytest?.[1] !== undefined) {
-    const part = (word: string): string | undefined =>
-      new RegExp(`(\\d+) ${word}`).exec(pytest[1] ?? '')?.[1];
-    add(part('passed'), part('failed'), part('skipped'));
-    return total;
-  }
-  return null;
+  for (const m of clean.matchAll(
+    /^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s(?: \([^)]*\))? =+$/gm,
+  ))
+    counts(m[1] ?? '');
+  return total.summaries === 0
+    ? null
+    : { passed: total.passed, failed: total.failed, skipped: total.skipped };
 }
 
 const TEST_RUNNERS = [
@@ -278,10 +268,34 @@ function commandCore(segment: string): string {
   return match[2] === undefined ? program : `${program} ${match[2].trimStart()}`;
 }
 
+/** Mirrors `NO_TEST_RUN`: flags that build, list or describe tests only. */
+const NO_TEST_RUN = [
+  '--no-run',
+  '--help',
+  '-h',
+  '--version',
+  '--collect-only',
+  '--co',
+  '--list',
+  '-list',
+  '--listtests',
+  '--showconfig',
+  '--show-config',
+];
+
+/** Mirrors `runs_tests`. */
+function runsTests(args: string): boolean {
+  const words = args.split(/\s+/).filter((word) => word !== '');
+  if (words[0] === 'list') return false;
+  return !words.some((word) =>
+    NO_TEST_RUN.some((flag) => word === flag || word.startsWith(`${flag}=`)),
+  );
+}
+
 /**
  * A known test runner in command position whose exit status reaches the end
- * of the command. Mirrors `is_test_command` (shared cases in
- * `src/test/test-commands.json`).
+ * of the command, in a mode that runs tests. Mirrors `is_test_command`
+ * (shared cases in `src/test/test-commands.json`).
  */
 export function looksLikeTestCommand(command: string): boolean {
   return shellSegments(command).some(([segment, reliable]) => {
@@ -291,7 +305,8 @@ export function looksLikeTestCommand(command: string): boolean {
       TEST_RUNNERS.some(
         (runner) =>
           core.startsWith(runner) &&
-          (core.length === runner.length || /\s/.test(core[runner.length] ?? '')),
+          (core.length === runner.length || /\s/.test(core[runner.length] ?? '')) &&
+          runsTests(core.slice(runner.length)),
       )
     );
   });

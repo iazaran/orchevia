@@ -361,21 +361,31 @@ export function reportedSpend(
   return result;
 }
 
+/**
+ * The results that still stand: a feedback correction supersedes a step's
+ * results before its round. Mirrors `current_results`.
+ */
+export function currentResults(rows: StoredNodeResult[]): StoredNodeResult[] {
+  const superseded = supersededByCorrections(rows);
+  return rows.filter((r) => r.id > (superseded.get(r.nodeId) ?? -Infinity));
+}
+
 export function recoveryPlan(
   run: StoredRun,
   workflow: Workflow,
   rows: StoredNodeResult[],
   changed: string[] = [],
 ): RecoveryPlan {
+  const current = currentResults(rows);
   const latest = new Map<string, StoredNodeResult>();
-  for (const row of rows)
+  for (const row of current)
     if (
       ['succeeded', 'failed', 'cancelled', 'approved', 'rejected', 'skipped'].includes(
         row.status,
       )
     )
       latest.set(row.nodeId, row);
-  const affected = recoveryInvalidated(workflow, rows, changed);
+  const affected = recoveryInvalidated(workflow, current, changed);
   return {
     sourceRunId: run.id,
     fingerprint: `${run.id}:${String(rows.length)}:${String(rows.at(-1)?.id ?? 0)}`,
@@ -859,7 +869,27 @@ export function replayGraph(
     affected: string[],
     refreshed: string[],
   ): void => {
-    const reset = new Set([...roots, ...affected].filter((id) => nodes.has(id)));
+    const named = new Set([...roots, ...affected].filter((id) => nodes.has(id)));
+    // A skipped step that only uses the corrected work by reference, and
+    // that no rerunning step routes to, cannot be reached by the reruns.
+    const passedBy = new Set<string>();
+    for (;;) {
+      const more = [...named].filter(
+        (id) =>
+          !roots.includes(id) &&
+          !passedBy.has(id) &&
+          terminal.get(id) === 'skipped' &&
+          into(id).every(
+            (e) =>
+              loopEdges.has(e.id) ||
+              ((!named.has(e.source) || passedBy.has(e.source)) &&
+                resolved.get(e.id) !== true),
+          ),
+      );
+      if (more.length === 0) break;
+      more.forEach((id) => passedBy.add(id));
+    }
+    const reset = new Set([...named].filter((id) => !passedBy.has(id)));
     reset.forEach((id) => {
       terminal.delete(id);
       unrecorded.delete(id);
@@ -867,10 +897,56 @@ export function replayGraph(
     });
     // Reached only through a loop-back edge: a fresh allowance, no rerun.
     refreshed.filter((id) => nodes.has(id)).forEach((id) => visits.set(id, 0));
-    for (const edge of workflow.edges) {
-      if (reset.has(edge.source) || reset.has(edge.target)) held.delete(edge.id);
-      if (!loopEdges.has(edge.id) && reset.has(edge.source)) resolved.delete(edge.id);
+    // The loops the reruns can send round again, and the steps after them:
+    // they wait for the loop to decide again.
+    const looped = new Set<string>();
+    const sentRound = new Set<string>();
+    for (;;) {
+      const more = workflow.edges.filter(
+        (e) =>
+          loopEdges.has(e.id) &&
+          !sentRound.has(e.id) &&
+          (reset.has(e.source) || looped.has(e.source)),
+      );
+      if (more.length === 0) break;
+      for (const edge of more) {
+        sentRound.add(edge.id);
+        loops.find((l) => l.edgeId === edge.id)?.body.forEach((id) => looped.add(id));
+        looped.add(edge.source);
+        looped.add(edge.target);
+      }
     }
+    const after = new Set<string>();
+    const frontier = [...looped];
+    for (let id = frontier.pop(); id !== undefined; id = frontier.pop())
+      for (const edge of out(id))
+        if (
+          !loopEdges.has(edge.id) &&
+          !looped.has(edge.target) &&
+          !reset.has(edge.target) &&
+          refreshed.includes(edge.target) &&
+          !after.has(edge.target)
+        ) {
+          after.add(edge.target);
+          frontier.push(edge.target);
+        }
+    after.forEach((id) => {
+      terminal.delete(id);
+      unrecorded.delete(id);
+    });
+    for (const edge of workflow.edges) {
+      const again =
+        after.has(edge.target) && (looped.has(edge.source) || after.has(edge.source));
+      if (reset.has(edge.source) || reset.has(edge.target) || again) held.delete(edge.id);
+      if (!loopEdges.has(edge.id) && (reset.has(edge.source) || again))
+        resolved.delete(edge.id);
+    }
+    after.forEach((id) => {
+      const incoming = into(id).filter((e) => !loopEdges.has(e.id));
+      pending.set(id, incoming.filter((e) => !resolved.has(e.id)).length);
+      if (incoming.some((e) => resolved.get(e.id) === true)) taken.add(id);
+      else taken.delete(id);
+    });
     reset.forEach((id) => {
       const incoming = into(id).filter((e) => !loopEdges.has(e.id));
       pending.set(id, incoming.filter((e) => !resolved.has(e.id)).length);

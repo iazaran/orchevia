@@ -26,7 +26,8 @@ All notable changes are recorded here, following
     addressed, addressed, needs your attention, arrived after publishing or not
     processed, with links to the check and the correction.
   - Feedback that arrives after publishing started is recorded but not applied: what
-    was pushed or posted cannot be recalled.
+    was pushed or posted cannot be recalled. A recovered run that reuses a publishing
+    step's result counts as published from the start.
   - A run makes at most two correction rounds by default (1–5 in **Usage limits**).
     Past that, or when a check cannot decide, a correction fails while the run carries
     on, or no AI step can act on the feedback, the run pauses before publishing;

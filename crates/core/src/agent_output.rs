@@ -282,19 +282,52 @@ fn command_core(segment: &str) -> String {
     }
 }
 
+/// Flags (lowercase) with which a runner builds, lists or describes tests
+/// instead of running them.
+const NO_TEST_RUN: [&str; 11] = [
+    "--no-run",
+    "--help",
+    "-h",
+    "--version",
+    "--collect-only",
+    "--co",
+    "--list",
+    "-list",
+    "--listtests",
+    "--showconfig",
+    "--show-config",
+];
+
 /// Whether a shell command runs a known test runner whose exit status the
 /// command's own status reports: the runner in command position, followed by
-/// nothing but `&&`. Used only to label a command whose status the CLI
-/// reported; never to infer a result. Mirrored by `looksLikeTestCommand`
-/// (shared cases in `src/test/test-commands.json`).
+/// nothing but `&&`, and not in a mode that runs no tests. Used only to label
+/// a command whose status the CLI reported; never to infer a result.
+/// Mirrored by `looksLikeTestCommand` (shared cases in
+/// `src/test/test-commands.json`).
 pub fn is_test_command(command: &str) -> bool {
     shell_segments(command).iter().any(|(segment, reliable)| {
         let core = command_core(segment);
         *reliable
             && TEST_RUNNERS.iter().any(|runner| {
-                core.strip_prefix(runner)
-                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+                core.strip_prefix(runner).is_some_and(|tail| {
+                    (tail.is_empty() || tail.starts_with(char::is_whitespace)) && runs_tests(tail)
+                })
             })
+    })
+}
+
+/// Whether a runner's arguments leave it running tests: no listing
+/// subcommand and no flag that only builds, lists or describes them.
+fn runs_tests(arguments: &str) -> bool {
+    let mut words = arguments.split_whitespace();
+    if words.clone().next() == Some("list") {
+        return false;
+    }
+    !words.any(|word| {
+        NO_TEST_RUN.iter().any(|flag| {
+            word.strip_prefix(flag)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+        })
     })
 }
 

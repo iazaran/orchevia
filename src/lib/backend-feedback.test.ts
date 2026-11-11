@@ -701,3 +701,218 @@ it('does not close the feedback window for a publishing step recovery skips', as
   const item = await backend.submitStepFeedback(recovered, 'impl', 'Still in time.');
   expect(item.status).toBe('pending');
 });
+
+describe('mock corrections around loops and skipped steps', () => {
+  const ok = (stdout: string): { status: string; stdout: string } => ({
+    status: 'succeeded',
+    stdout,
+  });
+  async function startWith(
+    wf: Workflow,
+    fixtures: Record<string, { status: string; stdout: string }[]>,
+  ): Promise<string> {
+    backend = __setMockBackendForTests();
+    await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+    await backend.saveWorkflow(wf);
+    const { runId } = await backend.runWorkflow(wf.id, {}, { dryRun: true, fixtures });
+    await vi.runAllTimersAsync();
+    return runId;
+  }
+  const agent = (
+    id: string,
+    extra: Record<string, unknown> = {},
+  ): Workflow['nodes'][0] => ({
+    id,
+    type: 'agent',
+    position: at,
+    config: { agentProfileId: 'fake', prompt: id, ...extra },
+  });
+  const command = (
+    id: string,
+    extra: Record<string, unknown> = {},
+  ): Workflow['nodes'][0] => ({
+    id,
+    type: 'command',
+    position: at,
+    config: { executable: 'never-runs', ...extra },
+  });
+
+  it('waits for a loop to decide again after correcting its fix step, like the engine', async () => {
+    const wf: Workflow = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: 'wf-review-loop',
+      name: 'Review loop',
+      nodes: [
+        { id: 'start', type: 'start', position: at, config: {} },
+        // Listed first: the mock runs one ready step at a time in this
+        // order, so a push left ready would run before the review.
+        command('push', { publishes: true }),
+        agent('impl'),
+        command('tests', { maxVisits: 3 }),
+        { id: 'approve', type: 'approval', position: at, config: { maxVisits: 3 } },
+        command('review', { maxVisits: 3 }),
+        {
+          id: 'gate',
+          type: 'condition',
+          position: at,
+          config: {
+            maxVisits: 3,
+            condition: {
+              logic: 'and',
+              clauses: [{ left: 'node.review.output', op: 'contains', right: 'FAIL' }],
+            },
+          },
+        },
+        agent('fix', { maxVisits: 3 }),
+        { id: 'end', type: 'end', position: at, config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'impl' },
+        { id: 'e2', source: 'impl', target: 'tests' },
+        { id: 'e3', source: 'tests', target: 'approve' },
+        { id: 'e4', source: 'approve', target: 'review' },
+        { id: 'e5', source: 'review', target: 'gate' },
+        { id: 'e6', source: 'gate', target: 'fix', label: 'true' },
+        { id: 'e7', source: 'fix', target: 'tests' },
+        { id: 'e8', source: 'gate', target: 'push', label: 'false' },
+        { id: 'e9', source: 'push', target: 'end' },
+      ],
+    };
+    const runId = await startWith(wf, {
+      impl: [ok('v1')],
+      tests: [ok('ok 1'), ok('ok 2'), ok('ok 3'), ok('ok 4')],
+      review: [ok('FAIL'), ok('fine'), ok('FAIL'), ok('fine')],
+      fix: [ok('fixed 1'), ok('fixed 2'), ok('fixed 3')],
+      push: [ok('pushed')],
+      'feedback:fix': [ok(decisionText('change'))],
+    });
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    await backend.submitStepFeedback(runId, 'fix', 'Keep the old function name.');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    let rows = await backend.getRunResults(runId);
+    expect(outputs(rows, 'fix')).toEqual(['fixed 1', 'fixed 2']);
+    expect(outputs(rows, 'push')).toEqual([]);
+    await approve(runId);
+    rows = await backend.getRunResults(runId);
+    expect(outputs(rows, 'push')).toEqual([]);
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    expect(outputs(rows, 'fix')).toEqual(['fixed 1', 'fixed 2', 'fixed 3']);
+    await approve(runId);
+    rows = await backend.getRunResults(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(outputs(rows, 'push')).toEqual(['pushed']);
+    expect(rows.filter((r) => r.nodeId === 'end')).toHaveLength(1);
+  });
+
+  it('keeps a skipped step that only reads the corrected work skipped, like the engine', async () => {
+    const wf: Workflow = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: 'wf-notes',
+      name: 'Notes',
+      nodes: [
+        { id: 'start', type: 'start', position: at, config: {} },
+        agent('impl'),
+        command('tests'),
+        { id: 'approve', type: 'approval', position: at, config: {} },
+        command('push', { publishes: true }),
+        command('lint'),
+        {
+          id: 'cond',
+          type: 'condition',
+          position: at,
+          config: {
+            condition: {
+              logic: 'and',
+              clauses: [{ left: 'node.lint.output', op: 'contains', right: 'DIRTY' }],
+            },
+          },
+        },
+        command('notes', { args: ['{{node.impl.output}}'] }),
+        { id: 'end', type: 'end', position: at, config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'impl' },
+        { id: 'e2', source: 'impl', target: 'tests' },
+        { id: 'e3', source: 'tests', target: 'approve' },
+        { id: 'e4', source: 'approve', target: 'push' },
+        { id: 'e5', source: 'push', target: 'end' },
+        { id: 'e6', source: 'start', target: 'lint' },
+        { id: 'e7', source: 'lint', target: 'cond' },
+        { id: 'e8', source: 'cond', target: 'notes', label: 'true' },
+        { id: 'e9', source: 'notes', target: 'end' },
+        { id: 'e10', source: 'cond', target: 'end', label: 'false' },
+      ],
+    };
+    const runId = await startWith(wf, {
+      impl: [ok('v1'), ok('v2')],
+      tests: [ok('ok 1'), ok('ok 2')],
+      lint: [ok('clean')],
+      notes: [ok('notes')],
+      push: [ok('pushed')],
+      'feedback:impl': [ok(decisionText('change'))],
+    });
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    await backend.submitStepFeedback(runId, 'impl', 'Keep old keys.');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    await approve(runId);
+    const rows = await backend.getRunResults(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(outputs(rows, 'impl')).toEqual(['v1', 'v2']);
+    expect(outputs(rows, 'push')).toEqual(['pushed']);
+    expect(outputs(rows, 'notes')).toEqual([]);
+  });
+});
+
+describe('mock feedback checks and run guards', () => {
+  it('counts a check as an agent attempt and stops at the budget, like the engine', async () => {
+    const wf: Workflow = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: 'wf-budget',
+      name: 'Budget',
+      nodes: [
+        { id: 'start', type: 'start', position: at, config: {} },
+        {
+          id: 'impl',
+          type: 'agent',
+          position: at,
+          config: { agentProfileId: 'fake', prompt: 'Change it.' },
+        },
+        { id: 'approve', type: 'approval', position: at, config: {} },
+        { id: 'end', type: 'end', position: at, config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'impl' },
+        { id: 'e2', source: 'impl', target: 'approve' },
+        { id: 'e3', source: 'approve', target: 'end' },
+      ],
+    };
+    backend = __setMockBackendForTests();
+    await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+    await backend.saveWorkflow(wf);
+    const { runId } = await backend.runWorkflow(wf.id, {}, { maxAgentAttempts: 1 });
+    await vi.runAllTimersAsync();
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    await backend.submitStepFeedback(runId, 'impl', 'Keep old keys.');
+    await approve(runId);
+    // The implementation used the only attempt: the check waits for more.
+    const paused = await backend.getRun(runId);
+    expect(paused?.status).toBe('paused');
+    expect(paused?.execution?.usagePause?.consumedAttempts).toBe(1);
+    let rows = await backend.getRunResults(runId);
+    expect(rows.some((r) => r.status === 'checked')).toBe(false);
+    expect((await backend.listRunFeedback(runId))[0]?.status).toBe('pending');
+    await backend.continueUsageRun(runId, paused?.execution?.usagePause?.id ?? 0, 2);
+    await vi.runAllTimersAsync();
+    rows = await backend.getRunResults(runId);
+    const check = rows.find((r) => r.status === 'checked');
+    expect(check).toBeDefined();
+    expect(JSON.parse(check?.structuredJson ?? '{}')).not.toHaveProperty('simulated');
+    // The check took the second attempt; the correction waits for a third.
+    expect((await backend.getRun(runId))?.execution?.usagePause?.consumedAttempts).toBe(
+      2,
+    );
+  });
+});

@@ -235,11 +235,27 @@ building and reviewing it:
   next publishing step is surfaced for attention instead of looping. Steps a round
   refreshes also drop recovery choices, and a publishing step recovery skips or
   reuses opens no cutoff. A test run needs no `||` before it and no background `&`.
+- **Third review round.** Correcting a loop's fix step after the loop exited no
+  longer lets the step after the loop (a push) run on the loop's earlier decision:
+  the steps after every loop the reruns can send round again wait for that loop to
+  decide again (derived from the marker's plan and the graph, so replay matches). A
+  skipped step that only reads the corrected work by reference stays skipped instead
+  of deadlocking the run. A recovered run that reuses a publishing step's result
+  starts past its cutoff, since a correction would publish it a second time. The
+  recovery preview, invalidation and seeds all ignore results a correction
+  superseded (`current_results`). Publishing steps whose claim is refused take no
+  parallel slot from the correction they wait for, and an unrunnable correction at
+  the end pauses instead of retrying forever. The browser mock counts its checks as
+  attempts, stops a round at the budget or spend target, opens the cutoff only after
+  the guards, and lets skipped or reused publishing steps through.
 - **Evidence for "tests passed".** One rule on both sides (shared
   `src/test/test-commands.json`): a runner in command position, outside quotes,
-  followed by nothing but `&&`. Claude successes carry no invented exit code, a
-  runner's own failure count beats exit code 0, digest commands keep stable ids past
-  the cap, and progress counts steps a round reruns as still to run.
+  followed by nothing but `&&`, and not in a mode that runs no tests (`--no-run`,
+  listing, collecting, help). Claude successes carry no invented exit code, every
+  runner summary in the output counts so one runner's failure is never hidden by
+  another's pass, a runner's own failure count beats exit code 0, digest commands
+  keep stable ids past the cap, and progress counts steps a round reruns as still to
+  run.
 - **Who handles feedback** passes over AI steps that did not run on the run's path;
   feedback on a skipped step is refused.
 - **Run page polish from the browser check:** a running command shows its latest
@@ -258,7 +274,9 @@ real commands (change, satisfied, command-step feedback, late feedback, unclear
 check, no AI step, cancel during a check, approval asked again with replay, round
 limit, missing check fixture, a fix loop's fresh passes, a review corrected inside a
 fix loop, spend target, recovery reuse, carried feedback correcting a reused step,
-the publishing-claim race, feedback sent during a check); the built-in PR review
+the publishing-claim race, feedback sent during a check, a corrected fix step after
+its loop exited, a skipped step reading the corrected work, a recovered run reusing a
+publication, held publishing steps beside a correction); the built-in PR review
 recipe replays feedback through its posting approval.
 The browser build was checked by hand with seeded runs (live parallel, corrected,
 failed, paused for feedback, pre-0.2 run) in dark and light themes and at 480 px.

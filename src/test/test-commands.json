@@ -1,5 +1,5 @@
 {
-  "about": "Read by is_test_command (crates/core/src/agent_output.rs) and looksLikeTestCommand (src/lib/step-summary.ts). A test run is a known runner in command position that certainly ran in the foreground and whose exit status is the command's: no || before it, nothing but && after it, not sent to the background.",
+  "about": "Read by is_test_command (crates/core/src/agent_output.rs) and looksLikeTestCommand (src/lib/step-summary.ts). A test run is a known runner in command position that certainly ran in the foreground and whose exit status is the command's: no || before it, nothing but && after it, not sent to the background, and not in a mode that runs no tests (building, listing, collecting, help, version).",
   "tests": [
     "cargo test -p orchevia-core",
     "pnpm test",
@@ -19,7 +19,9 @@
     "pnpm test 2>&1",
     "pytest &> out.log",
     "echo start; cargo test",
-    "sleep 1 & cargo test"
+    "sleep 1 & cargo test",
+    "pnpm test -- --coverage",
+    "pytest -v -k config"
   ],
   "other": [
     "cargo build",
@@ -39,6 +41,18 @@
     "true || cargo test",
     "cargo test &",
     "cargo test & wait",
-    "false || pnpm test && echo ok"
+    "false || pnpm test && echo ok",
+    "cargo test --no-run",
+    "cargo test --help",
+    "cargo test -- --list",
+    "pytest --collect-only -q",
+    "pytest --co",
+    "pytest --version",
+    "npx vitest list",
+    "cargo nextest list",
+    "go test -list .",
+    "jest --listTests",
+    "jest --showConfig",
+    "go test -h"
   ]
 }

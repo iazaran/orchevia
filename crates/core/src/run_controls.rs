@@ -365,13 +365,25 @@ impl RunOptions {
     }
 }
 
+/// The results that still stand: a feedback correction supersedes a step's
+/// results before its round, so a step the round has not run again since
+/// has none.
+pub fn current_results(rows: &[StoredNodeResult]) -> Vec<StoredNodeResult> {
+    let superseded = superseded_by_corrections(rows);
+    rows.iter()
+        .filter(|r| superseded.get(&r.node_id).is_none_or(|after| r.id > *after))
+        .cloned()
+        .collect()
+}
+
 /// Data references supplement graph dependencies, including ids containing dots.
 pub fn recovery_plan(
     run: &StoredRun,
     workflow: &Workflow,
     rows: &[StoredNodeResult],
 ) -> RecoveryPlan {
-    let latest: HashMap<_, _> = rows
+    let current = current_results(rows);
+    let latest: HashMap<_, _> = current
         .iter()
         .filter(|r| {
             matches!(
@@ -381,7 +393,7 @@ pub fn recovery_plan(
         })
         .map(|r| (r.node_id.as_str(), r))
         .collect();
-    let affected = invalidated_nodes(workflow, rows);
+    let affected = invalidated_nodes(workflow, &current);
     let nodes = workflow
         .nodes
         .iter()
@@ -604,4 +616,82 @@ pub fn reported_spend(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: i64, node: &str, status: &str, metadata: serde_json::Value) -> StoredNodeResult {
+        StoredNodeResult {
+            id,
+            run_id: "r".into(),
+            node_id: node.into(),
+            status: status.into(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: None,
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+            attempt: 1,
+            duration_ms: 0,
+            structured_json: metadata.to_string(),
+        }
+    }
+
+    #[test]
+    fn recovery_never_offers_a_result_a_correction_superseded() {
+        // start → a → b → end and start → d → end; a round corrected a and
+        // d in parallel; a ran again, d failed before b ran again.
+        let wf = Workflow::from_json(
+            &serde_json::json!({"schemaVersion":6,"id":"wf","name":"W",
+            "nodes":[{"id":"start","type":"start"},
+              {"id":"a","type":"agent","config":{"agentProfileId":"p","prompt":"A"}},
+              {"id":"b","type":"agent","config":{"agentProfileId":"p","prompt":"B"}},
+              {"id":"d","type":"agent","config":{"agentProfileId":"p","prompt":"D"}},
+              {"id":"end","type":"end"}],
+            "edges":[{"id":"e1","source":"start","target":"a"},{"id":"e2","source":"a","target":"b"},
+              {"id":"e3","source":"b","target":"end"},{"id":"e4","source":"start","target":"d"},
+              {"id":"e5","source":"d","target":"end"}]})
+            .to_string(),
+        )
+        .expect("workflow");
+        let none = serde_json::json!({});
+        let rows = vec![
+            row(1, "start", "succeeded", none.clone()),
+            row(2, "a", "succeeded", none.clone()),
+            row(3, "d", "succeeded", none.clone()),
+            row(4, "b", "succeeded", none.clone()),
+            row(
+                5,
+                crate::feedback::ROUND_NODE,
+                "correcting",
+                serde_json::json!({"feedbackRound":{"round":1,"roots":["a","d"],"affected":["b","end"],"refreshed":[]}}),
+            ),
+            row(6, "a", "succeeded", none.clone()),
+            row(7, "d", "failed", none),
+        ];
+        let run = StoredRun {
+            execution: RunExecution::default(),
+            id: "r".into(),
+            workflow_id: "wf".into(),
+            status: crate::db::RunStatus::Failed,
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+            inputs: HashMap::new(),
+        };
+        let plan = recovery_plan(&run, &wf, &rows);
+        let node = |id: &str| {
+            plan.nodes
+                .iter()
+                .find(|n| n.node_id == id)
+                .expect("node")
+                .clone()
+        };
+        assert_eq!(node("a").choices[0], RecoveryChoice::Reuse);
+        let b = node("b");
+        assert!(!b.choices.contains(&RecoveryChoice::Reuse), "{b:?}");
+        assert_eq!(b.previous_status, None);
+    }
 }

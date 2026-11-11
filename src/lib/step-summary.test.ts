@@ -93,6 +93,16 @@ describe('parseTestCounts', () => {
     });
   });
 
+  it('keeps a failure one runner reports after another runner passed', () => {
+    const text =
+      'test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured\n' +
+      ' Test Files  1 failed (1)\n' +
+      ' Tests  1 failed | 4 passed (5)\n' +
+      'Tests:       2 failed, 3 passed, 5 total\n' +
+      '===== 1 failed, 6 passed in 0.10s =====';
+    expect(parseTestCounts(text)).toEqual({ passed: 23, failed: 4, skipped: 0 });
+  });
+
   it('strips colours and returns null without a summary', () => {
     expect(parseTestCounts('\u001b[32m Tests  4 passed (4)\u001b[0m')?.passed).toBe(4);
     expect(parseTestCounts('compiled fine')).toBeNull();
@@ -219,6 +229,26 @@ describe('summarizeStep', () => {
     ).toEqual({
       kind: 'tests',
       text: 'Tests failed (exit 0): 10 passed, 2 failed',
+      tone: 'bad',
+    });
+    // `|| true` hides the status, but a printed failure still counts.
+    const chained = node({
+      type: 'command',
+      config: { executable: 'sh', args: ['-c', 'cargo test && pnpm test || true'] },
+    });
+    expect(
+      summarizeStep(
+        row({
+          exitCode: 0,
+          stdout:
+            'test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured\n' +
+            ' Tests  1 failed | 4 passed (5)',
+        }),
+        chained,
+      ).facts[0],
+    ).toEqual({
+      kind: 'tests',
+      text: 'Tests failed (exit 0): 14 passed, 1 failed',
       tone: 'bad',
     });
     const failed = summarizeStep(row({ status: 'failed', exitCode: 1 }), tests);
