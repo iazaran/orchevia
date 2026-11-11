@@ -1419,6 +1419,7 @@ mod tests {
             max_tool_calls: Some(100),
             max_subagents: None,
             spend_limit_usd: Some(5.0),
+            max_correction_rounds: None,
         };
         let inherit = resolve_limits(Some(&saved), &RunOptions::default());
         assert_eq!(inherit.max_agent_attempts, Some(10));

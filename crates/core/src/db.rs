@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use thiserror::Error;
 
 use crate::agents::{AgentProfile, PermissionLevel};
+use crate::feedback::{self, RunFeedback};
 use crate::mcp::McpServerConfig;
 use crate::notify::{Notification, NotificationPrefs};
 use crate::run_controls::{RunExecution, SpendPause};
@@ -30,6 +31,18 @@ pub enum DbError {
 }
 
 pub type DbResult<T> = Result<T, DbError>;
+
+/// Changes to feedback items; `None` keeps the stored value.
+#[derive(Debug, Default, Clone)]
+pub struct FeedbackPatch<'a> {
+    pub status: Option<&'a str>,
+    pub decision: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub check_result_id: Option<i64>,
+    pub round: Option<u32>,
+    /// Appended to the item's correction result ids.
+    pub correction_result_id: Option<i64>,
+}
 
 /// Stored workflow row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +318,26 @@ impl SqliteDb {
                updated_at TEXT NOT NULL
              );",
         )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS run_feedback (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+               node_id TEXT NOT NULL,
+               result_id INTEGER,
+               text TEXT NOT NULL,
+               status TEXT NOT NULL,
+               decision TEXT NOT NULL DEFAULT '',
+               target_node_id TEXT,
+               check_result_id INTEGER,
+               correction_result_ids TEXT NOT NULL DEFAULT '[]',
+               round INTEGER,
+               carried_from INTEGER,
+               acknowledged INTEGER NOT NULL DEFAULT 0,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS run_feedback_run ON run_feedback(run_id);",
+        )?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS recovery_requests (request_id TEXT PRIMARY KEY, source_run_id TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, choices TEXT NOT NULL); CREATE TABLE IF NOT EXISTS recovery_results (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, node_id TEXT NOT NULL, visit INTEGER NOT NULL, definition TEXT NOT NULL, PRIMARY KEY(run_id,node_id,visit));")?;
         // Milestone 3 columns (idempotent for existing databases).
         for (table, column, ddl) in [
@@ -327,6 +360,401 @@ impl SqliteDb {
             }
         }
         Ok(())
+    }
+
+    // -- Run feedback -------------------------------------------------------
+
+    fn feedback_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunFeedback> {
+        let corrections: String = row.get(9)?;
+        Ok(RunFeedback {
+            id: row.get(0)?,
+            run_id: row.get(1)?,
+            node_id: row.get(2)?,
+            result_id: row.get(3)?,
+            text: row.get(4)?,
+            status: row.get(5)?,
+            decision: row.get(6)?,
+            target_node_id: row.get(7)?,
+            check_result_id: row.get(8)?,
+            correction_result_ids: serde_json::from_str(&corrections).unwrap_or_default(),
+            round: row.get(10)?,
+            carried_from: row.get(11)?,
+            acknowledged: row.get::<_, i64>(12)? != 0,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
+        })
+    }
+
+    /// Feedback on a step of a running or paused run. It is `pending` until
+    /// the run's next checkpoint, or `late` once the run started publishing
+    /// (claimed under the same lock, see [`Self::claim_publication`]).
+    pub fn submit_feedback(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        result_id: Option<i64>,
+        text: &str,
+    ) -> DbResult<RunFeedback> {
+        let text = feedback::validate_text(text).map_err(DbError::Io)?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let run: Option<(String, String)> = tx
+            .query_row(
+                "SELECT status, execution_json FROM runs WHERE id = ?1",
+                params![run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((status, execution)) = run else {
+            return Err(DbError::NotFound(format!("run {run_id}")));
+        };
+        if status != "running" && status != "paused" {
+            return Err(DbError::Io(
+                "This run has finished; feedback can only be added while it is running or paused."
+                    .into(),
+            ));
+        }
+        let execution: RunExecution = serde_json::from_str(&execution)?;
+        if execution.feedback.closed {
+            return Err(DbError::Io(
+                "This run is finishing; feedback can no longer change it.".into(),
+            ));
+        }
+        let count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM run_feedback WHERE run_id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )?;
+        if count >= feedback::MAX_FEEDBACK_PER_RUN {
+            return Err(DbError::Io(format!(
+                "A run accepts at most {} feedback messages.",
+                feedback::MAX_FEEDBACK_PER_RUN
+            )));
+        }
+        let started: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM node_results WHERE run_id = ?1 AND node_id = ?2",
+            params![run_id, node_id],
+            |r| r.get(0),
+        )?;
+        if started == 0 || node_id.starts_with("__") || node_id == "run" {
+            return Err(DbError::Io(
+                "Feedback can be added to a step once it has started.".into(),
+            ));
+        }
+        if let Some(id) = result_id {
+            let owned: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM node_results WHERE id = ?1 AND run_id = ?2 AND node_id = ?3",
+                params![id, run_id, node_id],
+                |r| r.get(0),
+            )?;
+            if owned == 0 {
+                return Err(DbError::Io(
+                    "That result does not belong to this step of this run.".into(),
+                ));
+            }
+        }
+        let (status, decision) = match &execution.feedback.publication_started {
+            Some(started) => (
+                feedback::LATE,
+                format!(
+                    "Arrived after \"{}\" started publishing. What was already published cannot be recalled, so this feedback is recorded but not applied in this run.",
+                    started.label
+                ),
+            ),
+            None => (feedback::PENDING, String::new()),
+        };
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO run_feedback (run_id, node_id, result_id, text, status, decision, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![run_id, node_id, result_id, text, status, decision, now],
+        )?;
+        let id = tx.last_insert_rowid();
+        let item = tx.query_row(
+            "SELECT id, run_id, node_id, result_id, text, status, decision, target_node_id, check_result_id, correction_result_ids, round, carried_from, acknowledged, created_at, updated_at FROM run_feedback WHERE id = ?1",
+            params![id],
+            Self::feedback_row,
+        )?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    pub fn list_feedback(&self, run_id: &str) -> DbResult<Vec<RunFeedback>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, node_id, result_id, text, status, decision, target_node_id, check_result_id, correction_result_ids, round, carried_from, acknowledged, created_at, updated_at FROM run_feedback WHERE run_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![run_id], Self::feedback_row)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Feedback still to handle, or handled badly and not yet seen at a pause.
+    fn feedback_waiting(conn: &Connection, run_id: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM run_feedback WHERE run_id = ?1 AND \
+             (status IN (?2, ?3, ?4) OR (status = ?5 AND acknowledged = 0)))",
+            params![
+                run_id,
+                feedback::PENDING,
+                feedback::CHECKING,
+                feedback::CORRECTING,
+                feedback::NEEDS_ATTENTION
+            ],
+            |r| r.get(0),
+        )
+    }
+
+    /// Whether the run has feedback its next checkpoint must handle first.
+    pub fn has_waiting_feedback(&self, run_id: &str) -> DbResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        Ok(Self::feedback_waiting(&conn, run_id)?)
+    }
+
+    /// Claim a feedback window transition when no feedback waits. `finish`
+    /// closes feedback for a run about to finish; otherwise this records the
+    /// first publishing step's dispatch, the feedback cutoff. Runs under the
+    /// connection lock, like [`Self::submit_feedback`], so each submission
+    /// lands wholly before (and is handled first) or after (late or refused).
+    pub fn claim_feedback_cutoff(
+        &self,
+        run_id: &str,
+        publication: Option<(&str, &str)>,
+    ) -> DbResult<bool> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        if Self::feedback_waiting(&tx, run_id)? {
+            return Ok(false);
+        }
+        let value: String = tx.query_row(
+            "SELECT execution_json FROM runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )?;
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        match publication {
+            Some((node_id, label)) => {
+                if execution.feedback.publication_started.is_some() {
+                    return Ok(true);
+                }
+                execution.feedback.publication_started = Some(feedback::PublicationStart {
+                    node_id: node_id.into(),
+                    label: label.into(),
+                    at: Utc::now().to_rfc3339(),
+                });
+            }
+            None => execution.feedback.closed = true,
+        }
+        tx.execute(
+            "UPDATE runs SET execution_json = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&execution)?, run_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Change feedback items; `None` leaves a field as it is.
+    pub fn update_feedback(&self, ids: &[i64], patch: &FeedbackPatch<'_>) -> DbResult<()> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        for id in ids {
+            tx.execute(
+                "UPDATE run_feedback SET status = COALESCE(?1, status), decision = COALESCE(?2, decision), \
+                 target_node_id = COALESCE(?3, target_node_id), check_result_id = COALESCE(?4, check_result_id), \
+                 round = COALESCE(?5, round), updated_at = ?6 WHERE id = ?7",
+                params![
+                    patch.status,
+                    patch.decision.map(|d| d.chars().take(2000).collect::<String>()),
+                    patch.target,
+                    patch.check_result_id,
+                    patch.round,
+                    now,
+                    id
+                ],
+            )?;
+            if let Some(result_id) = patch.correction_result_id {
+                let current: String = tx.query_row(
+                    "SELECT correction_result_ids FROM run_feedback WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                let mut list: Vec<i64> = serde_json::from_str(&current).unwrap_or_default();
+                if !list.contains(&result_id) {
+                    list.push(result_id);
+                }
+                tx.execute(
+                    "UPDATE run_feedback SET correction_result_ids = ?1 WHERE id = ?2",
+                    params![serde_json::to_string(&list)?, id],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Start a correction round: the routing marker row (replayed on resume)
+    /// and the run's round count, in one transaction. Returns the row id.
+    pub fn record_correction_round(
+        &self,
+        run_id: &str,
+        round: u32,
+        summary: &str,
+        structured_json: &str,
+    ) -> DbResult<i64> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO node_results (run_id, node_id, status, stdout, stderr, started_at, finished_at, attempt, duration_ms, structured_json) \
+             VALUES (?1, ?2, 'correcting', ?3, '', ?4, ?4, 1, 0, ?5)",
+            params![run_id, feedback::ROUND_NODE, summary, now, structured_json],
+        )?;
+        let id = tx.last_insert_rowid();
+        let value: String = tx.query_row(
+            "SELECT execution_json FROM runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )?;
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        execution.feedback.rounds = round;
+        tx.execute(
+            "UPDATE runs SET execution_json = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&execution)?, run_id],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Merge one key into a result row's metadata (a feedback check's marker
+    /// and decision).
+    pub fn merge_result_metadata(
+        &self,
+        id: i64,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> DbResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        conn.execute(
+            "UPDATE node_results SET structured_json = json_set(CASE WHEN json_valid(structured_json) \
+             THEN structured_json ELSE '{}' END, ?1, json(?2)) WHERE id = ?3",
+            params![format!("$.{key}"), value.to_string(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Pause before a checkpoint because feedback needs the person: a
+    /// correction-round limit, a check that could not decide, a failed
+    /// correction. Mirrors [`Self::pause_for_spend`].
+    pub fn pause_for_feedback(&self, run_id: &str, reason: &str) -> DbResult<()> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let value: String = tx.query_row(
+            "SELECT execution_json FROM runs WHERE id=?1 AND status='running'",
+            params![run_id],
+            |r| r.get(0),
+        )?;
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO node_results (run_id,node_id,status,started_at,finished_at,error) VALUES (?1,?2,'guardPaused',?3,?3,?4)",
+            params![run_id, feedback::GUARD_NODE, now, reason],
+        )?;
+        execution.feedback.pause = Some(feedback::FeedbackPause {
+            id: tx.last_insert_rowid(),
+            reason: reason.into(),
+        });
+        tx.execute(
+            "UPDATE runs SET status='paused',finished_at=?1,execution_json=?2 WHERE id=?3",
+            params![now, serde_json::to_string(&execution)?, run_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Continue a run paused for feedback as it is: the items that needed
+    /// attention are marked seen and the run goes on to its checkpoint.
+    pub fn continue_feedback_run(&self, run_id: &str, expected_pause_id: i64) -> DbResult<bool> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        let tx = conn.transaction()?;
+        let value: Option<String> = tx
+            .query_row(
+                "SELECT execution_json FROM runs WHERE id=?1 AND status='paused'",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
+            return Ok(false);
+        };
+        let mut execution: RunExecution = serde_json::from_str(&value)?;
+        if execution.feedback.pause.as_ref().map(|p| p.id) != Some(expected_pause_id) {
+            return Ok(false);
+        }
+        execution.feedback.pause = None;
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE runs SET status='running',finished_at=NULL,execution_json=?1 WHERE id=?2",
+            params![serde_json::to_string(&execution)?, run_id],
+        )?;
+        tx.execute(
+            "UPDATE run_feedback SET acknowledged = 1, updated_at = ?1 WHERE run_id = ?2 AND status = ?3",
+            params![now, run_id, feedback::NEEDS_ATTENTION],
+        )?;
+        tx.execute(
+            "INSERT INTO node_results (run_id,node_id,status,started_at,finished_at) VALUES (?1,?2,'guardContinued',?3,?3)",
+            params![run_id, feedback::GUARD_NODE, now],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// When a run ends without handling its feedback (failed, cancelled,
+    /// restarted), say so on every item still waiting.
+    pub fn close_open_feedback(&self, run_id: &str, reason: &str) -> DbResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        Ok(conn.execute(
+            "UPDATE run_feedback SET status = ?1, decision = ?2, updated_at = ?3 \
+             WHERE run_id = ?4 AND status IN (?5, ?6, ?7)",
+            params![
+                feedback::NOT_PROCESSED,
+                reason,
+                Utc::now().to_rfc3339(),
+                run_id,
+                feedback::PENDING,
+                feedback::CHECKING,
+                feedback::CORRECTING
+            ],
+        )?)
     }
 
     // -- Workflows ----------------------------------------------------------
@@ -576,10 +1004,11 @@ impl SqliteDb {
         note: &str,
         expected_approval_id: Option<i64>,
     ) -> DbResult<bool> {
-        if self
-            .get_run(id)?
-            .is_some_and(|r| r.execution.spend_pause.is_some() || r.execution.usage_pause.is_some())
-        {
+        if self.get_run(id)?.is_some_and(|r| {
+            r.execution.spend_pause.is_some()
+                || r.execution.usage_pause.is_some()
+                || r.execution.feedback.pause.is_some()
+        }) {
             return Ok(false);
         }
         let now = Utc::now().to_rfc3339();
@@ -589,7 +1018,7 @@ impl SqliteDb {
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
         let tx = conn.transaction()?;
         let changed = tx.execute(
-            "UPDATE runs SET status = ?1, finished_at = ?2 WHERE id = ?3 AND status = 'paused' AND json_extract(execution_json, '$.spendPause') IS NULL AND json_extract(execution_json, '$.usagePause') IS NULL",
+            "UPDATE runs SET status = ?1, finished_at = ?2 WHERE id = ?3 AND status = 'paused' AND json_extract(execution_json, '$.spendPause') IS NULL AND json_extract(execution_json, '$.usagePause') IS NULL AND json_extract(execution_json, '$.feedback.pause') IS NULL",
             params![
                 if approved { "running" } else { "failed" },
                 if approved { None } else { Some(&now) },
@@ -787,6 +1216,15 @@ impl SqliteDb {
             tx.execute("INSERT INTO recovery_results (run_id,node_id,visit,definition) VALUES (?1,?2,?3,?4)",params![id,row.node_id,*visit,serde_json::to_string(row)?])?;
         }
         tx.execute("INSERT INTO recovery_requests (request_id,source_run_id,run_id,choices) VALUES (?1,?2,?3,?4)",params![request_id,source.id,id,choices.to_string()])?;
+        // Feedback the failed run never handled moves to the new run, where
+        // it is checked at the first checkpoint like any other.
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO run_feedback (run_id, node_id, text, status, carried_from, created_at, updated_at) \
+             SELECT ?1, node_id, text, ?2, id, ?3, ?3 FROM run_feedback \
+             WHERE run_id = ?4 AND status = ?5 ORDER BY id",
+            params![id, feedback::PENDING, now, source.id, feedback::NOT_PROCESSED],
+        )?;
         tx.commit()?;
         Ok(id.into())
     }
@@ -1168,11 +1606,46 @@ impl SqliteDb {
             .conn
             .lock()
             .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
+        // A feedback check is never a visit of its step, so it closes as a
+        // check instead of a failed step.
         Ok(conn.execute(
-            "UPDATE node_results SET status = 'failed', error = ?1, finished_at = ?2 \
-             WHERE run_id = ?3 AND status = 'running'",
+            "UPDATE node_results SET status = CASE WHEN json_valid(structured_json) THEN \
+             (CASE WHEN json_extract(structured_json, '$.feedbackCheck') IS NOT NULL \
+             THEN 'checked' ELSE 'failed' END) ELSE 'failed' END, \
+             error = ?1, finished_at = ?2 WHERE run_id = ?3 AND status = 'running'",
             params![reason, now, run_id],
         )?)
+    }
+
+    /// Runs left `running` by a previous session can never resume safely:
+    /// their processes are gone. Close their rows, fail them, and mark their
+    /// open feedback as not processed. Returns the runs closed.
+    pub fn close_interrupted_runs(&self) -> DbResult<Vec<String>> {
+        let interrupted: Vec<String> = self
+            .list_active_runs()?
+            .into_iter()
+            .filter(|run| run.status == RunStatus::Running)
+            .map(|run| run.id)
+            .collect();
+        for run_id in &interrupted {
+            self.fail_running_node_results(
+                run_id,
+                "Application restarted while this node was in progress.",
+            )?;
+            self.record_node_result(NewNodeResult::simple(
+                run_id,
+                "run",
+                "failed",
+                None,
+                Some("Application restarted while this run was in progress."),
+            ))?;
+            self.finish_run(run_id, RunStatus::Failed)?;
+            self.close_open_feedback(
+                run_id,
+                "Orchevia restarted before this feedback was handled. Recover the run to handle it there.",
+            )?;
+        }
+        Ok(interrupted)
     }
 
     /// Finalize the same row so the live step does not duplicate on completion.
@@ -2817,5 +3290,270 @@ mod corruption_tests {
         let list = db.list_workflows().expect("list tolerates corruption");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "good");
+    }
+}
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    use crate::feedback;
+
+    fn db_with_run(status: RunStatus) -> SqliteDb {
+        let db = SqliteDb::open_in_memory().expect("open");
+        let workflow = crate::workflow::sample_workflow();
+        db.upsert_workflow(&workflow).expect("workflow");
+        db.create_run_with_execution(
+            "run-1",
+            &workflow,
+            &std::collections::HashMap::new(),
+            &RunExecution::default(),
+        )
+        .expect("run");
+        db.record_node_result(NewNodeResult::simple(
+            "run-1",
+            "impl",
+            "succeeded",
+            Some(0),
+            None,
+        ))
+        .expect("row");
+        if status != RunStatus::Running {
+            db.finish_run("run-1", status).expect("status");
+        }
+        db
+    }
+
+    fn statuses(db: &SqliteDb) -> Vec<String> {
+        db.list_feedback("run-1")
+            .expect("list")
+            .into_iter()
+            .map(|f| f.status)
+            .collect()
+    }
+
+    #[test]
+    fn feedback_is_taken_only_on_started_steps_of_live_runs() {
+        let db = db_with_run(RunStatus::Running);
+        let item = db
+            .submit_feedback("run-1", "impl", None, "  Keep the old config.  ")
+            .expect("submit");
+        assert_eq!(item.status, feedback::PENDING);
+        assert_eq!(item.text, "Keep the old config.");
+        assert!(db.has_waiting_feedback("run-1").expect("waiting"));
+        for (node, text) in [
+            ("tests", "x"),
+            ("impl", "   "),
+            ("run", "x"),
+            ("__feedback", "x"),
+        ] {
+            assert!(
+                db.submit_feedback("run-1", node, None, text).is_err(),
+                "{node}"
+            );
+        }
+        assert!(db
+            .submit_feedback("run-1", "impl", Some(9999), "x")
+            .is_err());
+        assert!(db.submit_feedback("missing", "impl", None, "x").is_err());
+        for status in [
+            RunStatus::Succeeded,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+        ] {
+            let finished = db_with_run(status);
+            let error = finished
+                .submit_feedback("run-1", "impl", None, "x")
+                .unwrap_err();
+            assert!(error.to_string().contains("finished"), "{error}");
+        }
+        let paused = db_with_run(RunStatus::Paused);
+        assert!(paused.submit_feedback("run-1", "impl", None, "x").is_ok());
+    }
+
+    #[test]
+    fn a_run_takes_at_most_fifty_messages() {
+        let db = db_with_run(RunStatus::Running);
+        for n in 0..feedback::MAX_FEEDBACK_PER_RUN {
+            db.submit_feedback("run-1", "impl", None, &format!("note {n}"))
+                .expect("submit");
+        }
+        assert!(db
+            .submit_feedback("run-1", "impl", None, "one more")
+            .is_err());
+    }
+
+    #[test]
+    fn the_cutoff_waits_for_feedback_and_later_feedback_is_late() {
+        let db = db_with_run(RunStatus::Running);
+        let first = db
+            .submit_feedback("run-1", "impl", None, "a")
+            .expect("submit");
+        // Waiting feedback blocks the first publishing step.
+        assert!(!db
+            .claim_feedback_cutoff("run-1", Some(("push", "Push branch")))
+            .expect("claim"));
+        db.update_feedback(
+            &[first.id],
+            &FeedbackPatch {
+                status: Some(feedback::SATISFIED),
+                ..FeedbackPatch::default()
+            },
+        )
+        .expect("update");
+        assert!(db
+            .claim_feedback_cutoff("run-1", Some(("push", "Push branch")))
+            .expect("claim"));
+        let late = db
+            .submit_feedback("run-1", "impl", None, "b")
+            .expect("late");
+        assert_eq!(late.status, feedback::LATE);
+        assert!(late.decision.contains("\"Push branch\" started publishing"));
+        assert!(!db.has_waiting_feedback("run-1").expect("waiting"));
+        // A later publishing step does not move the cutoff.
+        assert!(db
+            .claim_feedback_cutoff("run-1", Some(("pr", "Open PR")))
+            .expect("claim"));
+        let run = db.get_run("run-1").expect("get").expect("run");
+        assert_eq!(
+            run.execution
+                .feedback
+                .publication_started
+                .map(|p| p.node_id),
+            Some("push".into())
+        );
+        // Closing for the finish refuses anything later.
+        assert!(db.claim_feedback_cutoff("run-1", None).expect("finish"));
+        assert!(db.submit_feedback("run-1", "impl", None, "c").is_err());
+    }
+
+    #[test]
+    fn a_feedback_pause_needs_its_own_continue_and_marks_items_seen() {
+        let db = db_with_run(RunStatus::Running);
+        let item = db
+            .submit_feedback("run-1", "impl", None, "a")
+            .expect("submit");
+        db.update_feedback(
+            &[item.id],
+            &FeedbackPatch {
+                status: Some(feedback::NEEDS_ATTENTION),
+                decision: Some("The check did not decide."),
+                ..FeedbackPatch::default()
+            },
+        )
+        .expect("update");
+        assert!(db.has_waiting_feedback("run-1").expect("waiting"), "unseen");
+        db.pause_for_feedback("run-1", "Feedback needs your attention.")
+            .expect("pause");
+        let run = db.get_run("run-1").expect("get").expect("run");
+        assert_eq!(run.status, RunStatus::Paused);
+        let pause = run.execution.feedback.pause.expect("pause");
+        // An approval decision cannot clear it.
+        assert!(!db
+            .decide_paused_run("run-1", true, "", None)
+            .expect("decide"));
+        assert!(!db
+            .continue_feedback_run("run-1", pause.id + 1)
+            .expect("stale"));
+        assert!(db
+            .continue_feedback_run("run-1", pause.id)
+            .expect("continue"));
+        assert!(!db.continue_feedback_run("run-1", pause.id).expect("twice"));
+        assert!(db.list_feedback("run-1").expect("list")[0].acknowledged);
+        assert!(!db.has_waiting_feedback("run-1").expect("waiting"));
+        assert_eq!(
+            db.get_run("run-1").expect("get").expect("run").status,
+            RunStatus::Running
+        );
+    }
+
+    #[test]
+    fn a_restart_closes_checks_as_checks_and_leaves_feedback_for_recovery() {
+        let db = db_with_run(RunStatus::Running);
+        db.submit_feedback("run-1", "impl", None, "a")
+            .expect("submit");
+        let check = db.start_node_result("run-1", "impl", 1).expect("check row");
+        db.merge_result_metadata(
+            check,
+            "feedbackCheck",
+            &serde_json::json!({"feedbackIds":[1]}),
+        )
+        .expect("marker");
+        let step = db.start_node_result("run-1", "tests", 1).expect("step row");
+        assert_eq!(db.close_interrupted_runs().expect("close"), ["run-1"]);
+        let rows = db.list_node_results("run-1").expect("rows");
+        let status = |id: i64| rows.iter().find(|r| r.id == id).map(|r| r.status.clone());
+        assert_eq!(status(check).as_deref(), Some("checked"));
+        assert_eq!(status(step).as_deref(), Some("failed"));
+        assert_eq!(statuses(&db), [feedback::NOT_PROCESSED]);
+        assert_eq!(
+            db.get_run("run-1").expect("get").expect("run").status,
+            RunStatus::Failed
+        );
+        // Recovery carries the unhandled feedback into the new run.
+        let source = db.get_run("run-1").expect("get").expect("run");
+        let workflow = db.get_run_snapshot("run-1").expect("snapshot").expect("wf");
+        db.create_recovery_run(
+            "run-2",
+            &source,
+            &workflow,
+            &RunExecution::default(),
+            &[],
+            "req",
+        )
+        .expect("recover");
+        let carried = db.list_feedback("run-2").expect("list");
+        assert_eq!(carried.len(), 1);
+        assert_eq!(carried[0].status, feedback::PENDING);
+        assert_eq!(carried[0].carried_from, Some(1));
+        assert_eq!(carried[0].text, "a");
+    }
+
+    #[test]
+    fn rounds_and_corrections_are_recorded() {
+        let db = db_with_run(RunStatus::Running);
+        let item = db
+            .submit_feedback("run-1", "impl", None, "a")
+            .expect("submit");
+        let marker = db
+            .record_correction_round(
+                "run-1",
+                1,
+                "Correcting impl",
+                r#"{"feedbackRound":{"round":1}}"#,
+            )
+            .expect("round");
+        db.update_feedback(
+            &[item.id],
+            &FeedbackPatch {
+                status: Some(feedback::CORRECTING),
+                round: Some(1),
+                correction_result_id: Some(marker),
+                ..FeedbackPatch::default()
+            },
+        )
+        .expect("update");
+        db.update_feedback(
+            &[item.id],
+            &FeedbackPatch {
+                correction_result_id: Some(marker),
+                ..FeedbackPatch::default()
+            },
+        )
+        .expect("again");
+        let stored = &db.list_feedback("run-1").expect("list")[0];
+        assert_eq!(stored.round, Some(1));
+        assert_eq!(stored.correction_result_ids, [marker]);
+        let run = db.get_run("run-1").expect("get").expect("run");
+        assert_eq!(run.execution.feedback.rounds, 1);
+        assert_eq!(
+            db.close_open_feedback("run-1", "Cancelled.")
+                .expect("close"),
+            1
+        );
+        // Deleting the run deletes its feedback.
+        db.finish_run("run-1", RunStatus::Cancelled)
+            .expect("finish");
+        db.delete_run("run-1").expect("delete");
+        assert!(db.list_feedback("run-1").expect("list").is_empty());
     }
 }

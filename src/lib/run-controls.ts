@@ -5,6 +5,7 @@ import type {
   Workflow,
   WorkflowEdge,
 } from './workflow';
+import type { FeedbackState } from './feedback';
 import {
   classifyEdgeLabel,
   MAX_ATTEMPTS_LIMIT,
@@ -51,6 +52,7 @@ export interface ResolvedLimits {
   maxToolCalls?: number;
   maxSubagents?: number;
   spendLimitUsd?: number;
+  maxCorrectionRounds?: number;
 }
 export interface RunExecution {
   options: RunOptions;
@@ -60,6 +62,8 @@ export interface RunExecution {
   resolvedLimits?: ResolvedLimits;
   consumedAgentAttempts?: number;
   usagePause?: UsagePause;
+  /** Feedback cutoff, correction rounds and a feedback pause. */
+  feedback?: FeedbackState;
 }
 export interface RecoveryNode {
   nodeId: string;
@@ -133,8 +137,13 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
     )
   )
     throw new Error('Unknown run option.');
-  for (const [id, fixtures] of Object.entries(options.fixtures ?? {})) {
+  for (const [key, fixtures] of Object.entries(options.fixtures ?? {})) {
+    // `feedback:<AI step>` feeds that step's feedback checks.
+    const check = key.startsWith('feedback:');
+    const id = check ? key.slice('feedback:'.length) : key;
     const node = workflow.nodes.find((n) => n.id === id);
+    if (check && node !== undefined && node.type !== 'agent')
+      throw new Error(`Feedback-check fixtures need an AI step; '${id}' is not one.`);
     if (!node || (!isEffectful(node.type) && node.type !== 'approval'))
       throw new Error(`Node '${id}' does not accept fixtures.`);
     if (!Array.isArray(fixtures) || fixtures.length > 1000)
@@ -191,6 +200,9 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
             'simulated',
             'reusedFrom',
             'command',
+            'agentDigest',
+            'correction',
+            'feedbackCheck',
           ].includes(key),
         )
       )
@@ -222,6 +234,8 @@ export function resolveLimits(
   if (subagents !== undefined) resolved.maxSubagents = subagents;
   const spend = options.spendLimitUsd ?? base?.spendLimitUsd;
   if (spend !== undefined) resolved.spendLimitUsd = spend;
+  if (base?.maxCorrectionRounds !== undefined)
+    resolved.maxCorrectionRounds = base.maxCorrectionRounds;
   return resolved;
 }
 
@@ -384,6 +398,46 @@ export function recoveryPlan(
   };
 }
 
+/**
+ * Every "B uses A's work" pair: edges, `contextRefs`, `inputRefs`,
+ * `{{node.A…}}` references and ticket variables. Mirrors `dependency_pairs`.
+ */
+export function dependencyPairs(workflow: Workflow): [string, string][] {
+  const dependencies: [string, string][] = workflow.edges.map((e) => [
+    e.source,
+    e.target,
+  ]);
+  for (const node of workflow.nodes) {
+    const text = JSON.stringify(node.config);
+    for (const source of workflow.nodes)
+      if (
+        node.id !== source.id &&
+        (node.config.contextRefs?.includes(source.id) ||
+          node.config.inputRefs?.includes(source.id) ||
+          (source.type === 'ticket' && text.includes('ticket.')) ||
+          text.includes(`node.${source.id}.`) ||
+          text.includes(`node.${source.id}"`) ||
+          text.includes(`node.${source.id}}}`))
+      )
+        dependencies.push([source.id, node.id]);
+  }
+  return dependencies;
+}
+
+/** Every step using the work of `seeds`. Mirrors `downstream_closure`. */
+export function downstreamClosure(workflow: Workflow, seeds: Set<string>): Set<string> {
+  const dependencies = dependencyPairs(workflow);
+  const reached = new Set<string>();
+  const frontier = [...seeds];
+  for (let id = frontier.pop(); id !== undefined; id = frontier.pop())
+    for (const [source, target] of dependencies)
+      if (source === id && !reached.has(target)) {
+        reached.add(target);
+        frontier.push(target);
+      }
+  return reached;
+}
+
 export function recoveryInvalidated(
   workflow: Workflow,
   rows: StoredNodeResult[],
@@ -403,21 +457,7 @@ export function recoveryInvalidated(
       .map((r) => r.nodeId),
   );
   changed.forEach((id) => affected.add(id));
-  const dependencies = workflow.edges.map((e) => [e.source, e.target] as const);
-  for (const node of workflow.nodes) {
-    const text = JSON.stringify(node.config);
-    for (const source of workflow.nodes)
-      if (
-        node.id !== source.id &&
-        (node.config.contextRefs?.includes(source.id) ||
-          node.config.inputRefs?.includes(source.id) ||
-          (source.type === 'ticket' && text.includes('ticket.')) ||
-          text.includes(`node.${source.id}.`) ||
-          text.includes(`node.${source.id}"`) ||
-          text.includes(`node.${source.id}}}`))
-      )
-        dependencies.push([source.id, node.id]);
-  }
+  const dependencies = dependencyPairs(workflow);
   for (;;) {
     let updated = false;
     for (const [source, target] of dependencies)
@@ -757,6 +797,44 @@ export function replayGraph(
       taken.delete(id);
     });
   };
+  // A feedback correction round (`Engine::reset_for_correction`): the
+  // corrected steps run first; the steps using their work wait, then rerun.
+  const correction: { gate: { roots: Set<string>; gated: Set<string> } | null } = {
+    gate: null,
+  };
+  const resetForCorrection = (roots: string[], affected: string[]): void => {
+    const reset = new Set([...roots, ...affected].filter((id) => nodes.has(id)));
+    reset.forEach((id) => {
+      terminal.delete(id);
+      unrecorded.delete(id);
+      visits.set(id, 0);
+    });
+    for (const edge of workflow.edges) {
+      if (reset.has(edge.source) || reset.has(edge.target)) held.delete(edge.id);
+      if (!loopEdges.has(edge.id) && reset.has(edge.source)) resolved.delete(edge.id);
+    }
+    reset.forEach((id) => {
+      const incoming = into(id).filter((e) => !loopEdges.has(e.id));
+      pending.set(id, incoming.filter((e) => !resolved.has(e.id)).length);
+      if (incoming.some((e) => resolved.get(e.id) === true)) taken.add(id);
+      else taken.delete(id);
+    });
+    const rootSet = new Set(roots.filter((id) => nodes.has(id)));
+    rootSet.forEach((id) => {
+      pending.set(id, 0);
+      taken.add(id);
+    });
+    correction.gate =
+      rootSet.size > 0
+        ? { roots: rootSet, gated: new Set([...reset].filter((id) => !rootSet.has(id))) }
+        : null;
+  };
+  const settleGate = (id: string): void => {
+    const gate = correction.gate;
+    if (gate === null) return;
+    gate.roots.delete(id);
+    if (gate.roots.size === 0) correction.gate = null;
+  };
   const loopLimit = (id: string): string =>
     `Loop limit exceeded at '${id}' (max ${String(maxVisits(id))} visits).`;
   /** Route a finished step; returns the run's failure, if this ends it. */
@@ -816,6 +894,18 @@ export function replayGraph(
   };
 
   for (const row of rows) {
+    // `ROUND_NODE` in ./feedback.
+    if (row.nodeId === '__feedback' && row.status === 'correcting') {
+      const round = resultMetadata(row).feedbackRound;
+      const list = (key: string): string[] => {
+        const value: unknown = isRecord(round) ? round[key] : undefined;
+        return Array.isArray(value)
+          ? value.filter((v): v is string => typeof v === 'string')
+          : [];
+      };
+      resetForCorrection(list('roots'), list('affected'));
+      continue;
+    }
     const outcome = TERMINAL_STATUSES[row.status];
     if (!nodes.has(row.nodeId) || outcome === undefined) continue;
     // A skip this replay already made is the one this row records.
@@ -826,6 +916,7 @@ export function replayGraph(
     if (outcome === 'succeeded' || outcome === 'failed')
       visits.set(row.nodeId, (visits.get(row.nodeId) ?? 0) + 1);
     terminal.set(row.nodeId, outcome);
+    settleGate(row.nodeId);
     if (outcome === 'cancelled') {
       error ??= 'Run cancelled.';
       continue;
@@ -844,7 +935,8 @@ export function replayGraph(
           !terminal.has(n.id) &&
           (pending.get(n.id) ?? 0) === 0 &&
           taken.has(n.id) &&
-          (visits.get(n.id) ?? 0) < maxVisits(n.id),
+          (visits.get(n.id) ?? 0) < maxVisits(n.id) &&
+          !(correction.gate?.gated.has(n.id) ?? false),
       )
       .map((n) => n.id);
   // When nothing can run, release the waits no step can end any more (exits a

@@ -253,6 +253,51 @@ pub async fn continue_usage_run(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn continue_feedback_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    expected_pause_id: i64,
+) -> Result<(), String> {
+    let workflow = state
+        .engine
+        .claim_feedback_continuation(&run_id, expected_pause_id)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        Engine::new(db, cancel).execute(workflow, run_id).await;
+    });
+    Ok(())
+}
+
+/// Feedback on a step of a running or paused run, handled at its next
+/// checkpoint.
+#[tauri::command]
+pub fn submit_step_feedback(
+    state: State<AppState>,
+    run_id: String,
+    node_id: String,
+    result_id: Option<i64>,
+    text: String,
+) -> Result<orchevia_core::feedback::RunFeedback, String> {
+    state
+        .engine
+        .submit_feedback(&run_id, &node_id, result_id, &text)
+        .map_err(|e| match e {
+            orchevia_core::engine::EngineError::Validation(message) => message,
+            other => other.to_string(),
+        })
+}
+
+#[tauri::command]
+pub fn list_run_feedback(
+    state: State<AppState>,
+    run_id: String,
+) -> Result<Vec<orchevia_core::feedback::RunFeedback>, String> {
+    state.db.list_feedback(&run_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 pub fn usage_summary(
     state: State<AppState>,

@@ -10,6 +10,7 @@ pub mod conditions;
 pub mod db;
 pub mod desktop;
 pub mod engine;
+pub mod feedback;
 pub mod generation;
 pub mod git;
 pub mod github;
@@ -43,5 +44,7 @@ pub mod workflow_document;
 
 #[cfg(test)]
 mod cli_canary;
+#[cfg(test)]
+mod feedback_engine_tests;
 #[cfg(test)]
 mod run_control_tests;

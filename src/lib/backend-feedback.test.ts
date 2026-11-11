@@ -1,0 +1,384 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __setMockBackendForTests, type Backend } from './backend';
+import { createDefaultProfile } from './agents';
+import { CURRENT_SCHEMA_VERSION, type StoredNodeResult, type Workflow } from './workflow';
+
+// The mock backend handles feedback like the engine; each case mirrors one in
+// crates/core/src/feedback_engine_tests.rs (dry runs with fixtures).
+
+const at = { x: 0, y: 0 };
+
+function decisionText(decision: 'change' | 'satisfied' | 'unclear'): string {
+  if (decision === 'unclear') return 'I am not sure.';
+  return (
+    'Checked.\n```orchevia-feedback\n' +
+    JSON.stringify(
+      decision === 'change'
+        ? {
+            decision: 'change',
+            explanation: 'Old keys are ignored.',
+            change: 'Read the old config keys as a fallback.',
+          }
+        : { decision: 'satisfied', explanation: 'Old config keys are still read.' },
+    ) +
+    '\n```'
+  );
+}
+
+/** start → impl (AI) → tests → approve → push (publishes) → end */
+function approvalWorkflow(maxCorrectionRounds?: number): Workflow {
+  return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    id: 'wf-feedback',
+    name: 'Feedback',
+    ...(maxCorrectionRounds === undefined ? {} : { limits: { maxCorrectionRounds } }),
+    nodes: [
+      { id: 'start', type: 'start', position: at, config: {} },
+      {
+        id: 'impl',
+        type: 'agent',
+        label: 'Implement',
+        position: at,
+        config: { agentProfileId: 'fake', prompt: 'Change it.' },
+      },
+      {
+        id: 'tests',
+        type: 'command',
+        position: at,
+        config: { executable: 'never-runs' },
+      },
+      { id: 'approve', type: 'approval', position: at, config: {} },
+      {
+        id: 'push',
+        type: 'command',
+        label: 'Push branch',
+        position: at,
+        config: { executable: 'never-runs', publishes: true },
+      },
+      { id: 'end', type: 'end', position: at, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'impl' },
+      { id: 'e2', source: 'impl', target: 'tests' },
+      { id: 'e3', source: 'tests', target: 'approve' },
+      { id: 'e4', source: 'approve', target: 'push' },
+      { id: 'e5', source: 'push', target: 'end' },
+    ],
+  };
+}
+
+function fixtures(
+  checks: ('change' | 'satisfied' | 'unclear')[],
+): Record<string, unknown> {
+  return {
+    impl: [
+      { status: 'succeeded', stdout: 'v1' },
+      { status: 'succeeded', stdout: 'v2' },
+    ],
+    tests: [
+      { status: 'succeeded', stdout: 'ok 1' },
+      { status: 'succeeded', stdout: 'ok 2' },
+    ],
+    push: [{ status: 'succeeded', stdout: 'pushed' }],
+    'feedback:impl': checks.map((c) => ({
+      status: 'succeeded',
+      stdout: decisionText(c),
+    })),
+  };
+}
+
+let backend: Backend;
+
+async function start(
+  wf: Workflow,
+  checks: ('change' | 'satisfied' | 'unclear')[] = ['change', 'change'],
+): Promise<string> {
+  backend = __setMockBackendForTests();
+  await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+  await backend.saveWorkflow(wf);
+  const { runId } = await backend.runWorkflow(
+    wf.id,
+    {},
+    { dryRun: true, fixtures: fixtures(checks) as never },
+  );
+  await vi.runAllTimersAsync();
+  return runId;
+}
+
+async function approve(runId: string): Promise<void> {
+  await backend.approveRun(runId, true);
+  await vi.runAllTimersAsync();
+}
+
+function outputs(rows: StoredNodeResult[], node: string): string[] {
+  return rows
+    .filter((r) => r.nodeId === node && r.status === 'succeeded')
+    .map((r) => r.stdout);
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('mock feedback during a run', () => {
+  it('corrects the step, reruns what uses it and asks the approval again', async () => {
+    const runId = await start(approvalWorkflow());
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    const item = await backend.submitStepFeedback(runId, 'impl', '  Keep old keys.  ');
+    expect(item).toMatchObject({ status: 'pending', text: 'Keep old keys.' });
+    await approve(runId);
+    // Asked again, after the feedback was addressed.
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    const [handled] = await backend.listRunFeedback(runId);
+    expect(handled).toMatchObject({
+      status: 'addressed',
+      targetNodeId: 'impl',
+      round: 1,
+    });
+    let rows = await backend.getRunResults(runId);
+    expect(outputs(rows, 'impl')).toEqual(['v1', 'v2']);
+    expect(outputs(rows, 'tests')).toEqual(['ok 1', 'ok 2']);
+    expect(outputs(rows, 'push')).toEqual([]);
+    const correction = rows.find((r) => r.stdout === 'v2');
+    expect(JSON.parse(correction?.structuredJson ?? '{}')).toMatchObject({
+      correction: { feedbackIds: [item.id], round: 1 },
+      simulated: true,
+    });
+    const check = rows.find((r) => r.status === 'checked');
+    expect(handled?.checkResultId).toBe(check?.id);
+    expect(JSON.parse(check?.structuredJson ?? '{}')).toMatchObject({
+      feedbackCheck: {
+        decision: 'change',
+        change: 'Read the old config keys as a fallback.',
+      },
+    });
+    expect(rows.some((r) => r.nodeId === '__feedback' && r.status === 'correcting')).toBe(
+      true,
+    );
+    await approve(runId);
+    rows = await backend.getRunResults(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(outputs(rows, 'push')).toEqual(['pushed']);
+    expect((await backend.getRun(runId))?.execution?.feedback).toMatchObject({
+      rounds: 1,
+      publicationStarted: { nodeId: 'push', label: 'Push branch' },
+      closed: true,
+    });
+  });
+
+  it('records satisfied feedback without rerunning anything', async () => {
+    const runId = await start(approvalWorkflow(), ['satisfied']);
+    await backend.submitStepFeedback(runId, 'tests', 'Is the old config kept?');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    const [item] = await backend.listRunFeedback(runId);
+    expect(item).toMatchObject({
+      status: 'satisfied',
+      targetNodeId: 'impl',
+      decision: 'Old config keys are still read.',
+    });
+    expect(outputs(await backend.getRunResults(runId), 'impl')).toEqual(['v1']);
+  });
+
+  it('pauses at the round limit and continues as it is', async () => {
+    const runId = await start(approvalWorkflow(1));
+    await backend.submitStepFeedback(runId, 'impl', 'First.');
+    await approve(runId);
+    const second = await backend.submitStepFeedback(runId, 'impl', 'Second.');
+    await approve(runId);
+    const run = await backend.getRun(runId);
+    expect(run?.status).toBe('paused');
+    const items = await backend.listRunFeedback(runId);
+    expect(items.find((i) => i.id === second.id)).toMatchObject({
+      status: 'needs-attention',
+      acknowledged: false,
+    });
+    expect(items.find((i) => i.id === second.id)?.decision).toContain(
+      '1 correction round',
+    );
+    const pause = run?.execution?.feedback?.pause;
+    if (pause === undefined) throw new Error('feedback pause expected');
+    // An approval cannot clear a feedback pause.
+    await expect(backend.approveRun(runId, true)).rejects.toThrow('not paused');
+    await expect(backend.continueFeedbackRun(runId, pause.id + 1)).rejects.toThrow();
+    await backend.continueFeedbackRun(runId, pause.id);
+    await vi.runAllTimersAsync();
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(
+      (await backend.listRunFeedback(runId)).find((i) => i.id === second.id)
+        ?.acknowledged,
+    ).toBe(true);
+    expect(outputs(await backend.getRunResults(runId), 'impl')).toEqual(['v1', 'v2']);
+  });
+
+  it('pauses when a check cannot decide', async () => {
+    const runId = await start(approvalWorkflow(), ['unclear']);
+    await backend.submitStepFeedback(runId, 'impl', 'x');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    const [item] = await backend.listRunFeedback(runId);
+    expect(item?.status).toBe('needs-attention');
+    expect(item?.decision).toContain('decision block');
+  });
+
+  it('records feedback after publishing started as late', async () => {
+    const wf = approvalWorkflow();
+    // push before the approval: the run pauses after publishing.
+    wf.edges = [
+      { id: 'e1', source: 'start', target: 'impl' },
+      { id: 'e2', source: 'impl', target: 'tests' },
+      { id: 'e3', source: 'tests', target: 'push' },
+      { id: 'e4', source: 'push', target: 'approve' },
+      { id: 'e5', source: 'approve', target: 'end' },
+    ];
+    const runId = await start(wf);
+    const late = await backend.submitStepFeedback(runId, 'impl', 'Too late?');
+    expect(late.status).toBe('late');
+    expect(late.decision).toContain('"Push branch" started publishing');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(outputs(await backend.getRunResults(runId), 'impl')).toEqual(['v1']);
+  });
+
+  it('refuses feedback the core refuses', async () => {
+    const runId = await start(approvalWorkflow());
+    await expect(backend.submitStepFeedback(runId, 'push', 'x')).rejects.toThrow(
+      'once it has started',
+    );
+    await expect(backend.submitStepFeedback(runId, 'impl', '  ')).rejects.toThrow(
+      'Write the feedback first.',
+    );
+    await expect(backend.submitStepFeedback(runId, 'impl', 'x', 9999)).rejects.toThrow(
+      'does not belong',
+    );
+    await expect(backend.submitStepFeedback('missing', 'impl', 'x')).rejects.toThrow();
+    for (let n = 0; n < 50; n++)
+      await backend.submitStepFeedback(runId, 'impl', `n${String(n)}`);
+    await expect(backend.submitStepFeedback(runId, 'impl', 'one more')).rejects.toThrow(
+      'at most 50',
+    );
+    await backend.cancelRun(runId);
+    expect(
+      (await backend.listRunFeedback(runId)).every((i) => i.status === 'not-processed'),
+    ).toBe(true);
+    await expect(backend.submitStepFeedback(runId, 'impl', 'x')).rejects.toThrow(
+      'finished',
+    );
+  });
+});
+
+describe('mock feedback in loops and across restarts', () => {
+  it('gives a fix loop fresh passes after a correction, like the engine', async () => {
+    const wf: Workflow = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: 'wf-loop',
+      name: 'Loop',
+      nodes: [
+        { id: 'start', type: 'start', position: at, config: {} },
+        {
+          id: 'impl',
+          type: 'agent',
+          position: at,
+          config: { agentProfileId: 'fake', prompt: 'Change it.' },
+        },
+        {
+          id: 'tests',
+          type: 'command',
+          position: at,
+          config: { executable: 'never-runs', maxVisits: 2 },
+        },
+        {
+          id: 'gate',
+          type: 'condition',
+          position: at,
+          config: {
+            maxVisits: 2,
+            condition: {
+              logic: 'and',
+              clauses: [{ left: 'node.tests.output', op: 'contains', right: 'FAIL' }],
+            },
+          },
+        },
+        {
+          id: 'fix',
+          type: 'agent',
+          position: at,
+          config: { agentProfileId: 'fake', prompt: 'Fix it.', maxVisits: 2 },
+        },
+        { id: 'approve', type: 'approval', position: at, config: {} },
+        {
+          id: 'push',
+          type: 'command',
+          position: at,
+          config: { executable: 'never-runs', publishes: true },
+        },
+        { id: 'end', type: 'end', position: at, config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'impl' },
+        { id: 'e2', source: 'impl', target: 'tests' },
+        { id: 'e3', source: 'tests', target: 'gate' },
+        { id: 'e4', source: 'gate', target: 'fix', label: 'true' },
+        { id: 'e5', source: 'fix', target: 'tests' },
+        { id: 'e6', source: 'gate', target: 'approve', label: 'false' },
+        { id: 'e7', source: 'approve', target: 'push' },
+        { id: 'e8', source: 'push', target: 'end' },
+      ],
+    };
+    backend = __setMockBackendForTests();
+    await backend.saveAgentProfile({ ...createDefaultProfile('claude'), id: 'fake' });
+    await backend.saveWorkflow(wf);
+    const ok = (stdout: string): { status: string; stdout: string } => ({
+      status: 'succeeded',
+      stdout,
+    });
+    const { runId } = await backend.runWorkflow(
+      wf.id,
+      {},
+      {
+        dryRun: true,
+        fixtures: {
+          impl: [ok('v1'), ok('v2')],
+          tests: [ok('FAIL'), ok('ok'), ok('FAIL'), ok('ok')],
+          fix: [ok('fixed 1'), ok('fixed 2')],
+          push: [ok('pushed')],
+          'feedback:impl': [ok(decisionText('change'))],
+        },
+      },
+    );
+    await vi.runAllTimersAsync();
+    await backend.submitStepFeedback(runId, 'impl', 'Keep old keys.');
+    await approve(runId);
+    expect((await backend.getRun(runId))?.status).toBe('paused');
+    let rows = await backend.getRunResults(runId);
+    expect(outputs(rows, 'tests')).toEqual(['FAIL', 'ok', 'FAIL', 'ok']);
+    expect(outputs(rows, 'fix')).toEqual(['fixed 1', 'fixed 2']);
+    await approve(runId);
+    rows = await backend.getRunResults(runId);
+    expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    expect(outputs(rows, 'push')).toEqual(['pushed']);
+  });
+
+  it('leaves open feedback not processed after a restart and carries it on recovery', async () => {
+    const runId = await start(approvalWorkflow());
+    await backend.submitStepFeedback(runId, 'impl', 'Keep old keys.');
+    // Simulate a restart: the stored run says running.
+    const stored = JSON.parse(
+      localStorage.getItem('orchevia.mock-backend.v1') ?? '{}',
+    ) as {
+      runs: { id: string; status: string }[];
+    };
+    const run = stored.runs.find((r) => r.id === runId);
+    if (run) run.status = 'running';
+    localStorage.setItem('orchevia.mock-backend.v1', JSON.stringify(stored));
+    backend = __setMockBackendForTests();
+    expect((await backend.getRun(runId))?.status).toBe('failed');
+    const [item] = await backend.listRunFeedback(runId);
+    expect(item?.status).toBe('not-processed');
+    expect(item?.decision).toContain('restarted');
+  });
+});

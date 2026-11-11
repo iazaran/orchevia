@@ -71,6 +71,12 @@ pub struct RunExecution {
     pub consumed_agent_attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_pause: Option<UsagePause>,
+    /// Feedback cutoff, correction rounds and a feedback pause.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::feedback::FeedbackState::is_empty"
+    )]
+    pub feedback: crate::feedback::FeedbackState,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +109,9 @@ pub struct WorkflowLimits {
     pub max_subagents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend_limit_usd: Option<f64>,
+    /// Correction rounds feedback may start in one run (1–5, default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_correction_rounds: Option<u32>,
 }
 
 /// Effective per-run limits after merging saved workflow limits with the
@@ -118,6 +127,16 @@ pub struct ResolvedLimits {
     pub max_subagents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend_limit_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_correction_rounds: Option<u32>,
+}
+
+impl ResolvedLimits {
+    /// Correction rounds this run may make.
+    pub fn correction_rounds(&self) -> u32 {
+        self.max_correction_rounds
+            .unwrap_or(crate::feedback::DEFAULT_CORRECTION_ROUNDS)
+    }
 }
 
 /// Hard bounds for attempt/tool/subagent allowances (per run or per node).
@@ -150,6 +169,13 @@ pub fn validate_workflow_limits(limits: &WorkflowLimits) -> Result<(), String> {
             return Err("Spend limit must be a positive finite USD amount.".into());
         }
     }
+    if let Some(n) = limits.max_correction_rounds {
+        validate_limit_value(
+            "Correction round limit",
+            n,
+            crate::feedback::MAX_CORRECTION_ROUNDS,
+        )?;
+    }
     Ok(())
 }
 
@@ -174,6 +200,8 @@ pub fn resolve_limits(saved: Option<&WorkflowLimits>, options: &RunOptions) -> R
         spend_limit_usd: options
             .spend_limit_usd
             .or_else(|| base.and_then(|l| l.spend_limit_usd)),
+        // No per-run override; cleared like the others it falls back to 2.
+        max_correction_rounds: base.and_then(|l| l.max_correction_rounds),
     }
 }
 
@@ -210,7 +238,7 @@ pub(crate) fn is_dispatched_record(status: &str, structured_json: &str) -> bool 
     let metadata = serde_json::from_str::<serde_json::Value>(structured_json).unwrap_or_default();
     matches!(
         status,
-        "running" | "succeeded" | "failed" | "retrying" | "cancelled"
+        "running" | "succeeded" | "failed" | "retrying" | "cancelled" | "checked"
     ) && metadata.get("reusedFrom").is_none()
         && metadata["simulated"] != true
         && metadata["notDispatched"] != true
@@ -275,12 +303,20 @@ impl RunOptions {
         if self.dry_run && self.spend_limit_usd.is_some() {
             return Err("Dry-run fixtures do not measure actual spend.".into());
         }
-        for (id, fixtures) in &self.fixtures {
+        for (key, fixtures) in &self.fixtures {
+            // `feedback:<AI step>` feeds that step's feedback checks.
+            let check = key.strip_prefix("feedback:");
+            let id = check.unwrap_or(key);
             let node = workflow
                 .nodes
                 .iter()
                 .find(|n| n.id == *id)
-                .ok_or_else(|| format!("Unknown fixture node '{id}'."))?;
+                .ok_or_else(|| format!("Unknown fixture node '{key}'."))?;
+            if check.is_some() && node.kind != NodeKind::Agent {
+                return Err(format!(
+                    "Feedback-check fixtures need an AI step; '{id}' is not one."
+                ));
+            }
             if !effectful(node.kind) && node.kind != NodeKind::Approval {
                 return Err(format!("Node '{id}' does not accept fixtures."));
             }
@@ -314,6 +350,9 @@ impl RunOptions {
                         "simulated",
                         "reusedFrom",
                         "command",
+                        "agentDigest",
+                        "correction",
+                        "feedbackCheck",
                     ]
                     .iter()
                     .any(|k| o.contains_key(*k))
@@ -375,21 +414,10 @@ pub fn recovery_plan(
     }
 }
 
-pub fn invalidated_nodes(workflow: &Workflow, rows: &[StoredNodeResult]) -> HashSet<String> {
-    let mut latest: HashMap<&str, &StoredNodeResult> = HashMap::new();
-    for row in rows {
-        if matches!(
-            row.status.as_str(),
-            "succeeded" | "failed" | "cancelled" | "approved" | "rejected" | "skipped"
-        ) {
-            latest.insert(&row.node_id, row);
-        }
-    }
-    let mut affected: HashSet<String> = latest
-        .iter()
-        .filter(|(_, r)| matches!(r.status.as_str(), "failed" | "cancelled" | "rejected"))
-        .map(|(id, _)| (*id).to_string())
-        .collect();
+/// Every "B uses A's work" pair: graph edges, `contextRefs`, `inputRefs`,
+/// `{{node.A…}}` references and ticket variables. Shared by recovery and
+/// feedback corrections.
+pub fn dependency_pairs(workflow: &Workflow) -> Vec<(String, String)> {
     let mut dependencies: Vec<(String, String)> = workflow
         .edges
         .iter()
@@ -412,6 +440,41 @@ pub fn invalidated_nodes(workflow: &Workflow, rows: &[StoredNodeResult]) -> Hash
             }
         }
     }
+    dependencies
+}
+
+/// Every step that uses the work of `seeds`, directly or through others
+/// (the seeds themselves only when a loop leads back to them).
+pub fn downstream_closure(workflow: &Workflow, seeds: &HashSet<String>) -> HashSet<String> {
+    let dependencies = dependency_pairs(workflow);
+    let mut reached: HashSet<String> = HashSet::new();
+    let mut frontier: Vec<String> = seeds.iter().cloned().collect();
+    while let Some(id) = frontier.pop() {
+        for (source, target) in &dependencies {
+            if *source == id && reached.insert(target.clone()) {
+                frontier.push(target.clone());
+            }
+        }
+    }
+    reached
+}
+
+pub fn invalidated_nodes(workflow: &Workflow, rows: &[StoredNodeResult]) -> HashSet<String> {
+    let mut latest: HashMap<&str, &StoredNodeResult> = HashMap::new();
+    for row in rows {
+        if matches!(
+            row.status.as_str(),
+            "succeeded" | "failed" | "cancelled" | "approved" | "rejected" | "skipped"
+        ) {
+            latest.insert(&row.node_id, row);
+        }
+    }
+    let mut affected: HashSet<String> = latest
+        .iter()
+        .filter(|(_, r)| matches!(r.status.as_str(), "failed" | "cancelled" | "rejected"))
+        .map(|(id, _)| (*id).to_string())
+        .collect();
+    let dependencies = dependency_pairs(workflow);
     loop {
         let mut changed = false;
         for (source, target) in &dependencies {

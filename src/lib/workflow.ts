@@ -178,12 +178,15 @@ export interface WorkflowLimits {
   maxToolCalls?: number;
   maxSubagents?: number;
   spendLimitUsd?: number;
+  /** Correction rounds feedback may start in one run (1–5, default 2). */
+  maxCorrectionRounds?: number;
 }
 
 /** Hard bounds mirror Rust MAX_*_LIMIT. */
 export const MAX_ATTEMPTS_LIMIT = 10_000;
 export const MAX_TOOL_CALL_LIMIT = 100_000;
 export const MAX_SUBAGENT_LIMIT = 1_000;
+export const MAX_CORRECTION_ROUNDS = 5;
 
 export function validateLimitValue(
   name: string,
@@ -226,6 +229,14 @@ export function validateWorkflowLimits(limits: WorkflowLimits): string | null {
     (!Number.isFinite(limits.spendLimitUsd) || limits.spendLimitUsd <= 0)
   )
     return 'Spend limit must be a positive finite USD amount.';
+  if (limits.maxCorrectionRounds !== undefined) {
+    const error = validateLimitValue(
+      'Correction round limit',
+      limits.maxCorrectionRounds,
+      MAX_CORRECTION_ROUNDS,
+    );
+    if (error) return error;
+  }
   return null;
 }
 

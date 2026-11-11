@@ -1,0 +1,87 @@
+{
+  "about": "Read by crates/core/src/feedback.rs and src/lib/feedback.test.ts: who handles feedback, which steps a correction reruns, and how a check's decision is read must agree.",
+  "workflow": {
+    "schemaVersion": 6,
+    "id": "wf",
+    "name": "W",
+    "nodes": [
+      { "id": "start", "type": "start", "position": { "x": 0, "y": 0 }, "config": {} },
+      { "id": "impl", "type": "agent", "position": { "x": 0, "y": 0 }, "config": {} },
+      { "id": "tests", "type": "command", "position": { "x": 0, "y": 0 }, "config": {} },
+      { "id": "review", "type": "agent", "position": { "x": 0, "y": 0 }, "config": {} },
+      { "id": "gate", "type": "condition", "position": { "x": 0, "y": 0 }, "config": {} },
+      { "id": "fix", "type": "agent", "position": { "x": 0, "y": 0 }, "config": {} },
+      { "id": "lint", "type": "command", "position": { "x": 0, "y": 0 }, "config": {} },
+      {
+        "id": "summary",
+        "type": "command",
+        "position": { "x": 0, "y": 0 },
+        "config": { "args": ["{{node.impl.output}}"] }
+      },
+      {
+        "id": "push",
+        "type": "command",
+        "position": { "x": 0, "y": 0 },
+        "config": { "publishes": true }
+      },
+      { "id": "end", "type": "end", "position": { "x": 0, "y": 0 }, "config": {} }
+    ],
+    "edges": [
+      { "id": "e1", "source": "start", "target": "impl" },
+      { "id": "e2", "source": "impl", "target": "tests" },
+      { "id": "e3", "source": "tests", "target": "review" },
+      { "id": "e4", "source": "review", "target": "gate" },
+      { "id": "e5", "source": "gate", "target": "push", "label": "true" },
+      { "id": "e6", "source": "gate", "target": "fix", "label": "false" },
+      { "id": "e7", "source": "fix", "target": "tests" },
+      { "id": "e8", "source": "start", "target": "lint" },
+      { "id": "e9", "source": "lint", "target": "push" },
+      { "id": "e10", "source": "push", "target": "end" },
+      { "id": "e11", "source": "lint", "target": "summary" },
+      { "id": "e12", "source": "summary", "target": "end" }
+    ]
+  },
+  "targets": [
+    { "node": "impl", "target": "impl" },
+    { "node": "tests", "target": "impl" },
+    { "node": "push", "target": "review" },
+    { "node": "summary", "target": "impl" },
+    { "node": "gate", "target": "review" },
+    { "node": "lint", "target": null },
+    { "node": "missing", "target": null }
+  ],
+  "plans": [
+    {
+      "targets": ["impl"],
+      "roots": ["impl"],
+      "affected": ["tests", "review", "gate", "fix", "summary", "push", "end"]
+    },
+    {
+      "targets": ["review", "impl"],
+      "roots": ["impl"],
+      "affected": ["tests", "review", "gate", "fix", "summary", "push", "end"]
+    },
+    {
+      "targets": ["fix", "review"],
+      "roots": ["review"],
+      "affected": ["tests", "gate", "fix", "push", "end"]
+    }
+  ],
+  "decisions": [
+    {
+      "text": "Fine.\n```orchevia-feedback\n{\"decision\":\"satisfied\",\"explanation\":\"Old keys still load.\"}\n```",
+      "kind": "satisfied",
+      "explanation": "Old keys still load."
+    },
+    {
+      "text": "{\"decision\": \"change\", \"explanation\": \"x\", \"change\": \"Read old keys too.\"}",
+      "kind": "change",
+      "explanation": "x",
+      "change": "Read old keys too."
+    },
+    { "text": "It is satisfied.", "kind": "unclear" },
+    { "text": "```orchevia-feedback\nnot json\n```", "kind": "unclear" },
+    { "text": "{\"decision\":\"maybe\"}", "kind": "unclear" },
+    { "text": "{\"decision\":\"change\"}", "kind": "unclear" }
+  ]
+}
