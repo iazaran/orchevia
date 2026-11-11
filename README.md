@@ -41,8 +41,9 @@ and signed in to yourself, so it uses your existing subscription and its limits.
   in parallel, with findings normalized to P0–P3.
 - 🧭 **Predictable, not autonomous.** A fixed graph of commands, agents, conditions,
   approvals, bounded loops and timeouts. Nothing runs until you press Run.
-- ✋ **You stay in the loop.** Durable Human Approval gates, read-only run snapshots,
-  cancel at any time, and deliberate recovery of failed runs.
+- ✋ **You stay in the loop.** Durable Human Approval gates, feedback on any step while
+  a run is going (handled before anything is pushed), read-only run snapshots, cancel
+  at any time, and deliberate recovery of failed runs.
 - 🔒 **Local and honest.** Workflows and history live in local SQLite, tool permissions
   are explicit, automation that writes is trust-gated, and CLI-reported usage is kept
   apart from estimates.
@@ -114,8 +115,9 @@ wizard detects `git`, `gh`, `claude` and `codex`, including CLIs on your login s
    approve the plan, Claude implements, Codex reviews.
 3. **Select a node** to set its profile, prompt and timeout. Badges on the canvas flag
    anything missing before you run.
-4. **Press ▶ Run.** Watch progress on the canvas, approve the paused gate, and read each
-   step's live output in **Runs**. Opening a workflow never runs it.
+4. **Press ▶ Run.** Watch progress on the canvas, approve the paused gate, and see in
+   **Runs** what each step is doing and what it changed. If a step needs a change, send
+   it **Feedback** without stopping the run. Opening a workflow never runs it.
 5. **Go further:** describe a goal with **✦ Generate**, save flows as **Templates**, or
    schedule them under **Automations**.
 
@@ -143,8 +145,9 @@ stays in sync.
 </td>
 <td width="50%" valign="top">
 
-**Inspect every run.** A timeline shows parallel steps on one time axis, each step's
-output and findings, which context a step resumed, and what each CLI reported.
+**Read every run.** Each step says what it is for, what it is doing now and what it
+changed: files, test results, failed commands and findings. A timeline shows parallel
+steps on one time axis; raw output and CLI usage stay one click away.
 
 <img src="./docs/images/run-timeline.webp" alt="The Runs view: a succeeded run with a timeline of 16 step attempts, including parallel Claude and Codex reviews, and a report of the final Codex review." />
 
@@ -209,9 +212,18 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
   working directory and a **Permissions** level: the app-wide choice you make once
   (full access or your CLI settings), or the profile's own CLI settings, explicit allow
   list or full access.
+- **Readable runs.** Step cards built from what the CLI reported: files changed, test
+  results from the runner's own exit code and summary, failed commands, the agent's
+  task list and what it is doing now. Text the agent wrote about itself is labelled as
+  its words.
+- **Feedback during a run.** Write a note on any step while the run is going. Before
+  the run publishes, hits an approval or finishes, the step checks it against its work;
+  if a change is needed it reruns with your note, and the steps that use its work
+  rerun after it. Feedback that arrives after publishing is recorded, never applied.
 - **Integrations.** Safe Git operations (dirty or lossy states refused), GitHub through
   your own `gh` (draft PRs, checks, comments), Jira tickets and other tools through your
-  MCP servers.
+  MCP servers, with **Check server** to test one before a workflow depends on it. Steps
+  that push, open pull requests or comment are marked as publishing.
 - **Local automation.** Durable schedules, PR review and feedback watchers with bot-loop
   guards, a notification inbox, and opt-in background mode. Schedules that write need a
   per-schedule trust opt-in.

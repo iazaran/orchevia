@@ -1207,7 +1207,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
           <h2 id="tour-h">Everything a run touched, in one place</h2>
           <p class="section-intro">
             Real screens from the desktop app. Edit on the canvas, follow each run step by
-            step, and see what your CLIs reported.
+            step, steer it with feedback, and see what your CLIs reported.
           </p>
           <div data-tabs>
             <div role="tablist" aria-label="Product tour">
@@ -1300,16 +1300,19 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
               </figure>
               <ul>
                 <li>
-                  <strong>A timeline on one time axis,</strong> so parallel reviews and
-                  loop visits are easy to read.
+                  <strong>Each step says what it did:</strong> what it is for, what it is
+                  doing now, and the files it changed, tests it ran and commands that
+                  failed, from what the CLI reported.
                 </li>
                 <li>
-                  <strong>Output and findings per step,</strong> with whether the agent
-                  resumed its earlier context.
+                  <strong>Feedback while it runs:</strong> a note on a step is checked
+                  against its work and, when it needs a change, corrected and rerun with
+                  what uses it, before anything is pushed.
                 </li>
                 <li>
-                  <strong>Read-only run snapshots</strong> on the canvas, and deliberate
-                  recovery of failed runs from their original inputs.
+                  <strong>A timeline on one time axis</strong> for parallel steps and loop
+                  visits, read-only run snapshots on the canvas, and recovery of failed
+                  runs from their original inputs.
                 </li>
               </ul>
             </div>
@@ -1469,6 +1472,30 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
                 accepted commands and conventions.
               </p>
             </div>
+            <div class="card">
+              <span class="icon" aria-hidden="true">💬</span>
+              <h3>Steer a run while it runs</h3>
+              <p>
+                Send feedback to a step mid-run. It is checked and, if needed, corrected
+                before the run pushes, opens a pull request or comments.
+              </p>
+            </div>
+            <div class="card">
+              <span class="icon" aria-hidden="true">📖</span>
+              <h3>Runs you can read</h3>
+              <p>
+                Files changed, tests passed or failed, failed commands and the agent's
+                task list, taken from exit codes and the CLI's own events.
+              </p>
+            </div>
+            <div class="card">
+              <span class="icon" aria-hidden="true">🩺</span>
+              <h3>Check your setup</h3>
+              <p>
+                Prove an agent profile works with one short prompt, and check that an MCP
+                server starts and lists the tools your workflows use.
+              </p>
+            </div>
           </div>
         </section>
 
@@ -1609,7 +1636,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
               </li>
               <li>
                 <strong>Press ▶ Run.</strong> Approve the paused gate, follow each step in
-                Runs, cancel at any time.
+                Runs, send feedback to a step, cancel at any time.
               </li>
               <li>
                 <strong>Go further:</strong> ✦ Generate from a goal, save Templates, or
