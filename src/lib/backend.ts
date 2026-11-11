@@ -89,6 +89,8 @@ import {
   type GitHubState,
   type McpServerConfig,
   type McpToolInfo,
+  type McpCheckReport,
+  MCP_CHECK_LABELS,
 } from './integrations';
 import type {
   EditObservation,
@@ -239,6 +241,9 @@ export interface Backend {
   saveMcpServer(server: McpServerConfig): Promise<McpServerConfig>;
   deleteMcpServer(id: string): Promise<boolean>;
   mcpListTools(serverId: string): Promise<McpToolInfo[]>;
+  /** Check a server on request; never calls a tool. Cancel with `cancelMcpCheck`. */
+  mcpCheckServer(serverId: string): Promise<McpCheckReport>;
+  cancelMcpCheck(serverId: string): Promise<boolean>;
   mcpEnvPresent(names: string[]): Promise<{ name: string; present: boolean }[]>;
   githubState(): Promise<GitHubState>;
   listSchedules(): Promise<Schedule[]>;
@@ -521,6 +526,12 @@ class TauriBackend implements Backend {
   }
   deleteMcpServer(id: string): Promise<boolean> {
     return this.invoke('delete_mcp_server', { id });
+  }
+  mcpCheckServer(serverId: string): Promise<McpCheckReport> {
+    return this.invoke('mcp_check_server', { serverId });
+  }
+  cancelMcpCheck(serverId: string): Promise<boolean> {
+    return this.invoke('cancel_mcp_check', { serverId });
   }
   mcpListTools(serverId: string): Promise<McpToolInfo[]> {
     return this.invoke('mcp_list_tools', { serverId });
@@ -2730,6 +2741,39 @@ class MockBackend implements Backend {
 
   async mcpListTools(): Promise<McpToolInfo[]> {
     return [{ name: 'example_tool', description: 'Mock tool (browser dev).' }];
+  }
+
+  async mcpCheckServer(serverId: string): Promise<McpCheckReport> {
+    const server = this.mcpServers.get(serverId);
+    if (server === undefined) throw new Error(`Unknown MCP server '${serverId}'.`);
+    // The browser preview starts no programs, so the check stops at the
+    // first item, as the desktop app does for a program it cannot find.
+    return {
+      serverId,
+      serverName: server.name,
+      status: 'failed',
+      items: [
+        {
+          id: 'found',
+          label: MCP_CHECK_LABELS.found,
+          status: 'failed',
+          detail: `'${server.command}' was not found: the browser preview starts no programs.`,
+          hint: 'Run the desktop app to check this server.',
+        },
+        ...(['started', 'listed', 'required'] as const).map((id) => ({
+          id,
+          label: MCP_CHECK_LABELS[id],
+          status: 'skipped' as const,
+          detail: 'Not checked: the program was not found.',
+        })),
+      ],
+      tools: [],
+      durationMs: 0,
+    };
+  }
+
+  async cancelMcpCheck(): Promise<boolean> {
+    return false;
   }
 
   async mcpEnvPresent(names: string[]): Promise<{ name: string; present: boolean }[]> {

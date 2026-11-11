@@ -216,6 +216,8 @@ fn main() {
             commands::continue_spend_run,
             commands::continue_usage_run,
             commands::continue_feedback_run,
+            commands::mcp_check_server,
+            commands::cancel_mcp_check,
             commands::submit_step_feedback,
             commands::list_run_feedback,
             commands::usage_summary,

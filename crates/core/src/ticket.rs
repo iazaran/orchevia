@@ -59,6 +59,9 @@ pub trait TicketSource {
     fn load_ticket(&self, key: &str) -> Result<NormalizedTicket, String>;
 }
 
+/// The tool Ticket steps call on their MCP server.
+pub const DEFAULT_TICKET_TOOL: &str = "jira_get_issue";
+
 /// Jira via a configured MCP server. The tool name is configurable because
 /// MCP servers differ (`jira_get_issue` is the common default).
 pub struct JiraMcpSource {
@@ -74,7 +77,7 @@ impl JiraMcpSource {
     pub fn new(server: crate::mcp::McpServerConfig) -> Self {
         Self {
             server,
-            tool_name: "jira_get_issue".to_string(),
+            tool_name: DEFAULT_TICKET_TOOL.to_string(),
             timeout: Duration::from_secs(30),
             cancel: Arc::new(AtomicBool::new(false)),
             max_context_chars: 8000,

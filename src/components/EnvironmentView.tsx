@@ -5,6 +5,7 @@ import {
   validateMcpServer,
   type McpServerConfig,
   type McpToolInfo,
+  type McpCheckReport,
 } from '../lib/integrations';
 import { AgentPermissionsSettings } from './AgentPermissions';
 import { confirmDialog } from './ConfirmDialog';
@@ -16,7 +17,7 @@ import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 import { UpdatesSection } from './Updates';
 import { LinesTextarea } from './DraftText';
-import { SetupCheckPanel } from './SetupCheck';
+import { CheckList, SetupCheckPanel } from './SetupCheck';
 
 export function EnvironmentView(): React.JSX.Element {
   const tools = useAppStore((s) => s.tools);
@@ -40,6 +41,15 @@ export function EnvironmentView(): React.JSX.Element {
   >({});
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [diagnostics, setDiagnostics] = useState<string | null>(null);
+  // MCP server checks, run only when asked, per server.
+  const [serverChecks, setServerChecks] = useState<
+    Record<
+      string,
+      | { state: 'checking' }
+      | { state: 'done'; report: McpCheckReport }
+      | { state: 'error'; message: string }
+    >
+  >({});
 
   const refreshAll = (): void => {
     void Promise.all([refreshTools(), refreshProfiles(), refreshIntegrations()]);
@@ -78,6 +88,21 @@ export function EnvironmentView(): React.JSX.Element {
           setMessage(errorMessage(err), 'error');
         });
     });
+  };
+
+  const checkServer = (id: string): void => {
+    setServerChecks((prev) => ({ ...prev, [id]: { state: 'checking' } }));
+    void getBackend()
+      .mcpCheckServer(id)
+      .then((report) => {
+        setServerChecks((prev) => ({ ...prev, [id]: { state: 'done', report } }));
+      })
+      .catch((err: unknown) => {
+        setServerChecks((prev) => ({
+          ...prev,
+          [id]: { state: 'error', message: errorMessage(err) },
+        }));
+      });
   };
 
   const listTools = (id: string): void => {
@@ -298,6 +323,26 @@ export function EnvironmentView(): React.JSX.Element {
                   >
                     {tools === undefined ? 'List tools' : 'Refresh tools'}
                   </button>
+                  {serverChecks[s.id]?.state === 'checking' ? (
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => {
+                        void getBackend().cancelMcpCheck(s.id);
+                      }}
+                    >
+                      Cancel check
+                    </button>
+                  ) : (
+                    <button
+                      className="btn btn-ghost"
+                      title="Starts the server, lists its tools and compares them with your workflows. Never calls a tool."
+                      onClick={() => {
+                        checkServer(s.id);
+                      }}
+                    >
+                      Check server
+                    </button>
+                  )}
                   <button
                     className="btn"
                     onClick={() => {
@@ -307,6 +352,32 @@ export function EnvironmentView(): React.JSX.Element {
                     Edit
                   </button>
                 </div>
+                {serverChecks[s.id] !== undefined && (
+                  <div style={{ marginTop: 8 }} aria-live="polite">
+                    {serverChecks[s.id]?.state === 'checking' && (
+                      <p className="field-hint">
+                        Checking: starting the server and listing its tools (up to 45 s)…
+                      </p>
+                    )}
+                    {(() => {
+                      const check = serverChecks[s.id];
+                      if (check?.state === 'done')
+                        return (
+                          <CheckList
+                            label={`Server check for ${check.report.serverName}`}
+                            items={check.report.items}
+                          />
+                        );
+                      if (check?.state === 'error')
+                        return (
+                          <Notice variant="error" style={{ marginBottom: 0 }}>
+                            Check failed: {check.message}
+                          </Notice>
+                        );
+                      return null;
+                    })()}
+                  </div>
+                )}
                 {tools !== undefined && (
                   <div style={{ marginTop: 8 }}>
                     {tools.state === 'loading' && (

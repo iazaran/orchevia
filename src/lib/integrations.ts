@@ -16,6 +16,35 @@ export interface McpToolInfo {
   inputSchema?: Record<string, unknown>;
 }
 
+/** One line of an MCP server check. Mirrors `McpCheckItem`. */
+export interface McpCheckItem {
+  id: 'found' | 'started' | 'listed' | 'required';
+  label: string;
+  status: 'passed' | 'warning' | 'failed' | 'skipped';
+  detail: string;
+  hint?: string;
+}
+
+/**
+ * A check of one MCP server, run only on request: found, started, tools
+ * listed, and the tools saved workflows use. Never calls a tool.
+ */
+export interface McpCheckReport {
+  serverId: string;
+  serverName: string;
+  status: McpCheckItem['status'];
+  items: McpCheckItem[];
+  tools: McpToolInfo[];
+  durationMs: number;
+}
+
+export const MCP_CHECK_LABELS: Record<McpCheckItem['id'], string> = {
+  found: 'Program found',
+  started: 'Starts and completes the MCP handshake',
+  listed: 'Lists its tools',
+  required: 'Has the tools your workflows use',
+};
+
 export interface GitHubState {
   installed: boolean;
   authenticated: boolean;

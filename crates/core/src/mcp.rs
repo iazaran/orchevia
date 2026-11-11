@@ -436,6 +436,294 @@ impl McpPipes {
     }
 }
 
+/// One line of an MCP server check.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCheckItem {
+    /// `found`, `started`, `listed` or `required`.
+    pub id: &'static str,
+    pub label: &'static str,
+    /// `passed`, `warning`, `failed` or `skipped`.
+    pub status: &'static str,
+    pub detail: String,
+    /// The next useful action when something is wrong.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// An explicit, bounded check of one MCP server: its program is found, it
+/// starts and completes the MCP handshake, it lists its tools, and the tools
+/// saved workflows use are among them. It never calls a tool.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCheckReport {
+    pub server_id: String,
+    pub server_name: String,
+    /// The worst item: `failed` > `warning` > `passed` > `skipped`.
+    pub status: &'static str,
+    pub items: Vec<McpCheckItem>,
+    pub tools: Vec<McpToolInfo>,
+    pub duration_ms: u64,
+}
+
+/// The tools saved workflows call on `server_id`: MCP steps' tools, and the
+/// issue lookup Ticket steps use.
+pub fn required_tools(workflows: &[crate::workflow::Workflow], server_id: &str) -> Vec<String> {
+    use crate::workflow::NodeKind;
+    let mut tools: Vec<String> = Vec::new();
+    for node in workflows.iter().flat_map(|w| &w.nodes) {
+        if node.config.mcp_server_id.as_deref() != Some(server_id) {
+            continue;
+        }
+        let tool = match node.kind {
+            NodeKind::Mcp => node
+                .config
+                .mcp_tool
+                .clone()
+                .filter(|t| !t.trim().is_empty()),
+            NodeKind::Ticket => Some(crate::ticket::DEFAULT_TICKET_TOOL.to_string()),
+            _ => None,
+        };
+        if let Some(tool) = tool {
+            if !tools.contains(&tool) {
+                tools.push(tool);
+            }
+        }
+    }
+    tools.sort();
+    tools
+}
+
+fn check_item(
+    id: &'static str,
+    label: &'static str,
+    status: &'static str,
+    detail: impl Into<String>,
+    hint: Option<&str>,
+) -> McpCheckItem {
+    McpCheckItem {
+        id,
+        label,
+        status,
+        detail: detail.into(),
+        hint: hint.map(str::to_string),
+    }
+}
+
+const FOUND: &str = "Program found";
+const STARTED: &str = "Starts and completes the MCP handshake";
+const LISTED: &str = "Lists its tools";
+const REQUIRED: &str = "Has the tools your workflows use";
+
+/// Run the check. Bounded by `timeout`, stopped by `cancel`; the server's
+/// whole process tree is stopped afterwards.
+pub fn check_server(
+    config: &McpServerConfig,
+    required: &[String],
+    timeout: Duration,
+    cancel: &Arc<AtomicBool>,
+) -> McpCheckReport {
+    let started_at = Instant::now();
+    let mut items: Vec<McpCheckItem> = Vec::new();
+    let mut tools: Vec<McpToolInfo> = Vec::new();
+    let skip_rest = |items: &mut Vec<McpCheckItem>, why: &str| {
+        for (id, label) in [
+            ("started", STARTED),
+            ("listed", LISTED),
+            ("required", REQUIRED),
+        ] {
+            if !items.iter().any(|i| i.id == id) {
+                items.push(check_item(id, label, "skipped", why, None));
+            }
+        }
+    };
+    if !config.enabled {
+        items.push(check_item(
+            "found",
+            FOUND,
+            "failed",
+            "This server is turned off.",
+            Some("Turn it on in its settings to check it."),
+        ));
+        skip_rest(&mut items, "Not checked: the server is off.");
+    } else if let Some(path) = crate::tools::find_executable(&config.command) {
+        items.push(check_item(
+            "found",
+            FOUND,
+            "passed",
+            path.to_string_lossy(),
+            None,
+        ));
+        match check_exchange(config, timeout, cancel) {
+            Err((phase, message, stderr)) => {
+                let tail = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Its error output: {}",
+                        stderr.chars().take(600).collect::<String>()
+                    )
+                };
+                if message == "Cancelled." {
+                    skip_rest(&mut items, "Cancelled.");
+                } else if phase == "list" {
+                    items.push(check_item(
+                        "started",
+                        STARTED,
+                        "passed",
+                        "It answered the handshake.",
+                        None,
+                    ));
+                    items.push(check_item(
+                        "listed",
+                        LISTED,
+                        "failed",
+                        format!("{message}{tail}"),
+                        Some("The server may need environment variables (tokens, URLs) set before Orchevia starts, or a newer version."),
+                    ));
+                    skip_rest(&mut items, "Not checked: no tool list.");
+                } else {
+                    let hint = if message.contains("exceeded") {
+                        "It started but did not answer in time. Check its arguments and environment variables; a first run through npx or uvx may need longer to download."
+                    } else {
+                        "Run the command in a terminal to see why it stops, or check that it is an MCP server that speaks over stdio."
+                    };
+                    items.push(check_item(
+                        "started",
+                        STARTED,
+                        "failed",
+                        format!("{message}{tail}"),
+                        Some(hint),
+                    ));
+                    skip_rest(&mut items, "Not checked: the server did not start.");
+                }
+            }
+            Ok(listed) => {
+                tools = listed;
+                items.push(check_item(
+                    "started",
+                    STARTED,
+                    "passed",
+                    "It answered the handshake.",
+                    None,
+                ));
+                if tools.is_empty() {
+                    items.push(check_item(
+                        "listed",
+                        LISTED,
+                        "warning",
+                        "It started but lists no tools.",
+                        Some("Check that its environment variables are set; some servers only offer tools once signed in."),
+                    ));
+                } else {
+                    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).take(8).collect();
+                    items.push(check_item(
+                        "listed",
+                        LISTED,
+                        "passed",
+                        format!(
+                            "{} tool{}: {}{}",
+                            tools.len(),
+                            if tools.len() == 1 { "" } else { "s" },
+                            names.join(", "),
+                            if tools.len() > names.len() {
+                                ", …"
+                            } else {
+                                ""
+                            }
+                        ),
+                        None,
+                    ));
+                }
+                let missing: Vec<&String> = required
+                    .iter()
+                    .filter(|name| !tools.iter().any(|t| &t.name == *name))
+                    .collect();
+                items.push(if required.is_empty() {
+                    check_item("required", REQUIRED, "skipped", "No saved workflow uses a tool from this server.", None)
+                } else if missing.is_empty() {
+                    check_item(
+                        "required",
+                        REQUIRED,
+                        "passed",
+                        format!("All {} tool{} your workflows use: {}.", required.len(), if required.len() == 1 { "" } else { "s" }, required.join(", ")),
+                        None,
+                    )
+                } else {
+                    check_item(
+                        "required",
+                        REQUIRED,
+                        "failed",
+                        format!(
+                            "Missing: {}.",
+                            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                        ),
+                        Some("Check the tool names in the steps that use this server, or update the server."),
+                    )
+                });
+            }
+        }
+    } else {
+        items.push(check_item(
+            "found",
+            FOUND,
+            "failed",
+            format!("'{}' was not found on PATH or as a file.", config.command),
+            Some("Install it, or set the full path to the program in this server's settings."),
+        ));
+        skip_rest(&mut items, "Not checked: the program was not found.");
+    }
+    let rank = |status: &str| match status {
+        "failed" => 3,
+        "warning" => 2,
+        "passed" => 1,
+        _ => 0,
+    };
+    let status = items
+        .iter()
+        .map(|i| i.status)
+        .max_by_key(|s| rank(s))
+        .unwrap_or("skipped");
+    McpCheckReport {
+        server_id: config.id.clone(),
+        server_name: config.name.clone(),
+        status,
+        items,
+        tools,
+        duration_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    }
+}
+
+/// Handshake then `tools/list`; an error names the phase it stopped in
+/// (`start`, `initialize` or `list`) and carries the server's error output.
+fn check_exchange(
+    config: &McpServerConfig,
+    timeout: Duration,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Vec<McpToolInfo>, (&'static str, String, String)> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(("start", "Cancelled.".into(), String::new()));
+    }
+    let SpawnedServer {
+        mut child,
+        group,
+        pipes,
+        stderr_log,
+    } = spawn_server(config).map_err(|e| ("start", e, String::new()))?;
+    let phase = Arc::new(Mutex::new("initialize"));
+    let reached = Arc::clone(&phase);
+    let result = run_bounded(&mut child, &group, pipes, timeout, cancel, move |pipes| {
+        pipes.initialize()?;
+        if let Ok(mut current) = reached.lock() {
+            *current = "list";
+        }
+        pipes.list_tools()
+    });
+    shutdown(child, group);
+    let phase = phase.lock().map(|p| *p).unwrap_or("initialize");
+    result.map_err(|e| (phase, e, stderr_tail_wait(&stderr_log)))
+}
+
 /// Probe a server command with `--version`-style courtesy: MCP servers speak
 /// stdio, so availability is just "resolves on PATH / is a file".
 pub fn probe_server(config: &McpServerConfig) -> HashMap<String, String> {
@@ -514,6 +802,138 @@ done
 
     fn cancel_flag() -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
+    }
+
+    fn statuses(report: &McpCheckReport) -> Vec<(&'static str, &'static str)> {
+        report.items.iter().map(|i| (i.id, i.status)).collect()
+    }
+
+    fn script_config(dir: &tempfile::TempDir, name: &str, body: &str) -> McpServerConfig {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.path().join(name);
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        McpServerConfig {
+            id: name.into(),
+            name: name.into(),
+            command: script.to_string_lossy().into_owned(),
+            args: vec![],
+            enabled: true,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_working_server_passes_and_names_missing_workflow_tools() {
+        let (_dir, config) = fixture_config();
+        let report = check_server(
+            &config,
+            &["jira_get_issue".into()],
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert_eq!(report.status, "passed", "{report:#?}");
+        assert_eq!(
+            statuses(&report),
+            [
+                ("found", "passed"),
+                ("started", "passed"),
+                ("listed", "passed"),
+                ("required", "passed")
+            ]
+        );
+        assert_eq!(report.tools[0].name, "jira_get_issue");
+        let missing = check_server(
+            &config,
+            &["jira_search".into(), "jira_get_issue".into()],
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert_eq!(missing.status, "failed");
+        assert_eq!(missing.items[3].detail, "Missing: jira_search.");
+        let unused = check_server(&config, &[], Duration::from_secs(10), &cancel_flag());
+        assert_eq!(unused.items[3].status, "skipped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_server_that_stops_or_stays_silent_says_where_and_what_to_do() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let crash = script_config(&dir, "crash", "echo 'JIRA_URL is not set' >&2; exit 3");
+        let report = check_server(&crash, &[], Duration::from_secs(10), &cancel_flag());
+        assert_eq!(
+            statuses(&report),
+            [
+                ("found", "passed"),
+                ("started", "failed"),
+                ("listed", "skipped"),
+                ("required", "skipped")
+            ]
+        );
+        assert!(
+            report.items[1].detail.contains("JIRA_URL is not set"),
+            "{report:#?}"
+        );
+        assert!(report.items[1].hint.is_some());
+        let silent = script_config(&dir, "silent", "sleep 30");
+        let started = Instant::now();
+        let report = check_server(&silent, &[], Duration::from_secs(1), &cancel_flag());
+        assert!(started.elapsed() < Duration::from_secs(10), "bounded");
+        assert_eq!(report.items[1].status, "failed");
+        assert!(report.items[1]
+            .hint
+            .as_deref()
+            .unwrap_or("")
+            .contains("did not answer in time"));
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let report = check_server(&silent, &[], Duration::from_secs(10), &cancelled);
+        assert!(
+            report.items[1..].iter().all(|i| i.status == "skipped"),
+            "{report:#?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_disabled_server_is_not_started() {
+        let missing = McpServerConfig {
+            id: "m".into(),
+            name: "m".into(),
+            command: "no-such-mcp-server-v020".into(),
+            args: vec![],
+            enabled: true,
+        };
+        let report = check_server(&missing, &[], Duration::from_secs(1), &cancel_flag());
+        assert_eq!(report.items[0].status, "failed");
+        assert!(report.items[0]
+            .hint
+            .as_deref()
+            .unwrap_or("")
+            .contains("full path"));
+        let off = McpServerConfig {
+            enabled: false,
+            ..missing
+        };
+        let report = check_server(&off, &[], Duration::from_secs(1), &cancel_flag());
+        assert_eq!(report.items[0].detail, "This server is turned off.");
+        assert_eq!(report.status, "failed");
+    }
+
+    #[test]
+    fn workflows_name_the_tools_they_need_from_a_server() {
+        let workflow: crate::workflow::Workflow = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 6, "id": "w", "name": "W",
+            "nodes": [
+                {"id": "a", "type": "mcp", "position": {"x":0,"y":0}, "config": {"mcpServerId": "jira", "mcpTool": "jira_search"}},
+                {"id": "b", "type": "ticket", "position": {"x":0,"y":0}, "config": {"mcpServerId": "jira", "ticketKey": "X-1"}},
+                {"id": "c", "type": "mcp", "position": {"x":0,"y":0}, "config": {"mcpServerId": "other", "mcpTool": "x"}}
+            ],
+            "edges": []
+        }))
+        .expect("workflow");
+        assert_eq!(
+            required_tools(&[workflow], "jira"),
+            ["jira_get_issue", "jira_search"]
+        );
     }
 
     #[test]

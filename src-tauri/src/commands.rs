@@ -493,6 +493,51 @@ pub async fn mcp_list_tools(
     .map_err(|e| format!("MCP discovery failed to join: {e}"))?
 }
 
+/// Check one MCP server on request: found, started, tools listed, and the
+/// tools saved workflows use. Never calls a tool; bounded at 45 s (a first
+/// `npx`/`uvx` run downloads the package) and cancellable.
+#[tauri::command]
+pub async fn mcp_check_server(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<orchevia_core::mcp::McpCheckReport, String> {
+    let server = state
+        .db
+        .get_mcp_server(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Unknown MCP server '{server_id}'."))?;
+    let workflows: Vec<orchevia_core::workflow::Workflow> = state
+        .db
+        .list_workflows()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|stored| stored.definition)
+        .collect();
+    let required = orchevia_core::mcp::required_tools(&workflows, &server_id);
+    let key = format!("mcp-check-{server_id}");
+    // A fresh flag per check: an earlier cancel must not stop this one.
+    state.cancel.remove(&key);
+    let cancel = state.cancel.flag_for(&key);
+    let registry = state.cancel.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::mcp::check_server(
+            &server,
+            &required,
+            std::time::Duration::from_secs(45),
+            &cancel,
+        )
+    })
+    .await
+    .map_err(|e| format!("MCP check failed to join: {e}"))?;
+    registry.remove(&key);
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn cancel_mcp_check(state: State<AppState>, server_id: String) -> bool {
+    state.cancel.cancel(&format!("mcp-check-{server_id}"))
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvPresence {
