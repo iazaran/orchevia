@@ -135,7 +135,7 @@ today's output view.
   fixtures (`feedback:<agentStepId>` for checks; corrections take the step's
   next fixture).
 - **Run end.** Items still open when a run fails or is cancelled become
-  `not-processed` (or `needs-attention` when their correction failed).
+  `not-processed`, with the reason; recovery carries them over.
 - **Mock.** `replayGraph` applies the marker row and gate; the mock processes
   feedback at the same checkpoints (a browser-only check that always asks for a
   change, said so in its explanation).
@@ -194,4 +194,63 @@ today's output view.
 
 ## 9. Outcome
 
-To be written when the work is done.
+Shipped as planned in sections 1–6, with these decisions and changes found while
+building and reviewing it:
+
+- **Recorded streams changed the parser.** Claude Code 2.1.303 tracks its plan with
+  `TaskCreate`/`TaskUpdate` (not `TodoWrite`), reports a failed Bash call as
+  `is_error: true` with "Exit code N", and says whether `Write` created a file.
+  Codex 0.166.0 wraps commands in the login shell (`/usr/bin/zsh -lc '…'`), sends
+  `item.started` before `item.completed`, and reports `file_change` kinds. One short
+  prompt per CLI was recorded in a scratch folder; the sanitized streams are the
+  fixtures. Codex `todo_list`, `mcp_tool_call` and `web_search` follow its documented
+  item types and are not yet recorded.
+- **Checks are rows, not a side table.** A check is a `checked` row on the AI step,
+  so attempt budgets, reported spend and the usage summary count it with no new
+  accounting path; replay ignores the status, and the restart sweep closes a running
+  check as `checked`. A run whose reported spend reached its target pauses for spend
+  before a check.
+- **Same-run corrections.** The `__feedback` marker row resets the corrected steps
+  and the closure of `run_controls::dependency_pairs` without loop-back edges (shared
+  with recovery), with fresh visit allowances; steps only a loop-back edge reaches are
+  `refreshed` (fresh allowance, results kept), so a corrected review inside a fix
+  loop never reruns the tests beside the gate. A gate holds the rerun steps until the
+  corrected steps finish. Recovery of a run that failed after a correction seeds only
+  the results after the last round (`superseded_by_corrections`), and inside a
+  recovered run a round overrides reuse and skip choices and approval seeds for the
+  steps it covers.
+- **Races and closings.** A publishing claim refused because feedback landed in the
+  same tick waits for the next tick instead of reading as a deadlock (tested through
+  a test-only hook in the race window). Cancelling a paused run or rejecting its
+  approval closes waiting feedback in the same transaction. A round pauses only for
+  feedback that needs the person; feedback sent during a check waits for the next
+  pass.
+- **Evidence for "tests passed".** One rule on both sides (shared
+  `src/test/test-commands.json`): a runner in command position, outside quotes,
+  followed by nothing but `&&`. Claude successes carry no invented exit code, a
+  runner's own failure count beats exit code 0, digest commands keep stable ids past
+  the cap, and progress counts steps a round reruns as still to run.
+- **Who handles feedback** passes over AI steps that did not run on the run's path;
+  feedback on a skipped step is refused.
+- **Run page polish from the browser check:** a running command shows its latest
+  output line, a check card leads with its decision, reruns after a round say so
+  instead of counting as loop visits, and the composer takes focus.
+- **Kept as they were:** `cycle-needs-condition` stays lenient for inner cycles (see
+  v0.1.24); the generator still does not offer `scriptFile`, because a draft cannot
+  know which scripts exist; compiled drafts mark publishing commands themselves.
+- **Screenshots** in `docs/images` were not retaken: the Runs screenshot shows the
+  header, report and timeline, which changed only by the new progress line.
+
+Verification: `pnpm check` (625 vitest cases), `cargo test -p orchevia-core` (581),
+clippy with `-D warnings`, `cargo fmt --check`, `cargo check -p orchevia` and
+`pnpm build`. Engine feedback tests run the real engine with a fake Claude CLI and
+real commands (change, satisfied, command-step feedback, late feedback, unclear
+check, no AI step, cancel during a check, approval asked again with replay, round
+limit, missing check fixture, a fix loop's fresh passes, a review corrected inside a
+fix loop, spend target, recovery reuse, carried feedback correcting a reused step,
+the publishing-claim race, feedback sent during a check); the built-in PR review
+recipe replays feedback through its posting approval.
+The browser build was checked by hand with seeded runs (live parallel, corrected,
+failed, paused for feedback, pre-0.2 run) in dark and light themes and at 480 px.
+The desktop app was not started in this session; the native flows are rows in
+`docs/smoke-tests.md`.

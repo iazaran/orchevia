@@ -323,7 +323,14 @@ engine recorded:
   Claude Code 2.1.303 and Codex 0.166.0 streams, kept as test fixtures.
 - **Command steps** report their exit code; a test command (or output with a
   cargo, vitest, jest or pytest summary) reads "Tests passed: 12 passed" or "Tests
-  failed (exit 1)". Simulated rows claim nothing about a real process.
+  failed (exit 1)". A summary that counts failures reads as failed even with exit
+  code 0. Simulated rows claim nothing about a real process.
+- **What counts as a test run** (for agents and Command steps alike): a known runner
+  in command position (after `cd … &&`, environment assignments, `npx`, `python -m`
+  and similar wrappers), with nothing but `&&` after it, so its exit status is the
+  command's. `cargo test | tail`, `pnpm test || true` and `cat vitest.config.ts` are
+  ordinary commands. Claude reports a failed call's exit code; a successful call has
+  none, and none is shown.
 - **Conditions, approvals, feedback checks** state the branch taken, the decision,
   or the check's verdict.
 
@@ -370,11 +377,15 @@ running. Once nothing else runs, the engine handles the feedback:
 4. **Correction.** One `__feedback` row marks a correction round: the AI steps that
    need a change run again with the feedback, the check's requested change and their
    earlier result appended to their own prompt, and every step that uses their work
-   (graph edges and data references, as recovery computes it) reruns after them by
-   normal routing, with a fresh visit allowance. Steps outside it keep their results,
-   including parallel branches. Original results stay in history; corrected ones are
-   labelled. Resuming after an approval, spend or usage pause replays the round from
-   the marker row.
+   through ordinary edges or data references reruns after them by normal routing, with
+   a fresh visit allowance. Steps that only a loop's way back leads to (the tests
+   before a corrected review in a fix loop) keep their results and get a fresh
+   allowance: they rerun only if the corrected work sends the loop round again. Steps
+   outside the round keep their results, including parallel branches. Original
+   results stay in history; corrected ones and the reruns are labelled. Resuming after
+   an approval, spend or usage pause replays the round from the marker row. In a
+   recovered run, a step the round reruns runs for real even if recovery chose to
+   reuse it, and an approval it covers is asked again.
 5. **Addressed.** At the next checkpoint the feedback is marked addressed, or needs
    your attention if the correction failed.
 
@@ -398,8 +409,10 @@ the cutoff is recorded as **arrived after publishing**: what was already pushed,
 opened or posted cannot be recalled, and the feedback is not applied in that run.
 Once a run claims its finish, new feedback is refused.
 
-**Ending early.** When a run fails or is cancelled, waiting feedback is marked **not
-processed**. At startup, runs that were running are failed as before; their open
+**Ending early.** When a run fails or is cancelled, including a paused run that is
+cancelled or whose approval is rejected, waiting feedback is marked **not
+processed**. Feedback sent while a check runs waits for the next pass; it does not
+pause the run. At startup, runs that were running are failed as before; their open
 feedback is marked not processed and a check that was running closes as a check.
 Recovering the failed run carries that feedback into the new run, where it is
 handled at its first checkpoint.
