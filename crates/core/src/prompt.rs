@@ -142,10 +142,11 @@ pub fn compose_agent_context(
         if !seen.insert(id) {
             return Err(format!("Duplicate context reference '{id}'."));
         }
+        // A feedback check is not one of the step's results.
         let row = rows
             .iter()
             .rev()
-            .find(|r| &r.node_id == id)
+            .find(|r| &r.node_id == id && r.status != "checked")
             .filter(|r| {
                 matches!(
                     r.status.as_str(),

@@ -9,8 +9,10 @@ import {
   scriptPathFromPicked,
   setWorkflowDefaults,
   commandModeBlocker,
+  isPublicationStep,
   toCommandMode,
   toScriptMode,
+  type NodeConfig,
   type Workflow,
 } from '../lib/workflow';
 import { profileGrants } from '../lib/permissions';
@@ -21,6 +23,15 @@ import { KeyValueTextarea, LinesTextarea } from './DraftText';
 import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
+
+/** Kinds of step that can publish (the rest only route or wait). */
+const WORKING_KINDS = new Set(['command', 'agent', 'git', 'github', 'ticket', 'mcp']);
+
+function withoutPublishes(config: NodeConfig): NodeConfig {
+  const copy = { ...config };
+  delete copy.publishes;
+  return copy;
+}
 
 const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
   { value: 'equals', label: '== equals' },
@@ -1855,6 +1866,29 @@ export function NodeInspector(): React.JSX.Element | null {
       {node.type === 'github' && <GitHubEditor workflow={workflow} nodeId={node.id} />}
       {node.type === 'ticket' && <TicketEditor workflow={workflow} nodeId={node.id} />}
       {node.type === 'mcp' && <McpNodeEditor workflow={workflow} nodeId={node.id} />}
+
+      {WORKING_KINDS.has(node.type) && (
+        <div className="field">
+          <label className="field-hint" style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={isPublicationStep(node)}
+              onChange={(e) => {
+                const config = withoutPublishes(node.config);
+                // GitHub pull requests and comments publish unless turned off.
+                const byDefault = isPublicationStep({ ...node, config });
+                if (e.target.checked !== byDefault) config.publishes = e.target.checked;
+                patch(config, node.label);
+              }}
+            />
+            <span>
+              <strong>Publishes</strong> — this step pushes, opens a pull request,
+              comments or releases. Feedback you send during a run is handled before the
+              first publishing step starts.
+            </span>
+          </label>
+        </div>
+      )}
 
       <div className="field">
         <label className="field-label" htmlFor="node-maxvisits">

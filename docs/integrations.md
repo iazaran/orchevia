@@ -84,6 +84,15 @@ before drafting; when discovery fails, the prompt asks for a setup gate
 instead of a fabricated MCP method. The node currently accepts string argument values, so complex
 schema inputs need manual handling.
 
+**Check server** (Environment, v0.2.0) checks one server when you click it: the
+program is found, it starts and completes the MCP handshake, it lists its tools, and
+the tools your saved workflows use on it are there (MCP steps' tools and the
+`jira_get_issue` lookup Ticket steps call). It never calls a tool. A failure says
+where the check stopped and what to do next, quoting the server's error output; a
+silent server is stopped after 45 seconds, and **Cancel check** stops it sooner. The
+check proves the server answers and lists its tools, not that a tool works with your
+data or credentials.
+
 ## Example: ticket-to-draft-PR
 
 ```text

@@ -404,6 +404,7 @@ export function UsageLimitsDialog({
   const [tools, setTools] = useState(text(workflow.limits?.maxToolCalls));
   const [subagents, setSubagents] = useState(text(workflow.limits?.maxSubagents));
   const [spend, setSpend] = useState(text(workflow.limits?.spendLimitUsd));
+  const [rounds, setRounds] = useState(text(workflow.limits?.maxCorrectionRounds));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const submit = (): void => {
@@ -416,6 +417,7 @@ export function UsageLimitsDialog({
       if (tools.trim() !== '') limits.maxToolCalls = Number(tools);
       if (subagents.trim() !== '') limits.maxSubagents = Number(subagents);
       if (spend.trim() !== '') limits.spendLimitUsd = Number(spend);
+      if (rounds.trim() !== '') limits.maxCorrectionRounds = Number(rounds);
       const invalid = validateWorkflowLimits(limits);
       if (invalid !== null) throw new Error(invalid);
       const backend = getBackend();
@@ -530,6 +532,28 @@ export function UsageLimitsDialog({
           CLI-estimated API value that pauses future dispatch. Missing reports cannot stop
           work and in-flight calls can overshoot. Never a subscription charge, billing cap
           or quota meter.
+        </p>
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="limits-rounds">
+          Feedback correction rounds per run
+        </label>
+        <input
+          id="limits-rounds"
+          className="input"
+          type="number"
+          min={1}
+          max={5}
+          step={1}
+          value={rounds}
+          disabled={busy}
+          onChange={(e) => setRounds(e.target.value)}
+          placeholder="2"
+        />
+        <p className="field-hint">
+          How many times feedback you send during a run may correct its work and rerun the
+          steps after it (1–5, 2 when empty). Past that, the run pauses before publishing
+          so you decide.
         </p>
       </div>
       <details className="field">

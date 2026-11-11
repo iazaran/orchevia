@@ -208,7 +208,10 @@ Stored locally in SQLite (`agent_profiles`, `known_folders` tables):
 Orchevia has no credential configuration fields and does not save environment
 dumps. Extra args reject credential-like flags. Run history stores stdout/stderr
 without a general secret scrubber, so tool output or pasted prompt text can still
-contain sensitive information. Inspect it before sharing.
+contain sensitive information. Inspect it before sharing. Since v0.2.0 each agent
+result also keeps a short digest of the CLI's events (changed file paths, shell
+commands and their exit status, its task list), and feedback you send during a run
+is stored with that run; both are deleted with the run.
 
 ## Privacy implications
 

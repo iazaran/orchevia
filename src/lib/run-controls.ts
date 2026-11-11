@@ -5,6 +5,7 @@ import type {
   Workflow,
   WorkflowEdge,
 } from './workflow';
+import type { FeedbackState } from './feedback';
 import {
   classifyEdgeLabel,
   MAX_ATTEMPTS_LIMIT,
@@ -51,6 +52,7 @@ export interface ResolvedLimits {
   maxToolCalls?: number;
   maxSubagents?: number;
   spendLimitUsd?: number;
+  maxCorrectionRounds?: number;
 }
 export interface RunExecution {
   options: RunOptions;
@@ -60,6 +62,8 @@ export interface RunExecution {
   resolvedLimits?: ResolvedLimits;
   consumedAgentAttempts?: number;
   usagePause?: UsagePause;
+  /** Feedback cutoff, correction rounds and a feedback pause. */
+  feedback?: FeedbackState;
 }
 export interface RecoveryNode {
   nodeId: string;
@@ -133,8 +137,13 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
     )
   )
     throw new Error('Unknown run option.');
-  for (const [id, fixtures] of Object.entries(options.fixtures ?? {})) {
+  for (const [key, fixtures] of Object.entries(options.fixtures ?? {})) {
+    // `feedback:<AI step>` feeds that step's feedback checks.
+    const check = key.startsWith('feedback:');
+    const id = check ? key.slice('feedback:'.length) : key;
     const node = workflow.nodes.find((n) => n.id === id);
+    if (check && node !== undefined && node.type !== 'agent')
+      throw new Error(`Feedback-check fixtures need an AI step; '${id}' is not one.`);
     if (!node || (!isEffectful(node.type) && node.type !== 'approval'))
       throw new Error(`Node '${id}' does not accept fixtures.`);
     if (!Array.isArray(fixtures) || fixtures.length > 1000)
@@ -191,6 +200,9 @@ export function validateRunOptions(workflow: Workflow, options: RunOptions): voi
             'simulated',
             'reusedFrom',
             'command',
+            'agentDigest',
+            'correction',
+            'feedbackCheck',
           ].includes(key),
         )
       )
@@ -222,6 +234,8 @@ export function resolveLimits(
   if (subagents !== undefined) resolved.maxSubagents = subagents;
   const spend = options.spendLimitUsd ?? base?.spendLimitUsd;
   if (spend !== undefined) resolved.spendLimitUsd = spend;
+  if (base?.maxCorrectionRounds !== undefined)
+    resolved.maxCorrectionRounds = base.maxCorrectionRounds;
   return resolved;
 }
 
@@ -347,21 +361,31 @@ export function reportedSpend(
   return result;
 }
 
+/**
+ * The results that still stand: a feedback correction supersedes a step's
+ * results before its round. Mirrors `current_results`.
+ */
+export function currentResults(rows: StoredNodeResult[]): StoredNodeResult[] {
+  const superseded = supersededByCorrections(rows);
+  return rows.filter((r) => r.id > (superseded.get(r.nodeId) ?? -Infinity));
+}
+
 export function recoveryPlan(
   run: StoredRun,
   workflow: Workflow,
   rows: StoredNodeResult[],
   changed: string[] = [],
 ): RecoveryPlan {
+  const current = currentResults(rows);
   const latest = new Map<string, StoredNodeResult>();
-  for (const row of rows)
+  for (const row of current)
     if (
       ['succeeded', 'failed', 'cancelled', 'approved', 'rejected', 'skipped'].includes(
         row.status,
       )
     )
       latest.set(row.nodeId, row);
-  const affected = recoveryInvalidated(workflow, rows, changed);
+  const affected = recoveryInvalidated(workflow, current, changed);
   return {
     sourceRunId: run.id,
     fingerprint: `${run.id}:${String(rows.length)}:${String(rows.at(-1)?.id ?? 0)}`,
@@ -384,6 +408,98 @@ export function recoveryPlan(
   };
 }
 
+/**
+ * Every "B uses A's work" pair: edges, `contextRefs`, `inputRefs`,
+ * `{{node.A…}}` references and ticket variables. Mirrors `dependency_pairs`.
+ */
+export function dependencyPairs(workflow: Workflow): [string, string][] {
+  const dependencies: [string, string][] = workflow.edges.map((e) => [
+    e.source,
+    e.target,
+  ]);
+  for (const node of workflow.nodes) {
+    const text = JSON.stringify(node.config);
+    for (const source of workflow.nodes)
+      if (
+        node.id !== source.id &&
+        (node.config.contextRefs?.includes(source.id) ||
+          node.config.inputRefs?.includes(source.id) ||
+          (source.type === 'ticket' && text.includes('ticket.')) ||
+          text.includes(`node.${source.id}.`) ||
+          text.includes(`node.${source.id}"`) ||
+          text.includes(`node.${source.id}}}`))
+      )
+        dependencies.push([source.id, node.id]);
+  }
+  return dependencies;
+}
+
+function roundSteps(
+  row: StoredNodeResult,
+): { reruns: string[]; refreshed: string[] } | null {
+  if (row.nodeId !== '__feedback' || row.status !== 'correcting') return null;
+  const round = resultMetadata(row).feedbackRound;
+  if (!isRecord(round)) return null;
+  const list = (keys: string[]): string[] =>
+    keys.flatMap((key) => {
+      const ids: unknown = round[key];
+      return Array.isArray(ids)
+        ? ids.filter((id): id is string => typeof id === 'string')
+        : [];
+    });
+  return { reruns: list(['roots', 'affected']), refreshed: list(['refreshed']) };
+}
+
+/**
+ * For each step a feedback correction round reran (or refreshed and ran
+ * again after it), the id of the last such round's marker row. Mirrors
+ * `superseded_by_corrections`.
+ */
+export function supersededByCorrections(rows: StoredNodeResult[]): Map<string, number> {
+  const superseded = new Map<string, number>();
+  for (const row of rows) {
+    const steps = roundSteps(row);
+    if (steps === null) continue;
+    for (const id of steps.reruns) superseded.set(id, row.id);
+    for (const id of steps.refreshed)
+      if (
+        rows.some(
+          (later) =>
+            later.id > row.id &&
+            later.nodeId === id &&
+            ['succeeded', 'failed', 'approved', 'rejected'].includes(later.status),
+        )
+      )
+        superseded.set(id, row.id);
+  }
+  return superseded;
+}
+
+/** Every step a correction round named. Mirrors `corrected_steps`. */
+export function correctedSteps(rows: StoredNodeResult[]): Set<string> {
+  const steps = new Set<string>();
+  for (const row of rows) {
+    const named = roundSteps(row);
+    if (named !== null)
+      [...named.reruns, ...named.refreshed].forEach((id) => steps.add(id));
+  }
+  return steps;
+}
+
+/** Every step using the work of `seeds`. Mirrors `downstream_closure`. */
+export function downstreamClosure(workflow: Workflow, seeds: Set<string>): Set<string> {
+  const dependencies = dependencyPairs(workflow);
+  const reached = new Set<string>();
+  const frontier = [...seeds];
+  for (let id = frontier.pop(); id !== undefined; id = frontier.pop())
+    for (const [source, target] of dependencies)
+      if (source === id && !reached.has(target)) {
+        reached.add(target);
+        frontier.push(target);
+      }
+  return reached;
+}
+
 export function recoveryInvalidated(
   workflow: Workflow,
   rows: StoredNodeResult[],
@@ -403,21 +519,7 @@ export function recoveryInvalidated(
       .map((r) => r.nodeId),
   );
   changed.forEach((id) => affected.add(id));
-  const dependencies = workflow.edges.map((e) => [e.source, e.target] as const);
-  for (const node of workflow.nodes) {
-    const text = JSON.stringify(node.config);
-    for (const source of workflow.nodes)
-      if (
-        node.id !== source.id &&
-        (node.config.contextRefs?.includes(source.id) ||
-          node.config.inputRefs?.includes(source.id) ||
-          (source.type === 'ticket' && text.includes('ticket.')) ||
-          text.includes(`node.${source.id}.`) ||
-          text.includes(`node.${source.id}"`) ||
-          text.includes(`node.${source.id}}}`))
-      )
-        dependencies.push([source.id, node.id]);
-  }
+  const dependencies = dependencyPairs(workflow);
   for (;;) {
     let updated = false;
     for (const [source, target] of dependencies)
@@ -757,6 +859,116 @@ export function replayGraph(
       taken.delete(id);
     });
   };
+  // A feedback correction round (`Engine::reset_for_correction`): the
+  // corrected steps run first; the steps using their work wait, then rerun.
+  const correction: { gate: { roots: Set<string>; gated: Set<string> } | null } = {
+    gate: null,
+  };
+  const resetForCorrection = (
+    roots: string[],
+    affected: string[],
+    refreshed: string[],
+  ): void => {
+    const named = new Set([...roots, ...affected].filter((id) => nodes.has(id)));
+    // A skipped step that only uses the corrected work by reference, and
+    // that no rerunning step routes to, cannot be reached by the reruns.
+    const passedBy = new Set<string>();
+    for (;;) {
+      const more = [...named].filter(
+        (id) =>
+          !roots.includes(id) &&
+          !passedBy.has(id) &&
+          terminal.get(id) === 'skipped' &&
+          into(id).every(
+            (e) =>
+              loopEdges.has(e.id) ||
+              ((!named.has(e.source) || passedBy.has(e.source)) &&
+                resolved.get(e.id) !== true),
+          ),
+      );
+      if (more.length === 0) break;
+      more.forEach((id) => passedBy.add(id));
+    }
+    const reset = new Set([...named].filter((id) => !passedBy.has(id)));
+    reset.forEach((id) => {
+      terminal.delete(id);
+      unrecorded.delete(id);
+      visits.set(id, 0);
+    });
+    // Reached only through a loop-back edge: a fresh allowance, no rerun.
+    refreshed.filter((id) => nodes.has(id)).forEach((id) => visits.set(id, 0));
+    // The loops the reruns can send round again, and the steps after them:
+    // they wait for the loop to decide again.
+    const looped = new Set<string>();
+    const sentRound = new Set<string>();
+    for (;;) {
+      const more = workflow.edges.filter(
+        (e) =>
+          loopEdges.has(e.id) &&
+          !sentRound.has(e.id) &&
+          (reset.has(e.source) || looped.has(e.source)),
+      );
+      if (more.length === 0) break;
+      for (const edge of more) {
+        sentRound.add(edge.id);
+        loops.find((l) => l.edgeId === edge.id)?.body.forEach((id) => looped.add(id));
+        looped.add(edge.source);
+        looped.add(edge.target);
+      }
+    }
+    const after = new Set<string>();
+    const frontier = [...looped];
+    for (let id = frontier.pop(); id !== undefined; id = frontier.pop())
+      for (const edge of out(id))
+        if (
+          !loopEdges.has(edge.id) &&
+          !looped.has(edge.target) &&
+          !reset.has(edge.target) &&
+          refreshed.includes(edge.target) &&
+          !after.has(edge.target)
+        ) {
+          after.add(edge.target);
+          frontier.push(edge.target);
+        }
+    after.forEach((id) => {
+      terminal.delete(id);
+      unrecorded.delete(id);
+    });
+    for (const edge of workflow.edges) {
+      const again =
+        after.has(edge.target) && (looped.has(edge.source) || after.has(edge.source));
+      if (reset.has(edge.source) || reset.has(edge.target) || again) held.delete(edge.id);
+      if (!loopEdges.has(edge.id) && (reset.has(edge.source) || again))
+        resolved.delete(edge.id);
+    }
+    after.forEach((id) => {
+      const incoming = into(id).filter((e) => !loopEdges.has(e.id));
+      pending.set(id, incoming.filter((e) => !resolved.has(e.id)).length);
+      if (incoming.some((e) => resolved.get(e.id) === true)) taken.add(id);
+      else taken.delete(id);
+    });
+    reset.forEach((id) => {
+      const incoming = into(id).filter((e) => !loopEdges.has(e.id));
+      pending.set(id, incoming.filter((e) => !resolved.has(e.id)).length);
+      if (incoming.some((e) => resolved.get(e.id) === true)) taken.add(id);
+      else taken.delete(id);
+    });
+    const rootSet = new Set(roots.filter((id) => nodes.has(id)));
+    rootSet.forEach((id) => {
+      pending.set(id, 0);
+      taken.add(id);
+    });
+    correction.gate =
+      rootSet.size > 0
+        ? { roots: rootSet, gated: new Set([...reset].filter((id) => !rootSet.has(id))) }
+        : null;
+  };
+  const settleGate = (id: string): void => {
+    const gate = correction.gate;
+    if (gate === null) return;
+    gate.roots.delete(id);
+    if (gate.roots.size === 0) correction.gate = null;
+  };
   const loopLimit = (id: string): string =>
     `Loop limit exceeded at '${id}' (max ${String(maxVisits(id))} visits).`;
   /** Route a finished step; returns the run's failure, if this ends it. */
@@ -816,6 +1028,18 @@ export function replayGraph(
   };
 
   for (const row of rows) {
+    // `ROUND_NODE` in ./feedback.
+    if (row.nodeId === '__feedback' && row.status === 'correcting') {
+      const round = resultMetadata(row).feedbackRound;
+      const list = (key: string): string[] => {
+        const value: unknown = isRecord(round) ? round[key] : undefined;
+        return Array.isArray(value)
+          ? value.filter((v): v is string => typeof v === 'string')
+          : [];
+      };
+      resetForCorrection(list('roots'), list('affected'), list('refreshed'));
+      continue;
+    }
     const outcome = TERMINAL_STATUSES[row.status];
     if (!nodes.has(row.nodeId) || outcome === undefined) continue;
     // A skip this replay already made is the one this row records.
@@ -826,6 +1050,7 @@ export function replayGraph(
     if (outcome === 'succeeded' || outcome === 'failed')
       visits.set(row.nodeId, (visits.get(row.nodeId) ?? 0) + 1);
     terminal.set(row.nodeId, outcome);
+    settleGate(row.nodeId);
     if (outcome === 'cancelled') {
       error ??= 'Run cancelled.';
       continue;
@@ -844,7 +1069,8 @@ export function replayGraph(
           !terminal.has(n.id) &&
           (pending.get(n.id) ?? 0) === 0 &&
           taken.has(n.id) &&
-          (visits.get(n.id) ?? 0) < maxVisits(n.id),
+          (visits.get(n.id) ?? 0) < maxVisits(n.id) &&
+          !(correction.gate?.gated.has(n.id) ?? false),
       )
       .map((n) => n.id);
   // When nothing can run, release the waits no step can end any more (exits a

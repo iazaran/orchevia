@@ -295,6 +295,24 @@ it('saves workflow limits and clears them when every field is empty', async () =
   await waitFor(() => expect(save).toHaveBeenCalledWith(undefined));
 });
 
+it('saves the feedback correction-round limit and refuses one out of range', async () => {
+  const workflow = createEmptyWorkflow('Rounds');
+  const save = vi.fn().mockResolvedValue(undefined);
+  render(
+    <UsageLimitsDialog workflow={workflow} onClose={() => undefined} onSave={save} />,
+  );
+  const rounds = screen.getByLabelText('Feedback correction rounds per run');
+  fireEvent.change(rounds, { target: { value: '9' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
+  expect(
+    await screen.findByText(/Correction round limit must not exceed 5/),
+  ).toBeInTheDocument();
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.change(rounds, { target: { value: '3' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith({ maxCorrectionRounds: 3 }));
+});
+
 it('shows declared tools the profile lacks before a live run and adds them', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();

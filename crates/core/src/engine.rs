@@ -207,6 +207,10 @@ const MAX_PARALLEL_NODES: usize = 4;
 pub struct Engine {
     db: Arc<SqliteDb>,
     cancel: CancellationRegistry,
+    /// Tests: runs once right before the first publishing step is claimed,
+    /// to land feedback in the race window deterministically.
+    #[cfg(test)]
+    pub(crate) before_publication_claim: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Routing-relevant outcome of a node execution.
@@ -456,6 +460,70 @@ struct RunState {
     /// causes are recorded at that time, so resuming replays them right
     /// after it, before anything that finished later.
     cause_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// While a feedback correction's first steps run, the steps it reruns
+    /// after them wait (see `Engine::reset_for_correction`).
+    correction_gate: Option<CorrectionGate>,
+}
+
+#[derive(Debug, Default)]
+struct CorrectionGate {
+    /// Corrected steps that have not finished yet.
+    roots: HashSet<String>,
+    /// Steps that rerun once every root has finished.
+    gated: HashSet<String>,
+}
+
+impl RunState {
+    /// A finished step releases the correction gate once it was the last
+    /// root still running.
+    fn settle_gate(&mut self, node_id: &str) {
+        if let Some(gate) = self.correction_gate.as_mut() {
+            gate.roots.remove(node_id);
+            if gate.roots.is_empty() {
+                self.correction_gate = None;
+            }
+        }
+    }
+
+    fn gated(&self, node_id: &str) -> bool {
+        self.correction_gate
+            .as_ref()
+            .is_some_and(|gate| gate.gated.contains(node_id))
+    }
+}
+
+/// The steps a correction round starts with and reruns, as its marker row
+/// records them.
+fn correction_round_of(row: &StoredNodeResult) -> Option<crate::feedback::CorrectionPlan> {
+    if row.node_id != crate::feedback::ROUND_NODE || row.status != "correcting" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&row.structured_json).ok()?;
+    let list = |key: &str| -> Vec<String> {
+        value["feedbackRound"][key]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Some(crate::feedback::CorrectionPlan {
+        roots: list("roots"),
+        affected: list("affected"),
+        refreshed: list("refreshed"),
+    })
+}
+
+/// What a feedback round decided for the scheduler.
+enum FeedbackStep {
+    Continue,
+    Pause(String),
+    UsagePaused { consumed: u32, limit: u32 },
+    SpendPaused(f64),
+    Cancelled,
 }
 
 impl Engine {
@@ -521,8 +589,9 @@ impl Engine {
                 )));
             }
         }
-        // Replay/skip choices invalidate dependent reuse, even upstream of the original failure.
-        let mut changed_rows = rows.clone();
+        // Replay/skip choices invalidate dependent reuse, even upstream of the
+        // original failure. Results a correction superseded no longer count.
+        let mut changed_rows = run_controls::current_results(&rows);
         for (id, choice) in choices {
             if *choice != RecoveryChoice::Reuse {
                 let mut row = rows.last().cloned().ok_or_else(|| {
@@ -530,6 +599,9 @@ impl Engine {
                 })?;
                 row.node_id = id.clone();
                 row.status = "failed".into();
+                // After every recorded result, so no correction marker
+                // supersedes it.
+                row.id = i64::MAX;
                 changed_rows.push(row);
             }
         }
@@ -543,8 +615,12 @@ impl Engine {
             }
         }
         let invalidated = run_controls::invalidated_nodes(&workflow, &changed_rows);
+        // A feedback correction superseded the results before it: reuse
+        // only what the last round left for each step.
+        let superseded = run_controls::superseded_by_corrections(&rows);
         let seeds: Vec<_> = rows
             .iter()
+            .filter(|r| superseded.get(&r.node_id).is_none_or(|after| r.id > *after))
             .filter(|r| {
                 (r.status == "succeeded" && choices.get(&r.node_id) == Some(&RecoveryChoice::Reuse))
                     || (r.status == "approved"
@@ -566,6 +642,26 @@ impl Engine {
             resolved_limits: source.execution.resolved_limits.clone(),
             consumed_agent_attempts: 0,
             usage_pause: None,
+            // A new run: its own cutoff and rounds. Unhandled feedback of
+            // the failed run is carried over as pending. A reused publishing
+            // step stands for what the failed run already published, so a
+            // run that reuses one starts past its cutoff: a correction would
+            // publish it again.
+            feedback: crate::feedback::FeedbackState {
+                publication_started: workflow
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        crate::workflow::publishes(n)
+                            && choices.get(&n.id) == Some(&RecoveryChoice::Reuse)
+                    })
+                    .map(|n| crate::feedback::PublicationStart {
+                        node_id: n.id.clone(),
+                        label: n.label.clone().unwrap_or_else(|| n.id.clone()),
+                        at: chrono::Utc::now().to_rfc3339(),
+                    }),
+                ..crate::feedback::FeedbackState::default()
+            },
         };
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
@@ -644,8 +740,63 @@ impl Engine {
         Ok(workflow)
     }
 
+    /// Continue a run paused for feedback as it is: the items that needed
+    /// attention stay recorded and the run goes on to its checkpoint.
+    pub async fn continue_feedback_run(
+        &self,
+        run_id: &str,
+        pause_id: i64,
+    ) -> Result<(), EngineError> {
+        let workflow = self.claim_feedback_continuation(run_id, pause_id)?;
+        self.execute(workflow, run_id.into()).await;
+        Ok(())
+    }
+
+    pub fn claim_feedback_continuation(
+        &self,
+        run_id: &str,
+        pause_id: i64,
+    ) -> Result<Workflow, EngineError> {
+        let workflow = self
+            .db
+            .get_run_workflow(run_id)?
+            .ok_or_else(|| EngineError::UnknownRun(run_id.into()))?;
+        {
+            let mut flags = self.cancel.flags();
+            self.cancel.admit()?;
+            if !self.db.continue_feedback_run(run_id, pause_id)? {
+                return Err(EngineError::NotPaused(run_id.into()));
+            }
+            flags.insert(run_id.into(), Arc::new(AtomicBool::new(false)));
+        }
+        Ok(workflow)
+    }
+
+    /// Feedback on a step of a running or paused run. Stored at once; the
+    /// run handles it at its next checkpoint.
+    pub fn submit_feedback(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        result_id: Option<i64>,
+        text: &str,
+    ) -> Result<crate::feedback::RunFeedback, EngineError> {
+        self.db
+            .submit_feedback(run_id, node_id, result_id, text)
+            .map_err(|e| match e {
+                DbError::Io(message) => EngineError::Validation(message),
+                DbError::NotFound(_) => EngineError::UnknownRun(run_id.into()),
+                other => EngineError::from(other),
+            })
+    }
+
     pub fn new(db: Arc<SqliteDb>, cancel: CancellationRegistry) -> Self {
-        Self { db, cancel }
+        Self {
+            db,
+            cancel,
+            #[cfg(test)]
+            before_publication_claim: Mutex::new(None),
+        }
     }
 
     pub fn cancel_run(&self, run_id: &str) -> Result<bool, EngineError> {
@@ -908,6 +1059,7 @@ impl Engine {
                     Ok(RunOutcome::Paused
                         | RunOutcome::SpendPaused(_)
                         | RunOutcome::UsagePaused { .. }
+                        | RunOutcome::FeedbackPaused(_)
                         | RunOutcome::Finished(RunStatus::Succeeded))
                 ) {
                 Ok(RunOutcome::Finished(RunStatus::Cancelled))
@@ -918,6 +1070,17 @@ impl Engine {
             match &result {
                 Ok(RunOutcome::Finished(status)) => {
                     let _ = self.db.finish_run(&run_id, *status);
+                    let reason = match status {
+                        RunStatus::Cancelled => Some("The run was cancelled before this feedback was handled."),
+                        RunStatus::Failed => Some("The run failed before this feedback was handled. Recover the run to handle it there."),
+                        _ => None,
+                    };
+                    if let Some(reason) = reason {
+                        let _ = self.db.close_open_feedback(&run_id, reason);
+                    }
+                }
+                Ok(RunOutcome::FeedbackPaused(reason)) => {
+                    let _ = self.db.pause_for_feedback(&run_id, reason);
                 }
                 Ok(RunOutcome::Paused) => {
                     let _ = self.db.finish_run(&run_id, RunStatus::Paused);
@@ -932,6 +1095,10 @@ impl Engine {
                     let _ =
                         self.record_simple(&run_id, "run", "failed", None, Some(&e.to_string()));
                     let _ = self.db.finish_run(&run_id, RunStatus::Failed);
+                    let _ = self.db.close_open_feedback(
+                        &run_id,
+                        "The run failed before this feedback was handled. Recover the run to handle it there.",
+                    );
                 }
             }
             result
@@ -943,7 +1110,10 @@ impl Engine {
                 }
             }
             Ok(
-                RunOutcome::Paused | RunOutcome::SpendPaused(_) | RunOutcome::UsagePaused { .. },
+                RunOutcome::Paused
+                | RunOutcome::SpendPaused(_)
+                | RunOutcome::UsagePaused { .. }
+                | RunOutcome::FeedbackPaused(_),
             ) => {
                 if !simulated {
                     crate::notify::emit_event(
@@ -1084,10 +1254,15 @@ impl Engine {
         let rows = self.db.list_node_results(run_id)?;
         let mut finished: Vec<&StoredNodeResult> = rows
             .iter()
-            .filter(|r| is_terminal_status(&r.status))
+            .filter(|r| is_terminal_status(&r.status) || correction_round_of(r).is_some())
             .collect();
         finished.sort_by(|a, b| a.finished_at.cmp(&b.finished_at).then(a.id.cmp(&b.id)));
         for row in finished {
+            // A feedback correction round resets routing where it started.
+            if let Some(plan) = correction_round_of(row) {
+                self.reset_for_correction(&graph, &mut state, &plan);
+                continue;
+            }
             let outcome = outcome_of_status(&row.status);
             // Replaying an upstream skip may already cascade into this node.
             // Its durable row must not resolve the same outgoing join twice.
@@ -1101,6 +1276,7 @@ impl Engine {
                 *state.visits.entry(row.node_id.clone()).or_insert(0) += 1;
             }
             state.terminal.insert(row.node_id.clone(), outcome);
+            state.settle_gate(&row.node_id);
             if outcome == NodeOutcome::Paused || outcome == NodeOutcome::Cancelled {
                 continue;
             }
@@ -1157,16 +1333,25 @@ impl Engine {
                         && state.pending.get(&n.id).copied().unwrap_or(0) == 0
                         && state.taken.get(&n.id).copied().unwrap_or(false)
                         && state.visits.get(&n.id).copied().unwrap_or(0) < graph.max_visits(&n.id)
+                        && !state.gated(&n.id)
                 })
                 .map(|n| n.id.clone())
                 .collect();
             ready.sort_by_key(|id| graph.def_order.get(id).copied().unwrap_or(usize::MAX));
 
-            let spend = run_controls::reported_spend(
-                workflow,
-                &self.db.list_node_results(run_id)?,
-                run.execution.options.dry_run,
-            );
+            let tick_rows = self.db.list_node_results(run_id)?;
+            let spend =
+                run_controls::reported_spend(workflow, &tick_rows, run.execution.options.dry_run);
+            // A recovered run's reuse and skip choices stop applying to a step
+            // once a feedback correction reruns it.
+            let superseded = run_controls::corrected_steps(&tick_rows);
+            let choices: HashMap<String, RecoveryChoice> = run
+                .execution
+                .recovery_choices
+                .iter()
+                .filter(|(id, _)| !superseded.contains(*id))
+                .map(|(id, choice)| (id.clone(), *choice))
+                .collect();
             let guarded = run
                 .execution
                 .resolved_limits
@@ -1178,7 +1363,7 @@ impl Engine {
                     graph.nodes.get(id).is_some_and(|n| {
                         run_controls::effectful(n.kind)
                             && !matches!(
-                                run.execution.recovery_choices.get(id),
+                                choices.get(id),
                                 Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                             )
                     })
@@ -1190,7 +1375,7 @@ impl Engine {
                     graph.nodes.get(id).is_some_and(|n| {
                         !run_controls::effectful(n.kind)
                             || matches!(
-                                run.execution.recovery_choices.get(id),
+                                choices.get(id),
                                 Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                             )
                     })
@@ -1216,7 +1401,7 @@ impl Engine {
                     graph.nodes.get(id).is_some_and(|n| {
                         n.kind == NodeKind::Agent
                             && !matches!(
-                                run.execution.recovery_choices.get(id),
+                                choices.get(id),
                                 Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                             )
                     })
@@ -1236,6 +1421,52 @@ impl Engine {
                 }
             }
 
+            // Feedback checkpoints: a publishing step, an Approval step or the
+            // end. While feedback waits, they are held; once nothing else runs,
+            // the feedback is handled before any of them.
+            if fail_fast.is_none() {
+                let checkpoint = |id: &String| {
+                    graph.nodes.get(id).is_some_and(|n| {
+                        matches!(n.kind, NodeKind::End | NodeKind::Approval)
+                            || crate::workflow::publishes(n)
+                    })
+                };
+                let finishing =
+                    in_flight.is_empty() && ready.is_empty() && all_terminal(&graph, &state);
+                if (finishing || ready.iter().any(checkpoint))
+                    && (self.db.has_waiting_feedback(run_id)?
+                        || self.finished_corrections(run_id)? > 0)
+                {
+                    if in_flight.is_empty() && ready.iter().all(checkpoint) {
+                        // A check is an agent attempt: never past a reached
+                        // spend target.
+                        if guarded {
+                            return Ok(RunOutcome::SpendPaused(spend.reported_usd));
+                        }
+                        match self
+                            .feedback_round(workflow, &graph, &mut state, &run, run_id, flag)
+                            .await?
+                        {
+                            FeedbackStep::Continue => continue 'schedule,
+                            FeedbackStep::Pause(reason) => {
+                                return Ok(RunOutcome::FeedbackPaused(reason));
+                            }
+                            FeedbackStep::UsagePaused { consumed, limit } => {
+                                return Ok(RunOutcome::UsagePaused { consumed, limit });
+                            }
+                            FeedbackStep::SpendPaused(total) => {
+                                return Ok(RunOutcome::SpendPaused(total));
+                            }
+                            FeedbackStep::Cancelled => {
+                                fail_fast = Some(FailFast::Cancelled);
+                                continue 'schedule;
+                            }
+                        }
+                    }
+                    ready.retain(|id| !checkpoint(id));
+                }
+            }
+
             // Approval gates engage only when nothing else is in flight, so a
             // pause never strands running siblings mid-branch.
             if fail_fast.is_none() && in_flight.is_empty() {
@@ -1244,7 +1475,14 @@ impl Engine {
                     .find(|id| graph.nodes.get(*id).map(|n| n.kind) == Some(NodeKind::Approval))
                 {
                     let approval_visit = state.visits.get(approval).copied().unwrap_or(0) + 1;
-                    if let Some(seed) = self.db.recovery_result(run_id, approval, approval_visit)? {
+                    let seed = if superseded.contains(approval) {
+                        // Asked again after a correction, never re-approved
+                        // from the recovered run's history.
+                        None
+                    } else {
+                        self.db.recovery_result(run_id, approval, approval_visit)?
+                    };
+                    if let Some(seed) = seed {
                         let metadata=serde_json::json!({"reusedFrom":{"runId":seed.run_id,"resultId":seed.id}}).to_string();
                         self.db.record_node_result(NewNodeResult {
                             run_id,
@@ -1338,7 +1576,14 @@ impl Engine {
                 // so parallel Agent nodes cannot each spend the same
                 // remaining allowance.
                 let mut usage_reserved: u32 = 0;
-                for id in ready.iter().take(capacity) {
+                let mut claim_refused = false;
+                let mut dispatched = 0;
+                // Every ready step is considered: a publishing step whose
+                // claim is refused takes no capacity from steps after it.
+                for id in &ready {
+                    if dispatched >= capacity {
+                        break;
+                    }
                     let id_owned = id.clone();
                     let kind = graph.nodes.get(&id_owned).map(|n| n.kind);
                     if kind == Some(NodeKind::Approval) {
@@ -1347,7 +1592,7 @@ impl Engine {
                     if kind == Some(NodeKind::Agent)
                         && !dry
                         && !matches!(
-                            run.execution.recovery_choices.get(&id_owned),
+                            choices.get(&id_owned),
                             Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                         )
                         && usage_max.is_some_and(|max| {
@@ -1363,6 +1608,35 @@ impl Engine {
                             "Ready node '{id_owned}' is missing from the workflow."
                         ))
                     })?;
+                    // The first publishing step is the feedback cutoff. Feedback
+                    // that landed first holds it until the next tick handles it.
+                    // Only a real dispatch publishes: a step recovery skips or
+                    // reuses never opens the cutoff.
+                    let publishing = crate::workflow::publishes(&node)
+                        && !matches!(
+                            choices.get(&id_owned),
+                            Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
+                        );
+                    #[cfg(test)]
+                    if publishing {
+                        let hook = self
+                            .before_publication_claim
+                            .lock()
+                            .ok()
+                            .and_then(|mut hook| hook.take());
+                        if let Some(hook) = hook {
+                            hook();
+                        }
+                    }
+                    if publishing
+                        && !self.db.claim_feedback_cutoff(
+                            run_id,
+                            Some((&node.id, node.label.as_deref().unwrap_or(&node.id))),
+                        )?
+                    {
+                        claim_refused = true;
+                        continue;
+                    }
                     let db = Arc::clone(&self.db);
                     let task_flag = Arc::clone(flag);
                     let owned = TaskInput {
@@ -1373,7 +1647,10 @@ impl Engine {
                         workflow_defaults: workflow.defaults.clone(),
                         run_id: run_id.to_string(),
                         inputs: run.inputs.clone(),
-                        execution: run.execution.clone(),
+                        execution: RunExecution {
+                            recovery_choices: choices.clone(),
+                            ..run.execution.clone()
+                        },
                     };
                     set.spawn(async move {
                         let outcome = execute_node_task(db, owned, task_flag).await;
@@ -1384,13 +1661,23 @@ impl Engine {
                     if kind == Some(NodeKind::Agent)
                         && !dry
                         && !matches!(
-                            run.execution.recovery_choices.get(id),
+                            choices.get(id),
                             Some(RecoveryChoice::Skip | RecoveryChoice::Reuse)
                         )
                     {
                         usage_reserved += 1;
                     }
                     in_flight.insert(id.clone());
+                    dispatched += 1;
+                }
+                // Feedback landed just before the claim: handle it next tick
+                // instead of mistaking the held step for a deadlock.
+                if claim_refused && in_flight.is_empty() {
+                    self.stall_unrunnable_corrections(
+                        run_id,
+                        "Its correction could not run before the next publishing step.",
+                    )?;
+                    continue 'schedule;
                 }
             }
 
@@ -1409,6 +1696,14 @@ impl Engine {
                     }
                 }
                 if all_terminal(&graph, &state) {
+                    // Feedback that arrived just now is handled before the end.
+                    if !self.db.claim_feedback_cutoff(run_id, None)? {
+                        self.stall_unrunnable_corrections(
+                            run_id,
+                            "Its correction could not run before the run finished.",
+                        )?;
+                        continue 'schedule;
+                    }
                     return Ok(RunOutcome::Finished(RunStatus::Succeeded));
                 }
                 // A loop exit waits while its condition loops back; when the
@@ -1457,6 +1752,7 @@ impl Engine {
                 continue;
             }
             if matches!(task_outcome, TaskOutcome::Incomplete) {
+                state.settle_gate(&node_id);
                 state.terminal.insert(node_id, NodeOutcome::Failed);
                 fail_fast = Some(FailFast::Failure("Agent work is incomplete; dependent steps were not released. Adjust the CLI limit or resolve the incomplete output, then recover deliberately.".into()));
                 flag.store(true, Ordering::SeqCst);
@@ -1477,6 +1773,7 @@ impl Engine {
                 *state.visits.entry(node_id.clone()).or_insert(0) += 1;
             }
             state.terminal.insert(node_id.clone(), outcome);
+            state.settle_gate(&node_id);
             if outcome == NodeOutcome::Cancelled {
                 if fail_fast.is_none() {
                     fail_fast = Some(FailFast::Cancelled);
@@ -1944,6 +2241,691 @@ impl Engine {
         }
     }
 
+    /// When only corrections that have not run hold publishing or the end,
+    /// and nothing else can run, they cannot run before it: the person
+    /// decides. The next tick pauses for them.
+    fn stall_unrunnable_corrections(&self, run_id: &str, reason: &str) -> Result<(), EngineError> {
+        if self.db.has_waiting_feedback(run_id)? || self.finished_corrections(run_id)? > 0 {
+            return Ok(());
+        }
+        let open: Vec<i64> = self
+            .db
+            .list_feedback(run_id)?
+            .iter()
+            .filter(|i| i.status == crate::feedback::CORRECTING)
+            .map(|i| i.id)
+            .collect();
+        self.db.update_feedback(
+            &open,
+            &crate::db::FeedbackPatch {
+                status: Some(crate::feedback::NEEDS_ATTENTION),
+                decision: Some(reason),
+                ..crate::db::FeedbackPatch::default()
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Corrections whose step has run again since their round began.
+    fn finished_corrections(&self, run_id: &str) -> Result<usize, EngineError> {
+        let items = self.db.list_feedback(run_id)?;
+        if !items
+            .iter()
+            .any(|i| i.status == crate::feedback::CORRECTING)
+        {
+            return Ok(0);
+        }
+        let rows = self.db.list_node_results(run_id)?;
+        Ok(items
+            .iter()
+            .filter(|i| {
+                i.status == crate::feedback::CORRECTING
+                    && crate::feedback::correction_finished(i, &rows)
+            })
+            .count())
+    }
+
+    /// Start a correction round in the routing state: the corrected steps
+    /// (`roots`) run again first, and every step that uses their work
+    /// (`affected`) waits for them and then runs by normal routing, with a
+    /// fresh visit allowance. Arrivals from steps outside the round keep
+    /// their decision; arrivals from steps that rerun are made again. A step
+    /// routing passed by, with no arrival from a step that reruns, stays
+    /// skipped. Steps after a loop the reruns send round again wait for
+    /// that loop to decide again. Replay applies the same reset at the
+    /// round's marker row.
+    fn reset_for_correction(
+        &self,
+        graph: &Graph,
+        state: &mut RunState,
+        plan: &crate::feedback::CorrectionPlan,
+    ) {
+        let roots = &plan.roots;
+        let named: HashSet<String> = roots
+            .iter()
+            .chain(&plan.affected)
+            .filter(|id| graph.nodes.contains_key(*id))
+            .cloned()
+            .collect();
+        // A skipped step that only uses the corrected work by reference, and
+        // that no rerunning step routes to, cannot be reached by the reruns.
+        let mut passed_by: HashSet<String> = HashSet::new();
+        loop {
+            let more: Vec<String> = named
+                .iter()
+                .filter(|id| {
+                    !roots.contains(*id)
+                        && !passed_by.contains(*id)
+                        && state.terminal.get(*id) == Some(&NodeOutcome::Skipped)
+                        && graph.incoming.get(*id).into_iter().flatten().all(|edge| {
+                            graph.is_loop_edge(&edge.id)
+                                || ((!named.contains(&edge.source)
+                                    || passed_by.contains(&edge.source))
+                                    && state.resolved.get(&edge.id) != Some(&true))
+                        })
+                })
+                .cloned()
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            passed_by.extend(more);
+        }
+        let reset: HashSet<String> = named.difference(&passed_by).cloned().collect();
+        for id in &reset {
+            state.terminal.remove(id);
+            state.visits.insert(id.clone(), 0);
+        }
+        // Steps only a loop-back edge leads to keep their results; if the
+        // rerun steps send the loop round, it re-arms them with room to run.
+        for id in plan
+            .refreshed
+            .iter()
+            .filter(|id| graph.nodes.contains_key(*id))
+        {
+            state.visits.insert(id.clone(), 0);
+        }
+        // The loops the reruns can send round again, and the steps after
+        // them: those were decided by the loop's earlier pass, so they wait
+        // for it to decide again instead of running on that decision.
+        let mut looped: HashSet<String> = HashSet::new();
+        let mut sent_round: HashSet<&str> = HashSet::new();
+        loop {
+            let mut grew = false;
+            for edge_id in &graph.loop_edges {
+                let Some((_, edge)) = graph.edges.get(edge_id) else {
+                    continue;
+                };
+                if sent_round.contains(edge_id.as_str())
+                    || !(reset.contains(&edge.source) || looped.contains(&edge.source))
+                {
+                    continue;
+                }
+                sent_round.insert(edge_id);
+                looped.extend(graph.loop_body(edge_id).cloned().unwrap_or_default());
+                looped.insert(edge.source.clone());
+                looped.insert(edge.target.clone());
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut after: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = looped.iter().cloned().collect();
+        while let Some(id) = frontier.pop() {
+            for edge in graph.outgoing.get(&id).into_iter().flatten() {
+                if !graph.is_loop_edge(&edge.id)
+                    && !looped.contains(&edge.target)
+                    && !reset.contains(&edge.target)
+                    && plan.refreshed.contains(&edge.target)
+                    && after.insert(edge.target.clone())
+                {
+                    frontier.push(edge.target.clone());
+                }
+            }
+        }
+        for id in &after {
+            state.terminal.remove(id);
+        }
+        for (_, edge) in graph.edges.values() {
+            let again = after.contains(&edge.target)
+                && (looped.contains(&edge.source) || after.contains(&edge.source));
+            if reset.contains(&edge.source) || reset.contains(&edge.target) || again {
+                state.held.remove(&edge.id);
+            }
+            if !graph.is_loop_edge(&edge.id) && (reset.contains(&edge.source) || again) {
+                state.resolved.remove(&edge.id);
+            }
+        }
+        for id in after.iter().filter(|id| !reset.contains(*id)) {
+            let incoming: Vec<&Edge> = graph
+                .incoming
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter(|edge| !graph.is_loop_edge(&edge.id))
+                .collect();
+            state.pending.insert(
+                id.clone(),
+                incoming
+                    .iter()
+                    .filter(|edge| !state.resolved.contains_key(&edge.id))
+                    .count(),
+            );
+            state.taken.insert(
+                id.clone(),
+                incoming
+                    .iter()
+                    .any(|edge| state.resolved.get(&edge.id) == Some(&true)),
+            );
+        }
+        for id in &reset {
+            let incoming: Vec<&Edge> = graph
+                .incoming
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter(|edge| !graph.is_loop_edge(&edge.id))
+                .collect();
+            let pending = incoming
+                .iter()
+                .filter(|edge| !state.resolved.contains_key(&edge.id))
+                .count();
+            let taken = incoming
+                .iter()
+                .any(|edge| state.resolved.get(&edge.id) == Some(&true));
+            state.pending.insert(id.clone(), pending);
+            state.taken.insert(id.clone(), taken);
+        }
+        for root in roots {
+            state.pending.insert(root.clone(), 0);
+            state.taken.insert(root.clone(), true);
+        }
+        let roots: HashSet<String> = roots
+            .iter()
+            .filter(|id| graph.nodes.contains_key(*id))
+            .cloned()
+            .collect();
+        state.correction_gate = (!roots.is_empty()).then(|| CorrectionGate {
+            gated: reset.difference(&roots).cloned().collect(),
+            roots,
+        });
+    }
+
+    /// Handle the run's waiting feedback at a checkpoint, with nothing else
+    /// running: close finished corrections, check pending feedback with the
+    /// AI step it concerns, and start one correction round for what needs a
+    /// change. Pauses when feedback needs the person.
+    async fn feedback_round(
+        &self,
+        workflow: &Workflow,
+        graph: &Graph,
+        state: &mut RunState,
+        run: &crate::db::StoredRun,
+        run_id: &str,
+        flag: &Arc<AtomicBool>,
+    ) -> Result<FeedbackStep, EngineError> {
+        use crate::db::FeedbackPatch;
+        use crate::feedback::{self as fb, Decision};
+        let label = |id: &str| {
+            graph
+                .nodes
+                .get(id)
+                .and_then(|n| n.label.clone())
+                .unwrap_or_else(|| id.to_string())
+        };
+        let items = self.db.list_feedback(run_id)?;
+        let rows = self.db.list_node_results(run_id)?;
+        // 1. Corrections whose step has run again: addressed, or the person
+        // must look. One still to run (after an approval, say) stays open.
+        for item in items
+            .iter()
+            .filter(|i| i.status == fb::CORRECTING && fb::correction_finished(i, &rows))
+        {
+            let target = item.target_node_id.clone().unwrap_or_default();
+            let correction = rows.iter().rev().find(|row| {
+                row.node_id == target
+                    && is_terminal_status(&row.status)
+                    && serde_json::from_str::<serde_json::Value>(&row.structured_json)
+                        .ok()
+                        .and_then(|m| m["correction"]["feedbackIds"].as_array().cloned())
+                        .is_some_and(|ids| ids.iter().any(|id| id.as_i64() == Some(item.id)))
+            });
+            let (status, decision, result) = match correction {
+                Some(row) if row.status == "succeeded" => (
+                    fb::ADDRESSED,
+                    format!(
+                        "Corrected by \"{}\"; the steps that use its work run again after it.",
+                        label(&target)
+                    ),
+                    Some(row.id),
+                ),
+                Some(row) => (
+                    fb::NEEDS_ATTENTION,
+                    format!(
+                        "The correction by \"{}\" did not finish{}.",
+                        label(&target),
+                        row.error
+                            .as_deref()
+                            .map(|e| format!(": {e}"))
+                            .unwrap_or_default()
+                    ),
+                    Some(row.id),
+                ),
+                None => (
+                    fb::NEEDS_ATTENTION,
+                    format!(
+                        "The correction by \"{}\" did not run: the run took another route.",
+                        label(&target)
+                    ),
+                    None,
+                ),
+            };
+            self.db.update_feedback(
+                &[item.id],
+                &FeedbackPatch {
+                    status: Some(status),
+                    decision: Some(&decision),
+                    correction_result_id: result,
+                    ..FeedbackPatch::default()
+                },
+            )?;
+        }
+        // 2. Pending feedback, grouped by the AI step that handles it.
+        let pending: Vec<fb::RunFeedback> = items
+            .into_iter()
+            .filter(|i| i.status == fb::PENDING || i.status == fb::CHECKING)
+            .collect();
+        if !pending.is_empty() {
+            let rounds = self
+                .db
+                .get_run(run_id)?
+                .map(|r| r.execution.feedback.rounds)
+                .unwrap_or(0);
+            let limit = run.execution.resolved_limits.correction_rounds();
+            if rounds >= limit {
+                let reason = format!(
+                    "This run already made {rounds} correction round{}, the most its workflow allows. Continue as it is, or cancel and start again.",
+                    if rounds == 1 { "" } else { "s" }
+                );
+                self.db.update_feedback(
+                    &pending.iter().map(|i| i.id).collect::<Vec<_>>(),
+                    &FeedbackPatch {
+                        status: Some(fb::NEEDS_ATTENTION),
+                        decision: Some(&reason),
+                        ..FeedbackPatch::default()
+                    },
+                )?;
+            } else {
+                let mut groups: Vec<(String, Vec<fb::RunFeedback>)> = Vec::new();
+                // Only an AI step that ran on this run's path can be corrected.
+                let ran = |id: &str| {
+                    rows.iter().any(|r| {
+                        r.node_id == id && matches!(r.status.as_str(), "succeeded" | "failed")
+                    })
+                };
+                for item in pending {
+                    match fb::feedback_target(workflow, &item.node_id, &ran) {
+                        Some(target) => match groups.iter_mut().find(|(t, _)| *t == target) {
+                            Some((_, group)) => group.push(item),
+                            None => groups.push((target, vec![item])),
+                        },
+                        None => self.db.update_feedback(
+                            &[item.id],
+                            &FeedbackPatch {
+                                status: Some(fb::NEEDS_ATTENTION),
+                                decision: Some("No AI step before this step can act on feedback, so it cannot be checked or applied automatically."),
+                                ..FeedbackPatch::default()
+                            },
+                        )?,
+                    }
+                }
+                groups.sort_by_key(|(target, _)| {
+                    graph.def_order.get(target).copied().unwrap_or(usize::MAX)
+                });
+                let round = rounds + 1;
+                let mut changed: Vec<String> = Vec::new();
+                let mut changed_ids: Vec<i64> = Vec::new();
+                // Why the round stopped before checking every group. Changes
+                // already decided still start their round below; unchecked
+                // feedback stays pending for the next pass.
+                let mut stopped: Option<FeedbackStep> = None;
+                let spend_limit = run
+                    .execution
+                    .resolved_limits
+                    .spend_limit_usd
+                    .or(run.execution.options.spend_limit_usd);
+                for (target, group) in groups {
+                    let ids: Vec<i64> = group.iter().map(|i| i.id).collect();
+                    if flag.load(Ordering::SeqCst) {
+                        stopped = Some(FeedbackStep::Cancelled);
+                        break;
+                    }
+                    // Every check is an agent attempt: never past a reached
+                    // spend target, even partway through a round.
+                    let spent = run_controls::reported_spend(
+                        workflow,
+                        &self.db.list_node_results(run_id)?,
+                        run.execution.options.dry_run,
+                    );
+                    if spend_limit.is_some_and(|limit| spent.reported_usd >= limit) {
+                        stopped = Some(FeedbackStep::SpendPaused(spent.reported_usd));
+                        break;
+                    }
+                    self.db.update_feedback(
+                        &ids,
+                        &FeedbackPatch {
+                            status: Some(fb::CHECKING),
+                            target: Some(&target),
+                            ..FeedbackPatch::default()
+                        },
+                    )?;
+                    let checked = self
+                        .check_feedback(workflow, run, run_id, &target, &group, flag)
+                        .await?;
+                    let (row_id, decision) = match checked {
+                        CheckResult::Decided { row_id, decision } => (row_id, decision),
+                        CheckResult::Stopped { pending_again } => {
+                            self.db.update_feedback(
+                                &ids,
+                                &FeedbackPatch {
+                                    status: Some(fb::PENDING),
+                                    ..FeedbackPatch::default()
+                                },
+                            )?;
+                            stopped = Some(pending_again);
+                            break;
+                        }
+                    };
+                    let (status, text, round_of) = match &decision {
+                        Decision::Satisfied { explanation } => (
+                            fb::SATISFIED,
+                            if explanation.is_empty() {
+                                "The check found the work already does this.".to_string()
+                            } else {
+                                explanation.clone()
+                            },
+                            None,
+                        ),
+                        Decision::Change {
+                            explanation,
+                            change,
+                        } => {
+                            changed.push(target.clone());
+                            changed_ids.extend(&ids);
+                            (
+                                fb::CORRECTING,
+                                if change.is_empty() {
+                                    explanation.clone()
+                                } else {
+                                    change.clone()
+                                },
+                                Some(round),
+                            )
+                        }
+                        Decision::Unclear { reason } => (fb::NEEDS_ATTENTION, reason.clone(), None),
+                    };
+                    self.db.update_feedback(
+                        &ids,
+                        &FeedbackPatch {
+                            status: Some(status),
+                            decision: Some(&text),
+                            check_result_id: row_id,
+                            round: round_of,
+                            ..FeedbackPatch::default()
+                        },
+                    )?;
+                }
+                if !changed.is_empty() {
+                    let plan = fb::correction_plan(workflow, &changed);
+                    let (roots, affected) = (&plan.roots, &plan.affected);
+                    let names = |ids: &[String]| {
+                        ids.iter()
+                            .map(|id| format!("\"{}\"", label(id)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    let summary = format!(
+                        "Correction round {round}: {} runs again with the feedback, then {} step{} that use{} its work.",
+                        names(roots),
+                        affected.len(),
+                        if affected.len() == 1 { "" } else { "s" },
+                        if affected.len() == 1 { "s" } else { "" },
+                    );
+                    let structured = serde_json::json!({"feedbackRound": {
+                        "round": round,
+                        "targets": changed,
+                        "roots": roots,
+                        "affected": affected,
+                        "refreshed": plan.refreshed,
+                        "feedbackIds": changed_ids,
+                    }});
+                    self.db.record_correction_round(
+                        run_id,
+                        round,
+                        &summary,
+                        &structured.to_string(),
+                    )?;
+                    self.reset_for_correction(graph, state, &plan);
+                    return Ok(stopped.unwrap_or(FeedbackStep::Continue));
+                }
+                if let Some(step) = stopped {
+                    return Ok(step);
+                }
+            }
+        }
+        // 3. Feedback that needs the person pauses the run before the
+        // checkpoint. Feedback that arrived during a check is still pending:
+        // the next tick handles it.
+        let attention = self
+            .db
+            .list_feedback(run_id)?
+            .iter()
+            .filter(|i| i.status == fb::NEEDS_ATTENTION && !i.acknowledged)
+            .count();
+        if attention > 0 {
+            return Ok(FeedbackStep::Pause(format!(
+                "{attention} feedback message{} need{} your attention before this run publishes or finishes. Read {} on the steps, then continue as it is or cancel the run.",
+                if attention == 1 { "" } else { "s" },
+                if attention == 1 { "s" } else { "" },
+                if attention == 1 { "it" } else { "them" },
+            )));
+        }
+        Ok(FeedbackStep::Continue)
+    }
+
+    /// One check of feedback by the AI step that handles it: the step's own
+    /// profile and folder, a fixed prompt that quotes the feedback and asks
+    /// for no changes, and a row that closes as `checked`. Dry runs use the
+    /// `feedback:<step>` fixtures.
+    async fn check_feedback(
+        &self,
+        workflow: &Workflow,
+        run: &crate::db::StoredRun,
+        run_id: &str,
+        target: &str,
+        items: &[crate::feedback::RunFeedback],
+        flag: &Arc<AtomicBool>,
+    ) -> Result<CheckResult, EngineError> {
+        use crate::feedback::{self as fb, Decision};
+        let node = workflow
+            .nodes
+            .iter()
+            .find(|n| n.id == target)
+            .cloned()
+            .ok_or_else(|| EngineError::Validation(format!("Unknown step '{target}'.")))?;
+        let rows = self.db.list_node_results(run_id)?;
+        let before = rows.last().map(|r| r.id).unwrap_or(0);
+        let ids: Vec<i64> = items.iter().map(|i| i.id).collect();
+        let marker = serde_json::json!({"feedbackIds": ids});
+        let latest = |id: &str| {
+            rows.iter()
+                .rev()
+                .find(|r| r.node_id == id && r.status == "succeeded")
+                .map(|r| r.stdout.clone())
+                .unwrap_or_else(|| "(no result yet)".into())
+        };
+        let task = TaskInput {
+            session_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            node: node.clone(),
+            workflow_id: workflow.id.clone(),
+            workflow_name: workflow.name.clone(),
+            workflow_defaults: workflow.defaults.clone(),
+            run_id: run_id.to_string(),
+            inputs: run.inputs.clone(),
+            execution: run.execution.clone(),
+        };
+        let outcome = if run.execution.options.dry_run {
+            let key = format!("feedback:{target}");
+            let used = rows
+                .iter()
+                .filter(|r| r.node_id == target && r.status == "checked")
+                .count();
+            match run
+                .execution
+                .options
+                .fixtures
+                .get(&key)
+                .and_then(|list| list.get(used))
+            {
+                Some(fixture) => {
+                    let mut metadata = if fixture.structured.is_object() {
+                        fixture.structured.clone()
+                    } else {
+                        serde_json::json!({})
+                    };
+                    metadata["simulated"] = serde_json::json!(true);
+                    metadata["feedbackCheck"] = marker.clone();
+                    self.db.record_node_result(NewNodeResult {
+                        run_id,
+                        node_id: target,
+                        status: "checked",
+                        exit_code: fixture.exit_code,
+                        stdout: &fixture.stdout,
+                        stderr: &fixture.stderr,
+                        error: (fixture.status != "succeeded")
+                            .then_some("Fixture reports failure."),
+                        attempt: 1,
+                        duration_ms: 0,
+                        structured_json: &metadata.to_string(),
+                    })?;
+                    if fixture.status == "succeeded" {
+                        TaskOutcome::Succeeded
+                    } else {
+                        TaskOutcome::Failed
+                    }
+                }
+                None => {
+                    self.db.record_node_result(NewNodeResult {
+                        structured_json:
+                            &serde_json::json!({"simulated": true, "feedbackCheck": marker})
+                                .to_string(),
+                        ..NewNodeResult::simple(
+                            run_id,
+                            target,
+                            "checked",
+                            None,
+                            Some("Missing feedback-check fixture. No real tool was executed."),
+                        )
+                    })?;
+                    TaskOutcome::Failed
+                }
+            }
+        } else {
+            let vars = build_vars(&self.db, &workflow.id, &workflow.name, run_id, &run.inputs)
+                .unwrap_or_default();
+            let template = node.config.prompt.clone().unwrap_or_default();
+            let (instructions, _) = render_prompt(&template, &vars);
+            let written_on = items
+                .iter()
+                .find(|i| i.node_id != target)
+                .map(|i| i.node_id.clone());
+            let written_label = written_on.as_deref().map(|id| graph_label(workflow, id));
+            let written_result = written_on.as_deref().map(latest);
+            let prompt = fb::check_prompt(&fb::CheckPrompt {
+                step_label: &graph_label(workflow, target),
+                instructions: &instructions,
+                latest_result: &latest(target),
+                written_on: written_label.as_deref().zip(written_result.as_deref()),
+                items,
+            });
+            run_check_attempt(&self.db, &task, &prompt, marker.clone(), flag).await
+        };
+        let rows = self.db.list_node_results(run_id)?;
+        let row = rows
+            .iter()
+            .rev()
+            .find(|r| r.id > before && r.node_id == target && r.status == "checked")
+            .cloned();
+        let row_id = row.as_ref().map(|r| r.id);
+        let decision = match outcome {
+            TaskOutcome::Cancelled => {
+                return Ok(CheckResult::Stopped {
+                    pending_again: FeedbackStep::Cancelled,
+                })
+            }
+            TaskOutcome::UsageExhausted => {
+                let consumed = run_controls::count_agent_attempts(workflow, &rows);
+                return Ok(CheckResult::Stopped {
+                    pending_again: FeedbackStep::UsagePaused {
+                        consumed,
+                        limit: run
+                            .execution
+                            .resolved_limits
+                            .max_agent_attempts
+                            .unwrap_or(consumed),
+                    },
+                });
+            }
+            TaskOutcome::Succeeded => {
+                let edited = row.as_ref().is_some_and(|r| {
+                    serde_json::from_str::<serde_json::Value>(&r.structured_json)
+                        .ok()
+                        .and_then(|m| m["agentDigest"]["files"].as_array().map(|f| !f.is_empty()))
+                        .unwrap_or(false)
+                });
+                if edited {
+                    Decision::Unclear {
+                        reason: "The check changed files, which a check must not do. Look at the step's files before continuing.".into(),
+                    }
+                } else {
+                    fb::parse_decision(row.as_ref().map(|r| r.stdout.as_str()).unwrap_or(""))
+                }
+            }
+            _ => Decision::Unclear {
+                reason: format!(
+                    "The check did not finish{}.",
+                    row.as_ref()
+                        .and_then(|r| r.error.clone())
+                        .map(|e| format!(": {e}"))
+                        .unwrap_or_default()
+                ),
+            },
+        };
+        if let Some(id) = row_id {
+            let (explanation, change) = match &decision {
+                Decision::Satisfied { explanation } => (explanation.clone(), String::new()),
+                Decision::Change {
+                    explanation,
+                    change,
+                } => (explanation.clone(), change.clone()),
+                Decision::Unclear { reason } => (reason.clone(), String::new()),
+            };
+            self.db.merge_result_metadata(
+                id,
+                "feedbackCheck",
+                &serde_json::json!({
+                    "feedbackIds": ids,
+                    "decision": decision.kind(),
+                    "explanation": explanation,
+                    "change": change,
+                }),
+            )?;
+        }
+        Ok(CheckResult::Decided { row_id, decision })
+    }
+
     /// Resume a paused run after an approval decision, with an optional note.
     pub async fn approve_run(
         &self,
@@ -2020,7 +3002,12 @@ enum RunOutcome {
     Finished(RunStatus),
     Paused,
     SpendPaused(f64),
-    UsagePaused { consumed: u32, limit: u32 },
+    UsagePaused {
+        consumed: u32,
+        limit: u32,
+    },
+    /// Feedback needs the person before a checkpoint.
+    FeedbackPaused(String),
 }
 
 /// Owned inputs for a spawned node task.
@@ -2158,6 +3145,13 @@ async fn execute_fixture_task(
         if let Some(command) = &planned {
             metadata["command"] = serde_json::json!(command);
         }
+        if let Some((serde_json::Value::Object(extra), _)) =
+            correction_context(db, &task.run_id, &task.node.id, &[])
+        {
+            for (key, value) in extra {
+                metadata[key] = value;
+            }
+        }
         let result = db.record_node_result(NewNodeResult {
             run_id: &task.run_id,
             node_id: &task.node.id,
@@ -2204,6 +3198,119 @@ async fn execute_fixture_task(
         }
     }
     TaskOutcome::Failed
+}
+
+/// How a feedback check ended.
+enum CheckResult {
+    Decided {
+        row_id: Option<i64>,
+        decision: crate::feedback::Decision,
+    },
+    /// Cancelled or out of attempts: its feedback waits again.
+    Stopped { pending_again: FeedbackStep },
+}
+
+fn graph_label(workflow: &Workflow, id: &str) -> String {
+    workflow
+        .nodes
+        .iter()
+        .find(|n| n.id == id)
+        .and_then(|n| n.label.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Run a feedback check with the step's own profile, folder and limits, as
+/// one attempt with no retries and no session.
+async fn run_check_attempt(
+    db: &Arc<SqliteDb>,
+    task: &TaskInput,
+    prompt: &str,
+    marker: serde_json::Value,
+    flag: &Arc<AtomicBool>,
+) -> TaskOutcome {
+    let node_id = task.node.id.as_str();
+    let fail = |error: &str| {
+        let _ = db.record_node_result(NewNodeResult {
+            structured_json: &serde_json::json!({"notDispatched": true, "feedbackCheck": marker})
+                .to_string(),
+            ..NewNodeResult::simple(&task.run_id, node_id, "checked", None, Some(error))
+        });
+        TaskOutcome::Failed
+    };
+    let profile_id = task
+        .node
+        .config
+        .agent_profile_id
+        .clone()
+        .unwrap_or_default();
+    let Ok(Some(profile)) = db.get_effective_agent_profile(&profile_id) else {
+        return fail(&format!("Unknown Agent Profile '{profile_id}'."));
+    };
+    if !is_executable_available(&profile.effective_executable()) {
+        return fail(&format!(
+            "Agent Profile '{}' needs '{}', which was not found on PATH.{PATH_HINT}",
+            profile.name,
+            profile.effective_executable()
+        ));
+    }
+    let spec = match build_agent_command(&profile, prompt, command_working_dir(task)) {
+        Ok(spec) => spec,
+        Err(e) => return fail(&e),
+    };
+    let (decode, output_note) = match structured_output(&profile) {
+        StructuredOutput::Supported => (Some(profile.adapter), None),
+        StructuredOutput::Unsupported => (None, None),
+        StructuredOutput::Conflict(note) => (None, Some(note)),
+    };
+    let timeout = task
+        .node
+        .config
+        .timeout_secs
+        .unwrap_or(profile.default_timeout_secs)
+        .clamp(1, MAX_TIMEOUT_SECS);
+    let mut agent_node_ids: HashSet<String> = db
+        .get_run_snapshot(&task.run_id)
+        .ok()
+        .flatten()
+        .map(|w| {
+            w.nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Agent)
+                .map(|n| n.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    agent_node_ids.insert(node_id.to_string());
+    run_with_retries(RetryRequest {
+        db,
+        run_id: &task.run_id,
+        node_id,
+        executable: &spec.executable,
+        args: &spec.args,
+        working_dir: spec.working_dir.as_deref(),
+        timeout: Duration::from_secs(timeout),
+        retry: None,
+        agent: None,
+        stdin: spec.stdin.as_deref(),
+        decode,
+        output_note: output_note.as_deref(),
+        command: None,
+        extend_on_output: task.node.config.extend_on_output,
+        flag,
+        usage: Some(UsageGate {
+            agent_node_ids,
+            max_attempts: task
+                .execution
+                .resolved_limits
+                .max_agent_attempts
+                .unwrap_or(u32::MAX),
+        }),
+        agent_meta: Some((profile.adapter, profile.model.clone())),
+        policy: None,
+        extra_meta: None,
+        check: Some(marker.clone()),
+    })
+    .await
 }
 
 struct ManagedAgent {
@@ -2326,6 +3433,8 @@ async fn execute_node_task(
                 usage: None,
                 agent_meta: None,
                 policy: None,
+                extra_meta: None,
+                check: None,
             })
             .await
         }
@@ -2541,7 +3650,7 @@ async fn execute_agent_task(
         Ok(rows) => rows,
         Err(e) => return agent_failure(db, task, node_id, &e.to_string()),
     };
-    let rendered = match crate::prompt::compose_agent_context(
+    let mut rendered = match crate::prompt::compose_agent_context(
         &rendered,
         &task.node.config.context_refs,
         task.node.config.context_max_chars,
@@ -2550,6 +3659,11 @@ async fn execute_agent_task(
         Ok(prompt) => prompt,
         Err(e) => return agent_failure(db, task, node_id, &e),
     };
+    // Feedback being corrected on this step travels with its prompt.
+    let correction = correction_context(db, &task.run_id, node_id, &context_rows);
+    if let Some((_, section)) = &correction {
+        rendered.push_str(section);
+    }
     let mut spec = match build_agent_command(&profile, &rendered, command_working_dir(task)) {
         Ok(spec) => spec,
         Err(e) => {
@@ -2741,10 +3855,45 @@ async fn execute_agent_task(
             node: &task.node,
             limits: &task.execution.resolved_limits,
         }),
+        extra_meta: correction.map(|(meta, _)| meta),
+        check: None,
     })
     .await;
     drop(group_guard);
     outcome
+}
+
+/// The feedback a step is being corrected for in this run: the metadata its
+/// rows carry and the section appended to its prompt.
+fn correction_context(
+    db: &SqliteDb,
+    run_id: &str,
+    node_id: &str,
+    rows: &[StoredNodeResult],
+) -> Option<(serde_json::Value, String)> {
+    let items: Vec<crate::feedback::RunFeedback> = db
+        .list_feedback(run_id)
+        .ok()?
+        .into_iter()
+        .filter(|item| {
+            item.status == crate::feedback::CORRECTING
+                && item.target_node_id.as_deref() == Some(node_id)
+        })
+        .collect();
+    if items.is_empty() {
+        return None;
+    }
+    let previous = rows
+        .iter()
+        .rev()
+        .find(|r| r.node_id == node_id && r.status == "succeeded")
+        .map(|r| r.stdout.as_str())
+        .unwrap_or("(no earlier result)");
+    let meta = serde_json::json!({"correction": {
+        "feedbackIds": items.iter().map(|i| i.id).collect::<Vec<_>>(),
+        "round": items.iter().filter_map(|i| i.round).max(),
+    }});
+    Some((meta, crate::feedback::correction_section(&items, previous)))
 }
 
 fn agent_failure(db: &SqliteDb, task: &TaskInput, node_id: &str, error: &str) -> TaskOutcome {
@@ -3777,6 +4926,11 @@ struct RetryRequest<'a> {
     /// profile model as configured now (None for non-agent tasks).
     agent_meta: Option<(AdapterKind, Option<String>)>,
     policy: Option<AgentPolicy<'a>>,
+    /// Merged into every finished row's metadata (a correction's feedback).
+    extra_meta: Option<serde_json::Value>,
+    /// A feedback check: its marker is stored on the row from the start, and
+    /// every row it writes closes as `checked`, never as a visit of the step.
+    check: Option<serde_json::Value>,
 }
 
 /// The un-injected composed task prompt, used to build one current policy
@@ -3919,7 +5073,30 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         usage,
         agent_meta,
         policy,
+        extra_meta,
+        check,
     } = request;
+    // A check's rows never route: whatever happens, they close as checks.
+    let closing = |status: &'static str| -> &'static str {
+        if check.is_some() && status != "running" {
+            "checked"
+        } else {
+            status
+        }
+    };
+    let stamp = |metadata: &mut serde_json::Value| {
+        if let (Some(extra), Some(target)) = (
+            extra_meta.as_ref().and_then(|e| e.as_object()),
+            metadata.as_object_mut(),
+        ) {
+            for (key, value) in extra {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        if let Some(marker) = &check {
+            metadata["feedbackCheck"] = marker.clone();
+        }
+    };
     let max_attempts = if agent.is_some_and(|a| a.resume_id.is_some()) {
         1
     } else {
@@ -3943,7 +5120,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 ..NewNodeResult::simple(
                     run_id,
                     node_id,
-                    "cancelled",
+                    closing("cancelled"),
                     None,
                     Some("Cancelled by user."),
                 )
@@ -3974,7 +5151,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
             Err(error) => {
                 let _ = db.record_node_result(NewNodeResult {
                     structured_json: r#"{"notDispatched":true}"#,
-                    ..NewNodeResult::simple(run_id, node_id, "failed", None, Some(&error))
+                    ..NewNodeResult::simple(run_id, node_id, closing("failed"), None, Some(&error))
                 });
                 return TaskOutcome::Failed;
             }
@@ -3999,7 +5176,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                         ..NewNodeResult::simple(
                             run_id,
                             node_id,
-                            "failed",
+                            closing("failed"),
                             None,
                             Some(&error.to_string()),
                         )
@@ -4010,6 +5187,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
         } else {
             db.start_node_result(run_id, node_id, attempt).ok()
         };
+        if let (Some(id), Some(marker)) = (live_id, &check) {
+            let _ = db.merge_result_metadata(id, "feedbackCheck", marker);
+        }
         let stream = match (agent, decode) {
             (Some(a), _) => Some(AgentOutput::new(a.profile.adapter)),
             (None, Some(adapter)) => Some(AgentOutput::tolerant(adapter)),
@@ -4028,7 +5208,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     let _ = db.record_node_result(NewNodeResult::simple(
                         run_id,
                         node_id,
-                        "failed",
+                        closing("failed"),
                         None,
                         Some(&e),
                     ));
@@ -4098,6 +5278,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     }
                     metadata["agentUsage"] = decoded.usage.clone();
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    if !decoded.digest.is_empty() {
+                        metadata["agentDigest"] = serde_json::json!(decoded.digest);
+                    }
                     if !decoded.permission_denials.is_empty() {
                         // Its own failure kind: the run view offers to add
                         // the suggested rules to this profile.
@@ -4136,11 +5319,12 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(severity) = crate::review::reported_severity(&stdout) {
                     metadata["severity"] = serde_json::json!(severity);
                 }
+                stamp(&mut metadata);
                 let structured = metadata.to_string();
                 if incomplete {
                     metadata["incomplete"] = serde_json::json!(true);
                     persist_command_result(db, live_id, NewNodeResult {
-                        run_id, node_id, status: "failed", exit_code: code,
+                        run_id, node_id, status: closing("failed"), exit_code: code,
                         stdout: &stdout, stderr: &stderr,
                         error: Some("Required Agent work is incomplete; dependent steps were not released."),
                         attempt, duration_ms, structured_json: &metadata.to_string(),
@@ -4154,7 +5338,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                         NewNodeResult {
                             run_id,
                             node_id,
-                            status: "succeeded",
+                            status: closing("succeeded"),
                             exit_code: code,
                             stdout: &stdout,
                             stderr: &stderr,
@@ -4191,7 +5375,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     NewNodeResult {
                         run_id,
                         node_id,
-                        status: if last { "failed" } else { "retrying" },
+                        status: closing(if last { "failed" } else { "retrying" }),
                         exit_code: code,
                         stdout: &stdout,
                         stderr: &stderr,
@@ -4210,7 +5394,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                         ..NewNodeResult::simple(
                             run_id,
                             node_id,
-                            "cancelled",
+                            closing("cancelled"),
                             None,
                             Some("Cancelled by user."),
                         )
@@ -4228,6 +5412,9 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     decoded.finish();
                     metadata["agentUsage"] = decoded.usage.clone();
                     metadata["agentActivity"] = serde_json::json!(decoded.activity);
+                    if !decoded.digest.is_empty() {
+                        metadata["agentDigest"] = serde_json::json!(decoded.digest);
+                    }
                 }
                 stamp_agent_meta(&mut metadata, &agent_meta);
                 if let Some(note) = output_note {
@@ -4236,6 +5423,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                 if let Some(command) = command {
                     metadata["command"] = serde_json::json!(command);
                 }
+                stamp(&mut metadata);
                 let metadata = metadata.to_string();
                 persist_command_result(
                     db,
@@ -4243,7 +5431,7 @@ async fn run_with_retries(request: RetryRequest<'_>) -> TaskOutcome {
                     NewNodeResult {
                         run_id,
                         node_id,
-                        status: "cancelled",
+                        status: closing("cancelled"),
                         exit_code: None,
                         stdout: &stdout,
                         stderr: &stderr,
@@ -4350,7 +5538,9 @@ fn build_vars(
     }
     let mut visits: HashMap<String, u32> = HashMap::new();
     let rows = db.list_node_results(run_id)?;
-    for row in &rows {
+    // A feedback check is a row about a step, not one of its results: it
+    // never becomes the step's output, status or severity.
+    for row in rows.iter().filter(|r| r.status != "checked") {
         insert_row_vars(&mut vars, row);
         if is_terminal_status(&row.status)
             && matches!(
@@ -4670,16 +5860,24 @@ async fn run_command_with_output(
                         guard.stderr.len(),
                     );
                     if current != last_persisted {
-                        let stdout = agent_output
+                        let decoded = agent_output.as_ref().and_then(|s| s.lock().ok());
+                        let digest = decoded
                             .as_ref()
-                            .and_then(|s| s.lock().ok())
-                            .map(|s| s.activity.clone())
-                            .unwrap_or_else(|| {
-                                truncate_chars(String::from_utf8_lossy(&guard.stdout).into_owned())
-                            });
+                            .filter(|s| !s.digest.is_empty())
+                            .and_then(|s| serde_json::to_string(&s.digest).ok());
+                        let stdout =
+                            decoded
+                                .as_ref()
+                                .map(|s| s.activity.clone())
+                                .unwrap_or_else(|| {
+                                    truncate_chars(
+                                        String::from_utf8_lossy(&guard.stdout).into_owned(),
+                                    )
+                                });
+                        drop(decoded);
                         let stderr =
                             truncate_chars(String::from_utf8_lossy(&guard.stderr).into_owned());
-                        let _ = db.update_node_output(id, &stdout, &stderr);
+                        let _ = db.update_node_progress(id, &stdout, &stderr, digest.as_deref());
                         last_persisted = current;
                     }
                 }
@@ -8887,6 +10085,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"complete on retry","u
             max_tool_calls: Some(10),
             max_subagents: Some(2),
             spend_limit_usd: None,
+            max_correction_rounds: None,
         });
         run_to_end(&db, &engine, wf, "review-guidance").await;
         let first_prompt = std::fs::read_to_string(first_dir.path().join("stdin")).unwrap();
@@ -9377,6 +10576,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"done","usage":{}}'"#;
             max_tool_calls: None,
             max_subagents: Some(2),
             spend_limit_usd: None,
+            max_correction_rounds: None,
         });
         run_to_end(&db, &engine, wf, "usage-policy").await;
         let stdin = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
@@ -9490,6 +10690,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"done","usage":{}}'"#;
                     max_tool_calls: None,
                     max_subagents: None,
                     spend_limit_usd: None,
+                    max_correction_rounds: None,
                 },
                 ..Default::default()
             },
@@ -9526,6 +10727,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"done","usage":{}}'"#;
                 max_tool_calls: None,
                 max_subagents: None,
                 spend_limit_usd: None,
+                max_correction_rounds: None,
             }),
             nodes: vec![Node {
                 id: "a".into(),

@@ -74,26 +74,9 @@ fn main() {
             });
             // Runs left in `running` state by a previous session (crash or
             // quit mid-run) can never resume safely: the child processes are
-            // gone. Mark them failed so history stays truthful.
-            if let Ok(runs) = db.list_runs(1000) {
-                for run in runs
-                    .iter()
-                    .filter(|r| matches!(r.status, orchevia_core::db::RunStatus::Running))
-                {
-                    let _ = db.fail_running_node_results(
-                        &run.id,
-                        "Application restarted while this node was in progress.",
-                    );
-                    let _ = db.record_node_result(orchevia_core::db::NewNodeResult::simple(
-                        &run.id,
-                        "run",
-                        "failed",
-                        None,
-                        Some("Application restarted while this run was in progress."),
-                    ));
-                    let _ = db.finish_run(&run.id, orchevia_core::db::RunStatus::Failed);
-                }
-            }
+            // gone. Mark them failed so history stays truthful; their
+            // unhandled feedback waits for a deliberate recovery.
+            let _ = db.close_interrupted_runs();
             let db = Arc::new(db);
             // First-run onboarding: seed a safe sample workflow so a fresh
             // install opens with something runnable (uname/echo only).
@@ -232,6 +215,11 @@ fn main() {
             commands::recover_run,
             commands::continue_spend_run,
             commands::continue_usage_run,
+            commands::continue_feedback_run,
+            commands::mcp_check_server,
+            commands::cancel_mcp_check,
+            commands::submit_step_feedback,
+            commands::list_run_feedback,
             commands::usage_summary,
             commands::adapter_capabilities,
             commands::approve_run,

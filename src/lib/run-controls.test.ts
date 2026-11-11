@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   reportedSpend,
+  recoveryPlan,
   timelineEntries,
   validateRunOptions,
   replayGraph,
+  type RecoveryPlan,
 } from './run-controls';
 import type { StoredNodeResult, StoredRun, Workflow, WorkflowNode } from './workflow';
 
@@ -230,5 +232,64 @@ describe('loop exits in the browser replay (parity with the engine)', () => {
     expect(graph.error).toBeNull();
     expect(graph.ready).toEqual(['e']);
     expect(graph.skipped).toContain('after');
+  });
+});
+
+describe('recovery after a correction', () => {
+  it('never offers a result a correction superseded, like the engine', () => {
+    // s → a → b → e and s → d → e; a round corrected a and d in parallel;
+    // a ran again, d failed before b ran again.
+    const agent = (id: string): WorkflowNode => ({
+      id,
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { agentProfileId: 'p', prompt: id },
+    });
+    const wf: Workflow = {
+      schemaVersion: 6,
+      id: 'w',
+      name: 'W',
+      nodes: [
+        { id: 's', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        agent('a'),
+        agent('b'),
+        agent('d'),
+        { id: 'e', type: 'end', position: { x: 0, y: 0 }, config: {} },
+      ],
+      edges: [
+        { id: 'sa', source: 's', target: 'a' },
+        { id: 'ab', source: 'a', target: 'b' },
+        { id: 'be', source: 'b', target: 'e' },
+        { id: 'sd', source: 's', target: 'd' },
+        { id: 'de', source: 'd', target: 'e' },
+      ],
+    };
+    const marker: StoredNodeResult = {
+      ...row(5, '__feedback', 'correcting'),
+      structuredJson: JSON.stringify({
+        feedbackRound: {
+          round: 1,
+          roots: ['a', 'd'],
+          affected: ['b', 'e'],
+          refreshed: [],
+        },
+      }),
+    };
+    const rows = [
+      row(1, 's'),
+      row(2, 'a'),
+      row(3, 'd'),
+      row(4, 'b'),
+      marker,
+      row(6, 'a'),
+      row(7, 'd', 'failed'),
+    ];
+    const run = { id: 'r', status: 'failed' } as StoredRun;
+    const plan = recoveryPlan(run, wf, rows);
+    const node = (id: string): RecoveryPlan['nodes'][number] | undefined =>
+      plan.nodes.find((n) => n.nodeId === id);
+    expect(node('a')?.choices[0]).toBe('reuse');
+    expect(node('b')?.choices).toEqual(['replay', 'skip']);
+    expect(node('b')?.previousStatus).toBeNull();
   });
 });

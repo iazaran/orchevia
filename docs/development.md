@@ -33,6 +33,17 @@ cargo check -p orchevia
   CI (`desktop` job) and on contributor machines with system deps. Keep business
   logic in core so it stays covered regardless.
 
+## Shared fixtures between the core and the UI
+
+Several JSON files under `src/test/` are read by both `cargo test` and vitest, so
+the Rust authority and its TypeScript mirror cannot drift apart:
+`validation-parity.json` (validation codes), `publishing-commands.json` (which
+commands publish), `feedback-parity.json` (who handles feedback, the correction plan,
+check decisions) and `agent-digest-claude.json` (the digest shape the run page
+reads). `crates/core/src/fixtures/` keeps recorded Claude Code and Codex event
+streams, with paths rewritten and long outputs trimmed; record new ones when a CLI
+changes its events, and keep personal paths out of them.
+
 ## Agent profile skills
 
 Profiles may name up to eight Claude Code or Codex skills. The core validates

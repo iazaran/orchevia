@@ -676,6 +676,7 @@ fn workflow_and_node_allowances_reject_zero_and_out_of_range() {
         max_tool_calls: None,
         max_subagents: None,
         spend_limit_usd: None,
+        max_correction_rounds: None,
     });
     assert!(crate::workflow::validate_workflow(&wf)
         .iter()

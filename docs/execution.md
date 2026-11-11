@@ -304,6 +304,149 @@ extend the budget explicitly or continue without the guard; ordinary approval
 cannot clear it, and stale or duplicate continuations are rejected. Budget-limited
 reviews contribute no findings, approvals or publications for unfinished work.
 
+## Reading a run (v0.2.0)
+
+Each step card leads with what the step is for (its label and the first line of
+its prompt, the command it runs, or its Git/GitHub operation), what it is doing
+now while it runs, and what it achieved. Those facts come only from evidence the
+engine recorded:
+
+- **Agent steps** keep a bounded digest of the CLI's own events (`agentDigest`
+  result metadata): files changed (from Claude `Edit`/`Write` tool inputs and their
+  results, Codex `file_change` items), shell commands with the exit status the CLI
+  reported, test runs among them (a known test runner such as `cargo test`,
+  `pnpm test` or `pytest`), the agent's task list (Claude `TaskCreate`/`TaskUpdate` or
+  `TodoWrite`, Codex `todo_list`), and its current action. A refused or failed edit
+  is not listed. The live row's digest is refreshed with its output, so "Editing
+  src/a.ts" or "Running cargo test" shows while the step runs. The agent's latest
+  message is shown labelled as its own words. Shapes were checked against recorded
+  Claude Code 2.1.303 and Codex 0.166.0 streams, kept as test fixtures.
+- **Command steps** report their exit code; a test command (or output with a
+  cargo, vitest, jest or pytest summary) reads "Tests passed: 12 passed" or "Tests
+  failed (exit 1)". Every runner summary in the output counts, so a failure one
+  runner reports is never hidden by another's pass, and a summary that counts
+  failures reads as failed even with exit code 0. Simulated rows claim nothing about
+  a real process.
+- **What counts as a test run** (for agents and Command steps alike): a known runner
+  in command position (after `cd … &&`, environment assignments, `npx`, `python -m`
+  and similar wrappers), with nothing but `&&` after it, so its exit status is the
+  command's. `cargo test | tail`, `pnpm test || true` and `cat vitest.config.ts` are
+  ordinary commands, and so is a runner that only builds, lists or describes tests
+  (`cargo test --no-run`, `pytest --collect-only`, `vitest list`, `--help`).
+  Claude reports a failed call's exit code; a successful call has none, and none is
+  shown.
+- **Conditions, approvals, feedback checks** state the branch taken, the decision,
+  or the check's verdict.
+
+Labels tell executions apart: **Attempt 2 of 3**, **Visit 2** (a loop pass),
+**Reused from run-…**, **Simulated**, **Correction for feedback #4** and **Feedback
+check**. The run header shows how many steps finished, failed, were skipped or are
+still to run, and which steps are running now ("in parallel" when more than one).
+
+Commands, stdout, stderr, agent activity and CLI usage sit under one **Details and
+log** disclosure per step, open by default for a failed or cancelled step. An agent's
+final answer, an integration's result and a short command output stay in view.
+Errors, refused tools, findings and feedback are never hidden. Runs from before
+v0.2.0 have no digest; their agent steps keep the earlier layout.
+
+## Feedback during a run (v0.2.0)
+
+While a run is running or paused, **Feedback** on a step's latest result sends a
+message about that step, for example "Keep compatibility with the old
+configuration." It is stored at once and never reaches a CLI that is already
+running: the step finishes first. The feedback waits for the run's next
+**checkpoint**:
+
+- the first step that **publishes** (a GitHub `createPr` or `postComment`, or any
+  step whose `publishes` flag is on, such as the built-in templates' push);
+- an **Approval** step, so you approve the corrected work;
+- the **end** of the run.
+
+While feedback waits, ready checkpoints are held and other ready work keeps
+running. Once nothing else runs, the engine handles the feedback:
+
+1. **Who handles it.** An AI step handles feedback on itself. Feedback on any other
+   step goes to the nearest AI step whose work it uses (through edges first, then
+   data references such as `{{node.impl.output}}`; the fix step of a loop only when
+   nothing else reaches an AI step). With none, the feedback needs your attention.
+2. **Check.** That AI step's profile, in its own folder, gets one fixed prompt: its
+   instructions, its latest result, the feedback quoted as your words, and an
+   instruction to change nothing. The reply must end with an `orchevia-feedback`
+   block deciding `satisfied` (with an explanation) or `change` (with what to
+   change). A missing or unreadable block, a failed call or a check whose recorded
+   tool use shows an edit needs your attention; it is never treated as satisfied.
+   The check is recorded as a `checked` row on that step, which never counts as one
+   of its visits.
+3. **Already satisfied.** The explanation is recorded and nothing reruns.
+4. **Correction.** One `__feedback` row marks a correction round: the AI steps that
+   need a change run again with the feedback, the check's requested change and their
+   earlier result appended to their own prompt, and every step that uses their work
+   through ordinary edges or data references reruns after them by normal routing, with
+   a fresh visit allowance. Steps that only a loop's way back leads to (the tests
+   before a corrected review in a fix loop) keep their results and get a fresh
+   allowance: they rerun only if the corrected work sends the loop round again. The
+   steps after such a loop (the push after a corrected fix step) wait for the loop to
+   decide again; its earlier pass no longer decides them. A step routing skipped that
+   only reads the corrected work by reference stays skipped. Steps outside the round
+   keep their results, including parallel branches. Original
+   results stay in history; corrected ones and the reruns are labelled. Resuming after
+   an approval, spend or usage pause replays the round from the marker row. In a
+   recovered run, a step the round reruns runs for real even if recovery chose to
+   reuse it, and an approval it covers is asked again.
+5. **Addressed.** At the first checkpoint after the corrected step ran again, the
+   feedback is marked addressed, or needs your attention if the correction failed
+   and the run carried on along its failure route. An approval the corrected steps
+   must pass first (an approval between two corrected steps) is asked as usual; the
+   later step's feedback stays _being addressed_ until that step reruns.
+
+**Approvals.** Feedback adds no approval of its own: when corrections and the steps
+after them finish, the run continues by itself. An Approval step the author placed
+still behaves as usual; one that the correction affects is asked again, because the
+work it approved changed.
+
+**Bounds.** A run makes at most `limits.maxCorrectionRounds` correction rounds (1–5,
+default 2). Feedback past the limit, a check that cannot decide, a correction that
+failed while the run carried on, a correction that cannot run before the next
+publishing step, or feedback no AI step can handle **pause the run before the
+checkpoint**. Its **Review feedback pause** dialog lists what needs attention and
+**Continue as it is** goes on, publishing included; Cancel stops the run. An
+approval cannot clear a feedback pause. A correction is an ordinary execution of its
+step: if it fails with no failure route, the run fails like any failed step, its
+feedback reads _not processed_, and recovery carries it over. Checks and corrections
+count toward the agent-attempt budget, the spend guard and usage like any other
+attempt; the spend target is checked before every check. When the budget or the
+spend target stops a round partway, the changes already decided still start their
+correction (resumed with the run) and unchecked feedback waits for the next pass.
+
+**Cutoff.** The first publishing step's dispatch is the feedback cutoff (a step
+recovery skips publishes nothing and opens no cutoff). A recovered run that reuses a
+publishing step's result starts past its cutoff: the failed run already published
+it, and a correction would publish it again. Submitting
+feedback and claiming that dispatch happen under the same database lock, so each
+message lands wholly before it (and is handled first) or after it. Feedback after
+the cutoff is recorded as **arrived after publishing**: what was already pushed,
+opened or posted cannot be recalled, and the feedback is not applied in that run.
+Once a run claims its finish, new feedback is refused.
+
+**Ending early.** When a run fails or is cancelled, including a paused run that is
+cancelled or whose approval is rejected, waiting feedback is marked **not
+processed**. Feedback sent while a check runs waits for the next pass; it does not
+pause the run. At startup, runs that were running are failed as before; their open
+feedback is marked not processed and a check that was running closes as a check.
+Recovering the failed run carries that feedback into the new run, where it is
+handled at its first checkpoint.
+
+**Limits.** Commands, custom CLIs, MCP tools and agents can publish without the
+`publishes` flag; Orchevia cannot see that, so feedback is only guaranteed to come
+before steps marked as publishing. A check is asked not to change anything but
+cannot be forced; a check whose recorded tool use shows an edit needs your
+attention. Feedback on a step that has not started yet is refused.
+
+**Dry runs.** Checks read `feedback:<AI step id>` fixtures in order (the same
+shape as other fixtures; `stdout` carries the reply with its decision block).
+Corrections take the step's next fixture. A missing check fixture needs attention
+and runs nothing real.
+
 ## Reading run output and findings
 
 Long stdout, stderr and agent activity use **Show full output** rather than a

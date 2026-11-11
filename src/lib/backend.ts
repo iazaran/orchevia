@@ -2,6 +2,8 @@ import {
   validateRunOptions,
   recoveryPlan,
   recoveryInvalidated,
+  currentResults,
+  correctedSteps,
   isEffectful,
   resultMetadata,
   replayGraph,
@@ -13,6 +15,7 @@ import {
   type RunOptions,
   type RecoveryChoice,
   type RecoveryPlan,
+  type RunExecution,
 } from './run-controls';
 import { reportedSeverity } from './severity';
 import { errorMessage } from './errors';
@@ -31,6 +34,22 @@ import {
   validateTemplate,
 } from './templates';
 import { readLocal, writeLocal } from './storage';
+import {
+  correctionPlan,
+  DEFAULT_CORRECTION_ROUNDS,
+  feedbackTarget,
+  GUARD_NODE,
+  isCheckpoint,
+  correctionFinished,
+  MAX_FEEDBACK_PER_RUN,
+  OPEN_STATUSES,
+  parseDecision,
+  ROUND_NODE,
+  validateFeedbackText,
+  type FeedbackStatus,
+  type RunFeedback,
+} from './feedback';
+import { isPublicationStep, type WorkflowNode } from './workflow';
 import {
   encodeDocument,
   decodeDocument,
@@ -74,6 +93,8 @@ import {
   type GitHubState,
   type McpServerConfig,
   type McpToolInfo,
+  type McpCheckReport,
+  MCP_CHECK_LABELS,
 } from './integrations';
 import type {
   EditObservation,
@@ -163,6 +184,20 @@ export interface Backend {
     requestId: string,
   ): Promise<{ runId: string }>;
   continueSpendRun(runId: string, expectedPauseId: number, limit?: number): Promise<void>;
+  /**
+   * Feedback on a step of a running or paused run. Stored at once and
+   * handled at the run's next checkpoint (a publishing step, an approval or
+   * the end); `late` once the run started publishing.
+   */
+  submitStepFeedback(
+    runId: string,
+    nodeId: string,
+    text: string,
+    resultId?: number,
+  ): Promise<RunFeedback>;
+  listRunFeedback(runId: string): Promise<RunFeedback[]>;
+  /** Continue a run paused for feedback as it is. */
+  continueFeedbackRun(runId: string, expectedPauseId: number): Promise<void>;
   continueUsageRun(
     runId: string,
     expectedPauseId: number,
@@ -210,6 +245,9 @@ export interface Backend {
   saveMcpServer(server: McpServerConfig): Promise<McpServerConfig>;
   deleteMcpServer(id: string): Promise<boolean>;
   mcpListTools(serverId: string): Promise<McpToolInfo[]>;
+  /** Check a server on request; never calls a tool. Cancel with `cancelMcpCheck`. */
+  mcpCheckServer(serverId: string): Promise<McpCheckReport>;
+  cancelMcpCheck(serverId: string): Promise<boolean>;
   mcpEnvPresent(names: string[]): Promise<{ name: string; present: boolean }[]>;
   githubState(): Promise<GitHubState>;
   listSchedules(): Promise<Schedule[]>;
@@ -373,6 +411,25 @@ class TauriBackend implements Backend {
       extension: extension ?? null,
     });
   }
+  submitStepFeedback(
+    runId: string,
+    nodeId: string,
+    text: string,
+    resultId?: number,
+  ): Promise<RunFeedback> {
+    return this.invoke('submit_step_feedback', {
+      runId,
+      nodeId,
+      resultId: resultId ?? null,
+      text,
+    });
+  }
+  listRunFeedback(runId: string): Promise<RunFeedback[]> {
+    return this.invoke('list_run_feedback', { runId });
+  }
+  continueFeedbackRun(runId: string, expectedPauseId: number): Promise<void> {
+    return this.invoke('continue_feedback_run', { runId, expectedPauseId });
+  }
   usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
     return this.invoke('usage_summary', { filter: filter ?? null });
   }
@@ -473,6 +530,12 @@ class TauriBackend implements Backend {
   }
   deleteMcpServer(id: string): Promise<boolean> {
     return this.invoke('delete_mcp_server', { id });
+  }
+  mcpCheckServer(serverId: string): Promise<McpCheckReport> {
+    return this.invoke('mcp_check_server', { serverId });
+  }
+  cancelMcpCheck(serverId: string): Promise<boolean> {
+    return this.invoke('cancel_mcp_check', { serverId });
   }
   mcpListTools(serverId: string): Promise<McpToolInfo[]> {
     return this.invoke('mcp_list_tools', { serverId });
@@ -645,6 +708,15 @@ class TauriBackend implements Backend {
 }
 
 /** Display-only command line for the browser mock (the core shell-escapes). */
+/** The run's spend target: the resolved limit, else the run option. */
+function spendLimitOf(execution: RunExecution): number | undefined {
+  return (
+    execution.resolvedLimits?.spendLimitUsd ??
+    execution.options.spendLimitUsd ??
+    undefined
+  );
+}
+
 function mockCommandPreview(executable: string, args: string[]): string {
   return [executable, ...args.map((a) => (a.includes(' ') ? `'${a}'` : a))].join(' ');
 }
@@ -687,6 +759,8 @@ class MockBackend implements Backend {
   private results = new Map<string, StoredNodeResult[]>();
   private runWorkflows = new Map<string, Workflow>();
   private recoverySeeds = new Map<string, StoredNodeResult[]>();
+  private feedback = new Map<string, RunFeedback[]>();
+  private feedbackCounter = 1;
   private recoveryRequests = new Map<
     string,
     { source: string; choices: Record<string, RecoveryChoice>; runId: string }
@@ -745,6 +819,8 @@ class MockBackend implements Backend {
         results?: [string, StoredNodeResult[]][];
         runWorkflows?: [string, Workflow][];
         recoverySeeds?: [string, StoredNodeResult[]][];
+        feedback?: [string, RunFeedback[]][];
+        feedbackCounter?: number;
         recoveryRequests?: [
           string,
           { source: string; choices: Record<string, RecoveryChoice>; runId: string },
@@ -764,15 +840,23 @@ class MockBackend implements Backend {
       this.results = new Map(data.results ?? []);
       this.runWorkflows = new Map(data.runWorkflows ?? []);
       this.recoverySeeds = new Map(data.recoverySeeds ?? []);
+      this.feedback = new Map(data.feedback ?? []);
+      this.feedbackCounter = data.feedbackCounter ?? 1;
       this.recoveryRequests = new Map(data.recoveryRequests ?? []);
       this.counter = data.counter ?? this.runs.length + 1;
       for (const run of this.runs)
         if (run.status === 'running') {
           run.status = 'failed';
           run.finishedAt = new Date().toISOString();
+          this.closeOpenFeedback(
+            run.id,
+            'Orchevia restarted before this feedback was handled. Recover the run to handle it there.',
+          );
           for (const row of this.results.get(run.id) ?? []) {
             if (row.status !== 'running') continue;
-            row.status = 'failed';
+            // A feedback check is never a visit of its step.
+            row.status =
+              resultMetadata(row).feedbackCheck === undefined ? 'failed' : 'checked';
             row.finishedAt = run.finishedAt;
             row.error = 'Application restarted before this attempt completed.';
             row.durationMs = Math.max(
@@ -808,6 +892,8 @@ class MockBackend implements Backend {
           results: [...this.results.entries()],
           runWorkflows: [...this.runWorkflows.entries()],
           recoverySeeds: [...this.recoverySeeds.entries()],
+          feedback: [...this.feedback.entries()],
+          feedbackCounter: this.feedbackCounter,
           recoveryRequests: [...this.recoveryRequests.entries()],
           counter: this.counter,
           preferences: [...this.preferences.values()],
@@ -966,6 +1052,17 @@ class MockBackend implements Backend {
         this.pushResult(runId, 'run', 'failed', errorMessage(error));
       }
     } finally {
+      const status = this.runs.find((r) => r.id === runId)?.status;
+      if (status === 'failed')
+        this.closeOpenFeedback(
+          runId,
+          'The run failed before this feedback was handled. Recover the run to handle it there.',
+        );
+      if (status === 'cancelled')
+        this.closeOpenFeedback(
+          runId,
+          'The run was cancelled before this feedback was handled.',
+        );
       this.persist();
     }
   }
@@ -998,24 +1095,79 @@ class MockBackend implements Backend {
       const graph = replayGraph(workflow, results);
       if (graph.error) throw new Error(graph.error);
       for (const id of graph.skipped) this.pushResult(runId, id, 'skipped', '');
-      const nodeId = graph.ready[0];
-      if (nodeId === undefined) break;
+      // Feedback checkpoints, as in the engine: other ready work first, then
+      // the waiting feedback, before any publishing step, approval or end.
+      let nodeId = graph.ready[0];
+      const nodeOf = (id: string): WorkflowNode | undefined =>
+        workflow.nodes.find((n) => n.id === id);
+      if (this.feedbackWaiting(runId) || this.finishedCorrections(runId) > 0) {
+        const others = graph.ready.filter((id) => !isCheckpoint(nodeOf(id)));
+        if (others.length > 0) nodeId = others[0];
+        else {
+          if (this.mockFeedbackRound(workflow, run) === 'pause') return;
+          continue;
+        }
+      } else if (
+        (this.feedback.get(runId) ?? []).some((item) => item.status === 'correcting')
+      ) {
+        // Publishing and finishing wait for corrections in progress, as the
+        // engine's cutoff claim does. Only a real dispatch publishes: a step
+        // recovery skips or reuses goes on.
+        const corrected = correctedSteps(results);
+        const free = graph.ready.filter((id) => {
+          const step = nodeOf(id);
+          const choice = corrected.has(id)
+            ? undefined
+            : run.execution?.recoveryChoices?.[id];
+          return (
+            step === undefined ||
+            !isPublicationStep(step) ||
+            choice === 'skip' ||
+            choice === 'reuse'
+          );
+        });
+        if (free.length > 0) nodeId = free[0];
+        else {
+          // Nothing else can run: the corrections cannot run before this
+          // step, so the person decides.
+          const open = (this.feedback.get(runId) ?? [])
+            .filter((item) => item.status === 'correcting')
+            .map((item) => item.id);
+          this.updateFeedback(open, {
+            status: 'needs-attention',
+            decision:
+              graph.ready.length === 0
+                ? 'Its correction could not run before the run finished.'
+                : 'Its correction could not run before the next publishing step.',
+          });
+          continue;
+        }
+      }
+      if (nodeId === undefined) {
+        if (run.execution) {
+          run.execution.feedback ??= {};
+          run.execution.feedback.closed = true;
+        }
+        break;
+      }
       const node = workflow.nodes.find((n) => n.id === nodeId);
       if (!node) continue;
+
       const execution = run.execution;
-      const choice = execution?.recoveryChoices?.[nodeId];
+      // Reuse and skip choices stop applying once a feedback correction
+      // reruns the step (`superseded_by_corrections` in the engine).
+      const superseded = correctedSteps(results).has(nodeId);
+      const choice = superseded ? undefined : execution?.recoveryChoices?.[nodeId];
       const spend = reportedSpend(workflow, results, execution?.options.dryRun);
+      const spendLimit = execution && spendLimitOf(execution);
       if (
-        typeof execution?.options.spendLimitUsd === 'number' &&
-        spend.reportedUsd >= execution.options.spendLimitUsd &&
+        typeof spendLimit === 'number' &&
+        spend.reportedUsd >= spendLimit &&
         isEffectful(node.type) &&
         choice !== 'reuse' &&
         choice !== 'skip'
       ) {
-        const pause = this.pushResult(runId, '__spend_guard', 'guardPaused', '');
-        execution.spendPause = { id: pause.id, reportedUsd: spend.reportedUsd };
-        run.status = 'paused';
-        this.persist();
+        this.pauseForSpend(run, spend.reportedUsd);
         return;
       }
       // Enforced Agent-attempt budget (mock mirrors native dispatch gating).
@@ -1031,16 +1183,24 @@ class MockBackend implements Backend {
         const consumed = countAgentAttempts(workflow, this.results.get(runId) ?? []);
         if (execution) execution.consumedAgentAttempts = consumed;
         if (consumed >= usageMax && execution) {
-          const pause = this.pushResult(runId, '__usage_guard', 'guardPaused', '');
-          execution.usagePause = {
-            id: pause.id,
-            consumedAttempts: consumed,
-            limitAttempts: usageMax,
-          };
-          run.status = 'paused';
-          this.persist();
+          this.pauseForUsage(run, consumed, usageMax);
           return;
         }
+      }
+      // Only a real dispatch publishes, once the guards let it run: a skipped
+      // or reused step never opens the cutoff.
+      if (
+        isPublicationStep(node) &&
+        run.execution &&
+        choice !== 'skip' &&
+        choice !== 'reuse'
+      ) {
+        run.execution.feedback ??= {};
+        run.execution.feedback.publicationStarted ??= {
+          nodeId,
+          label: node.label ?? nodeId,
+          at: new Date().toISOString(),
+        };
       }
       if (isEffectful(node.type) && choice === 'skip') {
         this.pushResult(runId, nodeId, 'skipped', '');
@@ -1099,6 +1259,7 @@ class MockBackend implements Backend {
             ...(node.type === 'command'
               ? { command: mockStepCommand(workflow, node, run.inputs ?? {}) }
               : {}),
+            ...this.correctionMeta(runId, nodeId),
           });
           if (status !== 'retrying') break;
           const delay = Math.min(
@@ -1112,9 +1273,11 @@ class MockBackend implements Backend {
         continue;
       }
       if (node.type === 'approval') {
-        const seed = this.recoverySeeds.get(runId)?.filter((r) => r.nodeId === nodeId)[
-          graph.visits.get(nodeId) ?? 0
-        ];
+        const seed = superseded
+          ? undefined
+          : this.recoverySeeds.get(runId)?.filter((r) => r.nodeId === nodeId)[
+              graph.visits.get(nodeId) ?? 0
+            ];
         if (seed) {
           const row = this.pushResult(runId, nodeId, 'approved', seed.stdout);
           row.structuredJson = JSON.stringify({
@@ -1307,10 +1470,20 @@ class MockBackend implements Backend {
               },
             });
           }
+          const correction = this.correctionMeta(runId, nodeId);
+          if (correction.correction !== undefined)
+            live.structuredJson = JSON.stringify({
+              ...resultMetadata(live),
+              ...correction,
+            });
           this.completeResult(
             live,
             'succeeded',
-            `mock-agent$ ${profile.adapter} "${prompt}"\nHello from Orchevia (browser mock, profile '${profile.name}').`,
+            `mock-agent$ ${profile.adapter} "${prompt}"\n${
+              correction.correction === undefined
+                ? 'Hello from Orchevia'
+                : 'Applied the feedback'
+            } (browser mock, profile '${profile.name}').`,
           );
         } catch (error) {
           this.completeResult(live, 'failed', '');
@@ -1470,6 +1643,11 @@ class MockBackend implements Backend {
       return { runId: existing.runId };
     }
     const childId = `run-mock-${String(this.counter++)}`;
+    // A reused publishing step stands for what the failed run already
+    // published: the new run starts past its cutoff, as in the engine.
+    const reusedPublication = workflow.nodes.find(
+      (n) => isPublicationStep(n) && choices[n.id] === 'reuse',
+    );
     const execution = {
       options: structuredClone(source.execution?.options ?? {}),
       recoveredFrom: runId,
@@ -1478,6 +1656,17 @@ class MockBackend implements Backend {
       // results are never re-charged.
       resolvedLimits: structuredClone(source.execution?.resolvedLimits ?? {}),
       consumedAgentAttempts: 0,
+      ...(reusedPublication
+        ? {
+            feedback: {
+              publicationStarted: {
+                nodeId: reusedPublication.id,
+                label: reusedPublication.label ?? reusedPublication.id,
+                at: new Date().toISOString(),
+              },
+            },
+          }
+        : {}),
     };
     this.runs.unshift({
       id: childId,
@@ -1489,11 +1678,13 @@ class MockBackend implements Backend {
     });
     this.results.set(childId, []);
     this.runWorkflows.set(childId, structuredClone(workflow));
-    const invalidated = recoveryInvalidated(workflow, rows, changed);
+    // A feedback correction superseded the results before it.
+    const current = currentResults(rows);
+    const invalidated = recoveryInvalidated(workflow, current, changed);
     this.recoverySeeds.set(
       childId,
       structuredClone(
-        rows.filter(
+        current.filter(
           (r) =>
             (r.status === 'succeeded' && choices[r.nodeId] === 'reuse') ||
             (r.status === 'approved' &&
@@ -1507,6 +1698,26 @@ class MockBackend implements Backend {
       choices: { ...choices },
       runId: childId,
     });
+    // Feedback the failed run never handled moves to the new run.
+    const now = new Date().toISOString();
+    this.feedback.set(
+      childId,
+      (this.feedback.get(runId) ?? [])
+        .filter((item) => item.status === 'not-processed')
+        .map((item) => ({
+          id: this.feedbackCounter++,
+          runId: childId,
+          nodeId: item.nodeId,
+          text: item.text,
+          status: 'pending',
+          decision: '',
+          correctionResultIds: [],
+          carriedFrom: item.id,
+          acknowledged: false,
+          createdAt: now,
+          updatedAt: now,
+        })),
+    );
     this.persist();
     void this.simulate(workflow, childId);
     return { runId: childId };
@@ -1570,6 +1781,405 @@ class MockBackend implements Backend {
     this.pushResult(runId, '__usage_guard', 'guardContinued', '');
     this.persist();
     void this.simulate(workflow, runId);
+  }
+
+  async submitStepFeedback(
+    runId: string,
+    nodeId: string,
+    text: string,
+    resultId?: number,
+  ): Promise<RunFeedback> {
+    const trimmed = validateFeedbackText(text);
+    const run = this.runs.find((r) => r.id === runId);
+    if (run === undefined) throw new Error(`Unknown run: ${runId}`);
+    if (run.status !== 'running' && run.status !== 'paused')
+      throw new Error(
+        'This run has finished; feedback can only be added while it is running or paused.',
+      );
+    if (run.execution?.feedback?.closed === true)
+      throw new Error('This run is finishing; feedback can no longer change it.');
+    const list = this.feedback.get(runId) ?? [];
+    if (list.length >= MAX_FEEDBACK_PER_RUN)
+      throw new Error(
+        `A run accepts at most ${String(MAX_FEEDBACK_PER_RUN)} feedback messages.`,
+      );
+    const rows = this.results.get(runId) ?? [];
+    if (
+      nodeId.startsWith('__') ||
+      nodeId === 'run' ||
+      !rows.some((r) => r.nodeId === nodeId && r.status !== 'skipped')
+    )
+      throw new Error('Feedback can be added to a step once it has started.');
+    if (
+      resultId !== undefined &&
+      !rows.some((r) => r.id === resultId && r.nodeId === nodeId)
+    )
+      throw new Error('That result does not belong to this step of this run.');
+    const started = run.execution?.feedback?.publicationStarted;
+    const now = new Date().toISOString();
+    const item: RunFeedback = {
+      id: this.feedbackCounter++,
+      runId,
+      nodeId,
+      ...(resultId === undefined ? {} : { resultId }),
+      text: trimmed,
+      status: started === undefined ? 'pending' : 'late',
+      decision:
+        started === undefined
+          ? ''
+          : `Arrived after "${started.label}" started publishing. What was already published cannot be recalled, so this feedback is recorded but not applied in this run.`,
+      correctionResultIds: [],
+      acknowledged: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.feedback.set(runId, [...list, item]);
+    this.persist();
+    return structuredClone(item);
+  }
+
+  async listRunFeedback(runId: string): Promise<RunFeedback[]> {
+    return structuredClone(this.feedback.get(runId) ?? []);
+  }
+
+  async continueFeedbackRun(runId: string, expectedPauseId: number): Promise<void> {
+    const run = this.runs.find((r) => r.id === runId);
+    const pause = run?.execution?.feedback?.pause;
+    if (
+      run?.status !== 'paused' ||
+      pause?.id !== expectedPauseId ||
+      !run.execution?.feedback
+    )
+      throw new Error('Run is not paused for feedback.');
+    const workflow = this.runWorkflows.get(runId);
+    if (!workflow) throw new Error('Run snapshot is unavailable.');
+    delete run.execution.feedback.pause;
+    for (const item of this.feedback.get(runId) ?? [])
+      if (item.status === 'needs-attention') item.acknowledged = true;
+    run.status = 'running';
+    delete run.finishedAt;
+    this.pushResult(runId, GUARD_NODE, 'guardContinued', '');
+    this.persist();
+    void this.simulate(workflow, runId);
+  }
+
+  /** Mirrors `has_waiting_feedback`. */
+  /** Mirrors `has_waiting_feedback`: to check, or needing the person. */
+  private feedbackWaiting(runId: string): boolean {
+    return (this.feedback.get(runId) ?? []).some(
+      (item) =>
+        item.status === 'pending' ||
+        item.status === 'checking' ||
+        (item.status === 'needs-attention' && !item.acknowledged),
+    );
+  }
+
+  /** Mirrors `finished_corrections`: corrections whose step ran again. */
+  private finishedCorrections(runId: string): number {
+    const rows = this.results.get(runId) ?? [];
+    return (this.feedback.get(runId) ?? []).filter(
+      (item) => item.status === 'correcting' && correctionFinished(item, rows),
+    ).length;
+  }
+
+  private updateFeedback(
+    ids: number[],
+    patch: Partial<
+      Pick<
+        RunFeedback,
+        'status' | 'decision' | 'targetNodeId' | 'checkResultId' | 'round'
+      >
+    > & {
+      correctionResultId?: number;
+    },
+  ): void {
+    const now = new Date().toISOString();
+    for (const list of this.feedback.values())
+      for (const item of list) {
+        if (!ids.includes(item.id)) continue;
+        if (patch.status !== undefined) item.status = patch.status;
+        if (patch.decision !== undefined) item.decision = patch.decision;
+        if (patch.targetNodeId !== undefined) item.targetNodeId = patch.targetNodeId;
+        if (patch.checkResultId !== undefined) item.checkResultId = patch.checkResultId;
+        if (patch.round !== undefined) item.round = patch.round;
+        if (
+          patch.correctionResultId !== undefined &&
+          !item.correctionResultIds.includes(patch.correctionResultId)
+        )
+          item.correctionResultIds.push(patch.correctionResultId);
+        item.updatedAt = now;
+      }
+  }
+
+  /** Mirrors `close_open_feedback`. */
+  private closeOpenFeedback(runId: string, reason: string): void {
+    const open = (this.feedback.get(runId) ?? [])
+      .filter((item) => OPEN_STATUSES.includes(item.status))
+      .map((item) => item.id);
+    if (open.length > 0)
+      this.updateFeedback(open, { status: 'not-processed', decision: reason });
+  }
+
+  /** The `correction` metadata a step's rows carry while it is corrected. */
+  private correctionMeta(runId: string, nodeId: string): Record<string, unknown> {
+    const items = (this.feedback.get(runId) ?? []).filter(
+      (item) => item.status === 'correcting' && item.targetNodeId === nodeId,
+    );
+    if (items.length === 0) return {};
+    return {
+      correction: {
+        feedbackIds: items.map((item) => item.id),
+        round: Math.max(...items.map((item) => item.round ?? 0)),
+      },
+    };
+  }
+
+  /**
+   * The browser preview's feedback round, mirroring `Engine::feedback_round`.
+   * A dry run reads `feedback:<step>` fixtures; otherwise, with no agent to
+   * ask, the check says so and treats the feedback as needing a change.
+   */
+  /** Pause before work past the run's spend target, as the engine does. */
+  private pauseForSpend(run: StoredRun, reportedUsd: number): void {
+    const pause = this.pushResult(run.id, '__spend_guard', 'guardPaused', '');
+    if (run.execution) run.execution.spendPause = { id: pause.id, reportedUsd };
+    run.status = 'paused';
+    this.persist();
+  }
+
+  /** Pause before an agent attempt past the run's budget, as the engine does. */
+  private pauseForUsage(run: StoredRun, consumed: number, limit: number): void {
+    const pause = this.pushResult(run.id, '__usage_guard', 'guardPaused', '');
+    if (run.execution) {
+      run.execution.consumedAgentAttempts = consumed;
+      run.execution.usagePause = {
+        id: pause.id,
+        consumedAttempts: consumed,
+        limitAttempts: limit,
+      };
+    }
+    run.status = 'paused';
+    this.persist();
+  }
+
+  private mockFeedbackRound(workflow: Workflow, run: StoredRun): 'continue' | 'pause' {
+    const runId = run.id;
+    const rows = this.results.get(runId) ?? [];
+    const label = (id: string): string =>
+      workflow.nodes.find((n) => n.id === id)?.label ?? id;
+    const items = this.feedback.get(runId) ?? [];
+    // Corrections whose step ran again; one still to run stays open.
+    for (const item of items.filter(
+      (i) => i.status === 'correcting' && correctionFinished(i, rows),
+    )) {
+      const target = item.targetNodeId ?? '';
+      const correction = [...rows].reverse().find((row) => {
+        const meta = resultMetadata(row).correction;
+        return (
+          row.nodeId === target &&
+          ['succeeded', 'failed', 'cancelled', 'skipped'].includes(row.status) &&
+          typeof meta === 'object' &&
+          meta !== null &&
+          Array.isArray((meta as { feedbackIds?: unknown }).feedbackIds) &&
+          (meta as { feedbackIds: unknown[] }).feedbackIds.includes(item.id)
+        );
+      });
+      if (correction?.status === 'succeeded')
+        this.updateFeedback([item.id], {
+          status: 'addressed',
+          decision: `Corrected by "${label(target)}"; the steps that use its work run again after it.`,
+          correctionResultId: correction.id,
+        });
+      else
+        this.updateFeedback([item.id], {
+          status: 'needs-attention',
+          decision:
+            correction === undefined
+              ? `The correction by "${label(target)}" did not run: the run took another route.`
+              : `The correction by "${label(target)}" did not finish${correction.error ? `: ${correction.error}` : ''}.`,
+          ...(correction === undefined ? {} : { correctionResultId: correction.id }),
+        });
+    }
+    const pending = items.filter(
+      (i) => i.status === 'pending' || i.status === 'checking',
+    );
+    const execution = run.execution;
+    if (pending.length > 0 && execution !== undefined) {
+      execution.feedback ??= {};
+      const rounds = execution.feedback.rounds ?? 0;
+      const limit =
+        execution.resolvedLimits?.maxCorrectionRounds ?? DEFAULT_CORRECTION_ROUNDS;
+      if (rounds >= limit) {
+        this.updateFeedback(
+          pending.map((i) => i.id),
+          {
+            status: 'needs-attention',
+            decision: `This run already made ${String(rounds)} correction round${rounds === 1 ? '' : 's'}, the most its workflow allows. Continue as it is, or cancel and start again.`,
+          },
+        );
+      } else {
+        const groups = new Map<string, RunFeedback[]>();
+        const ran = (id: string): boolean =>
+          rows.some((r) => r.nodeId === id && ['succeeded', 'failed'].includes(r.status));
+        for (const item of pending) {
+          const target = feedbackTarget(workflow, item.nodeId, ran);
+          if (target === null)
+            this.updateFeedback([item.id], {
+              status: 'needs-attention',
+              decision:
+                'No AI step before this step can act on feedback, so it cannot be checked or applied automatically.',
+            });
+          else groups.set(target, [...(groups.get(target) ?? []), item]);
+        }
+        const order = (id: string): number =>
+          workflow.nodes.findIndex((n) => n.id === id);
+        const round = rounds + 1;
+        const changed: string[] = [];
+        const changedIds: number[] = [];
+        // Why the round stopped before checking every group, as in the
+        // engine: changes already decided still start their round; unchecked
+        // feedback stays pending for the next pass.
+        let stopped:
+          | { kind: 'spend'; usd: number }
+          | { kind: 'usage'; consumed: number; limit: number }
+          | null = null;
+        const spendLimit = spendLimitOf(execution);
+        const usageMax = execution.resolvedLimits?.maxAgentAttempts;
+        for (const [target, group] of [...groups].sort(
+          ([a], [b]) => order(a) - order(b),
+        )) {
+          const ids = group.map((i) => i.id);
+          // Every check is an agent attempt: never past a reached spend
+          // target or the attempt budget, even partway through a round.
+          const sofar = this.results.get(runId) ?? [];
+          const spent = reportedSpend(workflow, sofar, execution.options.dryRun);
+          if (typeof spendLimit === 'number' && spent.reportedUsd >= spendLimit) {
+            stopped = { kind: 'spend', usd: spent.reportedUsd };
+            break;
+          }
+          const consumed = countAgentAttempts(workflow, sofar);
+          if (
+            execution.options.dryRun !== true &&
+            usageMax !== undefined &&
+            consumed >= usageMax
+          ) {
+            stopped = { kind: 'usage', consumed, limit: usageMax };
+            break;
+          }
+          let text: string;
+          let failed = false;
+          let checkRow: StoredNodeResult;
+          if (execution.options.dryRun === true) {
+            const used = rows.filter(
+              (r) => r.nodeId === target && r.status === 'checked',
+            ).length;
+            const fixture = execution.options.fixtures?.[`feedback:${target}`]?.[used];
+            text = fixture?.stdout ?? '';
+            failed = fixture === undefined || fixture.status !== 'succeeded';
+            checkRow = this.pushResult(runId, target, 'checked', text);
+            if (fixture === undefined)
+              checkRow.error =
+                'Missing feedback-check fixture. No real tool was executed.';
+          } else {
+            text =
+              'Browser preview: no agent ran, so this feedback is treated as needing a change.\n```orchevia-feedback\n' +
+              JSON.stringify({
+                decision: 'change',
+                explanation: 'Browser preview: no agent checked this.',
+                change: group.map((i) => i.text).join(' '),
+              }) +
+              '\n```';
+            checkRow = this.pushResult(runId, target, 'checked', text);
+          }
+          const decision = failed
+            ? ({ kind: 'unclear', reason: 'The check did not finish.' } as const)
+            : parseDecision(text);
+          checkRow.structuredJson = JSON.stringify({
+            // Like any agent attempt: only a dry run's is simulated.
+            ...(execution.options.dryRun === true ? { simulated: true } : {}),
+            feedbackCheck: {
+              feedbackIds: ids,
+              decision: decision.kind,
+              explanation:
+                decision.kind === 'unclear' ? decision.reason : decision.explanation,
+              change: decision.kind === 'change' ? decision.change : '',
+            },
+          });
+          const status: FeedbackStatus =
+            decision.kind === 'satisfied'
+              ? 'satisfied'
+              : decision.kind === 'change'
+                ? 'correcting'
+                : 'needs-attention';
+          if (decision.kind === 'change') {
+            changed.push(target);
+            changedIds.push(...ids);
+          }
+          this.updateFeedback(ids, {
+            status,
+            targetNodeId: target,
+            decision:
+              decision.kind === 'satisfied'
+                ? decision.explanation || 'The check found the work already does this.'
+                : decision.kind === 'change'
+                  ? decision.change || decision.explanation
+                  : decision.reason,
+            checkResultId: checkRow.id,
+            ...(decision.kind === 'change' ? { round } : {}),
+          });
+        }
+        if (changed.length > 0) {
+          const { roots, affected, refreshed } = correctionPlan(workflow, changed);
+          const marker = this.pushResult(
+            runId,
+            ROUND_NODE,
+            'correcting',
+            `Correction round ${String(round)}: ${roots.map((id) => `"${label(id)}"`).join(', ')} runs again with the feedback, then ${String(affected.length)} step${affected.length === 1 ? '' : 's'} that use${affected.length === 1 ? 's' : ''} its work.`,
+          );
+          marker.structuredJson = JSON.stringify({
+            feedbackRound: {
+              round,
+              targets: changed,
+              roots,
+              affected,
+              refreshed,
+              feedbackIds: changedIds,
+            },
+          });
+          execution.feedback.rounds = round;
+          this.persist();
+        }
+        if (stopped?.kind === 'spend') {
+          this.pauseForSpend(run, stopped.usd);
+          return 'pause';
+        }
+        if (stopped?.kind === 'usage') {
+          this.pauseForUsage(run, stopped.consumed, stopped.limit);
+          return 'pause';
+        }
+        if (changed.length > 0) return 'continue';
+      }
+    }
+    // Feedback that arrived during a check is still pending: the next pass
+    // handles it. Only feedback that needs the person pauses the run.
+    const attention = (this.feedback.get(runId) ?? []).filter(
+      (i) => i.status === 'needs-attention' && !i.acknowledged,
+    ).length;
+    if (attention > 0) {
+      const reason = `${String(attention)} feedback message${attention === 1 ? '' : 's'} need${attention === 1 ? 's' : ''} your attention before this run publishes or finishes. Read ${attention === 1 ? 'it' : 'them'} on the steps, then continue as it is or cancel the run.`;
+      const guard = this.pushResult(runId, GUARD_NODE, 'guardPaused', '');
+      guard.error = reason;
+      if (execution !== undefined) {
+        execution.feedback ??= {};
+        execution.feedback.pause = { id: guard.id, reason };
+      }
+      run.status = 'paused';
+      run.finishedAt = new Date().toISOString();
+      this.persist();
+      return 'pause';
+    }
+    this.persist();
+    return 'continue';
   }
 
   async usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
@@ -1922,6 +2532,10 @@ class MockBackend implements Backend {
     }
     run.status = 'cancelled';
     run.finishedAt = new Date().toISOString();
+    this.closeOpenFeedback(
+      runId,
+      'The run was cancelled before this feedback was handled.',
+    );
     this.persist();
     return true;
   }
@@ -1937,7 +2551,8 @@ class MockBackend implements Backend {
       run === undefined ||
       run.status !== 'paused' ||
       run.execution?.spendPause !== undefined ||
-      run.execution?.usagePause !== undefined
+      run.execution?.usagePause !== undefined ||
+      run.execution?.feedback?.pause !== undefined
     ) {
       throw new Error(`Run '${runId}' is not paused.`);
     }
@@ -1951,6 +2566,11 @@ class MockBackend implements Backend {
     if (!approved) {
       run.status = 'failed';
       run.finishedAt = new Date().toISOString();
+      this.closeOpenFeedback(
+        runId,
+        'The approval was rejected before this feedback was handled. Recover the run to handle it there.',
+      );
+      this.persist();
       return;
     }
     run.status = 'running';
@@ -1995,6 +2615,7 @@ class MockBackend implements Backend {
   }
 
   private removeRunHistory(runId: string): void {
+    this.feedback.delete(runId);
     this.results.delete(runId);
     this.runWorkflows.delete(runId);
     this.recoverySeeds.delete(runId);
@@ -2271,6 +2892,39 @@ class MockBackend implements Backend {
 
   async mcpListTools(): Promise<McpToolInfo[]> {
     return [{ name: 'example_tool', description: 'Mock tool (browser dev).' }];
+  }
+
+  async mcpCheckServer(serverId: string): Promise<McpCheckReport> {
+    const server = this.mcpServers.get(serverId);
+    if (server === undefined) throw new Error(`Unknown MCP server '${serverId}'.`);
+    // The browser preview starts no programs, so the check stops at the
+    // first item, as the desktop app does for a program it cannot find.
+    return {
+      serverId,
+      serverName: server.name,
+      status: 'failed',
+      items: [
+        {
+          id: 'found',
+          label: MCP_CHECK_LABELS.found,
+          status: 'failed',
+          detail: `'${server.command}' was not found: the browser preview starts no programs.`,
+          hint: 'Run the desktop app to check this server.',
+        },
+        ...(['started', 'listed', 'required'] as const).map((id) => ({
+          id,
+          label: MCP_CHECK_LABELS[id],
+          status: 'skipped' as const,
+          detail: 'Not checked: the program was not found.',
+        })),
+      ],
+      tools: [],
+      durationMs: 0,
+    };
+  }
+
+  async cancelMcpCheck(): Promise<boolean> {
+    return false;
   }
 
   async mcpEnvPresent(names: string[]): Promise<{ name: string; present: boolean }[]> {
@@ -2715,7 +3369,8 @@ function mockVariables(
   }
   for (const [name, value] of Object.entries(inputs)) vars[`input.${name}`] = value;
   const visits = new Map<string, number>();
-  for (const r of priorResults) {
+  // A feedback check is a row about a step, not one of its results.
+  for (const r of priorResults.filter((row) => row.status !== 'checked')) {
     vars[`node.${r.nodeId}`] = r.stdout;
     vars[`node.${r.nodeId}.output`] = r.stdout;
     vars[`node.${r.nodeId}.status`] = r.status;

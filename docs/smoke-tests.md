@@ -15,6 +15,8 @@ moves from manual to automated, or when an installer is added.
 | Automation (schedules and watchers) | Manual              | Manual                | Manual                          | Manual              |
 | Restart recovery                    | Manual              | Manual                | Manual                          | Manual              |
 | MCP and process cleanup             | CI (core); Manual   | CI (core); Manual     | CI (core, macOS inputs); Manual | Manual              |
+| Feedback during a run               | Manual              | Manual                | Manual                          | Manual              |
+| MCP server check                    | Manual              | Manual                | Manual                          | Manual              |
 | In-place updates                    | Manual (apt)        | Manual (updater)      | Manual (updater)                | Manual (updater)    |
 | Agent CLIs accept Orchevia's flags  | Weekly              | Weekly                | Weekly (Linux CLIs)             | Weekly (Linux CLIs) |
 
@@ -59,6 +61,21 @@ GitHub CLI, Claude Code and Codex with their versions.
 **Local generation.** Generate a workflow from a one-line goal with each CLI and the
 repository selected. The preview shows the steps; nothing runs until you choose to.
 
+**Readable runs and feedback (v0.2.0).** Use the built-in **Implement a Task** template on
+the disposable repository with a local bare remote. While the run tests, open its
+implementation step and send feedback ("Keep the old function name as an alias").
+Check that the step card says what it is doing while it runs, that the feedback reads
+_Waiting_, then _Being checked_, then _Being addressed_ or _Already satisfied_, that a
+correction reruns the tests before the push, and that the push happens once. Send
+feedback after the push started and check that it reads _Arrived after publishing_.
+Quit Orchevia during a feedback check, reopen it, and check that the run failed, the
+feedback reads _Not processed_, and **Recover failed run** carries it over.
+
+**MCP server check (v0.2.0).** In Environment, **Check server** on a working server
+lists its tools; on a server whose command is wrong it fails at _Program found_ or
+_Starts and completes the MCP handshake_ with the server's error output. Check that
+no MCP process is left afterwards (`ps -ef | grep <server>`).
+
 **Approvals.** Run a workflow with an approval step. The run pauses; approve once
 and reject once. Approving continues the run, rejecting fails it, and both show in
 the run's timeline.
@@ -81,7 +98,8 @@ left from that run.
 
 - AppImage and macOS (0.1.24 or later, from a release built with the update
   signing secret): **Environment → Updates → Check now**, then **Install and
-  restart**. It asks first, refuses while a workflow is running, and restarts on
+  restart**. Updating 0.1.24 to 0.2.0 is the first real run of this path: check it
+  on the AppImage and on both macOS builds. It asks first, refuses while a workflow is running, and restarts on
   the new version. The release's `latest.json` lists the AppImage and both macOS
   bundles; the signatures were verified before publication.
 - A release built without the signing secret has no `latest.json`: **Install and

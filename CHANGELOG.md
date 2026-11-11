@@ -6,7 +6,62 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
-## [0.1.24] - 2026-10-30
+## [0.2.0] - 2026-11-11
+
+### Added
+
+- **Send feedback to a step while its run is going.** While a run is running or
+  paused, **Feedback** on a step lets you write something like "Keep compatibility
+  with the old configuration." The step that is running finishes first; before the
+  run publishes anything (its first push, pull request or comment step), reaches an
+  approval or finishes, the AI step the feedback concerns checks it against its work.
+  - If the work already does it, the explanation is recorded and nothing reruns.
+  - If it needs a change, that step runs again with your feedback, and every step that
+    uses its work (tests, reviews, the push) runs again after it. Parallel work it does
+    not touch is kept, and the original results stay in the history next to the
+    corrected ones.
+  - No extra approval is added: the run continues by itself. An approval you placed
+    after the corrected work is asked again, because the work changed.
+  - Each step lists its feedback as waiting, being checked, already satisfied, being
+    addressed, addressed, needs your attention, arrived after publishing or not
+    processed, with links to the check and the correction.
+  - Feedback that arrives after publishing started is recorded but not applied: what
+    was pushed or posted cannot be recalled. A recovered run that reuses a publishing
+    step's result counts as published from the start.
+  - A run makes at most two correction rounds by default (1–5 in **Usage limits**).
+    Past that, or when a check cannot decide, a correction fails while the run carries
+    on, or no AI step can act on the feedback, the run pauses before publishing;
+    **Review feedback pause** lets you continue as it is or cancel. A correction that
+    fails with nowhere to go fails the run like any step; recovery carries its
+    feedback over. Checks and corrections count as agent attempts and spend.
+  - Feedback survives pauses and approvals. If Orchevia is closed mid-run, the run
+    fails as before, its feedback reads not processed, and **Recover failed run**
+    carries it into the new run.
+- **Steps that publish say so.** GitHub pull requests and comments publish; any other
+  step can be marked with **Publishes** in the step inspector. The built-in templates
+  mark their push step, generated drafts mark commands that push or publish, and a
+  command that plainly pushes without the mark gets a warning. Feedback is only
+  guaranteed to come before marked steps.
+- **Check server** in Environment checks an MCP server when you click it: the program
+  is found, it starts and answers, it lists its tools, and the tools your workflows
+  use on it are there. It never calls a tool, stops a silent server after 45 seconds,
+  can be cancelled, and says what to do when something fails.
+
+### Changed
+
+- **Runs read as what happened.** Each step card now leads with what the step is for,
+  what it is doing right now ("Editing src/login.ts", "Running cargo test") and what
+  it achieved: files changed, tests passed or failed (from exit codes and the test
+  runner's own summary), commands that failed, its task list, review findings,
+  timeouts and refused tools. Text the agent wrote about itself is labelled as its
+  words. Commands, logs, agent activity and CLI usage move under **Details and log**,
+  open by default when a step failed. Labels tell attempts, loop visits, reused
+  results, simulations, corrections and feedback checks apart, and the run header
+  shows progress and which steps are running now, including parallel ones.
+
+### Fixed
+
+- **Dry-run fixtures cannot fake** a step's digest, a correction or a feedback check.
 
 ### Added
 

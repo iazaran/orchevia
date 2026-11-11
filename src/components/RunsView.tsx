@@ -21,7 +21,22 @@ import {
   planCostGap,
   type PlanCost,
 } from '../lib/usage';
-import { reportFields, reportResult, stepCounts, stepLabel } from '../lib/run-report';
+import {
+  isBookkeeping,
+  reportFields,
+  reportResult,
+  runProgress,
+  stepCounts,
+  stepLabel,
+} from '../lib/run-report';
+import { digestOf, summarizeStep, type StepSummary } from '../lib/step-summary';
+import type { RunFeedback } from '../lib/feedback';
+import {
+  FeedbackComposer,
+  FeedbackList,
+  FeedbackPauseDialog,
+  FeedbackSummary,
+} from './StepFeedback';
 import { useAppStore } from '../store';
 import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
@@ -221,6 +236,101 @@ function RunFacts({
         </>
       )}
     </dl>
+  );
+}
+
+/** Where the run stands, and which steps are running now. */
+function RunProgressLine({
+  run,
+  workflow,
+  results,
+}: {
+  run: StoredRun;
+  workflow: Workflow;
+  results: StoredNodeResult[];
+}): React.JSX.Element | null {
+  const progress = runProgress(workflow, results);
+  if (progress.total === 0) return null;
+  const live = run.status === 'running' || run.status === 'paused';
+  const parts = [
+    `${String(progress.done)} of ${String(progress.total)} steps done`,
+    progress.failed > 0 ? `${String(progress.failed)} failed` : '',
+    progress.skipped > 0 ? `${String(progress.skipped)} skipped` : '',
+    live && progress.toGo > 0 ? `${String(progress.toGo)} still to run` : '',
+  ].filter((part) => part !== '');
+  const finished = progress.done + progress.failed + progress.skipped;
+  return (
+    <div className="run-progress">
+      <div
+        className="run-progress-bar"
+        role="progressbar"
+        aria-label="Steps finished"
+        aria-valuemin={0}
+        aria-valuemax={progress.total}
+        aria-valuenow={finished}
+      >
+        <span style={{ width: `${String((finished / progress.total) * 100)}%` }} />
+      </div>
+      <p className="run-progress-text">{parts.join(' · ')}</p>
+      {/* One polite region for the whole run, so parallel steps do not each announce. */}
+      <p className="run-progress-now" aria-live="polite">
+        {live && progress.running.length > 0
+          ? `Running now${progress.running.length > 1 ? ' in parallel' : ''}: ${progress.running.join(', ')}`
+          : ''}
+        {live && progress.waiting.length > 0
+          ? `${progress.running.length > 0 ? ' · ' : ''}Waiting for: ${progress.waiting.join(', ')}`
+          : ''}
+      </p>
+    </div>
+  );
+}
+
+/** A step's purpose, what it is doing now and what it achieved. */
+function StepSummaryView({
+  summary,
+}: {
+  summary: StepSummary;
+}): React.JSX.Element | null {
+  const { purpose, doing, facts, agentNote } = summary;
+  if (purpose === '' && doing === null && facts.length === 0 && agentNote === null)
+    return null;
+  return (
+    <div className="step-summary">
+      {purpose !== '' && <p className="step-purpose">{purpose}</p>}
+      {doing !== null && (
+        <p className="step-doing">
+          <span className="live-dot" aria-hidden="true" /> {doing}
+        </p>
+      )}
+      {agentNote !== null && (
+        <p className="step-agent-note">
+          <span className="field-hint">The agent says:</span> {agentNote}
+        </p>
+      )}
+      {facts.length > 0 && (
+        <ul className="step-facts">
+          {facts.map((fact, index) => (
+            <li
+              key={`${fact.kind}-${String(index)}`}
+              className={`step-fact tone-${fact.tone}`}
+            >
+              {fact.detail !== undefined && fact.detail.length > 0 ? (
+                <details>
+                  <summary>{fact.text}</summary>
+                  <ul className="step-fact-detail">
+                    {fact.detail.map((line, at) => (
+                      <li key={`${String(at)}-${line}`}>{line}</li>
+                    ))}
+                  </ul>
+                </details>
+              ) : (
+                fact.text
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -612,6 +722,16 @@ export function RunsView(): React.JSX.Element {
     findings: GroupedFinding[];
   } | null>(null);
   const findings = findingsState?.runId === activeRunId ? findingsState.findings : [];
+  const [feedbackState, setFeedbackState] = useState<{
+    runId: string;
+    items: RunFeedback[];
+  } | null>(null);
+  const feedback = feedbackState?.runId === activeRunId ? feedbackState.items : [];
+  // The result row whose feedback composer is open, per run.
+  const [composer, setComposer] = useState<{ runId: string; resultId: number } | null>(
+    null,
+  );
+  const [feedbackPauseOpen, setFeedbackPauseOpen] = useState(false);
   const findingsByResult = new Map<number, GroupedFinding[]>();
   const unassignedFindings: GroupedFinding[] = [];
   for (const finding of findings) {
@@ -656,6 +776,22 @@ export function RunsView(): React.JSX.Element {
       current = false;
     };
   }, [activeRunId, selectedResults]);
+
+  // Feedback follows the selected run's results, like findings.
+  const loadFeedback = useCallback((runId: string): void => {
+    void getBackend()
+      .listRunFeedback(runId)
+      .then((items) => {
+        if (mounted.current) setFeedbackState({ runId, items });
+      })
+      .catch(() => {
+        // Keep what is shown for this run.
+      });
+  }, []);
+  useEffect(() => {
+    if (activeRunId === null || selectedResults === undefined) return;
+    loadFeedback(activeRunId);
+  }, [activeRunId, selectedResults, loadFeedback]);
 
   const approve = (runId: string, approved: boolean): void => {
     if (pendingApproval === undefined) return;
@@ -788,6 +924,18 @@ export function RunsView(): React.JSX.Element {
           onContinued={() => refreshRunData()}
         />
       )}
+      {feedbackPauseOpen &&
+        activeRun !== null &&
+        activeRun.execution?.feedback?.pause !== undefined && (
+          <FeedbackPauseDialog
+            key={`${activeRun.id}-${String(activeRun.execution.feedback.pause.id)}`}
+            runId={activeRun.id}
+            pause={activeRun.execution.feedback.pause}
+            items={feedback}
+            onClose={() => setFeedbackPauseOpen(false)}
+            onContinued={() => refreshRunData()}
+          />
+        )}
       {usageDecision !== null && (
         <UsageContinueDialog
           key={`${usageDecision.runId}-${String(usageDecision.pause.id)}`}
@@ -935,6 +1083,19 @@ export function RunsView(): React.JSX.Element {
                     workflow={runWorkflow}
                     now={now}
                   />
+                  {runWorkflow !== null && (
+                    <RunProgressLine
+                      run={activeRun}
+                      workflow={runWorkflow}
+                      results={results}
+                    />
+                  )}
+                  <FeedbackSummary
+                    items={feedback}
+                    workflow={runWorkflow}
+                    state={activeRun.execution?.feedback}
+                    live={activeRun.status === 'running' || activeRun.status === 'paused'}
+                  />
                   <p className="field-hint run-header-id">{activeRun.id}</p>
                   {activeRun.execution?.options.dryRun && (
                     <p className="field-hint">
@@ -988,6 +1149,15 @@ export function RunsView(): React.JSX.Element {
                       Review spend pause
                     </button>
                   )}
+                  {activeRun.status === 'paused' &&
+                    activeRun.execution?.feedback?.pause && (
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => setFeedbackPauseOpen(true)}
+                      >
+                        Review feedback pause
+                      </button>
+                    )}
                   {activeRun.status === 'paused' && activeRun.execution?.usagePause && (
                     <button
                       className="btn btn-primary"
@@ -1001,7 +1171,8 @@ export function RunsView(): React.JSX.Element {
                   )}
                   {activeRun.status === 'paused' &&
                     activeRun.execution?.spendPause === undefined &&
-                    activeRun.execution?.usagePause === undefined && (
+                    activeRun.execution?.usagePause === undefined &&
+                    activeRun.execution?.feedback?.pause === undefined && (
                       <>
                         <button
                           className="btn btn-primary"
@@ -1028,7 +1199,8 @@ export function RunsView(): React.JSX.Element {
                 </div>
                 {activeRun.status === 'paused' &&
                   activeRun.execution?.spendPause === undefined &&
-                  activeRun.execution?.usagePause === undefined && (
+                  activeRun.execution?.usagePause === undefined &&
+                  activeRun.execution?.feedback?.pause === undefined && (
                     <div className="field" style={{ maxWidth: 560 }}>
                       <label className="field-label" htmlFor="approve-note">
                         Note (optional, stored with the decision)
@@ -1070,6 +1242,7 @@ export function RunsView(): React.JSX.Element {
                     for (const r of results) {
                       next[`${String(r.id)}:out`] = open;
                       next[`${String(r.id)}:err`] = open;
+                      next[`${String(r.id)}:details`] = open;
                     }
                     setExpandedOutputState({ runId: activeRunId, values: next });
                   };
@@ -1290,9 +1463,86 @@ export function RunsView(): React.JSX.Element {
                     const meta = [
                       profile !== null ? `via ${profile}` : null,
                       r.exitCode !== undefined ? `exit ${String(r.exitCode)}` : null,
-                      (r.attempt ?? 1) > 1 ? `attempt ${String(r.attempt)}` : null,
                       context?.sessionLabel ?? null,
                     ].filter((item): item is string => item !== null && item !== '');
+                    const workflowNode = runWorkflow?.nodes.find(
+                      (n) => n.id === r.nodeId,
+                    );
+                    const summary = summarizeStep(r, workflowNode, {
+                      results,
+                      inputs: activeRun.inputs ?? {},
+                      repoDir:
+                        runWorkflow?.defaults?.repoDir || workflowNode?.config.workingDir,
+                    });
+                    const digest = digestOf(r);
+                    const running = r.status === 'running';
+                    // What the step produced stays in view: an agent's finished
+                    // answer, an integration's result, a short command output.
+                    // Logs and live activity go under Details. Agent rows from
+                    // before v0.2.0 (no digest) keep the old layout.
+                    const shortOutput =
+                      r.stdout.split('\n').length <= 4 && r.stdout.length <= 400;
+                    const outputInView =
+                      node?.type === 'agent'
+                        ? !running || digest === null
+                        : node?.type === 'command'
+                          ? shortOutput && !running
+                          : true;
+                    const showActivity =
+                      context?.activity !== undefined &&
+                      context.activity !== '' &&
+                      context.activity.trim() !== r.stdout.trim();
+                    const hasDetails =
+                      ranCommand !== null ||
+                      (context?.usageHints.length ?? 0) > 0 ||
+                      textUsageHints.length > 0 ||
+                      Boolean(context?.outputNote) ||
+                      (!outputInView && r.stdout !== '') ||
+                      showActivity ||
+                      r.stderr !== '';
+                    const detailsKey = `${String(r.id)}:details`;
+                    const detailsOpen =
+                      expandedOutputs[detailsKey] ??
+                      (r.status === 'failed' ||
+                        r.status === 'cancelled' ||
+                        (node?.type === 'agent' && digest === null && running));
+                    // Feedback is written on the step's latest result while the
+                    // run is live, and listed on the result it was written on.
+                    const latestForStep =
+                      [...results]
+                        .reverse()
+                        .find((row) => row.nodeId === r.nodeId && !isBookkeeping(row))
+                        ?.id === r.id;
+                    const canFeedback =
+                      (activeRun.status === 'running' || activeRun.status === 'paused') &&
+                      latestForStep &&
+                      !isBookkeeping(r) &&
+                      r.status !== 'skipped' &&
+                      workflowNode !== undefined &&
+                      workflowNode.type !== 'start' &&
+                      workflowNode.type !== 'end';
+                    const stepFeedback = feedback.filter(
+                      (item) =>
+                        item.nodeId === r.nodeId &&
+                        (item.resultId === r.id ||
+                          (item.resultId === undefined && latestForStep)),
+                    );
+                    const composing =
+                      composer?.runId === activeRun.id && composer.resultId === r.id;
+                    const stdoutBlock = (
+                      <OutputBlock
+                        text={r.stdout}
+                        live={running}
+                        label={node?.type === 'agent' && !running ? 'Result' : 'stdout'}
+                        step={index + 1}
+                        rich={node?.type === 'agent'}
+                        defaultOpen={isLast}
+                        expanded={expandedOutputs[`${String(r.id)}:out`]}
+                        onToggle={() => {
+                          toggleOutput('out');
+                        }}
+                      />
+                    );
                     return (
                       <li
                         id={`run-result-${String(r.id)}`}
@@ -1330,10 +1580,31 @@ export function RunsView(): React.JSX.Element {
                           {node !== null && (
                             <span className="step-kind">{node.type}</span>
                           )}
+                          {summary.labels.map((label) => (
+                            <span key={label} className="step-label">
+                              {label}
+                            </span>
+                          ))}
                           {(r.durationMs ?? 0) > 0 && (
                             <span className="run-step-duration">
                               {formatDurationMs(r.durationMs ?? 0)}
                             </span>
+                          )}
+                          {canFeedback && (
+                            <button
+                              className="btn btn-ghost step-feedback-toggle"
+                              aria-expanded={composing}
+                              aria-label={`Send feedback on ${stepLabel(r.nodeId, node?.label)}, step ${String(index + 1)}`}
+                              onClick={() =>
+                                setComposer(
+                                  composing
+                                    ? null
+                                    : { runId: activeRun.id, resultId: r.id },
+                                )
+                              }
+                            >
+                              Feedback
+                            </button>
                           )}
                         </div>
                         {meta.length > 0 && (
@@ -1342,19 +1613,39 @@ export function RunsView(): React.JSX.Element {
                           </div>
                         )}
                         <div className="run-step-body">
-                          {ranCommand !== null && (
-                            <p
-                              className="run-step-command"
-                              title="Program and arguments exactly as passed (no shell)"
-                            >
-                              <span className="field-hint">
-                                {activeRun.execution?.options.dryRun
-                                  ? 'Would run'
-                                  : 'Ran'}
-                              </span>{' '}
-                              <code>{ranCommand}</code>
-                            </p>
+                          {!r.nodeId.startsWith('__') && (
+                            <StepSummaryView summary={summary} />
                           )}
+                          {composing && runWorkflow !== null && (
+                            <FeedbackComposer
+                              runId={activeRun.id}
+                              nodeId={r.nodeId}
+                              resultId={r.id}
+                              stepName={stepLabel(r.nodeId, node?.label)}
+                              step={index + 1}
+                              workflow={runWorkflow}
+                              state={activeRun.execution?.feedback}
+                              onSent={(item) => {
+                                setComposer(null);
+                                setFeedbackState((previous) => ({
+                                  runId: activeRun.id,
+                                  items: [
+                                    ...(previous?.runId === activeRun.id
+                                      ? previous.items
+                                      : []),
+                                    item,
+                                  ],
+                                }));
+                                void refreshRunData();
+                              }}
+                              onClose={() => setComposer(null)}
+                            />
+                          )}
+                          <FeedbackList
+                            items={stepFeedback}
+                            stepNumber={(id) => stepNumber.get(id)}
+                            labelOf={(id) => stepLabel(id, nodeFor(id)?.label)}
+                          />
                           {r.error !== undefined &&
                             r.error !== '' &&
                             (r.status === 'paused' ? (
@@ -1368,70 +1659,93 @@ export function RunsView(): React.JSX.Element {
                           {denied !== null && (
                             <PermissionDenials
                               denied={denied}
-                              profileId={
-                                runWorkflow?.nodes.find((n) => n.id === r.nodeId)?.config
-                                  .agentProfileId
-                              }
+                              profileId={workflowNode?.config.agentProfileId}
                             />
                           )}
                           <ReviewFindings findings={findingsByResult.get(r.id) ?? []} />
-                          {((context?.usageHints.length ?? 0) > 0 ||
-                            textUsageHints.length > 0) && (
-                            <details className="cli-usage-details">
-                              <summary>CLI usage</summary>
-                              {(context?.usageHints.length ?? 0) > 0 && (
-                                <p className="field-hint">
-                                  {context?.usageHints.join(' · ')}
+                          {outputInView && stdoutBlock}
+                          {hasDetails && (
+                            <details
+                              className="run-step-details"
+                              open={detailsOpen}
+                              onToggle={(event) => {
+                                const open = event.currentTarget.open;
+                                if (open === detailsOpen) return;
+                                setExpandedOutputState((prev) => ({
+                                  runId: activeRunId,
+                                  values: {
+                                    ...(prev.runId === activeRunId ? prev.values : {}),
+                                    [detailsKey]: open,
+                                  },
+                                }));
+                              }}
+                            >
+                              <summary>
+                                Details and log
+                                <span className="sr-only">
+                                  {`, step ${String(index + 1)}`}
+                                </span>
+                              </summary>
+                              {ranCommand !== null && (
+                                <p
+                                  className="run-step-command"
+                                  title="Program and arguments exactly as passed (no shell)"
+                                >
+                                  <span className="field-hint">
+                                    {activeRun.execution?.options.dryRun
+                                      ? 'Would run'
+                                      : 'Ran'}
+                                  </span>{' '}
+                                  <code>{ranCommand}</code>
                                 </p>
                               )}
-                              {textUsageHints.length > 0 && (
-                                <p className="field-hint">
-                                  Unverified text hints: {textUsageHints.join(' · ')}
-                                </p>
+                              {((context?.usageHints.length ?? 0) > 0 ||
+                                textUsageHints.length > 0) && (
+                                <details className="cli-usage-details">
+                                  <summary>CLI usage</summary>
+                                  {(context?.usageHints.length ?? 0) > 0 && (
+                                    <p className="field-hint">
+                                      {context?.usageHints.join(' · ')}
+                                    </p>
+                                  )}
+                                  {textUsageHints.length > 0 && (
+                                    <p className="field-hint">
+                                      Unverified text hints: {textUsageHints.join(' · ')}
+                                    </p>
+                                  )}
+                                  <p className="field-hint">{CLI_COST_EXPLANATION}</p>
+                                </details>
                               )}
-                              <p className="field-hint">{CLI_COST_EXPLANATION}</p>
-                            </details>
-                          )}
-                          {context?.outputNote && (
-                            <p className="field-hint">{context.outputNote}</p>
-                          )}
-                          <OutputBlock
-                            text={r.stdout}
-                            live={r.status === 'running'}
-                            label="stdout"
-                            step={index + 1}
-                            rich={node?.type === 'agent'}
-                            defaultOpen={isLast}
-                            expanded={expandedOutputs[`${String(r.id)}:out`]}
-                            onToggle={() => {
-                              toggleOutput('out');
-                            }}
-                          />
-                          {context?.activity &&
-                            context.activity.trim() !== r.stdout.trim() && (
+                              {context?.outputNote && (
+                                <p className="field-hint">{context.outputNote}</p>
+                              )}
+                              {!outputInView && stdoutBlock}
+                              {showActivity && (
+                                <OutputBlock
+                                  text={context.activity}
+                                  live={running}
+                                  label="Agent activity"
+                                  step={index + 1}
+                                  defaultOpen={false}
+                                  expanded={expandedOutputs[`${String(r.id)}:activity`]}
+                                  onToggle={() => {
+                                    toggleOutput('activity');
+                                  }}
+                                />
+                              )}
                               <OutputBlock
-                                text={context.activity}
-                                live={r.status === 'running'}
-                                label="Agent activity"
+                                text={r.stderr}
+                                live={running}
+                                label="stderr"
                                 step={index + 1}
-                                defaultOpen={false}
-                                expanded={expandedOutputs[`${String(r.id)}:activity`]}
+                                defaultOpen={isLast}
+                                expanded={expandedOutputs[`${String(r.id)}:err`]}
                                 onToggle={() => {
-                                  toggleOutput('activity');
+                                  toggleOutput('err');
                                 }}
                               />
-                            )}
-                          <OutputBlock
-                            text={r.stderr}
-                            live={r.status === 'running'}
-                            label="stderr"
-                            step={index + 1}
-                            defaultOpen={isLast}
-                            expanded={expandedOutputs[`${String(r.id)}:err`]}
-                            onToggle={() => {
-                              toggleOutput('err');
-                            }}
-                          />
+                            </details>
+                          )}
                         </div>
                         {playbook && (
                           <details className="run-step-playbook">

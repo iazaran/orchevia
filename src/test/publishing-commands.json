@@ -1,0 +1,25 @@
+{
+  "about": "Read by command_publishes (crates/core/src/workflow.rs) and commandPublishes (src/lib/workflow.ts): both must agree on every line.",
+  "publishes": [
+    ["git", "push"],
+    ["env", "GIT_TERMINAL_PROMPT=0", "git", "push", "-u", "origin", "{{input.branch}}"],
+    ["git", "-C", "/repo", "push", "origin", "HEAD"],
+    ["/usr/bin/git", "push"],
+    ["gh", "pr", "create", "--fill"],
+    ["gh", "-R", "owner/repo", "pr", "comment", "12", "--body", "done"],
+    ["bash", "-c", "cargo test && git push origin main"],
+    ["sh", "-c", "pnpm publish --access public"],
+    ["cargo", "publish"],
+    ["docker", "push", "img:1"]
+  ],
+  "local": [
+    ["git", "status"],
+    ["git", "commit", "-m", "push the fix"],
+    ["echo", "git", "pushes", "later"],
+    ["gh", "pr", "view", "12"],
+    ["gh", "pr", "checks"],
+    ["npm", "test"],
+    ["bash", "-c", "git log --oneline"],
+    ["git", "stash", "push"]
+  ]
+}

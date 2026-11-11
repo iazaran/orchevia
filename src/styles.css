@@ -1768,6 +1768,221 @@ details[open] > .gen-summary::after {
 .run-step-body > .run-output + .run-output {
   margin-top: 6px;
 }
+.run-step.step-checked {
+  --step-color: var(--border);
+}
+.run-step.step-correcting {
+  --step-color: var(--warning);
+}
+.status-correcting {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+.status-checked {
+  color: var(--text-1);
+}
+.step-label {
+  font-size: 11px;
+  color: var(--text-1);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.step-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.step-summary p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.step-purpose {
+  color: var(--text-1);
+  font-size: 13px;
+}
+.step-doing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-0);
+  font-weight: 600;
+}
+.step-doing .live-dot {
+  flex-shrink: 0;
+}
+.step-agent-note {
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+.step-facts {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+}
+.step-fact {
+  padding-left: 14px;
+  position: relative;
+  overflow-wrap: anywhere;
+}
+.step-fact::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-2);
+}
+.step-fact.tone-ok::before {
+  background: var(--success);
+}
+.step-fact.tone-bad {
+  color: var(--danger);
+}
+.step-fact.tone-bad::before {
+  background: var(--danger);
+}
+.step-fact.tone-warn::before {
+  background: var(--warning);
+}
+.step-fact summary {
+  cursor: pointer;
+}
+.step-fact-detail {
+  margin: 4px 0 2px;
+  padding-left: 16px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-1);
+}
+.run-step-details {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 6px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.run-step-details > summary {
+  cursor: pointer;
+  color: var(--text-1);
+  margin-bottom: 6px;
+}
+.run-step-details > .run-output + .run-output {
+  margin-top: 6px;
+}
+.run-progress {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.run-progress p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+.run-progress-now:empty {
+  display: none;
+}
+.run-progress-now {
+  color: var(--text-0);
+  font-weight: 600;
+}
+.run-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  overflow: hidden;
+  max-width: 420px;
+}
+.run-progress-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-progress-bar > span {
+    transition: none;
+  }
+}
+.step-feedback-toggle {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+.feedback-composer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 10px;
+  margin: 4px 0 10px;
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.feedback-composer .field-hint {
+  margin: 0;
+}
+.feedback-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.feedback-list {
+  list-style: none;
+  margin: 4px 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.feedback-item {
+  border-left: 3px solid var(--accent);
+  padding: 4px 0 4px 10px;
+  min-width: 0;
+}
+.feedback-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.feedback-text {
+  margin: 6px 0 4px;
+  font-style: italic;
+  color: var(--text-0);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+}
+.feedback-decision {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.feedback-links {
+  margin: 4px 0 0;
+}
+.run-feedback-summary {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
 .run-step-playbook {
   border-top: 1px solid var(--border-soft);
   padding: 8px 12px;

@@ -508,8 +508,9 @@ fn severity_gate(id: &str, y: f64, reviewers: &[&str]) -> Node {
 }
 
 /// Fails fast instead of waiting for a credential prompt no one can answer.
+/// Marked as publishing, so feedback sent during a run is handled first.
 fn push_branch(y: f64) -> Node {
-    command(
+    let mut node = command(
         "push",
         MAIN,
         y,
@@ -523,7 +524,9 @@ fn push_branch(y: f64) -> Node {
             "origin",
             "{{input.branch}}",
         ],
-    )
+    );
+    node.config.publishes = Some(true);
+    node
 }
 
 /// Bound the review/fix cycle: up to two fix rounds, then the run stops with
@@ -1477,6 +1480,8 @@ if [ -z "$sid" ]; then
   sid=$(printf '00000000-0000-4000-8000-%012d' "$n")
 fi
 case "$prompt" in
+  *"This is a check only"*)
+    text='Checked.\n```orchevia-feedback\n{{\"decision\":\"change\",\"explanation\":\"Not covered.\",\"change\":\"Cover the empty cart.\"}}\n```' ;;
   *"Deep review"*)
     n=$(cat {state_dir}/deep 2>/dev/null || echo 0); n=$((n+1)); echo $n > {state_dir}/deep
     if [ "$n" = 1 ]; then
@@ -1645,9 +1650,16 @@ done
             db.upsert_workflow(&workflow).unwrap();
             engine.start_run(&workflow, &run_id, &inputs).unwrap();
             engine.execute(workflow.clone(), run_id.clone()).await;
-            for _ in 0..4 {
+            for round in 0..4 {
                 if db.get_run(&run_id).unwrap().unwrap().status != RunStatus::Paused {
                     break;
+                }
+                // Feedback while the PR review waits to post: the review is
+                // corrected and the approval asked again before posting.
+                if template.id == "review-pr" && round == 0 {
+                    engine
+                        .submit_feedback(&run_id, "revA", None, "Also cover the empty cart.")
+                        .unwrap();
                 }
                 engine
                     .approve_run(&run_id, true, None, workflow.clone())
@@ -1734,6 +1746,18 @@ done
                     let comment = std::fs::read_to_string(state.join("comment")).unwrap();
                     assert!(comment.starts_with("pr\ncomment\n7\n"), "{comment}");
                     assert!(comment.contains("Missing empty-cart check"), "{comment}");
+                    // The feedback corrected the Claude review before posting,
+                    // once, and the Codex review was kept.
+                    let feedback = db.list_feedback(&run_id).unwrap();
+                    assert_eq!(
+                        feedback[0].status,
+                        crate::feedback::ADDRESSED,
+                        "{feedback:#?}"
+                    );
+                    assert_eq!((visits("revA"), visits("revB"), visits("note")), (2, 1, 1));
+                    let prompts = std::fs::read_to_string(state.join("prompts")).unwrap();
+                    assert!(prompts.contains("Also cover the empty cart."), "{prompts}");
+                    assert!(prompts.contains("- Cover the empty cart."), "{prompts}");
                 }
                 "multi-agent-review" => assert_eq!(visits("triage"), 0),
                 "watch-feedback" => {
@@ -1747,6 +1771,36 @@ done
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Feedback is handled before publishing only when publishing steps say
+    /// so: every built-in step that publishes is marked.
+    #[test]
+    fn builtin_publishing_steps_are_marked() {
+        for template in builtin_templates() {
+            for node in &template.workflow.nodes {
+                if node.kind == NodeKind::Command
+                    && crate::workflow::command_publishes(
+                        node.config.executable.as_deref().unwrap_or(""),
+                        &node.config.args,
+                    )
+                {
+                    assert!(
+                        crate::workflow::publishes(node),
+                        "{}: {} publishes unmarked",
+                        template.id,
+                        node.id
+                    );
+                }
+            }
+            assert!(
+                !crate::workflow::validate_workflow(&template.workflow)
+                    .iter()
+                    .any(|i| i.code == "publish-unmarked"),
+                "{}",
+                template.id
+            );
         }
     }
 

@@ -253,6 +253,51 @@ pub async fn continue_usage_run(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn continue_feedback_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    expected_pause_id: i64,
+) -> Result<(), String> {
+    let workflow = state
+        .engine
+        .claim_feedback_continuation(&run_id, expected_pause_id)
+        .map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        Engine::new(db, cancel).execute(workflow, run_id).await;
+    });
+    Ok(())
+}
+
+/// Feedback on a step of a running or paused run, handled at its next
+/// checkpoint.
+#[tauri::command]
+pub fn submit_step_feedback(
+    state: State<AppState>,
+    run_id: String,
+    node_id: String,
+    result_id: Option<i64>,
+    text: String,
+) -> Result<orchevia_core::feedback::RunFeedback, String> {
+    state
+        .engine
+        .submit_feedback(&run_id, &node_id, result_id, &text)
+        .map_err(|e| match e {
+            orchevia_core::engine::EngineError::Validation(message) => message,
+            other => other.to_string(),
+        })
+}
+
+#[tauri::command]
+pub fn list_run_feedback(
+    state: State<AppState>,
+    run_id: String,
+) -> Result<Vec<orchevia_core::feedback::RunFeedback>, String> {
+    state.db.list_feedback(&run_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 pub fn usage_summary(
     state: State<AppState>,
@@ -446,6 +491,51 @@ pub async fn mcp_list_tools(
     })
     .await
     .map_err(|e| format!("MCP discovery failed to join: {e}"))?
+}
+
+/// Check one MCP server on request: found, started, tools listed, and the
+/// tools saved workflows use. Never calls a tool; bounded at 45 s (a first
+/// `npx`/`uvx` run downloads the package) and cancellable.
+#[tauri::command]
+pub async fn mcp_check_server(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<orchevia_core::mcp::McpCheckReport, String> {
+    let server = state
+        .db
+        .get_mcp_server(&server_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Unknown MCP server '{server_id}'."))?;
+    let workflows: Vec<orchevia_core::workflow::Workflow> = state
+        .db
+        .list_workflows()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|stored| stored.definition)
+        .collect();
+    let required = orchevia_core::mcp::required_tools(&workflows, &server_id);
+    let key = format!("mcp-check-{server_id}");
+    // A fresh flag per check: an earlier cancel must not stop this one.
+    state.cancel.remove(&key);
+    let cancel = state.cancel.flag_for(&key);
+    let registry = state.cancel.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::mcp::check_server(
+            &server,
+            &required,
+            std::time::Duration::from_secs(45),
+            &cancel,
+        )
+    })
+    .await
+    .map_err(|e| format!("MCP check failed to join: {e}"))?;
+    registry.remove(&key);
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn cancel_mcp_check(state: State<AppState>, server_id: String) -> bool {
+    state.cancel.cancel(&format!("mcp-check-{server_id}"))
 }
 
 #[derive(Debug, serde::Serialize)]

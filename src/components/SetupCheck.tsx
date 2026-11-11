@@ -32,15 +32,23 @@ function rich(text: string): React.ReactNode {
     .map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part));
 }
 
-/** The checklist of one profile's setup check. */
-export function SetupCheckResult({
-  report,
+/** A checklist of check items: an agent profile's or an MCP server's. */
+export function CheckList({
+  label,
+  items,
 }: {
-  report: SetupCheckReport;
+  label: string;
+  items: {
+    id: string;
+    label: string;
+    status: SetupCheckStatus;
+    detail: string;
+    hint?: string;
+  }[];
 }): React.JSX.Element {
   return (
-    <ul className="setup-check" aria-label={`Setup check for ${report.profileName}`}>
-      {report.items.map((item) => (
+    <ul className="setup-check" aria-label={label}>
+      {items.map((item) => (
         <li key={item.id} className="setup-check-item">
           <span className={`status-pill ${PILL[item.status]}`}>
             {ITEM_WORD[item.status]}
@@ -55,6 +63,17 @@ export function SetupCheckResult({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** The checklist of one profile's setup check. */
+export function SetupCheckResult({
+  report,
+}: {
+  report: SetupCheckReport;
+}): React.JSX.Element {
+  return (
+    <CheckList label={`Setup check for ${report.profileName}`} items={report.items} />
   );
 }
 

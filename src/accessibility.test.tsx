@@ -682,10 +682,21 @@ describe('Runs view', () => {
       await act(async () => {
         await useAppStore.getState().selectRun(pausedRunId);
       });
-      await renderView(<RunsView />);
+      const user = await renderView(<RunsView />);
       expect(
         (await screen.findAllByText('Check the plan before tests run.')).length,
       ).toBeGreaterThan(0);
+      await expectNoAxeViolations();
+      // The feedback composer and the feedback it lists.
+      const [feedback] = screen.getAllByRole('button', { name: /^Send feedback on / });
+      if (feedback === undefined) throw new Error('a step with feedback expected');
+      await user.click(feedback);
+      await user.type(screen.getByLabelText(/^Feedback on /), 'Keep the old config.');
+      await expectNoAxeViolations();
+      await user.click(screen.getByRole('button', { name: 'Send feedback' }));
+      expect(
+        await screen.findByRole('list', { name: 'Feedback on this step' }),
+      ).toBeInTheDocument();
       await expectNoAxeViolations();
     },
     SLOW,
@@ -719,6 +730,13 @@ describe('Environment view', () => {
     await populatedBackend();
     const user = await renderView(<EnvironmentView />);
     expect(await screen.findByText('Files')).toBeInTheDocument();
+    await expectNoAxeViolations();
+    const [check] = screen.getAllByRole('button', { name: 'Check server' });
+    if (check === undefined) throw new Error('an MCP server expected');
+    await user.click(check);
+    expect(
+      await screen.findByRole('list', { name: /^Server check for / }),
+    ).toBeInTheDocument();
     await expectNoAxeViolations();
     await checkDialog(
       user,
