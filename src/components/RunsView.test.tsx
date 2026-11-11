@@ -1531,8 +1531,10 @@ async function renderRun(
   run: StoredRun,
   results: StoredNodeResult[],
   workflow: Workflow,
+  setup?: (backend: Backend) => void,
 ): Promise<void> {
   const backend = __setMockBackendForTests();
+  setup?.(backend);
   vi.spyOn(backend, 'listRuns').mockImplementation(() =>
     Promise.resolve(useAppStore.getState().runs),
   );
@@ -1711,4 +1713,197 @@ it('opens Details for a failed step and labels loop visits and corrections', asy
     'open',
   );
   expect(screen.getByText('Correction for feedback #7')).toBeInTheDocument();
+});
+
+it('sends feedback on a step of a live run and lists what became of it', async () => {
+  const backend = __setMockBackendForTests();
+  const items: import('../lib/feedback').RunFeedback[] = [];
+  const submit = vi
+    .spyOn(backend, 'submitStepFeedback')
+    .mockImplementation((runId, nodeId, text, resultId) => {
+      const item = {
+        id: 7,
+        runId,
+        nodeId,
+        ...(resultId === undefined ? {} : { resultId }),
+        text,
+        status: 'pending' as const,
+        decision: '',
+        correctionResultIds: [],
+        acknowledged: false,
+        createdAt: '',
+        updatedAt: '',
+      };
+      items.push(item);
+      return Promise.resolve(item);
+    });
+  vi.spyOn(backend, 'listRunFeedback').mockImplementation(() =>
+    Promise.resolve([...items]),
+  );
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  vi.spyOn(backend, 'getRunResults').mockImplementation((id) =>
+    Promise.resolve(useAppStore.getState().runResults[id] ?? []),
+  );
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    ...readableWorkflow,
+    nodes: [
+      ...readableWorkflow.nodes,
+      {
+        id: 'push',
+        type: 'command',
+        label: 'Push branch',
+        position: { x: 0, y: 0 },
+        config: { executable: 'git', args: ['push'], publishes: true },
+      },
+    ],
+  });
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  useAppStore.setState({
+    runs: [
+      {
+        id: 'readable',
+        workflowId: 'readable-wf',
+        status: 'running',
+        startedAt: '2026-11-11T10:00:00Z',
+      },
+    ],
+    activeRunId: 'readable',
+    runResults: {
+      readable: [
+        readableRow({ stdout: 'v1' }),
+        readableRow({ id: 2, nodeId: 'tests', status: 'running' }),
+      ],
+    },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const button = await screen.findByRole('button', {
+    name: 'Send feedback on Implement, step 1',
+  });
+  fireEvent.click(button);
+  const box = screen.getByLabelText(/Feedback on Implement/);
+  expect(
+    screen.getByText(/It is checked before "Push branch" publishes/),
+  ).toBeInTheDocument();
+  fireEvent.change(box, {
+    target: { value: 'Keep compatibility with the old configuration.' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Send feedback' }));
+  await waitFor(() =>
+    expect(submit).toHaveBeenCalledWith(
+      'readable',
+      'impl',
+      'Keep compatibility with the old configuration.',
+      1,
+    ),
+  );
+  const list = await screen.findByRole('list', { name: 'Feedback on this step' });
+  expect(within(list).getByText('Waiting')).toBeInTheDocument();
+  expect(
+    within(list).getByText('Keep compatibility with the old configuration.'),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/1 waiting/)).toBeInTheDocument();
+});
+
+it('offers no feedback on finished runs and links checks and corrections', async () => {
+  const feedbackItems: import('../lib/feedback').RunFeedback[] = [
+    {
+      id: 3,
+      runId: 'readable',
+      nodeId: 'impl',
+      resultId: 1,
+      text: 'Keep old keys.',
+      status: 'addressed',
+      decision: 'Corrected by "Implement"; the steps that use its work ran again.',
+      targetNodeId: 'impl',
+      checkResultId: 2,
+      correctionResultIds: [3],
+      round: 1,
+      acknowledged: false,
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+  await renderRun(
+    {
+      id: 'readable',
+      workflowId: 'readable-wf',
+      status: 'succeeded',
+      startedAt: '2026-11-11T10:00:00Z',
+    },
+    [
+      readableRow({ stdout: 'v1' }),
+      readableRow({ id: 2, status: 'checked', stdout: 'Checked.' }),
+      readableRow({
+        id: 3,
+        stdout: 'v2',
+        structuredJson: '{"correction":{"feedbackIds":[3],"round":1}}',
+      }),
+    ],
+    readableWorkflow,
+    (backend) => {
+      vi.spyOn(backend, 'listRunFeedback').mockResolvedValue(feedbackItems);
+    },
+  );
+  expect(screen.queryByRole('button', { name: /Send feedback/ })).toBeNull();
+  const list = await screen.findByRole('list', { name: 'Feedback on this step' });
+  expect(within(list).getByText('Addressed')).toBeInTheDocument();
+  expect(within(list).getByRole('link', { name: 'Check (step 2)' })).toHaveAttribute(
+    'href',
+    '#run-result-2',
+  );
+  expect(within(list).getByRole('link', { name: 'Correction (step 3)' })).toHaveAttribute(
+    'href',
+    '#run-result-3',
+  );
+});
+
+it('shows a feedback pause apart from approvals and continues it', async () => {
+  let resume: ReturnType<typeof vi.fn> | undefined;
+  const pauseItems: import('../lib/feedback').RunFeedback[] = [
+    {
+      id: 4,
+      runId: 'readable',
+      nodeId: 'impl',
+      text: 'Use the strict lint profile.',
+      status: 'needs-attention',
+      decision: 'No AI step before this step can act on feedback.',
+      correctionResultIds: [],
+      acknowledged: false,
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+  await renderRun(
+    {
+      id: 'readable',
+      workflowId: 'readable-wf',
+      status: 'paused',
+      startedAt: '2026-11-11T10:00:00Z',
+      execution: {
+        options: {},
+        feedback: {
+          pause: { id: 9, reason: '1 feedback message needs your attention.' },
+        },
+      },
+    },
+    [readableRow({ stdout: 'v1' })],
+    readableWorkflow,
+    (backend) => {
+      vi.spyOn(backend, 'listRunFeedback').mockResolvedValue(pauseItems);
+      resume = vi.fn().mockResolvedValue(undefined);
+      backend.continueFeedbackRun = resume as Backend['continueFeedbackRun'];
+    },
+  );
+  expect(screen.queryByRole('button', { name: 'Approve & continue' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Review feedback pause' }));
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Feedback needs your attention',
+  });
+  expect(within(dialog).getByText('Use the strict lint profile.')).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Continue as it is' }));
+  await waitFor(() => expect(resume).toHaveBeenCalledWith('readable', 9));
 });

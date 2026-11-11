@@ -30,6 +30,13 @@ import {
   stepLabel,
 } from '../lib/run-report';
 import { digestOf, summarizeStep, type StepSummary } from '../lib/step-summary';
+import type { RunFeedback } from '../lib/feedback';
+import {
+  FeedbackComposer,
+  FeedbackList,
+  FeedbackPauseDialog,
+  FeedbackSummary,
+} from './StepFeedback';
 import { useAppStore } from '../store';
 import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
@@ -715,6 +722,16 @@ export function RunsView(): React.JSX.Element {
     findings: GroupedFinding[];
   } | null>(null);
   const findings = findingsState?.runId === activeRunId ? findingsState.findings : [];
+  const [feedbackState, setFeedbackState] = useState<{
+    runId: string;
+    items: RunFeedback[];
+  } | null>(null);
+  const feedback = feedbackState?.runId === activeRunId ? feedbackState.items : [];
+  // The result row whose feedback composer is open, per run.
+  const [composer, setComposer] = useState<{ runId: string; resultId: number } | null>(
+    null,
+  );
+  const [feedbackPauseOpen, setFeedbackPauseOpen] = useState(false);
   const findingsByResult = new Map<number, GroupedFinding[]>();
   const unassignedFindings: GroupedFinding[] = [];
   for (const finding of findings) {
@@ -759,6 +776,22 @@ export function RunsView(): React.JSX.Element {
       current = false;
     };
   }, [activeRunId, selectedResults]);
+
+  // Feedback follows the selected run's results, like findings.
+  const loadFeedback = useCallback((runId: string): void => {
+    void getBackend()
+      .listRunFeedback(runId)
+      .then((items) => {
+        if (mounted.current) setFeedbackState({ runId, items });
+      })
+      .catch(() => {
+        // Keep what is shown for this run.
+      });
+  }, []);
+  useEffect(() => {
+    if (activeRunId === null || selectedResults === undefined) return;
+    loadFeedback(activeRunId);
+  }, [activeRunId, selectedResults, loadFeedback]);
 
   const approve = (runId: string, approved: boolean): void => {
     if (pendingApproval === undefined) return;
@@ -891,6 +924,18 @@ export function RunsView(): React.JSX.Element {
           onContinued={() => refreshRunData()}
         />
       )}
+      {feedbackPauseOpen &&
+        activeRun !== null &&
+        activeRun.execution?.feedback?.pause !== undefined && (
+          <FeedbackPauseDialog
+            key={`${activeRun.id}-${String(activeRun.execution.feedback.pause.id)}`}
+            runId={activeRun.id}
+            pause={activeRun.execution.feedback.pause}
+            items={feedback}
+            onClose={() => setFeedbackPauseOpen(false)}
+            onContinued={() => refreshRunData()}
+          />
+        )}
       {usageDecision !== null && (
         <UsageContinueDialog
           key={`${usageDecision.runId}-${String(usageDecision.pause.id)}`}
@@ -1045,6 +1090,12 @@ export function RunsView(): React.JSX.Element {
                       results={results}
                     />
                   )}
+                  <FeedbackSummary
+                    items={feedback}
+                    workflow={runWorkflow}
+                    state={activeRun.execution?.feedback}
+                    live={activeRun.status === 'running' || activeRun.status === 'paused'}
+                  />
                   <p className="field-hint run-header-id">{activeRun.id}</p>
                   {activeRun.execution?.options.dryRun && (
                     <p className="field-hint">
@@ -1098,6 +1149,15 @@ export function RunsView(): React.JSX.Element {
                       Review spend pause
                     </button>
                   )}
+                  {activeRun.status === 'paused' &&
+                    activeRun.execution?.feedback?.pause && (
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => setFeedbackPauseOpen(true)}
+                      >
+                        Review feedback pause
+                      </button>
+                    )}
                   {activeRun.status === 'paused' && activeRun.execution?.usagePause && (
                     <button
                       className="btn btn-primary"
@@ -1111,7 +1171,8 @@ export function RunsView(): React.JSX.Element {
                   )}
                   {activeRun.status === 'paused' &&
                     activeRun.execution?.spendPause === undefined &&
-                    activeRun.execution?.usagePause === undefined && (
+                    activeRun.execution?.usagePause === undefined &&
+                    activeRun.execution?.feedback?.pause === undefined && (
                       <>
                         <button
                           className="btn btn-primary"
@@ -1138,7 +1199,8 @@ export function RunsView(): React.JSX.Element {
                 </div>
                 {activeRun.status === 'paused' &&
                   activeRun.execution?.spendPause === undefined &&
-                  activeRun.execution?.usagePause === undefined && (
+                  activeRun.execution?.usagePause === undefined &&
+                  activeRun.execution?.feedback?.pause === undefined && (
                     <div className="field" style={{ maxWidth: 560 }}>
                       <label className="field-label" htmlFor="approve-note">
                         Note (optional, stored with the decision)
@@ -1444,6 +1506,26 @@ export function RunsView(): React.JSX.Element {
                       (r.status === 'failed' ||
                         r.status === 'cancelled' ||
                         (node?.type === 'agent' && digest === null && running));
+                    // Feedback is written on the step's latest result while the
+                    // run is live, and listed on the result it was written on.
+                    const latestForStep =
+                      [...results].reverse().find((row) => row.nodeId === r.nodeId)
+                        ?.id === r.id;
+                    const canFeedback =
+                      (activeRun.status === 'running' || activeRun.status === 'paused') &&
+                      latestForStep &&
+                      !isBookkeeping(r) &&
+                      workflowNode !== undefined &&
+                      workflowNode.type !== 'start' &&
+                      workflowNode.type !== 'end';
+                    const stepFeedback = feedback.filter(
+                      (item) =>
+                        item.nodeId === r.nodeId &&
+                        (item.resultId === r.id ||
+                          (item.resultId === undefined && latestForStep)),
+                    );
+                    const composing =
+                      composer?.runId === activeRun.id && composer.resultId === r.id;
                     const stdoutBlock = (
                       <OutputBlock
                         text={r.stdout}
@@ -1505,6 +1587,22 @@ export function RunsView(): React.JSX.Element {
                               {formatDurationMs(r.durationMs ?? 0)}
                             </span>
                           )}
+                          {canFeedback && (
+                            <button
+                              className="btn btn-ghost step-feedback-toggle"
+                              aria-expanded={composing}
+                              aria-label={`Send feedback on ${stepLabel(r.nodeId, node?.label)}, step ${String(index + 1)}`}
+                              onClick={() =>
+                                setComposer(
+                                  composing
+                                    ? null
+                                    : { runId: activeRun.id, resultId: r.id },
+                                )
+                              }
+                            >
+                              Feedback
+                            </button>
+                          )}
                         </div>
                         {meta.length > 0 && (
                           <div className="run-step-meta" title={context?.group}>
@@ -1513,6 +1611,36 @@ export function RunsView(): React.JSX.Element {
                         )}
                         <div className="run-step-body">
                           {!isBookkeeping(r) && <StepSummaryView summary={summary} />}
+                          {composing && runWorkflow !== null && (
+                            <FeedbackComposer
+                              runId={activeRun.id}
+                              nodeId={r.nodeId}
+                              resultId={r.id}
+                              stepName={stepLabel(r.nodeId, node?.label)}
+                              step={index + 1}
+                              workflow={runWorkflow}
+                              state={activeRun.execution?.feedback}
+                              onSent={(item) => {
+                                setComposer(null);
+                                setFeedbackState((previous) => ({
+                                  runId: activeRun.id,
+                                  items: [
+                                    ...(previous?.runId === activeRun.id
+                                      ? previous.items
+                                      : []),
+                                    item,
+                                  ],
+                                }));
+                                void refreshRunData();
+                              }}
+                              onClose={() => setComposer(null)}
+                            />
+                          )}
+                          <FeedbackList
+                            items={stepFeedback}
+                            stepNumber={(id) => stepNumber.get(id)}
+                            labelOf={(id) => stepLabel(id, nodeFor(id)?.label)}
+                          />
                           {r.error !== undefined &&
                             r.error !== '' &&
                             (r.status === 'paused' ? (

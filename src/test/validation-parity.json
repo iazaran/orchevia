@@ -2556,6 +2556,49 @@
           "nodeId": "gate"
         }
       ]
+    },
+    {
+      "name": "a correction-round limit outside 1–5 is invalid",
+      "workflow": {
+        "limits": {
+          "maxCorrectionRounds": 6
+        },
+        "nodes": [
+          {
+            "id": "start",
+            "type": "start"
+          },
+          {
+            "id": "cmd",
+            "type": "command",
+            "config": {
+              "executable": "echo"
+            }
+          },
+          {
+            "id": "end",
+            "type": "end"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e1",
+            "source": "start",
+            "target": "cmd"
+          },
+          {
+            "id": "e2",
+            "source": "cmd",
+            "target": "end"
+          }
+        ]
+      },
+      "issues": [
+        {
+          "code": "workflow-limits-invalid",
+          "severity": "error"
+        }
+      ]
     }
   ]
 }
