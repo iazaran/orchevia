@@ -114,6 +114,7 @@ const GUARD_LABELS: Record<string, string> = {
   __spend_guard: 'Spend guard',
   __usage_guard: 'Usage guard',
   __feedback: 'Feedback round',
+  __feedback_guard: 'Feedback pause',
 };
 
 /** A step's display name: its label, a guard's name, or the node id. */

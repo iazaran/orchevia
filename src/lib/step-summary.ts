@@ -260,9 +260,8 @@ export function stepPurpose(
     case 'condition':
       return 'Chooses the route';
     case 'start':
-      return 'Start';
     case 'end':
-      return 'End';
+      return '';
     default:
       return '';
   }
@@ -368,20 +367,42 @@ function executionLabels(
         ? `Attempt ${String(attempt)} of ${String(Math.min(10, max))}`
         : `Attempt ${String(attempt)}`,
     );
-  // Loop passes: earlier finished visits of the same step. A correction is
-  // labelled as such, not as another pass.
+  // Loop passes: earlier finished visits of the same step since the last
+  // feedback round that reran it. A correction is labelled as such, and a
+  // step a correction round reran says so instead of counting as a pass.
   if (!isRecord(correction) && row.status !== 'checked') {
     const index = results.findIndex((r) => r.id === row.id);
-    const earlier = results
-      .slice(0, index < 0 ? results.length : index)
-      .filter(
-        (r) =>
-          r.nodeId === row.nodeId &&
-          ['succeeded', 'failed', 'approved', 'rejected'].includes(r.status),
-      ).length;
+    const before = results.slice(0, index < 0 ? results.length : index);
+    let since = 0;
+    let round: number | null = null;
+    for (const [at, r] of before.entries()) {
+      const plan = r.nodeId === '__feedback' ? metadataOf(r).feedbackRound : undefined;
+      if (!isRecord(plan)) continue;
+      const affected = Array.isArray(plan.affected) ? plan.affected : [];
+      if (!affected.includes(row.nodeId)) continue;
+      since = at + 1;
+      round = typeof plan.round === 'number' ? plan.round : null;
+    }
+    const finished = (r: StoredNodeResult): boolean =>
+      r.nodeId === row.nodeId &&
+      ['succeeded', 'failed', 'approved', 'rejected'].includes(r.status);
+    const rerun = round !== null && before.slice(0, since).some(finished);
+    if (rerun) labels.push(`Rerun after feedback (round ${String(round)})`);
+    const earlier = before.slice(since).filter(finished).length;
     if (earlier > 0) labels.push(`Visit ${String(earlier + 1)}`);
   }
   return labels;
+}
+
+/** A running command's own latest output line, or that it is running. */
+function latestLine(output: string): string {
+  const line = output
+    .replace(ANSI, '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .pop();
+  return line === undefined ? 'Running…' : `Running · ${shorten(line, 140)}`;
 }
 
 export function summarizeStep(
@@ -486,14 +507,21 @@ export function summarizeStep(
       text: 'The CLI stopped before finishing its work',
       tone: 'bad',
     });
+  const checkedIds =
+    isRecord(check) && Array.isArray(check.feedbackIds)
+      ? check.feedbackIds.filter((id): id is number => typeof id === 'number')
+      : [];
   return {
-    purpose: stepPurpose(node, options.inputs ?? {}),
+    purpose:
+      row.status === 'checked'
+        ? `Checks feedback ${checkedIds.map((id) => `#${String(id)}`).join(', ')} against this step's work, without changing it`
+        : stepPurpose(node, options.inputs ?? {}),
     doing: running
       ? (digest?.doing ??
         (node?.type === 'agent'
           ? 'Working…'
           : node?.type === 'command'
-            ? 'Running…'
+            ? latestLine(row.stdout)
             : null))
       : null,
     facts,

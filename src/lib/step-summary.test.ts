@@ -194,6 +194,17 @@ describe('summarizeStep', () => {
     expect(summary.doing).toBe('Editing src/a.ts');
     expect(summary.agentNote).toBe('Looking at the parser.');
     expect(summarizeStep(row({ status: 'running' }), agent).doing).toBe('Working…');
+    const tests = node({
+      type: 'command',
+      config: { executable: 'pnpm', args: ['test'] },
+    });
+    expect(summarizeStep(row({ status: 'running' }), tests).doing).toBe('Running…');
+    expect(
+      summarizeStep(
+        row({ status: 'running', stdout: '> vitest run\n ✓ src/a.test.ts (4)\n\n' }),
+        tests,
+      ).doing,
+    ).toBe('Running · ✓ src/a.test.ts (4)');
   });
 
   it('reports a test command from its exit code and printed counts only', () => {
@@ -250,6 +261,20 @@ describe('summarizeStep', () => {
         { results: history },
       ).labels,
     ).toEqual(['Correction for feedback #4, #5']);
+    // A step a correction round reran says so, and its loop passes count anew.
+    const round = row({
+      id: 4,
+      nodeId: '__feedback',
+      status: 'correcting',
+      structuredJson: '{"feedbackRound":{"round":1,"affected":["impl"]}}',
+    });
+    const after = [...history, round, row({ id: 5 }), row({ id: 6 })];
+    expect(
+      summarizeStep(after[4] as StoredNodeResult, agent, { results: after }).labels,
+    ).toEqual(['Rerun after feedback (round 1)']);
+    expect(
+      summarizeStep(after[5] as StoredNodeResult, agent, { results: after }).labels,
+    ).toEqual(['Rerun after feedback (round 1)', 'Visit 2']);
     expect(
       summarizeStep(
         row({
@@ -276,6 +301,9 @@ describe('summarizeStep', () => {
       agent,
     );
     expect(check.labels).toEqual(['Feedback check']);
+    expect(check.purpose).toBe(
+      "Checks feedback #1 against this step's work, without changing it",
+    );
     expect(check.facts[0]).toEqual({
       kind: 'outcome',
       text: 'Feedback already satisfied: Old keys still load.',

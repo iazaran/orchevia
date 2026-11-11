@@ -168,6 +168,7 @@ describe('feedback rows and run progress', () => {
     expect(reportResult(workflow, results)?.id).toBe(1);
     expect(stepCounts(results).total).toBe(1);
     expect(stepLabel('__feedback', undefined)).toBe('Feedback round');
+    expect(stepLabel('__feedback_guard', undefined)).toBe('Feedback pause');
     expect(timelineBarStatus('checked')).toBe('cancelled');
     expect(timelineBarStatus('correcting')).toBe('paused');
   });

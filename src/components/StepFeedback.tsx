@@ -75,6 +75,8 @@ export function FeedbackComposer({
       <textarea
         id={`${id}-text`}
         className="textarea"
+        // Opened by its button to type into at once.
+        autoFocus
         rows={3}
         maxLength={MAX_FEEDBACK_CHARS}
         placeholder="e.g. Keep compatibility with the old configuration."

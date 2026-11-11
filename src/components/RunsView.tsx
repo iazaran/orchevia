@@ -1509,7 +1509,9 @@ export function RunsView(): React.JSX.Element {
                     // Feedback is written on the step's latest result while the
                     // run is live, and listed on the result it was written on.
                     const latestForStep =
-                      [...results].reverse().find((row) => row.nodeId === r.nodeId)
+                      [...results]
+                        .reverse()
+                        .find((row) => row.nodeId === r.nodeId && !isBookkeeping(row))
                         ?.id === r.id;
                     const canFeedback =
                       (activeRun.status === 'running' || activeRun.status === 'paused') &&
@@ -1610,7 +1612,9 @@ export function RunsView(): React.JSX.Element {
                           </div>
                         )}
                         <div className="run-step-body">
-                          {!isBookkeeping(r) && <StepSummaryView summary={summary} />}
+                          {!r.nodeId.startsWith('__') && (
+                            <StepSummaryView summary={summary} />
+                          )}
                           {composing && runWorkflow !== null && (
                             <FeedbackComposer
                               runId={activeRun.id}

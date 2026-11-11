@@ -1907,3 +1907,26 @@ it('shows a feedback pause apart from approvals and continues it', async () => {
   fireEvent.click(within(dialog).getByRole('button', { name: 'Continue as it is' }));
   await waitFor(() => expect(resume).toHaveBeenCalledWith('readable', 9));
 });
+
+it('keeps feedback on a step whose latest row is a feedback check', async () => {
+  await renderRun(
+    {
+      id: 'readable',
+      workflowId: 'readable-wf',
+      status: 'paused',
+      startedAt: '2026-11-11T10:00:00Z',
+      execution: { options: {} },
+    },
+    [
+      readableRow({ stdout: 'v1' }),
+      readableRow({ id: 2, status: 'checked', stdout: 'not sure' }),
+    ],
+    readableWorkflow,
+  );
+  expect(
+    await screen.findByRole('button', { name: 'Send feedback on Implement, step 1' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: /Send feedback on Implement, step 2/ }),
+  ).toBeNull();
+});
