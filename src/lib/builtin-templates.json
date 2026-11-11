@@ -1159,7 +1159,8 @@
               "origin",
               "{{input.branch}}"
             ],
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "publishes": true
           },
           "label": "Push branch"
         },
@@ -1749,7 +1750,8 @@
               "origin",
               "{{input.branch}}"
             ],
-            "extendOnOutput": false
+            "extendOnOutput": false,
+            "publishes": true
           },
           "label": "Push branch"
         },

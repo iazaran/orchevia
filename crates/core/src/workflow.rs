@@ -198,6 +198,12 @@ pub struct NodeConfig {
     /// MCP string arguments (values are `{{…}}` templates) for Mcp nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_args: Option<std::collections::HashMap<String, String>>,
+    /// This step publishes outside the machine (a push, a PR, a comment, a
+    /// release). Feedback sent during a run is handled before the first such
+    /// step starts. GitHub `createPr` and `postComment` publish unless this
+    /// is `false`; any other step only when it is `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publishes: Option<bool>,
 }
 
 /// A Git repository operation (all arg-based, lossy states refused).
@@ -406,6 +412,8 @@ pub const VALIDATION_CODES: &[&str] = &[
     "command-script-templated",
     "command-script-dir-required",
     "command-script-misplaced",
+    "publish-unmarked",
+    "publish-misplaced",
     "agent-session-group-invalid",
     "agent-session-variable-invalid",
     "agent-session-turns-invalid",
@@ -454,6 +462,88 @@ pub const VALIDATION_CODES: &[&str] = &[
     "unreachable-node",
     "dead-end-node",
 ];
+
+/// Whether a step publishes outside the machine; see [`NodeConfig::publishes`].
+/// Mirrored by `isPublicationStep` in `src/lib/workflow.ts`.
+pub fn publishes(node: &Node) -> bool {
+    match node.config.publishes {
+        Some(explicit) => {
+            explicit
+                && !matches!(
+                    node.kind,
+                    NodeKind::Start | NodeKind::End | NodeKind::Condition | NodeKind::Approval
+                )
+        }
+        None => {
+            node.kind == NodeKind::GitHub
+                && matches!(
+                    node.config.github_op,
+                    Some(GitHubOp::CreatePr { .. } | GitHubOp::PostComment { .. })
+                )
+        }
+    }
+}
+
+/// Commands that plainly publish: `git push`, `gh pr create`, a package
+/// publish. Read from the program and its arguments as written, including
+/// `env … git push` and `bash -c "… git push"`; a script file's contents are
+/// not read. Mirrored by `commandPublishes` in `src/lib/workflow.ts`.
+pub fn command_publishes(executable: &str, args: &[String]) -> bool {
+    const PUBLISHING: [&str; 14] = [
+        "git push",
+        "gh pr create",
+        "gh pr comment",
+        "gh pr merge",
+        "gh pr review",
+        "gh release create",
+        "gh issue comment",
+        "glab mr create",
+        "npm publish",
+        "pnpm publish",
+        "yarn publish",
+        "cargo publish",
+        "twine upload",
+        "docker push",
+    ];
+    let line = std::iter::once(executable)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let words: Vec<&str> = line
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '"' | '\''))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.rsplit('/').next().unwrap_or(w))
+        .collect();
+    PUBLISHING.iter().any(|phrase| {
+        let parts: Vec<&str> = phrase.split(' ').collect();
+        (0..words.len()).any(|start| phrase_at(&words, start, &parts))
+    })
+}
+
+/// `parts` in order from `words[start]`, skipping options between them
+/// (`git -C dir push`, `gh -R owner/repo pr create`).
+fn phrase_at(words: &[&str], start: usize, parts: &[&str]) -> bool {
+    const WITH_VALUE: [&str; 6] = ["-c", "-C", "-R", "--repo", "--git-dir", "--work-tree"];
+    let mut at = start;
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            while words.get(at).is_some_and(|w| w.starts_with('-')) {
+                let flag = words.get(at).copied().unwrap_or("");
+                at += if WITH_VALUE.iter().any(|f| f.eq_ignore_ascii_case(flag)) {
+                    2
+                } else {
+                    1
+                };
+            }
+        }
+        if words.get(at) != Some(part) {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
 
 /// Error codes that mean "this machine still needs configuring" (a folder,
 /// a server) rather than a broken graph: templates and generated drafts may
@@ -851,6 +941,17 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 if let Some(script) = node.config.script_file.as_deref() {
                     validate_script_file(wf, node, script, &mut issues);
                 }
+                if node.config.publishes.is_none()
+                    && node.config.script_file.is_none()
+                    && command_publishes(exe, &node.config.args)
+                {
+                    push_warning(
+                        &mut issues,
+                        "publish-unmarked",
+                        "This command looks like it publishes (a push, a pull request, a release). Turn on Publishes so feedback sent during a run is handled before it runs.".to_string(),
+                        Some(node.id.clone()),
+                    );
+                }
                 validate_retry(node, &mut issues);
                 validate_max_visits(node, &mut issues);
             }
@@ -1215,6 +1316,19 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                 &mut issues,
                 "command-script-misplaced",
                 "Only Command steps run script files.".to_string(),
+                Some(node.id.clone()),
+            );
+        }
+        if node.config.publishes.is_some()
+            && matches!(
+                node.kind,
+                NodeKind::Start | NodeKind::End | NodeKind::Condition | NodeKind::Approval
+            )
+        {
+            push_error(
+                &mut issues,
+                "publish-misplaced",
+                "Only steps that do work (commands, AI agents, Git, GitHub, tickets, MCP) can publish.".to_string(),
                 Some(node.id.clone()),
             );
         }
@@ -2953,5 +3067,67 @@ mod script_file_tests {
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(value["scriptFile"], "tools/check.py");
         assert!(serde_json::to_value(NodeConfig::default()).unwrap()["scriptFile"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    fn shared() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../../src/test/publishing-commands.json"))
+            .expect("shared publishing commands")
+    }
+
+    fn argv(line: &serde_json::Value) -> (String, Vec<String>) {
+        let words: Vec<String> = line
+            .as_array()
+            .expect("argv")
+            .iter()
+            .map(|w| w.as_str().unwrap_or("").to_string())
+            .collect();
+        (words[0].clone(), words[1..].to_vec())
+    }
+
+    #[test]
+    fn publishing_commands_match_the_shared_list() {
+        let fixture = shared();
+        for line in fixture["publishes"].as_array().expect("publishes") {
+            let (exe, args) = argv(line);
+            assert!(command_publishes(&exe, &args), "{line}");
+        }
+        for line in fixture["local"].as_array().expect("local") {
+            let (exe, args) = argv(line);
+            assert!(!command_publishes(&exe, &args), "{line}");
+        }
+    }
+
+    #[test]
+    fn github_writes_publish_unless_turned_off_and_routing_never_does() {
+        let mut pr = Node {
+            id: "pr".into(),
+            kind: NodeKind::GitHub,
+            label: None,
+            position: Position::default(),
+            config: NodeConfig {
+                github_op: Some(GitHubOp::PostComment {
+                    number: 1,
+                    body: "x".into(),
+                }),
+                ..NodeConfig::default()
+            },
+        };
+        assert!(publishes(&pr));
+        pr.config.publishes = Some(false);
+        assert!(!publishes(&pr));
+        pr.config.github_op = Some(GitHubOp::PrChecks { number: 1 });
+        pr.config.publishes = None;
+        assert!(!publishes(&pr));
+        pr.config.publishes = Some(true);
+        assert!(publishes(&pr));
+        pr.kind = NodeKind::Approval;
+        assert!(!publishes(&pr), "an approval never publishes");
+        let value = serde_json::to_value(NodeConfig::default()).expect("json");
+        assert!(value.get("publishes").is_none(), "absent unless set");
     }
 }

@@ -55,6 +55,7 @@ const configKeys = [
   'mcpServerId',
   'mcpTool',
   'mcpArgs',
+  'publishes',
 ];
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -125,6 +126,7 @@ function configShape(value: unknown, raw = false): void {
   uintField(config, 'timeoutSecs');
   uintField(config, 'maxVisits', false, 4294967295);
   boolField(config, 'extendOnOutput');
+  boolField(config, 'publishes');
   for (const key of ['retry', 'condition', 'gitOp', 'githubOp', 'mcpArgs'])
     if (config[key] === null) Reflect.deleteProperty(config, key);
   if (config.retry !== undefined) {

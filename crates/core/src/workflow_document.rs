@@ -76,6 +76,7 @@ const CONFIG_KEYS: &[&str] = &[
     "mcpServerId",
     "mcpTool",
     "mcpArgs",
+    "publishes",
 ];
 fn readable_key(node: &Node) -> String {
     if !node.id.starts_with("node-") && is_valid_input_name(&node.id) {

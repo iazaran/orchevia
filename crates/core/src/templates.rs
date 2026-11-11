@@ -508,8 +508,9 @@ fn severity_gate(id: &str, y: f64, reviewers: &[&str]) -> Node {
 }
 
 /// Fails fast instead of waiting for a credential prompt no one can answer.
+/// Marked as publishing, so feedback sent during a run is handled first.
 fn push_branch(y: f64) -> Node {
-    command(
+    let mut node = command(
         "push",
         MAIN,
         y,
@@ -523,7 +524,9 @@ fn push_branch(y: f64) -> Node {
             "origin",
             "{{input.branch}}",
         ],
-    )
+    );
+    node.config.publishes = Some(true);
+    node
 }
 
 /// Bound the review/fix cycle: up to two fix rounds, then the run stops with
@@ -1747,6 +1750,36 @@ done
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Feedback is handled before publishing only when publishing steps say
+    /// so: every built-in step that publishes is marked.
+    #[test]
+    fn builtin_publishing_steps_are_marked() {
+        for template in builtin_templates() {
+            for node in &template.workflow.nodes {
+                if node.kind == NodeKind::Command
+                    && crate::workflow::command_publishes(
+                        node.config.executable.as_deref().unwrap_or(""),
+                        &node.config.args,
+                    )
+                {
+                    assert!(
+                        crate::workflow::publishes(node),
+                        "{}: {} publishes unmarked",
+                        template.id,
+                        node.id
+                    );
+                }
+            }
+            assert!(
+                !crate::workflow::validate_workflow(&template.workflow)
+                    .iter()
+                    .any(|i| i.code == "publish-unmarked"),
+                "{}",
+                template.id
+            );
         }
     }
 

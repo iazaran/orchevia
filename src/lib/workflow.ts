@@ -136,6 +136,13 @@ export interface NodeConfig {
   mcpServerId?: string;
   mcpTool?: string;
   mcpArgs?: Record<string, string>;
+  /**
+   * This step publishes outside the machine (a push, a PR, a comment, a
+   * release). Feedback sent during a run is handled before the first such
+   * step starts. GitHub `createPr` and `postComment` publish unless this is
+   * `false`; any other step only when it is `true`. Mirrors `publishes`.
+   */
+  publishes?: boolean;
 }
 
 export interface WorkflowNode {
@@ -630,6 +637,63 @@ export function issueNodeLabel(wf: Workflow, issue: ValidationIssue): string | n
   return node.label?.trim() || node.id;
 }
 
+const ROUTING_KINDS = new Set<NodeKind>(['start', 'end', 'condition', 'approval']);
+
+/** Whether a step publishes outside the machine. Mirrors `publishes` in the core. */
+export function isPublicationStep(node: WorkflowNode): boolean {
+  const explicit = node.config.publishes;
+  if (explicit !== undefined) return explicit && !ROUTING_KINDS.has(node.type);
+  const op = node.config.githubOp?.op;
+  return node.type === 'github' && (op === 'createPr' || op === 'postComment');
+}
+
+const PUBLISHING = [
+  'git push',
+  'gh pr create',
+  'gh pr comment',
+  'gh pr merge',
+  'gh pr review',
+  'gh release create',
+  'gh issue comment',
+  'glab mr create',
+  'npm publish',
+  'pnpm publish',
+  'yarn publish',
+  'cargo publish',
+  'twine upload',
+  'docker push',
+];
+const WITH_VALUE = ['-c', '-r', '--repo', '--git-dir', '--work-tree'];
+
+/**
+ * Commands that plainly publish, read from the program and its arguments as
+ * written (including `env … git push` and `bash -c "… git push"`), with
+ * options allowed between the words. Mirrors `command_publishes`.
+ */
+export function commandPublishes(executable: string, args: string[]): boolean {
+  const words = [executable, ...args]
+    .join(' ')
+    .toLowerCase()
+    .split(/[\s;&|()"']+/)
+    .filter((word) => word !== '')
+    .map((word) => word.split('/').pop() ?? word);
+  const phraseAt = (start: number, parts: string[]): boolean => {
+    let at = start;
+    for (const [index, part] of parts.entries()) {
+      if (index > 0)
+        while (words[at]?.startsWith('-') === true)
+          at += WITH_VALUE.includes(words[at] ?? '') ? 2 : 1;
+      if (words[at] !== part) return false;
+      at += 1;
+    }
+    return true;
+  };
+  return PUBLISHING.some((phrase) => {
+    const parts = phrase.split(' ');
+    return words.some((_, start) => phraseAt(start, parts));
+  });
+}
+
 /**
  * Every code `validateWorkflowLocal` can report — the same list as Rust
  * `VALIDATION_CODES`. The shared fixture `src/test/validation-parity.json`
@@ -650,6 +714,8 @@ export const VALIDATION_CODES = [
   'command-script-templated',
   'command-script-dir-required',
   'command-script-misplaced',
+  'publish-unmarked',
+  'publish-misplaced',
   'agent-session-group-invalid',
   'agent-session-variable-invalid',
   'agent-session-turns-invalid',
@@ -1215,6 +1281,16 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
               at,
             );
         }
+        if (
+          config.publishes === undefined &&
+          script === undefined &&
+          commandPublishes(exe, config.args ?? [])
+        )
+          warning(
+            'publish-unmarked',
+            'This command looks like it publishes (a push, a pull request, a release). Turn on Publishes so feedback sent during a run is handled before it runs.',
+            at,
+          );
         retry();
         break;
       }
@@ -1443,6 +1519,12 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
       );
     if (node.type !== 'command' && config.scriptFile !== undefined)
       error('command-script-misplaced', 'Only Command steps run script files.', at);
+    if (config.publishes !== undefined && ROUTING_KINDS.has(node.type))
+      error(
+        'publish-misplaced',
+        'Only steps that do work (commands, AI agents, Git, GitHub, tickets, MCP) can publish.',
+        at,
+      );
   }
 
   const seenInputs = new Set<string>();

@@ -579,3 +579,55 @@ it('keeps a home-relative script in script mode and says why', async () => {
   expect(screen.getByRole('radio', { name: 'Script file' })).toBeChecked();
   expect(screen.getByText(/cannot become a plain command/)).toBeVisible();
 });
+
+it('marks a step as publishing, and keeps GitHub writes publishing by default', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Publishing');
+  workflow.nodes.push(
+    {
+      id: 'push',
+      type: 'command',
+      position: { x: 0, y: 0 },
+      config: { executable: 'git', args: ['push'] },
+    },
+    {
+      id: 'pr',
+      type: 'github',
+      position: { x: 0, y: 0 },
+      config: { githubOp: { op: 'createPr', title: 't', base: 'main', head: 'fix' } },
+    },
+  );
+  const stored = await backend.saveWorkflow(workflow);
+  const select = (id: string): void =>
+    useAppStore.setState({
+      workflows: useAppStore.getState().workflows.length
+        ? useAppStore.getState().workflows
+        : [stored],
+      activeWorkflowId: stored.id,
+      selectedNodeId: id,
+      selectedEdgeId: null,
+      overlayRunId: null,
+    });
+  const config = (id: string): NodeConfig | undefined =>
+    useAppStore
+      .getState()
+      .workflows.find((w) => w.id === stored.id)
+      ?.definition.nodes.find((n) => n.id === id)?.config;
+  useAppStore.setState({ workflows: [stored] });
+  select('push');
+  const view = render(<NodeInspector />);
+  const box = (): HTMLElement => screen.getByRole('checkbox', { name: /Publishes/ });
+  expect(box()).not.toBeChecked();
+  fireEvent.click(box());
+  expect(config('push')?.publishes).toBe(true);
+  fireEvent.click(box());
+  expect(config('push')?.publishes).toBeUndefined();
+  view.unmount();
+  select('pr');
+  render(<NodeInspector />);
+  expect(box()).toBeChecked();
+  fireEvent.click(box());
+  expect(config('pr')?.publishes).toBe(false);
+  fireEvent.click(box());
+  expect(config('pr')?.publishes).toBeUndefined();
+});

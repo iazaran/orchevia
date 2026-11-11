@@ -389,6 +389,24 @@ fn compile_proposal_inner(
     // Nodes on a cycle need an explicit visit bound; the model often forgets
     // them, so default instead of rejecting the whole proposal.
     default_cycle_bounds(&mut workflow, &mut all_repairs);
+    // Steps that plainly publish are marked, so feedback sent during a run is
+    // handled before them; drafts never carry the field themselves.
+    for node in &mut workflow.nodes {
+        if node.kind == NodeKind::Command
+            && node.config.publishes.is_none()
+            && node.config.script_file.is_none()
+            && crate::workflow::command_publishes(
+                node.config.executable.as_deref().unwrap_or(""),
+                &node.config.args,
+            )
+        {
+            node.config.publishes = Some(true);
+            all_repairs.push(format!(
+                "Marked '{}' as publishing, so feedback is handled before it runs.",
+                node.label.as_deref().unwrap_or(&node.id)
+            ));
+        }
+    }
     // 3. Role resolution (agent nodes carry roles, never raw profile ids).
     let (resolved, unmapped) = resolve_agent_roles(&workflow, role_map);
     workflow = resolved;
@@ -2001,6 +2019,19 @@ Good luck!"#;
             .risk_labels
             .iter()
             .any(|label| label == "Push / create or comment on PRs"));
+        // Marked as publishing, so feedback is handled before the push.
+        assert_eq!(preview.workflow.nodes[1].config.publishes, Some(true));
+        assert!(preview
+            .repairs
+            .iter()
+            .any(|note| note.contains("publishing")));
+        assert!(!preview.issues.iter().any(|i| i.code == "publish-unmarked"));
+        let local = parse_proposal(&proposal_with_command(
+            r#"{"executable":"git","args":["status"]}"#,
+        ))
+        .expect("parse");
+        let local = compile_proposal(&local, &role_map(), "wf-local", None).expect("compile");
+        assert_eq!(local.workflow.nodes[1].config.publishes, None);
     }
 
     fn proposal_with_command(config_json: &str) -> String {
