@@ -8,6 +8,7 @@ import { decodeDocument, remapConfigReferences } from './workflow-document';
 export function builtinTemplates(): WorkflowTemplate[] {
   return structuredClone(definitions) as WorkflowTemplate[];
 }
+
 export function validateTemplate(template: WorkflowTemplate): void {
   if (!template.id.trim() || !template.name.trim())
     throw new Error('Template id and name must not be empty.');

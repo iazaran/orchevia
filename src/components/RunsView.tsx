@@ -5,7 +5,7 @@ import { playbookField, successfulCommand } from '../lib/memory';
 import type { Workflow } from '../lib/workflow';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
-import type { GroupedFinding } from '../lib/scheduler';
+import type { FindingState, GroupedFinding } from '../lib/scheduler';
 import { isMarkdown } from '../lib/markdown';
 import { formatTime } from '../lib/time';
 import {
@@ -494,6 +494,73 @@ function ReviewFindings({
   );
 }
 
+const FINDING_STATES: Record<FindingState, string> = {
+  fixed: 'Fixed',
+  stillOpen: 'Still open',
+  new: 'New',
+  reintroduced: 'Reintroduced',
+};
+
+function ReviewRounds({
+  findings,
+}: {
+  findings: GroupedFinding[];
+}): React.JSX.Element | null {
+  const history = findings.flatMap((group) => group.history ?? []);
+  if (history.length === 0) return null;
+  const summary = Object.entries(FINDING_STATES)
+    .map(
+      ([state, label]) =>
+        `${String(history.filter((entry) => entry.state === state).length)} ${label.toLowerCase()}`,
+    )
+    .join(' · ');
+  return (
+    <details className="run-findings review-rounds" aria-label="Review rounds">
+      <summary>
+        Review rounds <span className="field-hint">{summary}</span>
+      </summary>
+      <p className="field-hint">
+        Compared per reviewer. Fixed means the finding was absent from that reviewer’s
+        latest completed visit.
+      </p>
+      {history.map((entry) => {
+        const last = entry.occurrences.at(-1);
+        if (last === undefined) return null;
+        return (
+          <details key={entry.id} className="tool-card finding-card">
+            <summary>
+              <strong>{last.finding.title}</strong> · {FINDING_STATES[entry.state]} ·{' '}
+              {entry.previousSeverity === undefined
+                ? last.finding.severity
+                : `${entry.previousSeverity} → ${last.finding.severity}`}
+            </summary>
+            <p className="field-hint">{last.finding.source}</p>
+            <ol className="review-occurrences" aria-label="Reported visits">
+              {entry.occurrences.map((occurrence) => (
+                <li key={occurrence.resultId}>
+                  <a href={`#run-result-${String(occurrence.resultId)}`}>
+                    Visit {occurrence.visit}
+                  </a>
+                  {' · '}
+                  {occurrence.finding.severity}
+                  {occurrence.finding.file &&
+                    ` · ${occurrence.finding.file}${occurrence.finding.lineStart === undefined ? '' : `:${String(occurrence.finding.lineStart)}`}`}
+                  {occurrence.finding.explanation && (
+                    <MarkdownText
+                      text={occurrence.finding.explanation}
+                      allowRaw={false}
+                    />
+                  )}
+                </li>
+              ))}
+            </ol>
+          </details>
+        );
+      })}
+    </details>
+  );
+}
+
 export function RunsView(): React.JSX.Element {
   const runs = useAppStore((s) => s.runs);
   const activeRunId = useAppStore((s) => s.activeRunId);
@@ -735,8 +802,9 @@ export function RunsView(): React.JSX.Element {
   const findingsByResult = new Map<number, GroupedFinding[]>();
   const unassignedFindings: GroupedFinding[] = [];
   for (const finding of findings) {
-    const sourceRows = new Set<number>();
-    for (const source of finding.sources) {
+    if (finding.sources.length === 0) continue;
+    const sourceRows = new Set(finding.resultIds ?? []);
+    for (const source of finding.resultIds === undefined ? finding.sources : []) {
       const row = [...results]
         .reverse()
         .find(
@@ -969,7 +1037,7 @@ export function RunsView(): React.JSX.Element {
           </button>
         </div>
       </div>
-      <div className="view">
+      <div className="view runs-view">
         {memoryMessage && (
           <Notice eventId={memoryMessageEvent} onDismiss={() => setMemoryMessage(null)}>
             {memoryMessage}
@@ -1005,7 +1073,7 @@ export function RunsView(): React.JSX.Element {
           </div>
         )}
         <div className="runs-layout">
-          <div className="run-list">
+          <div className="run-list" role="region" aria-label="Run history" tabIndex={0}>
             {runs.map((run) => (
               <div key={run.id} className="run-row-wrap" style={{ position: 'relative' }}>
                 <button
@@ -1061,12 +1129,18 @@ export function RunsView(): React.JSX.Element {
               </div>
             ))}
           </div>
-          <div style={{ minWidth: 0 }}>
+          <div
+            key={activeRunId}
+            className="run-details"
+            role="region"
+            aria-label="Run details"
+            tabIndex={0}
+          >
             {activeRun === null && runs.length > 0 && (
               <p className="field-hint">Select a run to inspect node results.</p>
             )}
             {activeRun !== null && (
-              <section aria-label="Run details" className="run-detail">
+              <section className="run-detail">
                 <header className="run-header">
                   <div className="run-header-title">
                     <h2>{workflowName}</h2>
@@ -1408,6 +1482,7 @@ export function RunsView(): React.JSX.Element {
                   <p className="field-hint">No node results yet.</p>
                 )}
                 <ReviewFindings findings={unassignedFindings} />
+                <ReviewRounds findings={findings} />
                 <ol className="run-steps" role="list" aria-label="Steps">
                   {results.map((r, index) => {
                     const node = nodeFor(r.nodeId);

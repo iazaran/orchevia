@@ -306,6 +306,11 @@ reviews contribute no findings, approvals or publications for unfinished work.
 
 ## Reading a run (v0.2.0)
 
+The run history and selected run details have independent scroll regions. Use
+Tab to focus either region. For a run with repeated reviews, **Review rounds**
+compares the completed visits and links back to the original results.
+[Review findings guide](./pr-review.md#review-rounds)
+
 Each step card leads with what the step is for (its label and the first line of
 its prompt, the command it runs, or its Git/GitHub operation), what it is doing
 now while it runs, and what it achieved. Those facts come only from evidence the

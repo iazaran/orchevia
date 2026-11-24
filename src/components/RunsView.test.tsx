@@ -39,6 +39,14 @@ it('opens finished runs on the canvas through exact snapshot navigation', async 
     showRunOverlay,
   });
   render(<RunsView />);
+  const history = screen.getByRole('region', { name: 'Run history' });
+  const details = screen.getByRole('region', { name: 'Run details' });
+  expect(history).toHaveAttribute('tabindex', '0');
+  expect(details).toHaveAttribute('tabindex', '0');
+  expect(history).not.toContainElement(details);
+  expect(details).toContainElement(
+    screen.getByRole('button', { name: 'Show on canvas' }),
+  );
   await userEvent.setup().click(screen.getByRole('button', { name: 'Show on canvas' }));
   expect(showRunOverlay).toHaveBeenCalledWith('finished-run');
   expect(screen.queryByRole('button', { name: 'Cancel run' })).toBeNull();

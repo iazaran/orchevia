@@ -12,8 +12,11 @@ import { errorMessage } from '../lib/errors';
 import { setWorkflowDefaults, validateWorkflowLocal } from '../lib/workflow';
 import { DirPicker } from './DirPicker';
 
+const STARTER_TEMPLATE = 'first-workflow';
+
 export function TemplatesView(): React.JSX.Element {
   const builtinTemplates = useAppStore((s) => s.builtinTemplates);
+  const starter = builtinTemplates.find((template) => template.id === STARTER_TEMPLATE);
   const userTemplates = useAppStore((s) => s.userTemplates);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
   const refreshWorkflows = useAppStore((s) => s.refreshWorkflows);
@@ -47,6 +50,9 @@ export function TemplatesView(): React.JSX.Element {
   const reload = (): void => {
     void refreshLibrary();
   };
+  const needsRepository =
+    useTarget !== null &&
+    (!useTarget.builtin || useTarget.template.id !== STARTER_TEMPLATE);
 
   const openUse = (template: WorkflowTemplate, builtin: boolean): void => {
     const servers = useAppStore.getState().mcpServers.filter((s) => s.enabled);
@@ -54,9 +60,11 @@ export function TemplatesView(): React.JSX.Element {
       template,
       builtin,
       repoDir:
-        template.workflow.defaults?.repoDir ??
-        useAppStore.getState().knownFolders[0] ??
-        '',
+        builtin && template.id === STARTER_TEMPLATE
+          ? ''
+          : (template.workflow.defaults?.repoDir ??
+            useAppStore.getState().knownFolders[0] ??
+            ''),
       mcpServerId: servers.length === 1 ? (servers[0]?.id ?? '') : '',
     });
     setUseRoleMap(undefined);
@@ -117,10 +125,12 @@ export function TemplatesView(): React.JSX.Element {
         return getBackend()
           .saveWorkflow(workflow)
           .then((stored) => {
-            if (details.length)
+            if (details.length) {
+              const fresh = preview.freshSessionSteps?.join(', ');
               useAppStore.getState().pushUiNotice({
-                content: `Template '${template.name}' uses Agent Profiles: ${details.join('; ')}.`,
+                content: `Template '${template.name}' uses Agent Profiles: ${details.join('; ')}.${fresh ? ` These steps use fresh sessions with the selected CLI: ${fresh}.` : ''}`,
               });
+            }
             return stored;
           });
       })
@@ -292,7 +302,10 @@ export function TemplatesView(): React.JSX.Element {
         )}
         <h2 style={{ fontSize: 14 }}>Built-in ({builtinTemplates.length})</h2>
         <div className="tool-grid">
-          {builtinTemplates.map((t) => renderCard(t, true))}
+          {starter !== undefined && renderCard(starter, true)}
+          {builtinTemplates
+            .filter((t) => t.id !== STARTER_TEMPLATE)
+            .map((t) => renderCard(t, true))}
         </div>
         <h2 style={{ fontSize: 14, marginTop: 20 }}>Mine ({userTemplates.length})</h2>
         {userTemplates.length === 0 && (
@@ -321,20 +334,24 @@ export function TemplatesView(): React.JSX.Element {
           <div>
             <h3 style={{ marginTop: 0 }}>Use “{useTarget.template.name}”</h3>
             <p className="field-hint">{useTarget.template.description}</p>
-            <DirPicker
-              id="tpl-repo"
-              label="Repository folder (required)"
-              value={useTarget.repoDir}
-              placeholder="/path/to/your/project"
-              onChange={(repoDir) => {
-                setUseTarget({ ...useTarget, repoDir });
-              }}
-            />
-            <p className="field-hint">
-              Every step works here: AI agents edit and review this repository, and
-              commands, Git and GitHub steps run in it. You can change it later in the
-              workflow settings.
-            </p>
+            {needsRepository && (
+              <>
+                <DirPicker
+                  id="tpl-repo"
+                  label="Repository folder (required)"
+                  value={useTarget.repoDir}
+                  placeholder="/path/to/your/project"
+                  onChange={(repoDir) => {
+                    setUseTarget({ ...useTarget, repoDir });
+                  }}
+                />
+                <p className="field-hint">
+                  Every step works here: AI agents edit and review this repository, and
+                  commands, Git and GitHub steps run in it. You can change it later in the
+                  workflow settings.
+                </p>
+              </>
+            )}
             {useTarget.template.workflow.nodes.some(
               (n) => n.type === 'ticket' || n.type === 'mcp',
             ) && (
@@ -363,7 +380,7 @@ export function TemplatesView(): React.JSX.Element {
                 ) : (
                   <p className="field-hint">
                     No MCP server yet: add your Jira server under Environment → MCP
-                    servers, then pick it on the ticket step.
+                    connections, then pick it on the ticket step.
                   </p>
                 )}
               </div>
@@ -391,9 +408,9 @@ export function TemplatesView(): React.JSX.Element {
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-primary"
-                disabled={useTarget.repoDir.trim() === ''}
+                disabled={needsRepository && useTarget.repoDir.trim() === ''}
                 title={
-                  useTarget.repoDir.trim() === ''
+                  needsRepository && useTarget.repoDir.trim() === ''
                     ? 'Choose the repository this workflow works in'
                     : 'Create the workflow and open it on the canvas'
                 }

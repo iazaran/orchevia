@@ -6,10 +6,88 @@
  * the actual argv; this module mirrors validation, previews, and prompt
  * templating for a responsive UI.
  */
-import { MAX_TIMEOUT_SECS, type StoredNodeResult } from './workflow';
+import { MAX_TIMEOUT_SECS, type StoredNodeResult, type Workflow } from './workflow';
 import { validateToolRules } from './permissions';
 
-export type AdapterKind = 'claude' | 'codex' | 'custom';
+export const ADAPTERS = {
+  claude: {
+    name: 'Claude Code',
+    executable: 'claude',
+    notes: 'Streams tokens and reported USD through Claude Code. Prompt on stdin.',
+  },
+  codex: {
+    name: 'Codex',
+    executable: 'codex',
+    notes: 'Streams tokens through Codex. Prompt on stdin.',
+  },
+  muse: {
+    name: 'Muse Code',
+    executable: 'muse',
+    notes: "Runs muse exec with Muse Code's permission settings.",
+  },
+  antigravity: {
+    name: 'Google Antigravity CLI',
+    executable: 'agy',
+    notes: 'Runs agy in print mode using your Google sign-in and CLI settings.',
+  },
+  gemini: {
+    name: 'Gemini CLI',
+    executable: 'gemini',
+    notes:
+      'Runs Gemini CLI headlessly. Requires a supported enterprise or API-key setup.',
+  },
+  opencode: {
+    name: 'OpenCode',
+    executable: 'opencode',
+    notes: 'Runs opencode run with your connected provider and CLI settings.',
+  },
+  custom: {
+    name: 'Custom CLI',
+    executable: '',
+    notes: 'Your own coding CLI. Set the full binary path; prompt goes last.',
+  },
+} as const;
+
+export type AdapterKind = keyof typeof ADAPTERS;
+export const ADAPTER_KINDS = Object.keys(ADAPTERS) as AdapterKind[];
+export const BUILTIN_ADAPTERS = ADAPTER_KINDS.filter((id) => id !== 'custom');
+
+export function supportsProfileControls(adapter: AdapterKind): boolean {
+  return adapter === 'claude' || adapter === 'codex';
+}
+
+/** Mirror of use_supported_sessions. Call on a newly created workflow. */
+export function applySupportedSessions(
+  workflow: Workflow,
+  profiles: AgentProfile[],
+): string[] {
+  const changed: string[] = [];
+  for (const node of workflow.nodes) {
+    if (node.type !== 'agent' || node.config.sessionGroup === undefined) continue;
+    const profile = profiles.find((item) => item.id === node.config.agentProfileId);
+    if (profile === undefined || supportsProfileControls(profile.adapter)) continue;
+    delete node.config.sessionGroup;
+    delete node.config.sessionMaxTurns;
+    changed.push(node.label ?? node.id);
+  }
+  return changed;
+}
+export function supportsEffort(adapter: AdapterKind): boolean {
+  return supportsProfileControls(adapter) || adapter === 'antigravity';
+}
+
+export const AGENT_SETUP_GUIDE =
+  'https://github.com/iazaran/orchevia/blob/main/docs/agents.md#supported-clis';
+
+export const AGENT_SIGN_IN: Record<Exclude<AdapterKind, 'custom'>, string> = {
+  claude: 'Open `claude` and complete sign-in.',
+  codex: 'Run `codex login` in a terminal.',
+  muse: 'Open `muse` and complete Meta sign-in.',
+  antigravity: 'Open `agy` and complete Google sign-in for Gemini.',
+  gemini:
+    'Use a supported enterprise or API-key setup. For individual Google sign-in, use Antigravity CLI.',
+  opencode: 'Open `opencode` and use `/connect` to configure a model provider.',
+};
 export type WorkingDirMode = 'node' | 'profile' | 'inherit';
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh';
@@ -47,7 +125,8 @@ export function permissionLevels(adapter: AdapterKind): PermissionLevel[] {
   if (adapter === 'claude')
     return ['appDefault', 'cliSettings', 'allowedTools', 'fullAccess'];
   if (adapter === 'codex') return ['appDefault', 'cliSettings', 'fullAccess'];
-  return ['appDefault'];
+  if (adapter === 'custom') return ['appDefault'];
+  return ['cliSettings'];
 }
 
 /** Label of the app-wide level, `null` meaning not chosen yet. */
@@ -69,7 +148,7 @@ export function permissionLevelLabel(
     case 'fullAccess':
       return 'Full access';
     default:
-      return adapter === 'codex' ? 'Use Codex settings' : 'Use Claude Code settings';
+      return `Use ${ADAPTERS[adapter].name} settings`;
   }
 }
 
@@ -118,7 +197,7 @@ export function withAppDefault(
   if ((profile.permissionLevel ?? 'appDefault') !== 'appDefault') return profile;
   const full =
     appDefault === 'fullAccess' &&
-    profile.adapter !== 'custom' &&
+    supportsProfileControls(profile.adapter) &&
     permissionArgument(profile) === null;
   return { ...profile, permissionLevel: full ? 'fullAccess' : 'cliSettings' };
 }
@@ -164,6 +243,19 @@ export function hasFullAccess(profile: AgentProfile): boolean {
         ].includes(arg) ||
         ((arg === '--sandbox' || arg === '-s') && next === 'danger-full-access')
       );
+    if (profile.adapter === 'muse')
+      return ['--yolo', '--disable-approval', '--disable-sandbox'].includes(arg);
+    if (profile.adapter === 'gemini')
+      return (
+        ['--yolo', '-y', '--approval-mode=yolo'].includes(arg) ||
+        (arg === '--approval-mode' && next === 'yolo')
+      );
+    if (profile.adapter === 'antigravity')
+      return [
+        '--dangerously-skip-permissions',
+        '--dangerously-skip-permissions=true',
+      ].includes(arg);
+    if (profile.adapter === 'opencode') return arg === '--auto' || arg === '--auto=true';
     return false;
   });
 }
@@ -179,6 +271,10 @@ export function hasFullAccess(profile: AgentProfile): boolean {
 export const MODEL_PRESETS: Record<AdapterKind, string[]> = {
   claude: ['opus', 'sonnet', 'haiku', 'fable', 'claude-opus-5-5', 'claude-fable-5-1'],
   codex: ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5-mini', 'gpt-6-astra'],
+  muse: [],
+  antigravity: [],
+  gemini: [],
+  opencode: [],
   custom: [],
 };
 
@@ -199,11 +295,9 @@ export function mergeModelSuggestions(presets: string[], custom: string[]): stri
   return out;
 }
 
-export const ADAPTER_LABELS: Record<AdapterKind, string> = {
-  claude: 'Claude Code',
-  codex: 'Codex',
-  custom: 'Custom CLI',
-};
+export const ADAPTER_LABELS = Object.fromEntries(
+  ADAPTER_KINDS.map((id) => [id, ADAPTERS[id].name]),
+) as Record<AdapterKind, string>;
 
 export interface AgentProfile {
   id: string;
@@ -388,7 +482,7 @@ export function createDefaultProfile(adapter: AdapterKind): AgentProfile {
         ? 'Claude — Implementation'
         : adapter === 'codex'
           ? 'Codex — Deep Review'
-          : 'Custom CLI',
+          : ADAPTERS[adapter].name,
     adapter,
     extraArgs: [],
     skills: [],
@@ -494,7 +588,7 @@ export function validateProfile(profile: AgentProfile): string[] {
     }
   }
   const skills = profile.skills ?? [];
-  if (profile.adapter === 'custom' && skills.length > 0)
+  if (!supportsProfileControls(profile.adapter) && skills.length > 0)
     errors.push('Skills are supported only for Claude Code and Codex profiles.');
   if (skills.length > 8) errors.push('Select at most 8 skills per profile.');
   const seenSkills = new Set<string>();
@@ -526,7 +620,7 @@ export function validateProfile(profile: AgentProfile): string[] {
   errors.push(...validateToolRules(allowedTools, 'Allowed tools'));
   const level = profile.permissionLevel ?? 'appDefault';
   if (level !== 'cliSettings' && level !== 'appDefault') {
-    if (profile.adapter === 'custom')
+    if (!supportsProfileControls(profile.adapter))
       errors.push('Permission levels apply only to Claude Code and Codex profiles.');
     else if (profile.adapter === 'codex' && level === 'allowedTools')
       errors.push('Codex has no tool allow-list. Use Codex settings or Full access.');
@@ -555,7 +649,7 @@ export function effortLabel(profile: Pick<AgentProfile, 'effort'>): string {
 export function effectiveExecutable(profile: AgentProfile): string {
   const explicit = (profile.executable ?? '').trim();
   if (explicit !== '') return explicit;
-  return profile.adapter === 'claude' ? 'claude' : 'codex';
+  return ADAPTERS[profile.adapter].executable;
 }
 
 // -- Prompt templating --------------------------------------------------------
@@ -638,8 +732,8 @@ function renderPrompt(
 
 /** Managed nodes own these arguments; mirror the core adapter restrictions. */
 export function validateSessionProfile(profile: AgentProfile): string[] {
-  if (profile.adapter === 'custom')
-    return ['Custom CLI profiles do not support session groups.'];
+  if (!supportsProfileControls(profile.adapter))
+    return [`${ADAPTERS[profile.adapter].name} profiles do not support session groups.`];
   const flags =
     profile.adapter === 'claude'
       ? [

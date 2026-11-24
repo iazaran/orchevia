@@ -80,6 +80,19 @@ no MCP process is left afterwards (`ps -ef | grep <server>`).
 and reject once. Approving continues the run, rejecting fails it, and both show in
 the run's timeline.
 
+**New CLI profiles (v0.3.0).** For Muse Code (`muse`), Antigravity (`agy`), Gemini
+CLI (`gemini`), and OpenCode (`opencode`), record the installed version and run
+**Agents → Check setup** after signing in. Test an Agent step with a blank model
+field and then with a model your CLI lists. For a built-in review loop, choose
+one of these CLIs as the implementer and confirm that the generated workflow uses
+a fresh invocation with the review handoff. The automated canary covers Claude
+Code and Codex, and the new adapters have offline argument-contract tests.
+
+**Connection recipes (v0.3.0).** Follow the [provider setup](./integrations.md#connection-recipes)
+and choose **Check server** for each installed recipe. Confirm Slack shows the
+bot credential's presence without displaying its value. Use an authorized read
+operation to verify the contents and permissions of each service you connect.
+
 **Automation.** Enable a schedule due in two minutes and a watcher on the
 repository, turn on background mode and close the window. Both start a run on
 time. On

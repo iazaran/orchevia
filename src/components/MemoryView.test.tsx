@@ -10,6 +10,65 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+it('loads disabled knowledge and makes re-enabling it explicit', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference('/project', 'testCommand', 'make test', 'Verified');
+  const preference = (await backend.listPreferences())[0];
+  if (!preference) throw new Error('fixture');
+  await backend.savePreference({ ...preference, enabled: false });
+  useAppStore.setState({
+    workflows: [],
+    preferences: await backend.listPreferences(),
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  render(<MemoryView />);
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Saved repositories'), '/project');
+  const save = await screen.findByRole('button', {
+    name: 'Save and enable Test command',
+  });
+  expect(screen.getByLabelText('Test command')).toHaveValue('make test');
+  await user.click(save);
+  await waitFor(async () =>
+    expect((await backend.listPreferences())[0]?.enabled).toBe(true),
+  );
+});
+
+it('opens a saved repository playbook and keeps suggested values out of its editor', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference(
+    '/project',
+    'testCommand',
+    'make test',
+    'Verified run',
+  );
+  const preference = (await backend.listPreferences())[0];
+  if (!preference) throw new Error('fixture');
+  await backend.savePreference({
+    ...preference,
+    source: 'suggested',
+    value: 'make unsafe',
+  });
+  useAppStore.setState({
+    workflows: [],
+    preferences: await backend.listPreferences(),
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  render(<MemoryView />);
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Saved repositories'), '/project');
+  await screen.findByText(/No saved project knowledge/);
+  expect(screen.getByLabelText('Playbook repository')).toHaveValue('/project');
+  expect(screen.getByLabelText('Test command')).toHaveValue('');
+});
+
 it('edits a project command with evidence and a reusable template reference', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();
@@ -121,6 +180,7 @@ it('accepts, edits, disables and deletes inspectable preferences', async () => {
   );
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Accept' }));
+  await user.click(screen.getByText(/^Saved preferences/));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument(),
   );

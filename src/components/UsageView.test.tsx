@@ -262,7 +262,10 @@ it('says why an estimate is partial', async () => {
       .closest('.usage-card'),
   ).not.toHaveTextContent('your estimated cost');
   // The day's own estimate says it is partial too.
-  await userEvent.setup().click(screen.getByText(/Daily table/));
+  fireEvent.change(screen.getByLabelText('From (inclusive)'), {
+    target: { value: '2026-10-23' },
+  });
+  await userEvent.setup().click(await screen.findByText(/Daily table/));
   expect(screen.getByRole('row', { name: /2026-10-23/ })).toHaveTextContent(
     'USD 4.00 partial',
   );

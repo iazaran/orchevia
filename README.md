@@ -4,7 +4,7 @@
 
 # Orchevia
 
-**Run your Claude Code and Codex CLIs as reviewable, repeatable pipelines — on your own machine.**
+**Run coding agents in local workflows you can review, repeat and share.**
 
 [![CI](https://github.com/iazaran/orchevia/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/iazaran/orchevia/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/iazaran/orchevia?sort=semver&color=6ea8fe)](https://github.com/iazaran/orchevia/releases/latest)
@@ -22,31 +22,19 @@
 
 </div>
 
-Orchevia is a **local-first desktop app** that turns the work you already do with AI
-coding CLIs into a graph you can inspect, repeat and share. Describe a task —
-_"plan this ticket with Claude, let me approve it, implement, run the tests, have Claude
-and Codex review, fix P0/P1 findings, open a draft PR"_ — check the graph, press **Run**,
-and every step executes through **tools already installed on your machine**: Claude
-Code, Codex, `git`, `gh`, your test commands.
+Orchevia is a free desktop app for running **Claude Code, Codex, Muse Code, Google
+Antigravity CLI, Gemini CLI and OpenCode** on your machine. Build a visual workflow
+that plans a change, pauses for approval, runs your tests and asks two independent
+reviewers to check the diff. Open Runs to see what each step did and which findings
+survived the fix round.
 
-**Orchevia is not an AI provider.** There is no Orchevia account, no model API key
-field, no telemetry and no hosted runner. AI work goes through the CLIs you installed
-and signed in to yourself, so it uses your existing subscription and its limits.
-
-## Why developers use it
-
-- 🔑 **Your subscriptions, not API bills.** Agent steps call your own `claude` and
-  `codex` CLIs. No keys to paste and no per-token invoice from Orchevia.
-- 🤝 **Claude and Codex in one pipeline.** Let one model implement and the other review,
-  in parallel, with findings normalized to P0–P3.
-- 🧭 **Predictable, not autonomous.** A fixed graph of commands, agents, conditions,
-  approvals, bounded loops and timeouts. Nothing runs until you press Run.
-- ✋ **You stay in the loop.** Durable Human Approval gates, feedback on any step while
-  a run is going (handled before anything is pushed), read-only run snapshots, cancel
-  at any time, and deliberate recovery of failed runs.
-- 🔒 **Local and honest.** Workflows and history live in local SQLite, tool permissions
-  are explicit, automation that writes is trust-gated, and CLI-reported usage is kept
-  apart from estimates.
+- **Bring your own tools.** Sign in through the CLIs you already use. Orchevia needs
+  no account and keeps workflows and run history in local SQLite.
+- **Approve and give feedback.** Pause at an Approval step or give a running step
+  feedback before a push or PR comment.
+- **Reuse what works.** Save a graph as a template, keep test commands and reviewer
+  choices in Playbooks, or set up local Jira, Slack, AWS Knowledge, Docs and Gmail
+  tools in Environment.
 
 ## Download
 
@@ -101,34 +89,21 @@ over the old one. Your workflows and history are kept.
 
 </details>
 
-**Before your first AI run:** install and sign in to at least one AI CLI
-([Claude Code](https://github.com/anthropics/claude-code) or
-[Codex](https://github.com/openai/codex)). The setup
-wizard detects `git`, `gh`, `claude` and `codex`, including CLIs on your login shell's
-`PATH` (nvm, fnm, Homebrew, `~/.local/bin`). A command-only workflow needs no AI CLI.
+## Your first workflow
 
-## Your first workflow in 5 minutes
+1. Install Orchevia, then open **Templates → First Workflow** and create a copy.
+   The starter uses a local command and an approval. It needs no account,
+   repository or agent.
+2. Choose **Dry run** to try the routing, or **Run** to execute the echo commands.
+   Open **Runs**, inspect the first step and approve to continue.
+3. When you are ready for a code change, install and sign in to an agent CLI,
+   then run **Agents → Check setup** on its profile. Start from **Implement a
+   Task**, choose your repository, and supply your actual test command.
 
-1. **Open Orchevia.** The setup wizard detects your tools and creates recommended
-   Claude and Codex profiles.
-2. **Workflows → Samples… → Plan → Implement → Review → Create.** Claude plans, you
-   approve the plan, Claude implements, Codex reviews.
-3. **Select a node** to set its profile, prompt and timeout. Badges on the canvas flag
-   anything missing before you run.
-4. **Press ▶ Run.** Watch progress on the canvas, approve the paused gate, and see in
-   **Runs** what each step is doing and what it changed. If a step needs a change, send
-   it **Feedback** without stopping the run. Opening a workflow never runs it.
-5. **Go further:** describe a goal with **✦ Generate**, save flows as **Templates**, or
-   schedule them under **Automations**.
+[First-run guide](./docs/getting-started.md) · [Agent setup](./docs/agents.md#supported-clis) ·
+[MCP connection recipes](./docs/integrations.md#connection-recipes)
 
-Prefer to start without AI? The [getting-started guide](./docs/getting-started.md)
-begins with a one-node [`echo` workflow](./docs/examples/hello-workflow.json).
-
-> [!TIP]
-> Headless Claude Code and Codex cannot ask for permission mid-run. Decide once, in the
-> setup wizard or **Environment → Agent permissions**: let agents work without asking
-> (full access), or keep each CLI's own settings. With the CLI settings, a refused
-> tool fails the step with **tools refused** and the exact allow rules to add.
+If Orchevia is useful to you, [star the repository on GitHub](https://github.com/iazaran/orchevia).
 
 ## See it in action
 
@@ -177,7 +152,7 @@ CLI, model, effort and permission level. CLIs are found on your login shell's `P
 
 <img align="right" width="380" src="./docs/images/generate-dialog.webp" alt="The Generate workflow dialog: a goal describing a ticket-to-PR flow, a repository directory, and a preview listing 12 steps, 4 risk categories, one setup item, the compiler notes and the proposed steps." />
 
-1. Open **Workflows → ✦ Generate**, pick Claude Code or Codex, and optionally point it at
+1. Open **Workflows → ✦ Generate**, pick a configured agent profile, and optionally point it at
    a repository so the draft uses your real paths and conventions. The AI is asked to
    inspect it without changing anything, but it runs with that profile's permissions.
 2. Write the goal like a short spec. Name the agents, the commands that prove the change
@@ -208,14 +183,14 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 - **Real control flow.** Constrained conditions (no scripting), parallel branches with
   joins, failure edges, bounded retries with backoff, guarded review/fix loops, per-node
   timeouts and typed workflow inputs.
-- **Agent profiles.** Claude Code, Codex or any custom CLI, with model, effort, skills,
-  working directory and a **Permissions** level: the app-wide choice you make once
-  (full access or your CLI settings), or the profile's own CLI settings, explicit allow
-  list or full access.
+- **Agent profiles.** Model, working directory and setup checks per profile. Claude
+  Code and Codex also support managed sessions and structured run activity.
+  [Supported CLI capabilities](./docs/agents.md#supported-clis)
 - **Readable runs.** Step cards built from what the CLI reported: files changed, test
   results from the runner's own exit code and summary, failed commands, the agent's
   task list and what it is doing now. Text the agent wrote about itself is labelled as
-  its words.
+  its words. **Review rounds** shows fixed, still-open, new and reintroduced
+  findings with severity changes.
 - **Feedback during a run.** Write a note on any step while the run is going. Before
   the run publishes, hits an approval or finishes, the step checks it against its work;
   if a change is needed it reruns with your note, and the steps that use its work
@@ -227,9 +202,8 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 - **Local automation.** Durable schedules, PR review and feedback watchers with bot-loop
   guards, a notification inbox, and opt-in background mode. Schedules that write need a
   per-schedule trust opt-in.
-- **Reuse and memory.** Nine ready-to-run built-in templates (pick a repository,
-  answer the run form) plus your own, versioned JSON
-  import/export, and a project playbook of accepted commands and conventions.
+- **Templates and Playbooks.** Ten built-in templates, versioned JSON import and
+  export, and saved test commands, conventions and reviewer choices per repository.
 - **Run controls.** Dry runs with fixtures, agent-attempt budgets, an optional guard on
   CLI-reported spend, and recovery of failed runs from their original inputs.
 

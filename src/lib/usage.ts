@@ -8,6 +8,8 @@
  * - usage hints the CLI itself printed (tokens/cost/duration patterns).
  */
 
+import { ADAPTER_KINDS, ADAPTER_LABELS } from './agents';
+
 /** CLI estimates cannot reconcile a subscription bill or measure remaining quota. */
 export const CLI_COST_EXPLANATION =
   "API value is what pay-as-you-go API pricing would charge for the same tokens, as the CLI reports it. On a monthly plan you pay the plan fee instead: enter it in Usage & costs to see your cost. Remaining quota is on your provider's usage page.";
@@ -496,11 +498,10 @@ export function estimatePlanCost(
 
 /** Provider name for cost rows: "Claude Code", "Codex", or the adapter as recorded. */
 export function providerLabel(adapter: string): string {
-  return isPlanProvider(adapter)
-    ? PLAN_PROVIDER_LABELS[adapter]
-    : adapter === 'unknown'
-      ? 'Unknown (legacy)'
-      : adapter;
+  if (isPlanProvider(adapter)) return PLAN_PROVIDER_LABELS[adapter];
+  if (adapter === 'unknown') return 'Unknown (legacy)';
+  const known = ADAPTER_KINDS.find((id) => id === adapter);
+  return known === undefined ? adapter : ADAPTER_LABELS[known];
 }
 
 /** Why an estimate is incomplete: providers without a plan, or pay-per-use attempts without a dollar report. */

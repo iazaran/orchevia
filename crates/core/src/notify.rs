@@ -74,6 +74,7 @@ pub enum NotifyEvent {
     ActionableFindings {
         run_id: String,
         count: usize,
+        rounds: Option<String>,
     },
     FeedbackNeedsAction {
         watcher: String,
@@ -117,9 +118,18 @@ pub fn render_event(event: &NotifyEvent) -> (String, String, Option<String>) {
             format!("Workflow '{workflow}' succeeded."),
             Some(run_id.clone()),
         ),
-        NotifyEvent::ActionableFindings { run_id, count } => (
+        NotifyEvent::ActionableFindings {
+            run_id,
+            count,
+            rounds,
+        } => (
             "Actionable findings".to_string(),
-            format!("{count} P0/P1 finding(s) need attention."),
+            match rounds {
+                Some(rounds) => {
+                    format!("{count} P0/P1 finding(s) need attention. Round history across all severities, per reviewer: {rounds}.")
+                }
+                None => format!("{count} P0/P1 finding(s) need attention."),
+            },
             Some(run_id.clone()),
         ),
         NotifyEvent::FeedbackNeedsAction { watcher, detail } => (
@@ -262,7 +272,8 @@ mod tests {
             &prefs,
             &NotifyEvent::ActionableFindings {
                 run_id: "r".into(),
-                count: 2
+                count: 2,
+                rounds: None,
             }
         ));
     }

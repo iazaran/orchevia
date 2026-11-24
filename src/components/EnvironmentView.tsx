@@ -1,12 +1,20 @@
 import { useState } from 'react';
 import { getBackend } from '../lib/backend';
 import {
+  MCP_PRESETS,
+  MCP_SETUP_GUIDE,
   newMcpId,
   validateMcpServer,
   type McpServerConfig,
   type McpToolInfo,
   type McpCheckReport,
 } from '../lib/integrations';
+import {
+  ADAPTERS,
+  AGENT_SETUP_GUIDE,
+  AGENT_SIGN_IN,
+  BUILTIN_ADAPTERS,
+} from '../lib/agents';
 import { AgentPermissionsSettings } from './AgentPermissions';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
@@ -53,6 +61,12 @@ export function EnvironmentView(): React.JSX.Element {
 
   const refreshAll = (): void => {
     void Promise.all([refreshTools(), refreshProfiles(), refreshIntegrations()]);
+  };
+
+  const openGuide = (url: string): void => {
+    void getBackend()
+      .openExternalUrl(url)
+      .catch((error: unknown) => setMessage(errorMessage(error), 'error'));
   };
 
   const saveServer = (server: McpServerConfig): void => {
@@ -152,56 +166,54 @@ export function EnvironmentView(): React.JSX.Element {
             <span>{message}</span>{' '}
           </Notice>
         )}
-        <Notice inline>
-          Orchevia never installs tools for you. Install and authenticate <code>git</code>
-          , <code>gh</code>, <code>claude</code> or <code>codex</code> yourself; Orchevia
-          discovers them on <code>PATH</code> and delegates AI work to them. Those tools
-          may contact their own providers — Orchevia itself only asks GitHub for its
-          latest version (see Updates below).
-        </Notice>
-
         <h2 style={{ fontSize: 14, marginTop: 20 }}>Local CLIs</h2>
+        <p className="field-hint">
+          Install and sign in to the tools you use, then re-detect to refresh what
+          Orchevia can find.
+        </p>
         <div className="tool-grid">
-          {tools.map((tool) => (
-            <div key={tool.id} className="tool-card">
-              <h3>{tool.displayName}</h3>
-              <div style={{ margin: '6px 0' }}>
-                <span
-                  className={`status-pill ${tool.installed ? 'status-succeeded' : 'status-cancelled'}`}
-                >
-                  {tool.installed ? 'Installed' : 'Not found'}
-                </span>
-              </div>
-              {tool.version !== undefined && (
-                <div className="tool-version">{tool.version}</div>
-              )}
-              {tool.path !== undefined && (
-                <div className="tool-version" title={tool.path}>
-                  {tool.path}
+          {tools.map((tool) => {
+            const agent = BUILTIN_ADAPTERS.find((id) => id === tool.id);
+            return (
+              <div key={tool.id} className="tool-card">
+                <h3>{tool.displayName}</h3>
+                <div style={{ margin: '6px 0' }}>
+                  <span
+                    className={`status-pill ${tool.installed ? 'status-succeeded' : 'status-cancelled'}`}
+                  >
+                    {tool.installed ? 'Installed' : 'Not found'}
+                  </span>
                 </div>
-              )}
-              {!tool.installed && (
-                <p className="field-hint" style={{ marginBottom: 0 }}>
-                  Optional. Workflows that need it will fail validation with a clear
-                  message.
-                </p>
-              )}
-            </div>
-          ))}
+                {tool.version !== undefined && (
+                  <div className="tool-version">{tool.version}</div>
+                )}
+                {tool.path !== undefined && (
+                  <div className="tool-version" title={tool.path}>
+                    {tool.path}
+                  </div>
+                )}
+                {agent !== undefined && (
+                  <p className="field-hint" style={{ marginBottom: 0 }}>
+                    {!tool.installed && (
+                      <>
+                        Install <code>{ADAPTERS[agent].executable}</code>.{' '}
+                      </>
+                    )}
+                    {AGENT_SIGN_IN[agent].replaceAll('`', '')}
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
         {tools.length === 0 && <p className="field-hint">Detecting tools…</p>}
 
         {adapters.length > 0 && (
           <>
-            <h2 style={{ fontSize: 14, marginTop: 20 }}>AI CLI adapters</h2>
+            <h2 style={{ fontSize: 14, marginTop: 20 }}>Agent connections</h2>
             <p className="field-hint">
-              Orchevia builds argv per adapter (
-              {adapters
-                .map((a) => a.defaultExecutable)
-                .filter((e) => e !== '')
-                .join(', ')}
-              ) — the engine never embeds CLI-specific syntax. {profiles.length} Agent
-              Profile(s) configured.{' '}
+              {profiles.length} profiles configured. Use the setup check to verify a
+              profile’s sign-in and file access.{' '}
               <button
                 className="btn btn-ghost"
                 onClick={() => {
@@ -209,6 +221,12 @@ export function EnvironmentView(): React.JSX.Element {
                 }}
               >
                 Manage profiles
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => openGuide(AGENT_SETUP_GUIDE)}
+              >
+                Agent setup guide
               </button>
             </p>
           </>
@@ -224,9 +242,8 @@ export function EnvironmentView(): React.JSX.Element {
         </h2>
         <p className="field-hint" style={{ maxWidth: 720 }}>
           Headless Claude Code and Codex cannot ask for permission while a workflow step
-          runs. Choose once what they may do; every Agent Profile at “App default” follows
-          this, and Agents can give one profile its own level. Orchevia passes only CLI
-          flags and never edits the Claude Code or Codex settings files.
+          runs. Configure the app default for Claude Code and Codex here, or set an
+          override per profile in Agents. Other agents use their own CLI settings.
         </p>
         <div style={{ maxWidth: 720 }}>
           <AgentPermissionsSettings />
@@ -275,12 +292,44 @@ export function EnvironmentView(): React.JSX.Element {
           </div>
         )}
 
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>MCP servers ({mcpServers.length})</h2>
+        <h2 id="mcp-connections" style={{ fontSize: 14, marginTop: 20 }}>
+          MCP connections
+        </h2>
+        <p className="field-hint">
+          Choose a recipe to prefill an editable local server for an MCP Tool or Jira
+          Ticket step.
+        </p>
+        <div className="tool-grid connection-recipes">
+          {MCP_PRESETS.map((preset) => (
+            <div className="tool-card" key={preset.name}>
+              <h3>{preset.name}</h3>
+              <p className="field-hint">{preset.setup}</p>
+              <button
+                className="btn"
+                onClick={() =>
+                  setEditing({
+                    id: newMcpId(),
+                    name: preset.name,
+                    command: preset.command,
+                    args: [...preset.args],
+                    enabled: true,
+                  })
+                }
+              >
+                Set up {preset.name}
+              </button>
+            </div>
+          ))}
+        </div>
+        <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
+          MCP setup guide
+        </button>
+        <h3 style={{ fontSize: 14, marginTop: 20 }}>
+          Saved servers ({mcpServers.length})
+        </h3>
         <p className="field-hint" style={{ maxWidth: 720 }}>
-          Local stdio servers (command + args only — Orchevia stores no secrets and passes
-          no credentials; the child inherits the normal environment). Used by Ticket nodes
-          (Jira) and MCP Tool nodes. Disabled or missing servers fail validation instead
-          of running.
+          Credentials stay in the server or your launch environment. Use Check server
+          after saving to verify startup and list its tools.
         </p>
         <div className="tool-grid">
           {mcpServers.map((s) => {
@@ -560,6 +609,9 @@ function McpEditor({
   onSave: (s: McpServerConfig) => void;
 }): React.JSX.Element {
   const [form, setForm] = useState<McpServerConfig>(initial);
+  const preset = MCP_PRESETS.find(
+    (option) => option.name === initial.name && option.command === initial.command,
+  );
   const validation = useSubmitValidation(validateMcpServer(form));
   const set = (patch: Partial<McpServerConfig>): void => {
     setForm((f) => ({ ...f, ...patch }));
@@ -575,32 +627,38 @@ function McpEditor({
   return (
     <>
       <h3 style={{ marginTop: 0 }}>MCP server</h3>
-      <details className="guide-box">
-        <summary>Setting up Jira? Step-by-step guide</summary>
-        <ol style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-          <li>
-            Install <code>uv</code> (provides <code>uvx</code>) if missing:{' '}
-            <code>curl -LsSf astral.sh/uv/install.sh | sh</code>
-          </li>
-          <li>
-            Press <strong>Fill Jira example</strong> below, then Save. It uses the{' '}
-            <code>mcp-atlassian</code> package — edit the command if your setup differs.
-          </li>
-          <li>
-            Give the server its credentials <em>outside</em> Orchevia (it inherits your
-            shell environment; never paste secrets here) — snippet and checker below.
-          </li>
-          <li>
-            Back in the list, press <strong>List tools</strong> — you should see{' '}
-            <code>jira_get_issue</code>. Ticket nodes call it by default: reference the
-            server from a Ticket node with a key like <code>{'{{input.ticket}}'}</code>;
-            fields become <code>ticket.key</code>, <code>ticket.title</code>,{' '}
-            <code>ticket.description</code>, <code>ticket.acceptanceCriteria</code>.
-            Ticket text is untrusted input — passed to agents as data, never executed.
-          </li>
-        </ol>
-        <JiraCredentialsBody />
-      </details>
+      {preset && <p className="field-hint">{preset.setup}</p>}
+      {preset?.name === 'Slack' && (
+        <McpEnvironmentCheck names={['SLACK_MCP_XOXB_TOKEN']} />
+      )}
+      {(preset === undefined || preset.name === 'Jira') && (
+        <details className="guide-box">
+          <summary>Setting up Jira? Step-by-step guide</summary>
+          <ol style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+            <li>
+              Install <code>uv</code> (provides <code>uvx</code>) if missing:{' '}
+              <code>curl -LsSf astral.sh/uv/install.sh | sh</code>
+            </li>
+            <li>
+              Press <strong>Fill Jira example</strong> below, then Save. It uses the{' '}
+              <code>mcp-atlassian</code> package — edit the command if your setup differs.
+            </li>
+            <li>
+              Give the server its credentials <em>outside</em> Orchevia (it inherits your
+              shell environment; never paste secrets here) — snippet and checker below.
+            </li>
+            <li>
+              Back in the list, press <strong>List tools</strong> — you should see{' '}
+              <code>jira_get_issue</code>. Ticket nodes call it by default: reference the
+              server from a Ticket node with a key like <code>{'{{input.ticket}}'}</code>;
+              fields become <code>ticket.key</code>, <code>ticket.title</code>,{' '}
+              <code>ticket.description</code>, <code>ticket.acceptanceCriteria</code>.
+              Ticket text is untrusted input — passed to agents as data, never executed.
+            </li>
+          </ol>
+          <JiraCredentialsBody />
+        </details>
+      )}
       <div className="field">
         <label className="field-label" htmlFor="mcp-name">
           Name
@@ -668,9 +726,11 @@ function McpEditor({
         >
           Save server
         </button>
-        <button className="btn" onClick={fillJiraExample}>
-          Fill Jira example
-        </button>
+        {(preset === undefined || preset.name === 'Jira') && (
+          <button className="btn" onClick={fillJiraExample}>
+            Fill Jira example
+          </button>
+        )}
         <button className="btn btn-ghost" onClick={onCancel}>
           Cancel
         </button>
@@ -755,22 +815,6 @@ const JIRA_ENV_VARS = [
  */
 function JiraCredentialsBody(): React.JSX.Element {
   const [copied, setCopied] = useState(false);
-  const [envState, setEnvState] = useState<{ name: string; present: boolean }[] | null>(
-    null,
-  );
-  const [checking, setChecking] = useState(false);
-  const checkEnv = (): void => {
-    setChecking(true);
-    void getBackend()
-      .mcpEnvPresent(JIRA_ENV_VARS)
-      .then(setEnvState)
-      .catch(() => {
-        setEnvState(null);
-      })
-      .finally(() => {
-        setChecking(false);
-      });
-  };
   return (
     <>
       <p className="field-hint">
@@ -809,10 +853,38 @@ function JiraCredentialsBody(): React.JSX.Element {
         >
           {copied ? 'Copied ✓' : 'Copy snippet'}
         </button>
-        <button className="btn btn-primary" disabled={checking} onClick={checkEnv}>
-          {checking ? 'Checking…' : 'Check what Orchevia sees'}
-        </button>
       </div>
+      <McpEnvironmentCheck names={JIRA_ENV_VARS} />
+      <p className="field-hint">
+        Jira Cloud uses the URL, username and API token together. Jira Server or Data
+        Center can use a personal token.
+      </p>
+    </>
+  );
+}
+
+function McpEnvironmentCheck({ names }: { names: string[] }): React.JSX.Element {
+  const [envState, setEnvState] = useState<{ name: string; present: boolean }[] | null>(
+    null,
+  );
+  const [checking, setChecking] = useState(false);
+  const checkEnv = (): void => {
+    setChecking(true);
+    void getBackend()
+      .mcpEnvPresent(names)
+      .then(setEnvState)
+      .catch(() => {
+        setEnvState(null);
+      })
+      .finally(() => {
+        setChecking(false);
+      });
+  };
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button className="btn" disabled={checking} onClick={checkEnv}>
+        {checking ? 'Checking…' : 'Check what Orchevia sees'}
+      </button>
       {envState !== null && (
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -831,14 +903,12 @@ function JiraCredentialsBody(): React.JSX.Element {
             ))}
           </div>
           <p className="field-hint" style={{ marginTop: 6 }}>
-            Only names are checked — values are never read or shown. Missing here but set
-            in a terminal? That proves it: the desktop session never got them. Log out +
-            back in (for ~/.profile) or quit and run <code>orchevia</code> from a terminal
-            (for ~/.bashrc), then check again. Note: either the Cloud trio (URL + USERNAME
-            + API_TOKEN) or a personal token must be present — not necessarily all four.
+            Orchevia shows only whether these variables are present. If they are available
+            in your terminal, launch <code>orchevia</code> from that terminal and check
+            again.
           </p>
         </div>
       )}
-    </>
+    </div>
   );
 }

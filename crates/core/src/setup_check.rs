@@ -101,6 +101,10 @@ fn sign_in_hint(adapter: AdapterKind) -> &'static str {
             "Run `claude` once in a terminal and sign in (`/login`), then check again."
         }
         AdapterKind::Codex => "Run `codex login` in a terminal, then check again.",
+        AdapterKind::Muse => "Open `muse` in a terminal and complete the Meta sign-in, then check again.",
+        AdapterKind::Gemini => "Configure Enterprise or API-key authentication for `gemini` in your terminal, then check again.",
+        AdapterKind::Antigravity => "Open `agy` in a terminal and complete the Google sign-in, then check again.",
+        AdapterKind::OpenCode => "Open `opencode` in a terminal and use `/connect` to configure a provider, then check again.",
         AdapterKind::Custom => {
             "Sign in to this CLI the way its documentation describes, then check again."
         }
@@ -126,6 +130,7 @@ fn run_checks(profile: &AgentProfile, timeout: Duration) -> Vec<SetupCheckItem> 
             AdapterKind::Claude => "Install Claude Code and check `claude --version` works in a terminal, or set its full path in this profile.",
             AdapterKind::Codex => "Install Codex and check `codex --version` works in a terminal, or set its full path in this profile.",
             AdapterKind::Custom => "Set the full path of the CLI in this profile.",
+            _ => "Follow the CLI installation guide in Environment, or set its full path in this profile.",
         };
         items.push(with_hint(
             item(
@@ -423,19 +428,20 @@ fn edit_refused(profile: &AgentProfile, outcome: &Outcome) -> SetupCheckItem {
             "Add `Edit` and `Write` to this profile's allowed tools, or give it Full access.",
         ),
         PermissionLevel::AppDefault | PermissionLevel::CliSettings => {
-            let settings = if profile.adapter == AdapterKind::Codex {
-                "Codex settings"
+            let settings = profile.adapter.display_name();
+            let hint = if profile.adapter.supports_profile_controls() {
+                "Choose “Let agents work without asking” in Environment → Agent permissions, or give this profile its own level in Agents."
             } else {
-                "Claude Code settings"
+                "Review the CLI's permissions for headless use, then check again."
             };
             with_hint(
                 item(
                     "editFile",
                     EDIT_FILE,
                     CheckStatus::Warning,
-                    format!("Under your {settings}, steps that edit files will be refused. {what}"),
+                    format!("Under your {settings} settings, steps that edit files will be refused. {what}"),
                 ),
-                "Choose “Let agents work without asking” in Environment → Agent permissions, or give this profile its own level in Agents.",
+                hint,
             )
         }
     }

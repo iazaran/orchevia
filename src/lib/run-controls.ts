@@ -288,7 +288,7 @@ export function adapterCapabilities(adapter: string): AdapterCapabilities {
       spendEstimate: 'unsupported',
       note: 'Attempts enforced per run by Orchevia. No verified Codex turn/spend flags: turns and subagents are advisory guidance; tool-completion events are observed where the CLI reports them. Codex runs report no USD.',
     };
-  if (adapter === 'custom')
+  if (adapter !== 'claude')
     return {
       adapter,
       agentAttempts: 'enforced',

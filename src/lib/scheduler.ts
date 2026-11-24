@@ -167,21 +167,34 @@ export function scheduleTrustError(
   return `Schedule needs explicit trust for: ${labels.join(', ')}. Review the workflow, then opt in.`;
 }
 
+export interface ReviewFinding {
+  severity: string;
+  category: string;
+  title: string;
+  explanation: string;
+  file?: string | undefined;
+  lineStart?: number | undefined;
+  lineEnd?: number | undefined;
+  confidence?: string | undefined;
+  source: string;
+  suggestedFix?: string | undefined;
+  fingerprint: string;
+}
+
+export type FindingState = 'fixed' | 'stillOpen' | 'new' | 'reintroduced';
+
+export interface FindingHistory {
+  id: string;
+  state: FindingState;
+  occurrences: { resultId: number; visit: number; finding: ReviewFinding }[];
+  previousSeverity?: string;
+}
+
 export interface GroupedFinding {
-  finding: {
-    severity: string;
-    category: string;
-    title: string;
-    explanation: string;
-    file?: string | undefined;
-    lineStart?: number | undefined;
-    lineEnd?: number | undefined;
-    confidence?: string | undefined;
-    source: string;
-    suggestedFix?: string | undefined;
-    fingerprint: string;
-  };
+  finding: ReviewFinding;
   sources: string[];
+  resultIds?: number[];
+  history?: FindingHistory[];
 }
 
 export function newScheduleId(prefix: string): string {

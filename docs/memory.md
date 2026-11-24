@@ -1,4 +1,4 @@
-# Workflow generation, templates & memory
+# Workflow generation, templates and playbooks
 
 Orchevia feels personal without owning an AI connection: a configured local
 agent drafts workflows, versioned templates capture good shapes, and memory is
@@ -36,21 +36,27 @@ first configured profile per role. An explicit node profile or exact unique
 `profileName` takes precedence over this fallback. Unmapped roles block acceptance with a message
 naming the role — never silently.
 
+New generated workflows use fresh sessions for profiles that cannot resume a
+managed session. The preview or acceptance message lists the affected steps.
+Use output handoffs to pass context between these steps.
+
 ## Templates
 
-Nine built-ins: Implement a Task, Review Pull Request, Investigate Bug,
+Ten built-ins: First Workflow, Implement a Task, Review Pull Request, Investigate Bug,
 Refactor, Dependency Upgrade, Run Multi-Agent Review, Create Draft PR, Address
 Review Feedback, and Ticket to Draft PR. Versioned (`v1` schema) and cloneable:
 
-- **Use** asks for the repository folder (and the Jira/MCP server for ticket
+- **Use** asks for the repository folder for development starters (and the Jira/MCP server for ticket
   steps), lists the inputs each run asks for and any tool permissions the mapped
   profiles lack, then instantiates with your role map (fresh ids). Every step works
   in that repository.
-- Each built-in asks for what it needs as run inputs (task, bug, PR number, test
+- Each development starter asks for what it needs as run inputs (task, bug, PR number, test
   command, branch, base branch), declares the tools its implementation steps need,
   and is replayed end to end in the core tests with stub CLIs.
 - **Save as template** keeps exact choices locally. Portable export uses roles
   and exact unique profile names; configure the corresponding profiles on import.
+- Built-in starters use ordinary handoffs for steps whose selected CLI cannot
+  resume a managed session. Orchevia lists those steps when it opens the workflow.
 - **Import/export** accepts a supported plain Simple/Advanced workflow document
   directly as a new template, or an existing template envelope. No selected
   workflow is needed. Structural/semantic errors leave the source available for
@@ -58,14 +64,14 @@ Review Feedback, and Ticket to Draft PR. Versioned (`v1` schema) and cloneable:
   JSON is validated; credential-like content is refused on
   both paths. Templates carry no secrets by construction.
 
-## Memory (structured preferences)
+## Playbooks and saved preferences
 
 Examples: default profile per role, `pr.startAsDraft`, commit-only-after-tests,
 fix-loop on P0/P1, max review cycles, prefer worktrees, learning toggle.
 
 - **Observe:** role-default changes (and other mapped edits) count toward a
   suggestion after **3 consistent** occurrences.
-- **Suggest:** pending items appear in Memory with their evidence note.
+- **Suggest:** pending items appear under **Playbooks → Suggestions** with their evidence note.
 - **You decide:** accept, reject (never re-asked until reset), edit, disable
   per item, or reset everything.
 - **Scope:** global (`*`) and repository playbooks (`repo:<canonical directory>`).
@@ -73,19 +79,17 @@ fix-loop on P0/P1, max review cycles, prefer worktrees, learning toggle.
 - **Retention:** generation history keeps the last 100 (setting
   `history.generations`, 10–1000).
 
-No vectors, no hidden profile, no telemetry: open Memory and read exactly what
-Orchevia believes. Data lives in SQLite (`preferences`, `observation_counts`,
-`generations`, `user_templates`); export from Memory; profile references stay
+No vectors, no hidden profile, no telemetry: open **Playbooks** to inspect the saved records. Data lives in SQLite (`preferences`, `observation_counts`,
+`generations`, `user_templates`); export from **Playbooks → Import, export and reset**; profile references stay
 local (re-map by name after moving machines).
 
-The Templates library includes nine language-neutral starters in desktop and
-browser preview. Test steps require your project's `testCommand`; blank values
+The Templates library includes ten starters, including **First Workflow** for commands and approval without setup. Test steps require your project's `testCommand`; blank values
 cannot run. Clone a starter and edit it with Simple JSON, or save a configured
 workflow as a user template. Portable export retains explicit reviewer names.
 
 ## Project playbooks
 
-Open Memory, choose the repository, and Load playbook to edit saved knowledge.
+Open **Playbooks** and select a repository to load it. Browse for a folder or enter a path and choose **Load playbook** for a new repository.
 Save test/lint/build commands, repository conventions, exact reviewer names,
 or a user-template reference with an evidence note. Existing preference controls
 let you edit, disable, delete, export, import, or reset records. Select the global

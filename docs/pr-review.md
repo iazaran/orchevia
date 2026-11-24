@@ -38,9 +38,37 @@ are never invented.
 
 ## Deduplication
 
-Same fingerprint from Claude and Codex groups into one finding with both
+An identical fingerprint from two reviewers groups into one finding with both
 sources listed, sorted P0 → info. The Runs view shows findings per run;
 completion with actionable findings raises a notification (opt-out capable).
+
+## Review rounds
+
+When a reviewer step succeeds more than once, expand **Review rounds** in Runs.
+Open a finding to see the successful visits that reported it, including the
+original wording, locations and severities. The visit links jump to their
+step cards.
+
+| Status       | Meaning for this reviewer                                              |
+| ------------ | ---------------------------------------------------------------------- |
+| Fixed        | Reported before, absent from the latest completed visit.               |
+| Still open   | Reported in both of the two latest completed visits.                   |
+| New          | First reported in the latest visit.                                    |
+| Reintroduced | Reported earlier, absent in an intervening visit, then reported again. |
+
+Orchevia matches the same reviewer step, file and normalized title, using nearby
+line ranges to distinguish duplicate titles. A matching finding can change
+severity. The comparison uses what the reviewers reported. It cannot verify a
+fix that a later reviewer omitted or identify a finding whose title was
+completely rewritten. Failed attempts, reused results, dry runs and feedback
+decision rows do not form review visits. The existing severity gate continues to
+route on the latest step output.
+
+For a focused fixer handoff, reference both reviewers' current outputs in the
+fixer's context and ask it to verify each P0/P1 against the diff, fix confirmed
+issues and explain any it skips. To reconcile disagreements, add an Agent step
+after both reviews with both outputs as context. Pass its verified list to the
+fixer. Keep subsequent reviewer prompts independent of the earlier findings.
 
 ## Severity honesty
 

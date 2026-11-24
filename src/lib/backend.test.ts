@@ -1451,7 +1451,7 @@ describe('mock parity with the desktop backend', () => {
   it('rejects what the desktop backend rejects', async () => {
     localStorage.clear();
     const backend = __setMockBackendForTests();
-    await expect(backend.saveCustomModels('gemini', ['x'])).rejects.toThrow(
+    await expect(backend.saveCustomModels('unregistered-agent', ['x'])).rejects.toThrow(
       'Unknown adapter.',
     );
     await expect(

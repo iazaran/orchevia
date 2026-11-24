@@ -10,6 +10,51 @@ export interface McpServerConfig {
   enabled: boolean;
 }
 
+export const MCP_SETUP_GUIDE =
+  'https://github.com/iazaran/orchevia/blob/main/docs/integrations.md#connection-recipes';
+
+export const MCP_PRESETS = [
+  {
+    name: 'Jira',
+    command: 'uvx',
+    args: ['mcp-atlassian'],
+    setup:
+      'Install uv and configure Jira credentials in the server environment. Supports Ticket steps.',
+  },
+  {
+    name: 'Slack',
+    command: 'slack-mcp-server',
+    args: [
+      '--transport',
+      'stdio',
+      '--enabled-tools',
+      'channels_list,conversations_history,conversations_replies',
+    ],
+    setup:
+      'Install the community Slack MCP server and configure a workspace-approved bot token. Reads channels the bot can access.',
+  },
+  {
+    name: 'AWS Knowledge',
+    command: 'uvx',
+    args: ['fastmcp', 'run', 'https://knowledge-mcp.global.api.aws'],
+    setup: 'Install uv. Searches public AWS documentation without an AWS account.',
+  },
+  {
+    name: 'Google Docs',
+    command: 'gws-mcp-server',
+    args: ['--read-only', '--services', 'docs,drive'],
+    setup:
+      'Install gws and its community MCP wrapper. Sign in to Google outside Orchevia with Docs and Drive read access.',
+  },
+  {
+    name: 'Gmail',
+    command: 'gws-mcp-server',
+    args: ['--read-only', '--services', 'gmail'],
+    setup:
+      'Install gws and its community MCP wrapper. Sign in to Google outside Orchevia with Gmail read access.',
+  },
+] as const;
+
 export interface McpToolInfo {
   name: string;
   description: string;

@@ -8,24 +8,25 @@ You choose when to run and where a human decision belongs.
 
 1. Install the desktop app using the [README downloads](../README.md#download).
    Pick your platform there; every link points to the latest release.
-2. Open **Workflows**, create a workflow, and open its **JSON** editor in **Simple** mode.
-3. Paste [hello-workflow.json](./examples/hello-workflow.json), save, and close the editor.
-   It uses `echo` with a single argument, no shell and no repository changes.
-4. Press **Run**. Open **Runs** and select the run to see `Hello from Orchevia`.
-5. Choose **Show on canvas** to inspect the exact graph saved with that run.
-   Switch back to the editable workflow to make changes.
+2. Open **Templates → First Workflow** and choose **Use**, then **Create workflow**.
+3. Choose **Dry run** to try the routing, or **Run** to execute the local echo commands.
+4. Open **Runs**. Inspect the first command and approve to continue. Select
+   **Show on canvas** to see the graph saved with the run.
+
+To try Simple JSON, paste [hello-workflow.json](./examples/hello-workflow.json)
+into a new workflow's **JSON** editor.
 
 Contributors can use `pnpm dev` to explore the UI. That browser demo simulates
 commands; `pnpm tauri dev` and the installed desktop app execute them.
 
 ## Add the tools you need
 
-The setup wizard detects `git`, `gh`, `claude`, and `codex`. Missing tools do not
-prevent command-only workflows. Install and authenticate each CLI yourself,
+The setup wizard detects Git, GitHub CLI and the
+[supported agent CLIs](./agents.md#supported-clis). Install and authenticate each CLI yourself,
 then check it in **Environment**. Orchevia reads your login shell's `PATH`, so
 CLIs installed with nvm, fnm, Homebrew or into `~/.local/bin` are found even when
 the app starts from your system menu. If you install a CLI while Orchevia is open,
-choose **Refresh** in Environment. If a CLI is still not found, set its full
+choose **Re-detect** in Environment. If a CLI is still not found, set its full
 executable path in the relevant profile.
 
 In **Agents**, create a profile for your installed CLI. Keep the model blank to
@@ -47,9 +48,9 @@ keeps your Claude Code and Codex configuration in charge, and a refused tool the
 fails the step. If you skip it, the first run or template asks once. See
 [tool permissions](./agents.md#tool-permissions).
 
-Jira needs an enabled local MCP server. Configure it in **Environment → MCP
-servers** and discover its tools. Follow [integrations](./integrations.md) for
-GitHub authentication and MCP setup.
+Open **Environment → MCP connections** for Jira, Slack, AWS Knowledge, Google Docs
+and Gmail recipes. Follow [integrations](./integrations.md#connection-recipes) for
+installation and sign-in.
 
 ## Make your first development flow
 
@@ -108,7 +109,7 @@ Unsupported integration operations may need Command nodes or manual steps.
 - Use **Simple JSON** for readable node keys and portable profile selections.
   **Advanced JSON** preserves the full runtime definition. Importing and editing
   do not execute a workflow. Use **Arrange** when the graph grows.
-- In **Memory**, save a project playbook with test commands, conventions, and
+- In **Playbooks**, save project knowledge with test commands, conventions, and
   review choices. Suggestions require acceptance. Promote a command from a
   successful run explicitly; full logs are not copied into the playbook.
 - Add **Automations** only after a manual run works. Schedules run locally while
