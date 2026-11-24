@@ -4229,7 +4229,8 @@ details[open] > .gen-summary::after {
 }
 .mcp-guide-env .log-block {
   margin: 0;
-  color: var(--json-string);
+  /* Code blocks stay dark in both themes. */
+  color: #9fe0a0;
 }
 .mcp-guide-tools {
   margin-top: 10px;
