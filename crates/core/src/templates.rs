@@ -2186,7 +2186,10 @@ mod fixture_dump {
         }
         let json = serde_json::to_string_pretty(&super::builtin_templates()).unwrap();
         std::fs::write(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/lib/builtin-templates.json"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../src/lib/builtin-templates.json"
+            ),
             json + "\n",
         )
         .unwrap();
