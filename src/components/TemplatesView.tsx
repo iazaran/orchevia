@@ -112,6 +112,12 @@ export function TemplatesView(): React.JSX.Element {
     useTarget !== null &&
     !(useTarget.builtin && useTarget.template.id === STARTER_TEMPLATE) &&
     templateNeedsRepository(useTarget.template);
+  // Agent steps can work in a folder even when nothing requires one.
+  const optionalRepository =
+    useTarget !== null &&
+    !needsRepository &&
+    !(useTarget.builtin && useTarget.template.id === STARTER_TEMPLATE) &&
+    useTarget.template.workflow.nodes.some((n) => n.type === 'agent');
   const expectedSetups = useTarget === null ? [] : expectedMcpSetups(useTarget.template);
 
   const openUse = (template: WorkflowTemplate, builtin: boolean): void => {
@@ -438,6 +444,23 @@ export function TemplatesView(): React.JSX.Element {
                 </p>
               </>
             )}
+            {optionalRepository && (
+              <>
+                <DirPicker
+                  id="tpl-repo"
+                  label="Folder for AI steps (optional)"
+                  value={useTarget.repoDir}
+                  placeholder="/path/to/your/project"
+                  onChange={(repoDir) => {
+                    setUseTarget({ ...useTarget, repoDir });
+                  }}
+                />
+                <p className="field-hint">
+                  AI steps read files here when the prompt needs them. Leave it empty when
+                  the steps only work with what earlier steps return.
+                </p>
+              </>
+            )}
             {useTarget.template.workflow.nodes.some(
               (n) => n.type === 'ticket' || n.type === 'mcp',
             ) && (
@@ -618,6 +641,17 @@ export function TemplatesView(): React.JSX.Element {
                       : ioModal.json
                   }
                 />
+                {exportFormat === 'n8n' &&
+                  toN8n(ioModal.workflow, profiles).notes.length > 0 && (
+                    <div className="transfer-notes">
+                      <span className="field-label">What changes in n8n</span>
+                      <ul>
+                        {toN8n(ioModal.workflow, profiles).notes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                   <CopyButton
                     className="btn btn-primary"

@@ -13,9 +13,9 @@ All notable changes are recorded here, following
 - **n8n import and export.** Workflows → **Import / Export** turns the open
   workflow into n8n workflow JSON (paste it onto an n8n canvas) or Orchevia
   Simple JSON, and imports either format as a new workflow. Templates import
-  accepts n8n JSON and export offers it too. Every conversion lists what
-  changed, and n8n nodes or expressions without an Orchevia equivalent are
-  reported instead of dropped silently.
+  accepts n8n JSON and export offers it too. Inserted values stay one shell
+  argument in n8n, n8n nodes without an equivalent become steps that stop the run
+  until you replace them, and every conversion lists what changed.
 - **22 MCP setups in the new server form**, each with sign-in steps, the
   variables to export with a presence check, and tools to call: Google
   Workspace (Gmail, Drive, Docs, Calendar and Sheets in one server), Microsoft
@@ -32,15 +32,16 @@ All notable changes are recorded here, following
   Copilot CLI, Cursor CLI, Qwen Code, Amp, Aider, Goose and Kiro CLI. Each
   supported CLI shows its install command or version and a Create profile
   button.
-- A **JSON editor** with syntax colors, line numbers, Format, and the line and
-  column of the first syntax error, in the workflow JSON, import, dry-run
-  fixture and playbook dialogs. Read-only JSON is colored too.
+- A **JSON editor** with syntax colors, line numbers, Format (which keeps every
+  number exactly as written), and the line and column of the first syntax error,
+  in the workflow JSON, import, dry-run fixture and playbook dialogs. Read-only
+  JSON is colored too.
 
 ### Changed
 
-- **Playbooks** explains what a playbook is for and uses one form per
-  repository with a single **Save playbook** button. Emptying a saved field
-  clears it.
+- **Playbooks** explains what a playbook is for, opens the saved playbook of the
+  current repository, and uses one form with a single **Save playbook** button.
+  Detection never overwrites saved values, and clearing a saved value asks first.
 - A shared **switch** replaces button pairs for Simple and Advanced JSON,
   schedule cadence, the usage date range, command or script mode and the theme.
 - **Run progress** is a full-width bar split into done, failed, skipped and

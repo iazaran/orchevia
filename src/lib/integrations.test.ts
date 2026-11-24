@@ -79,6 +79,18 @@ describe('MCP presets', () => {
       })?.id,
     ).toBe('linear');
     expect(matchMcpPreset({ command: 'my-server', args: [] })).toBeUndefined();
+    expect(
+      matchMcpPreset({
+        command: 'uvx',
+        args: ['fastmcp', 'run', 'https://internal.example/mcp'],
+      }),
+    ).toBeUndefined();
+    expect(
+      matchMcpPreset({
+        command: 'uvx',
+        args: ['fastmcp', 'run', 'https://knowledge-mcp.global.api.aws'],
+      })?.id,
+    ).toBe('aws-knowledge');
   });
 
   it('writes export lines with names only', () => {

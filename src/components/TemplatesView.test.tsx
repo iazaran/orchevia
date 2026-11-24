@@ -273,6 +273,8 @@ it('creates an MCP research workflow without asking for a repository', async () 
     name: 'Use template Summarize a Web Page',
   });
   expect(within(dialog).queryByLabelText(/Repository folder/)).toBeNull();
+  // Agent steps may still use a folder: offered, not required.
+  expect(within(dialog).getByLabelText('Folder for AI steps (optional)')).toHaveValue('');
   expect(dialog).toHaveTextContent('Expects the Fetch web pages setup');
   await user.click(within(dialog).getByRole('button', { name: 'Create workflow' }));
   await waitFor(async () => {

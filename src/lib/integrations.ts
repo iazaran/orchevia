@@ -179,13 +179,18 @@ export const MCP_PRESETS: McpPreset[] = [
     summary: 'Load tickets for Ticket steps, search issues and Confluence pages.',
     command: 'uvx',
     args: ['mcp-atlassian', '--read-only'],
-    env: ['JIRA_URL', 'JIRA_USERNAME', 'JIRA_API_TOKEN', 'JIRA_PERSONAL_TOKEN'],
-    envOptional: ['CONFLUENCE_URL', 'CONFLUENCE_USERNAME', 'CONFLUENCE_API_TOKEN'],
+    env: ['JIRA_URL', 'JIRA_USERNAME', 'JIRA_API_TOKEN'],
+    envOptional: [
+      'JIRA_PERSONAL_TOKEN',
+      'CONFLUENCE_URL',
+      'CONFLUENCE_USERNAME',
+      'CONFLUENCE_API_TOKEN',
+    ],
     auth: 'env',
     readOnly: true,
     needs: 'uv',
     steps: [
-      'Jira Cloud: export JIRA_URL, JIRA_USERNAME and JIRA_API_TOKEN. Server or Data Center: JIRA_URL and JIRA_PERSONAL_TOKEN.',
+      'Jira Cloud: export JIRA_URL, JIRA_USERNAME and JIRA_API_TOKEN. Server or Data Center: JIRA_URL and JIRA_PERSONAL_TOKEN instead of the username and token.',
       'Add the CONFLUENCE_ variables to search Confluence too.',
       'Ticket steps call jira_get_issue on this server.',
     ],
@@ -581,7 +586,7 @@ function presetSignature(preset: McpPreset): string | undefined {
   return preset.args.find(
     (arg) =>
       !arg.startsWith('-') &&
-      !['run', 'mcp-remote', 'stdio'].includes(arg) &&
+      !['run', 'mcp-remote', 'stdio', 'fastmcp'].includes(arg) &&
       !/^[A-Z][A-Z0-9_]*$/.test(arg),
   );
 }

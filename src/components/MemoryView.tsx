@@ -2,7 +2,7 @@ import { PROJECT_FIELDS, projectKey, type DetectedCommand } from '../lib/memory'
 import { DirPicker } from './DirPicker';
 import { Modal } from './Modal';
 import { readLocal } from '../lib/storage';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import { isPendingSuggestion, type Preference } from '../lib/generation';
 import { formatTime } from '../lib/time';
@@ -58,9 +58,7 @@ export function MemoryView(): React.JSX.Element {
     ),
   ].sort();
   const changedFields = PROJECT_FIELDS.filter(
-    (field) =>
-      (fields[field] ?? '').trim() !== (savedFields[field] ?? '') ||
-      (disabledFields.includes(field) && (fields[field] ?? '').trim() !== ''),
+    (field) => (fields[field] ?? '').trim() !== (savedFields[field] ?? ''),
   );
   const repoName =
     repoDir
@@ -184,35 +182,50 @@ export function MemoryView(): React.JSX.Element {
     setMessage(null);
   };
 
+  /** The stored playbook of a repository: its scope, saved values and disabled fields. */
+  const readPlaybook = async (
+    directory: string,
+  ): Promise<{
+    scope: string | null;
+    stored: Record<string, string>;
+    disabled: string[];
+  }> => {
+    const context = await getBackend().getProjectMemoryContext(directory);
+    const all = await getBackend().listPreferences();
+    const scope = context.scope.startsWith('repo:') ? context.scope : null;
+    const disabled: string[] = [];
+    const stored = PROJECT_FIELDS.flatMap<[string, string]>((field) => {
+      if (scope === null) return [];
+      const key = projectKey(scope, field);
+      const saved = all.find(
+        (p) =>
+          p.key === key &&
+          p.scope === scope &&
+          (p.source === 'manual' || p.source === 'accepted'),
+      );
+      if (saved?.enabled === false) disabled.push(field);
+      return typeof saved?.value === 'string' ? [[field, saved.value]] : [];
+    });
+    return { scope, stored: Object.fromEntries(stored), disabled };
+  };
+  const showPlaybook = (loaded: Awaited<ReturnType<typeof readPlaybook>>): void => {
+    setFields(loaded.stored);
+    setSavedFields(loaded.stored);
+    setLoadedScope(loaded.scope);
+    setDisabledFields(loaded.disabled);
+  };
+
   const loadPlaybook = (directory: string): void => {
     const request = ++playbookRequest.current;
     setBusy(true);
     setMessage(null);
     setDetected(null);
-    void getBackend()
-      .getProjectMemoryContext(directory)
-      .then(async (context) => {
-        const all = await getBackend().listPreferences();
+    void readPlaybook(directory)
+      .then((loaded) => {
         if (request !== playbookRequest.current) return;
-        const disabled: string[] = [];
-        const stored = PROJECT_FIELDS.flatMap<[string, string]>((field) => {
-          if (!context.scope.startsWith('repo:')) return [];
-          const key = projectKey(context.scope, field);
-          const saved = all.find(
-            (p) =>
-              p.key === key &&
-              p.scope === context.scope &&
-              (p.source === 'manual' || p.source === 'accepted'),
-          );
-          if (saved?.enabled === false) disabled.push(field);
-          return typeof saved?.value === 'string' ? [[field, saved.value]] : [];
-        });
-        setFields(Object.fromEntries(stored));
-        setSavedFields(Object.fromEntries(stored));
-        setLoadedScope(context.scope.startsWith('repo:') ? context.scope : null);
-        setDisabledFields(disabled);
+        showPlaybook(loaded);
         setMessage(
-          stored.length
+          Object.keys(loaded.stored).length > 0
             ? 'Loaded project playbook.'
             : 'No saved project knowledge for this repository yet. Detect commands or type them, then Save playbook.',
         );
@@ -224,16 +237,46 @@ export function MemoryView(): React.JSX.Element {
       .finally(() => request === playbookRequest.current && setBusy(false));
   };
 
+  // Show the saved playbook of the repository the view opens with.
+  useEffect(() => {
+    if (!/^(\/|[A-Za-z]:[\\/])/.test(repoDir.trim())) return;
+    const request = playbookRequest.current;
+    void readPlaybook(repoDir)
+      .then((loaded) => {
+        // Ignored once the user picks a repository or acts.
+        if (request === playbookRequest.current) showPlaybook(loaded);
+      })
+      .catch(() => {
+        // The picker and Load playbook report errors.
+      });
+    // Only on open: later changes load through the picker.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const detect = (): void => {
     const request = ++playbookRequest.current;
     setBusy(true);
     setMessage(null);
-    void getBackend()
-      .detectProjectCommands(repoDir)
-      .then((found) => {
+    void (async () => {
+      try {
+        // Saved values come first: detection only fills what is still empty.
+        if (loadedScope === null) {
+          const loaded = await readPlaybook(repoDir);
+          if (request !== playbookRequest.current) return;
+          setSavedFields(loaded.stored);
+          setLoadedScope(loaded.scope);
+          setDisabledFields(loaded.disabled);
+          // What you typed before loading stays; saved values fill the rest.
+          setFields((current) => ({
+            ...loaded.stored,
+            ...Object.fromEntries(
+              Object.entries(current).filter(([, value]) => value.trim() !== ''),
+            ),
+          }));
+        }
+        const found = await getBackend().detectProjectCommands(repoDir);
         if (request !== playbookRequest.current) return;
         setDetected(found);
-        // Fill empty fields; keep anything already typed or saved.
         setFields((current) => {
           const next = { ...current };
           for (const item of found)
@@ -245,6 +288,31 @@ export function MemoryView(): React.JSX.Element {
             ? 'Nothing to suggest: no package.json, Cargo.toml, Makefile, go.mod, pyproject.toml or similar file was found in that folder.'
             : `Found ${String(found.length)} suggestion${found.length === 1 ? '' : 's'} in ${[...new Set(found.map((d) => d.source.split(' ')[0] ?? d.source))].join(', ')}. Review them, then Save playbook.`,
         );
+      } catch (e) {
+        if (request === playbookRequest.current) setMessage(errorMessage(e), 'error');
+      } finally {
+        if (request === playbookRequest.current) setBusy(false);
+      }
+    })();
+  };
+
+  const enableField = (field: string): void => {
+    const value = savedFields[field];
+    if (value === undefined) return;
+    const request = ++playbookRequest.current;
+    setBusy(true);
+    void getBackend()
+      .saveProjectPreference(
+        repoDir,
+        field,
+        value,
+        note.trim() || 'Enabled again in Playbooks.',
+      )
+      .then(async () => {
+        await refreshLibrary();
+        if (request !== playbookRequest.current) return;
+        setDisabledFields((previous) => previous.filter((item) => item !== field));
+        setMessage(`Enabled ${FIELD_LABELS[field] ?? field} again.`);
       })
       .catch((e: unknown) => {
         if (request === playbookRequest.current) setMessage(errorMessage(e), 'error');
@@ -253,10 +321,24 @@ export function MemoryView(): React.JSX.Element {
   };
 
   const savePlaybook = (): void => {
-    const request = ++playbookRequest.current;
-    setBusy(true);
-    setMessage(null);
     void (async () => {
+      const clearing = changedFields.filter(
+        (field) =>
+          (fields[field] ?? '').trim() === '' && savedFields[field] !== undefined,
+      );
+      if (
+        clearing.length > 0 &&
+        !(await confirmDialog({
+          title: `Clear ${String(clearing.length)} saved value${clearing.length === 1 ? '' : 's'}?`,
+          message: `${clearing.map((field) => FIELD_LABELS[field] ?? field).join(', ')} will no longer be used for this repository.`,
+          confirmLabel: 'Clear and save',
+          danger: true,
+        }))
+      )
+        return;
+      const request = ++playbookRequest.current;
+      setBusy(true);
+      setMessage(null);
       const backend = getBackend();
       const saved: string[] = [];
       const cleared: string[] = [];
@@ -437,8 +519,19 @@ export function MemoryView(): React.JSX.Element {
           </span>
         )}
         {disabledFields.includes(field) && (
-          <span className="field-hint">
-            Disabled for workflow generation and assistance; saving enables it again.
+          <span className="field-hint playbook-disabled">
+            Disabled for workflow generation and assistance.{' '}
+            {(fields[field] ?? '').trim() === (savedFields[field] ?? '') &&
+              savedFields[field] !== undefined && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-inline"
+                  disabled={busy}
+                  onClick={() => enableField(field)}
+                >
+                  Enable again
+                </button>
+              )}
           </span>
         )}
       </div>

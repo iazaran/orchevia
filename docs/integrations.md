@@ -176,15 +176,26 @@ JSON** offers both formats. Paste exported n8n JSON onto an n8n canvas (Ctrl+V o
 | Ticket               | `jira` (issue → get)                          | Connect Jira credentials in n8n.                                             |
 | MCP tool             | `noOp` placeholder                            | n8n calls MCP only from an AI Agent; the note keeps the tool and arguments.  |
 
-Import maps triggers to Start (schedule and webhook triggers get a note),
-`executeCommand` to Command (or back to an Agent step when it calls a known
-agent CLI), `httpRequest` to a `curl` Command without headers or credentials,
-`if` to Condition, `wait`, `form` and “send and wait” nodes to Approval, Jira
-“get issue” to Ticket, and AI Agent, LLM chain and model nodes to an Agent step
-for your Implementation profile. Set nodes become run inputs with their values as
-defaults. Code, merge and other data-shaping nodes are left out and their
-neighbours joined. Every conversion lists what changed, and an n8n expression
-Orchevia cannot read is kept as visible text for you to replace.
+Values a step inserts (`{{input.x}}`, `{{node.x.output}}`) are exported inside
+single quotes with their own quotes escaped, so in n8n a value stays one argument,
+as it is in Orchevia; a step's own `sh -c` script keeps inserting values as shell
+text, as it does in Orchevia.
+
+Import maps triggers to Start (schedule and webhook triggers get a note). An
+Execute Command becomes an argv Command step when it needs no shell, an Agent step
+when it calls a known agent CLI with only the flags Orchevia itself writes
+(`--model`, the prompt flag), and a `sh -c` step otherwise. `httpRequest` becomes a
+`curl` Command without headers or credentials, `if` and `filter` become Conditions
+(a filter's non-matching path ends the run), `wait`, `form` and “send and wait”
+nodes become Approvals, Jira “get issue” becomes a Ticket, and AI Agent, LLM chain
+and model nodes become an Agent step for your Implementation profile. Set nodes
+become run inputs with their values as defaults. Merge, split, sort and other
+data-shaping nodes are left out and their neighbours joined; a loop through one runs
+its steps once. Code nodes and anything else without an equivalent become a step
+that stops the run until you replace it, so nothing after it runs by accident.
+Nodes no trigger reaches are left out, as n8n never runs them. Every conversion
+lists what changed, and an n8n expression Orchevia cannot read is kept as visible
+text (`[[…]]`) for you to replace.
 
 ## Example: ticket-to-draft-PR
 
