@@ -4255,3 +4255,11 @@ details[open] > .gen-summary::after {
 .mcp-guide-source code {
   overflow-wrap: anywhere;
 }
+.tag-cyan {
+  color: #67e8f9;
+  background: rgba(34, 211, 238, 0.12);
+  border-color: rgba(34, 211, 238, 0.35);
+}
+[data-theme='light'] .tag-cyan {
+  color: #0e7490;
+}

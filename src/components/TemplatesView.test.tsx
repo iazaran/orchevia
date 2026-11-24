@@ -147,9 +147,10 @@ it('asks for the repository before creating a workflow from a template', async (
   });
   const create = within(dialog).getByRole('button', { name: 'Create workflow' });
   expect(create).toBeDisabled();
-  expect(within(dialog).getByRole('combobox', { name: 'Jira / MCP server' })).toHaveValue(
+  expect(within(dialog).getByRole('combobox', { name: 'MCP server' })).toHaveValue(
     'jira',
   );
+  expect(dialog).toHaveTextContent('Expects the Jira & Confluence setup');
   expect(dialog).toHaveTextContent('Jira ticket key or URL');
   // The one-time agent permissions question comes with the first template.
   expect(dialog).toHaveTextContent('Let AI agents work without asking?');
@@ -234,5 +235,53 @@ it('keeps a saved template’s repository and default branch when it is used', a
   expect(created?.definition.defaults).toEqual({
     repoDir: '/saved/repo',
     branch: 'develop',
+  });
+});
+
+it('creates an MCP research workflow without asking for a repository', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  for (const profile of recommendedProfiles([])) await backend.saveAgentProfile(profile);
+  const fetch = {
+    id: 'fetch',
+    name: 'Fetch',
+    command: 'uvx',
+    args: ['mcp-server-fetch'],
+    enabled: true,
+  };
+  await backend.saveMcpServer(fetch);
+  const { builtin } = await backend.listTemplates();
+  useAppStore.setState({
+    builtinTemplates: builtin,
+    userTemplates: [],
+    activeWorkflowId: null,
+    profiles: await backend.listAgentProfiles(),
+    agentPermissionDefault: 'cliSettings',
+    mcpServers: [fetch],
+    knownFolders: ['/somewhere'],
+    view: 'templates',
+  });
+  render(<TemplatesView />);
+  const user = userEvent.setup();
+  const card = screen
+    .getByRole('heading', { name: 'Summarize a Web Page' })
+    .closest<HTMLElement>('.template-card');
+  if (!card) throw new Error('template card');
+  expect(within(card).getByText('MCP')).toBeInTheDocument();
+  await user.click(within(card).getByRole('button', { name: 'Use template' }));
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Use template Summarize a Web Page',
+  });
+  expect(within(dialog).queryByLabelText(/Repository folder/)).toBeNull();
+  expect(dialog).toHaveTextContent('Expects the Fetch web pages setup');
+  await user.click(within(dialog).getByRole('button', { name: 'Create workflow' }));
+  await waitFor(async () => {
+    const created = (await backend.listWorkflows()).find(
+      (w) => w.name === 'Summarize a Web Page',
+    );
+    expect(
+      created?.definition.nodes.find((n) => n.type === 'mcp')?.config.mcpServerId,
+    ).toBe('fetch');
+    expect(created?.definition.defaults?.repoDir).toBeUndefined();
   });
 });

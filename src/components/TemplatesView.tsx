@@ -15,11 +15,39 @@ import { CopyButton } from './CopyButton';
 import { JsonEditor, JsonView } from './JsonEditor';
 import { Segmented } from './Segmented';
 import { prepareImportText, toN8n } from '../lib/n8n';
+import { MCP_PRESETS } from '../lib/integrations';
 
 const STARTER_TEMPLATE = 'first-workflow';
 
+/** Steps that run in a repository: commands, Git, GitHub or agents that edit files. */
+function templateNeedsRepository(template: WorkflowTemplate): boolean {
+  return template.workflow.nodes.some(
+    (n) =>
+      n.type === 'command' ||
+      n.type === 'git' ||
+      n.type === 'github' ||
+      (n.type === 'agent' && (n.config.requiredTools?.length ?? 0) > 0),
+  );
+}
+
+/** The MCP setups whose tools a template's MCP and Ticket steps call. */
+function expectedMcpSetups(template: WorkflowTemplate): string[] {
+  const tools = template.workflow.nodes.flatMap((n) =>
+    n.type === 'ticket'
+      ? ['jira_get_issue']
+      : n.type === 'mcp'
+        ? [n.config.mcpTool ?? '']
+        : [],
+  );
+  return MCP_PRESETS.filter((preset) =>
+    preset.tools.some((tool) => tools.includes(tool.name)),
+  ).map((preset) => preset.name);
+}
+
 function categoryTone(category: string): string {
   switch (category) {
+    case 'research':
+      return 'cyan';
     case 'getting-started':
       return 'green';
     case 'review':
@@ -82,7 +110,9 @@ export function TemplatesView(): React.JSX.Element {
   };
   const needsRepository =
     useTarget !== null &&
-    (!useTarget.builtin || useTarget.template.id !== STARTER_TEMPLATE);
+    !(useTarget.builtin && useTarget.template.id === STARTER_TEMPLATE) &&
+    templateNeedsRepository(useTarget.template);
+  const expectedSetups = useTarget === null ? [] : expectedMcpSetups(useTarget.template);
 
   const openUse = (template: WorkflowTemplate, builtin: boolean): void => {
     const servers = useAppStore.getState().mcpServers.filter((s) => s.enabled);
@@ -90,8 +120,9 @@ export function TemplatesView(): React.JSX.Element {
       template,
       builtin,
       repoDir:
-        builtin && template.id === STARTER_TEMPLATE
-          ? ''
+        (builtin && template.id === STARTER_TEMPLATE) ||
+        !templateNeedsRepository(template)
+          ? (template.workflow.defaults?.repoDir ?? '')
           : (template.workflow.defaults?.repoDir ??
             useAppStore.getState().knownFolders[0] ??
             ''),
@@ -412,7 +443,7 @@ export function TemplatesView(): React.JSX.Element {
             ) && (
               <div className="field">
                 <label className="field-label" htmlFor="tpl-mcp">
-                  Jira / MCP server
+                  MCP server
                 </label>
                 {mcpServers.some((s) => s.enabled) ? (
                   <select
@@ -434,8 +465,14 @@ export function TemplatesView(): React.JSX.Element {
                   </select>
                 ) : (
                   <p className="field-hint">
-                    No MCP server yet: add your Jira server under Environment → MCP
-                    connections, then pick it on the ticket step.
+                    No MCP server yet: add one under Environment → + New MCP server, then
+                    pick it on the step.
+                  </p>
+                )}
+                {expectedSetups.length > 0 && (
+                  <p className="field-hint">
+                    Expects the <strong>{expectedSetups.join(' or ')}</strong> setup from
+                    Environment → + New MCP server.
                   </p>
                 )}
               </div>

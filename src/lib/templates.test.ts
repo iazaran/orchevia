@@ -20,9 +20,9 @@ it('creates independent workflow clones on repeated template use', () => {
   expect(first.nodes.map((n) => n.id)).not.toEqual(second.nodes.map((n) => n.id));
 });
 
-it('mirrors ten portable templates, required commands and role setup', () => {
+it('mirrors thirteen portable templates, required commands and role setup', () => {
   const templates = builtinTemplates();
-  expect(templates).toHaveLength(10);
+  expect(templates).toHaveLength(13);
   for (const template of templates) {
     const roles = Object.fromEntries(
       template.workflow.nodes.flatMap((n) =>
@@ -214,9 +214,14 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
     for (const node of template.workflow.nodes.filter(
       (n) => n.config.contextRefs?.length,
     ))
-      // Reviewers fed a whole PR or branch diff get a larger handoff.
+      // Reviewers fed a whole PR or branch diff get a larger handoff, and
+      // research steps read a whole page or search result.
       expect(node.config.contextMaxChars).toBe(
-        node.config.contextRefs?.includes('diff') === true ? 48000 : 12000,
+        node.config.contextRefs?.includes('diff') === true
+          ? 48000
+          : template.category === 'research' || template.category === 'integration'
+            ? 20000
+            : 12000,
       );
   }
 });
@@ -327,5 +332,22 @@ it('leaves nothing on the setup list once a repository and MCP server are chosen
       validateWorkflowLocal(workflow).filter((i) => i.severity === 'error'),
       template.id,
     ).toEqual([]);
+  }
+});
+
+it('ships MCP templates that need a server but no repository', () => {
+  const ids = ['web-page-brief', 'aws-docs-answer', 'slack-digest'];
+  for (const id of ids) {
+    const template = builtinTemplates().find((t) => t.id === id);
+    if (!template) throw new Error(id);
+    const mcp = template.workflow.nodes.filter((n) => n.type === 'mcp');
+    expect(mcp).toHaveLength(1);
+    expect(mcp[0]?.config.mcpServerId).toBeUndefined();
+    expect(
+      template.workflow.nodes.some((n) => ['command', 'git', 'github'].includes(n.type)),
+    ).toBe(false);
+    const agent = template.workflow.nodes.find((n) => n.type === 'agent');
+    expect(agent?.config.requiredTools ?? []).toEqual([]);
+    expect(agent?.config.prompt).toMatch(/Do not edit any files/);
   }
 });
