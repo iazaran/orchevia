@@ -8,7 +8,7 @@ import {
   type N8nNode,
 } from './n8n';
 import { decodeDocument, type DeveloperNode } from './workflow-document';
-import { validateWorkflowLocal, type Workflow } from './workflow';
+import { validateWorkflowLocal, type Workflow, type WorkflowNode } from './workflow';
 import type { AgentProfile } from './agents';
 
 const codex: AgentProfile = {
@@ -187,6 +187,88 @@ describe('toN8n', () => {
     expect(notes.join(' ')).toMatch(/Execute Command/);
     expect(notes.join(' ')).toMatch(/Wait nodes/);
     expect(notes.join(' ')).toMatch(/MCP/);
+  });
+
+  const single = (step: WorkflowNode): Workflow => ({
+    ...workflow,
+    inputs: [{ name: 'prNumber' }, { name: 'u' }],
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      step,
+      { id: 'end', type: 'end', position: { x: 0, y: 2 }, config: {} },
+    ],
+    edges: [
+      { id: '1', source: 'start', target: step.id },
+      { id: '2', source: step.id, target: 'end' },
+    ],
+  });
+
+  it('exports bash scripts with their interpreter and PR number 0 as the run input', () => {
+    const script = '[[ -n "$BASH_VERSION" ]] && echo {{input.u}}';
+    const bash = toN8n(
+      single({
+        id: 's',
+        type: 'command',
+        label: 'Bash',
+        position: { x: 0, y: 1 },
+        config: { executable: 'bash', args: ['-c', script] },
+      }),
+    ).workflow.nodes.find((n) => n.name === 'Bash');
+    expect(
+      runAsN8n(bash?.parameters.command, { 'Workflow inputs': { u: 'hi' } }),
+    ).toEqual(['cd', '/repo', '&&', 'bash', '-c', '[[ -n "$BASH_VERSION" ]] && echo hi']);
+    const view = toN8n(
+      single({
+        id: 'v',
+        type: 'github',
+        label: 'View PR',
+        position: { x: 0, y: 1 },
+        config: { githubOp: { op: 'prDetails', number: 0 } },
+      }),
+    ).workflow.nodes.find((n) => n.name === 'View PR');
+    expect(
+      runAsN8n(view?.parameters.command, { 'Workflow inputs': { prNumber: '42' } }),
+    ).toEqual(['cd', '/repo', '&&', 'gh', 'pr', 'view', '42']);
+  });
+
+  it('keeps references to steps whose names contain braces or quotes', () => {
+    const label = 'Say "hi" }} {{';
+    const wf: Workflow = {
+      ...workflow,
+      inputs: [],
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'a',
+          type: 'command',
+          label,
+          position: { x: 0, y: 1 },
+          config: { executable: 'date' },
+        },
+        {
+          id: 'b',
+          type: 'command',
+          label: 'Echo',
+          position: { x: 0, y: 2 },
+          config: { executable: 'echo', args: ['{{node.a.output}}'] },
+        },
+        { id: 'end', type: 'end', position: { x: 0, y: 3 }, config: {} },
+      ],
+      edges: [
+        { id: '1', source: 'start', target: 'a' },
+        { id: '2', source: 'a', target: 'b' },
+        { id: '3', source: 'b', target: 'end' },
+      ],
+    };
+    const exported = toN8n(wf).workflow;
+    const echo = exported.nodes.find((n) => n.name === 'Echo');
+    expect(runAsN8n(echo?.parameters.command, { [label]: { stdout: 'Monday' } })).toEqual(
+      ['cd', '/repo', '&&', 'echo', 'Monday'],
+    );
+    const back = fromN8n(JSON.parse(JSON.stringify(exported))).document;
+    expect(back.nodes.find((n) => n.label === 'Echo')?.config.args).toEqual([
+      '{{node.say_hi.output}}',
+    ]);
   });
 
   it('keeps steps named like object built-ins connected', () => {
@@ -420,14 +502,14 @@ describe('fromN8n', () => {
       nodes: [
         { name: 'Go', type: 'n8n-nodes-base.manualTrigger', parameters: {} },
         {
-          name: 'Run',
-          type: 'n8n-nodes-base.executeCommand',
-          parameters: { command: '=echo {{ $now.toISO() }}' },
+          name: 'Ask',
+          type: 'n8n-nodes-base.wait',
+          parameters: { resume: 'webhook', message: '=Approve by {{ $now.toISO() }}' },
         },
       ],
-      connections: { Go: { main: [[{ node: 'Run', type: 'main', index: 0 }]] } },
+      connections: { Go: { main: [[{ node: 'Ask', type: 'main', index: 0 }]] } },
     });
-    expect(document.nodes[1]?.config.args).toEqual(['-c', 'echo [[ $now.toISO() ]]']);
+    expect(document.nodes[1]?.config.message).toBe('Approve by [[ $now.toISO() ]]');
     expect(notes.join(' ')).toMatch(/kept as plain text/);
   });
 
@@ -471,6 +553,31 @@ describe('fromN8n', () => {
       'claude -p fix *.ts',
     ]);
     expect(importCommand('npm test && npm run lint')?.config.executable).toBe('sh');
+  });
+
+  it('keeps a shell for multi-line commands, env prefixes and builtins', () => {
+    for (const command of [
+      'npm run build\nnpm test',
+      'FOO=bar npm test',
+      'exit 0',
+      'source ./env.sh && make',
+      '. ./env.sh',
+      'time npm test',
+    ])
+      expect(importCommand(command)?.config, command).toEqual({
+        executable: 'sh',
+        args: ['-c', command],
+      });
+    // A line continuation is one command.
+    expect(importCommand('npm run \\\nbuild')?.config).toEqual({
+      executable: 'npm',
+      args: ['run', 'build'],
+    });
+  });
+
+  it('stops instead of running a command whose expression was not converted', () => {
+    const step = importCommand('=echo {{ $json.a > 5 ? "x" : "y" }}');
+    expect(step?.config.args?.[1]).toMatch(/^printf .*Replace this step.*exit 1$/);
   });
 
   it('round-trips prompts with apostrophes and shell characters', () => {

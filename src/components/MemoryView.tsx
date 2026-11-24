@@ -244,7 +244,17 @@ export function MemoryView(): React.JSX.Element {
     void readPlaybook(repoDir)
       .then((loaded) => {
         // Ignored once the user picks a repository or acts.
-        if (request === playbookRequest.current) showPlaybook(loaded);
+        if (request !== playbookRequest.current) return;
+        setSavedFields(loaded.stored);
+        setLoadedScope(loaded.scope);
+        setDisabledFields(loaded.disabled);
+        // Anything typed while it loaded stays.
+        setFields((current) => ({
+          ...loaded.stored,
+          ...Object.fromEntries(
+            Object.entries(current).filter(([, value]) => value.trim() !== ''),
+          ),
+        }));
       })
       .catch(() => {
         // The picker and Load playbook report errors.
@@ -342,6 +352,7 @@ export function MemoryView(): React.JSX.Element {
       const backend = getBackend();
       const saved: string[] = [];
       const cleared: string[] = [];
+      const written: string[] = [];
       try {
         for (const field of changedFields) {
           const value = (fields[field] ?? '').trim();
@@ -349,6 +360,7 @@ export function MemoryView(): React.JSX.Element {
             if (loadedScope !== null && savedFields[field] !== undefined) {
               await backend.deletePreference(projectKey(loadedScope, field));
               cleared.push(FIELD_LABELS[field] ?? field);
+              written.push(field);
             }
             continue;
           }
@@ -363,6 +375,7 @@ export function MemoryView(): React.JSX.Element {
                 : `Detected from ${source.source}; reviewed in Playbooks.`),
           );
           saved.push(FIELD_LABELS[field] ?? field);
+          written.push(field);
         }
         await refreshLibrary();
         if (request !== playbookRequest.current) return;
@@ -374,8 +387,9 @@ export function MemoryView(): React.JSX.Element {
             }),
           ),
         );
+        // Only what was written changes state; other disabled values stay disabled.
         setDisabledFields((previous) =>
-          previous.filter((field) => (fields[field] ?? '').trim() === ''),
+          previous.filter((field) => !written.includes(field)),
         );
         setMessage(
           [

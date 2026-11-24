@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   checkJsonSyntax,
   describeJsonError,
@@ -100,13 +100,18 @@ export function JsonEditor({
   // Move the colored copy and the line numbers with the textarea. A
   // transform (not scrollTop) keeps them aligned even when the textarea's
   // horizontal scroll bar makes it scroll further than they could.
-  const syncScroll = (event: React.UIEvent<HTMLTextAreaElement>): void => {
-    const { scrollTop, scrollLeft } = event.currentTarget;
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const syncScroll = (): void => {
+    const input = inputRef.current;
+    if (input === null) return;
+    const { scrollTop, scrollLeft } = input;
     if (highlightRef.current !== null)
       highlightRef.current.style.transform = `translate(${String(-scrollLeft)}px, ${String(-scrollTop)}px)`;
     if (gutterRef.current !== null)
       gutterRef.current.style.transform = `translateY(${String(-scrollTop)}px)`;
   };
+  // Shorter text can clamp the scroll position without a scroll event.
+  useLayoutEffect(syncScroll, [value]);
   const format = (): void => {
     if (error !== null || value.trim() === '') return;
     const formatted = formatJson(value);
@@ -147,6 +152,7 @@ export function JsonEditor({
             </span>
           </pre>
           <textarea
+            ref={inputRef}
             id={id}
             className="json-input"
             aria-label={ariaLabel}

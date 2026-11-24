@@ -140,17 +140,20 @@ function gitCommand(op: GitOp, q: Quote): string {
 }
 
 function githubCommand(op: GitHubOp, q: Quote): string {
+  // 0 is the run's `prNumber` input, as in the engine.
+  const pr = (number: number): string =>
+    number === 0 ? q('{{input.prNumber}}') : String(number);
   switch (op.op) {
     case 'prStatus':
       return 'gh pr status';
     case 'listPrs':
       return `gh pr list${op.state ? ` --state ${q(op.state)}` : ''}`;
     case 'prDetails':
-      return `gh pr view ${String(op.number)}`;
+      return `gh pr view ${pr(op.number)}`;
     case 'prFiles':
-      return `gh pr diff ${String(op.number)} --name-only`;
+      return `gh pr diff ${pr(op.number)} --name-only`;
     case 'prChecks':
-      return `gh pr checks ${String(op.number)}`;
+      return `gh pr checks ${pr(op.number)}`;
     case 'createPr':
       return [
         'gh pr create',
@@ -163,11 +166,16 @@ function githubCommand(op: GitHubOp, q: Quote): string {
         .filter(Boolean)
         .join(' ');
     case 'postComment':
-      return `gh pr comment ${String(op.number)} --body ${q(op.body)}`;
+      return `gh pr comment ${pr(op.number)} --body ${q(op.body)}`;
   }
 }
 
 const REF = /\{\{\s*([^{}]+?)\s*\}\}/g;
+
+/** A JS string literal for a node name that cannot end an n8n `{{ }}` early. */
+function nameLiteral(name: string): string {
+  return JSON.stringify(name).replaceAll('{', '\\u007b').replaceAll('}', '\\u007d');
+}
 
 /**
  * An n8n expression that yields `path` as text with every single quote
@@ -229,7 +237,7 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
         );
       const field =
         node[2] === 'exitCode' ? 'exitCode' : node[2] === 'stderr' ? 'stderr' : 'stdout';
-      return `$(${JSON.stringify(target)}).item.json.${field}`;
+      return `$(${nameLiteral(target)}).item.json.${field}`;
     }
     const ticket = /^ticket\.(key|title|description|acceptanceCriteria)$/.exec(ref);
     if (ticket !== null) {
@@ -242,7 +250,7 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
           : ticket[1] === 'title'
             ? 'fields.summary'
             : 'fields.description';
-      return `$(${JSON.stringify(target)}).item.json.${path}`;
+      return `$(${nameLiteral(target)}).item.json.${path}`;
     }
     return null;
   };
@@ -367,12 +375,9 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
         let command: string;
         if (c.scriptFile !== undefined)
           command = [exe || 'bash', c.scriptFile, ...args].map(p.q).join(' ');
-        else if (
-          ['sh', 'bash', 'zsh'].includes(exe) &&
-          args[0] === '-c' &&
-          args.length === 2
-        )
-          // The step's own shell script: values go in as they do in Orchevia.
+        else if (exe === 'sh' && args[0] === '-c' && args.length === 2)
+          // n8n runs commands with sh: the step's own script goes in as it is,
+          // and its values as shell text, as in Orchevia.
           command = p.raw(args[1] ?? '');
         else command = [exe, ...args].map(p.q).join(' ');
         nodes.push(execute(node, p.done(cdPrefix(c) + command)));
@@ -779,6 +784,29 @@ export function fromN8n(value: unknown): N8nImport {
   const inputs = new Set<string>();
   const inputDefaults = new Map<string, string>();
 
+  // Steps with an n8n expression that could not be converted.
+  const unreadable = new Set<string>();
+  /** A node name as written in `$("…")` or `$('…')`. */
+  const nameOf = (literal: string): string => {
+    if (literal.startsWith("'")) return literal.slice(1, -1);
+    try {
+      const parsed: unknown = JSON.parse(literal);
+      return typeof parsed === 'string' ? parsed : literal;
+    } catch {
+      return literal.slice(1, -1);
+    }
+  };
+  /** A step that stops the run with a message, in place of what could not be converted. */
+  const stopStep = (key: string, label: string, message: string): DeveloperNode => ({
+    key,
+    type: 'command',
+    label,
+    config: {
+      executable: 'sh',
+      args: ['-c', `printf '%s\\n' ${shellQuote(message)} >&2; exit 1`],
+    },
+  });
+
   /** n8n expression text → Orchevia template text (best effort). */
   const translate = (
     text: string,
@@ -792,14 +820,15 @@ export function fromN8n(value: unknown): N8nImport {
         /^String\((.+?)\s*\?\?\s*""\)(?:\.replaceAll\(.*\))?$/.exec(inner.trim())?.[1] ??
         inner.trim();
       const named =
-        /^\$\(\s*['"](.+?)['"]\s*\)\.(?:item|first\(\)|last\(\))\.json(?:\.([\w.]+)|\[\s*['"](.+?)['"]\s*\])$/.exec(
+        /^\$\(\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*\)\.(?:item|first\(\)|last\(\))\.json(?:\.([\w.]+)|\[\s*['"](.+?)['"]\s*\])$/.exec(
           ref,
         );
       const direct =
         /^\$(?:json|input\.(?:item|first\(\)|last\(\))\.json)(?:\.([\w.]+)|\[\s*['"](.+?)['"]\s*\])$/.exec(
           ref,
         );
-      const source = named !== null ? named[1] : direct !== null ? previous : undefined;
+      const source =
+        named !== null ? nameOf(named[1] ?? '') : direct !== null ? previous : undefined;
       const field =
         named !== null ? (named[2] ?? named[3]) : (direct?.[1] ?? direct?.[2]);
       if (field !== undefined && source !== undefined) {
@@ -826,6 +855,7 @@ export function fromN8n(value: unknown): N8nImport {
           return `{{node.${key}.output}}`;
         }
       }
+      unreadable.add(where);
       note(
         `"${where}" uses the n8n expression ${whole}, which was kept as plain text. Replace it with an Orchevia reference such as {{input.name}} or {{node.step.output}}.`,
       );
@@ -843,7 +873,18 @@ export function fromN8n(value: unknown): N8nImport {
     const t = (text: string): string => translate(text, previous, n.name);
     let node: DeveloperNode;
     if (n.type === 'n8n-nodes-base.executeCommand') {
-      node = commandNode(key, n.name, t(stringParam(p.command)), note);
+      const command = t(stringParam(p.command));
+      if (unreadable.has(n.name)) {
+        // The text left in place would run as shell code.
+        node = stopStep(
+          key,
+          n.name,
+          `Replace this step: the n8n command of "${n.name}" uses an expression that was not converted.`,
+        );
+        note(
+          `"${n.name}" became a step that stops the run, because its command uses an n8n expression Orchevia cannot convert.`,
+        );
+      } else node = commandNode(key, n.name, command, note);
     } else if (n.type === 'n8n-nodes-base.httpRequest') {
       const method = stringParam(p.method) || stringParam(p.requestMethod) || 'GET';
       node = {
@@ -916,20 +957,11 @@ export function fromN8n(value: unknown): N8nImport {
     } else {
       // Kept as a visible step that stops the run, so nothing after it runs
       // by accident and references to it still resolve.
-      node = {
+      node = stopStep(
         key,
-        type: 'command',
-        label: n.name,
-        config: {
-          executable: 'sh',
-          args: [
-            '-c',
-            `printf '%s\\n' ${shellQuote(
-              `Replace this step: the n8n node "${n.name}" (${shortType(n.type)}) was not converted.`,
-            )} >&2; exit 1`,
-          ],
-        },
-      };
+        n.name,
+        `Replace this step: the n8n node "${n.name}" (${shortType(n.type)}) was not converted.`,
+      );
       note(
         n.type === 'n8n-nodes-base.code'
           ? `Code node "${n.name}" became a step that stops the run: n8n JavaScript does not run outside n8n. Replace it with a Command step.`
@@ -939,7 +971,7 @@ export function fromN8n(value: unknown): N8nImport {
     steps.push(node);
   }
   for (const n of n8nNodes)
-    if (roles.get(n.name) === 'pass') {
+    if (roles.get(n.name) === 'pass' && !n.disabled) {
       if (n.type === 'n8n-nodes-base.noOp') {
         if (n.notes.trim() !== '')
           note(`Placeholder "${n.name}" was left out: ${n.notes.trim()}`);
@@ -1010,6 +1042,23 @@ export function fromN8n(value: unknown): N8nImport {
     } else if (labels.every((label) => label === 'failure')) addEdge(step.key, 'end');
   }
   if (steps.length === 0) addEdge('start', 'end');
+  const next = new Map<string, string[]>();
+  for (const e of edges) next.set(e.from, [...(next.get(e.from) ?? []), e.to]);
+  const inCycle = (start: string): boolean => {
+    const stack = [...(next.get(start) ?? [])];
+    const seen = new Set<string>();
+    for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+      if (at === start) return true;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      stack.push(...(next.get(at) ?? []));
+    }
+    return false;
+  };
+  if (steps.some((step) => inCycle(step.key)))
+    note(
+      'The n8n loop came back without a visit limit: set Max visits on the steps in it before running.',
+    );
 
   const document: DeveloperWorkflow = {
     version: 1,
@@ -1163,11 +1212,16 @@ export function shellTokens(command: string): { words: string[]; shell: boolean 
       if (j >= command.length) return null;
       inWord = true;
       i = j;
+    } else if (c === '\\' && command.charAt(i + 1) === '\n') {
+      // A line continuation joins the two lines.
+      i += 1;
     } else if (c === '\\' && i + 1 < command.length) {
       current += command.charAt(i + 1);
       inWord = true;
       i += 1;
-    } else if (c === ' ' || c === '\t' || c === '\n') {
+    } else if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      // A newline separates commands, as `;` does.
+      if (c === '\n' || c === '\r') shell = true;
       if (inWord) words.push(current);
       current = '';
       inWord = false;
@@ -1186,6 +1240,46 @@ export function shellTokens(command: string): { words: string[]; shell: boolean 
 export function shellWords(command: string): string[] | null {
   return shellTokens(command)?.words ?? null;
 }
+
+/** Builtins and keywords that are not programs Orchevia can start. */
+const SHELL_WORDS = new Set([
+  '.',
+  ':',
+  '!',
+  '{',
+  '[',
+  'alias',
+  'builtin',
+  'case',
+  'cd',
+  'command',
+  'declare',
+  'eval',
+  'exec',
+  'exit',
+  'export',
+  'for',
+  'function',
+  'if',
+  'local',
+  'read',
+  'readonly',
+  'return',
+  'select',
+  'set',
+  'shift',
+  'source',
+  'test',
+  'time',
+  'trap',
+  'typeset',
+  'ulimit',
+  'umask',
+  'unset',
+  'until',
+  'wait',
+  'while',
+]);
 
 /**
  * Local agent CLI calls Orchevia itself exports. Only these flags are
@@ -1244,6 +1338,8 @@ function agentCall(words: string[]): { prompt: string; model?: string } | null {
         if (i + 1 >= args.length) return null;
         const flagValue = args[++i];
         if (arg === '--model' || arg === '-m') model = flagValue;
+        // Agent steps read text: another output format stays a command.
+        else if (arg === '--output-format' && flagValue !== 'text') return null;
       } else if (cli.bare?.includes(arg) === true) {
         if (cli.required?.includes(arg) === true) required = true;
       } else if (
@@ -1284,7 +1380,15 @@ function commandNode(
   }
   const folder = workingDir === undefined ? {} : { workingDir };
   const tokens = shellTokens(rest);
-  if (tokens !== null && !tokens.shell && tokens.words.length > 0) {
+  const first = tokens?.words[0] ?? '';
+  if (
+    tokens !== null &&
+    !tokens.shell &&
+    first !== '' &&
+    // `FOO=bar cmd` and shell builtins only work through a shell.
+    !/^[A-Za-z_]\w*=/.test(first) &&
+    !SHELL_WORDS.has(first)
+  ) {
     const agent = agentCall(tokens.words);
     if (agent !== null) {
       if (agent.model !== undefined)

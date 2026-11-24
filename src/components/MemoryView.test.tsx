@@ -346,3 +346,31 @@ it('loads the saved playbook before detecting, so detection never overwrites it'
   expect(screen.getByLabelText('Build command')).toHaveValue('pnpm run build');
   expect(screen.getByRole('button', { name: 'Use it' })).toBeInTheDocument();
 });
+
+it('keeps a disabled value disabled when another field is saved', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference('/project', 'testCommand', 'make test', 'Team');
+  const preference = (await backend.listPreferences())[0];
+  if (!preference) throw new Error('fixture');
+  await backend.savePreference({ ...preference, enabled: false });
+  useAppStore.setState({
+    workflows: [],
+    preferences: await backend.listPreferences(),
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  render(<MemoryView />);
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Saved repositories'), '/project');
+  await screen.findByRole('button', { name: 'Enable again' });
+  await user.type(screen.getByLabelText('Lint command'), 'make lint');
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
+  await screen.findByText('Saved Lint command.');
+  expect(screen.getByRole('button', { name: 'Enable again' })).toBeInTheDocument();
+  const test = (await backend.listPreferences()).find((p) =>
+    p.key.endsWith('testCommand'),
+  );
+  expect(test?.enabled).toBe(false);
+});
