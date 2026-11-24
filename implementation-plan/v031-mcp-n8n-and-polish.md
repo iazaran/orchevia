@@ -37,6 +37,18 @@ make every screen calmer and clearer.
   full-width segmented run progress bar.
 - [x] README, project site (redesign, three demo scenarios), area docs, smoke
   tests, roadmap, changelog, screenshots and social preview.
+- [x] Review round 1 (full diff, two independent reviewers). Fixed: exported
+  n8n commands put values inside single quotes unescaped (shell injection in
+  n8n); import took a flag's value for the agent prompt; round trips turned
+  agent and argv steps into `sh -c`; references to dropped nodes; self-loops
+  through dropped loop nodes; Filter nodes bypassed; unreached nodes wired to
+  Start; a step named `__proto__` lost its connections; deep JSON overflowed
+  the checker's stack; Format rounded large integers and turned `1e400` into
+  `null`; highlight drift under a horizontal scroll bar; detection could
+  overwrite a saved playbook the user had not loaded; agent-only user templates
+  lost their folder picker; `uvx fastmcp` servers matched AWS Knowledge; the
+  Jira snippet listed alternative tokens as required; clearing saved values
+  did not ask first; missing n8n notes in the Templates export.
 - [ ] Manual checks from `docs/smoke-tests.md` (MCP setups with real accounts, a
   real n8n instance, playbook detection on real repositories, OpenCode `PWD`).
 
