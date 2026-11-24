@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   checkJsonSyntax,
   describeJsonError,
+  formatJson,
   lineColumn,
   tokenizeJson,
 } from './json-syntax';
@@ -132,4 +133,26 @@ it('lineColumn counts lines from 1', () => {
   expect(lineColumn('ab\ncd', 0)).toEqual({ line: 1, column: 1 });
   expect(lineColumn('ab\ncd', 4)).toEqual({ line: 2, column: 2 });
   expect(lineColumn('ab\ncd', 99)).toEqual({ line: 2, column: 3 });
+});
+
+it('checks very deep documents without overflowing the stack', () => {
+  const deep = '['.repeat(20000) + '0' + ']'.repeat(20000);
+  expect(checkJsonSyntax(deep)).toBeNull();
+  expect(checkJsonSyntax('['.repeat(20000) + '0' + ']'.repeat(19999))?.message).toBe(
+    'This deeply nested JSON is not valid',
+  );
+});
+
+describe('formatJson', () => {
+  it('indents like JSON.stringify for ordinary documents', () => {
+    const text = '{"a":[1,2,{"b":null}],"c":{},"d":[],"e":"x, y: {z}"}';
+    expect(formatJson(text)).toBe(JSON.stringify(JSON.parse(text) as unknown, null, 2));
+  });
+
+  it('keeps numbers exactly as written and refuses invalid JSON', () => {
+    expect(formatJson('{"id":9007199254740993,"x":1e400,"y":1.50}')).toBe(
+      '{\n  "id": 9007199254740993,\n  "x": 1e400,\n  "y": 1.50\n}',
+    );
+    expect(formatJson('{"a":1,}')).toBeNull();
+  });
 });

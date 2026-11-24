@@ -126,6 +126,11 @@ export function lineColumn(
   return { line, column: end - lineStart + 1 };
 }
 
+/** Deeper documents are checked by `JSON.parse` only (no recursion limit to hit). */
+const MAX_DEPTH = 256;
+
+class JsonTooDeep extends Error {}
+
 class JsonCheckError extends Error {
   constructor(
     message: string,
@@ -218,12 +223,15 @@ export function checkJsonSyntax(text: string): JsonSyntaxError | null {
     if (c === "'") fail('JSON strings use double quotes, not single quotes');
     fail(`Unexpected ${describe(i)}`);
   };
+  let depth = 0;
   const parseObject = (): void => {
     const open = i;
+    if (++depth > MAX_DEPTH) throw new JsonTooDeep();
     i += 1;
     skipSpace();
     if (text.charAt(i) === '}') {
       i += 1;
+      depth -= 1;
       return;
     }
     for (;;) {
@@ -246,6 +254,7 @@ export function checkJsonSyntax(text: string): JsonSyntaxError | null {
       }
       if (c === '}') {
         i += 1;
+        depth -= 1;
         return;
       }
       if (i >= text.length) fail('This { is never closed', open);
@@ -254,10 +263,12 @@ export function checkJsonSyntax(text: string): JsonSyntaxError | null {
   };
   const parseArray = (): void => {
     const open = i;
+    if (++depth > MAX_DEPTH) throw new JsonTooDeep();
     i += 1;
     skipSpace();
     if (text.charAt(i) === ']') {
       i += 1;
+      depth -= 1;
       return;
     }
     for (;;) {
@@ -275,6 +286,7 @@ export function checkJsonSyntax(text: string): JsonSyntaxError | null {
       }
       if (c === ']') {
         i += 1;
+        depth -= 1;
         return;
       }
       if (i >= text.length) fail('This [ is never closed', open);
@@ -290,10 +302,63 @@ export function checkJsonSyntax(text: string): JsonSyntaxError | null {
     if (i < text.length) fail(`Unexpected ${describe(i)} after the end of the document`);
     return null;
   } catch (err) {
+    if (err instanceof JsonTooDeep || err instanceof RangeError) return deepCheck(text);
     if (!(err instanceof JsonCheckError)) throw err;
     const { line, column } = lineColumn(text, err.offset);
     return { message: err.message, offset: err.offset, line, column };
   }
+}
+
+/** Very deep documents: the platform parser decides, without a position. */
+function deepCheck(text: string): JsonSyntaxError | null {
+  try {
+    JSON.parse(text);
+    return null;
+  } catch (err) {
+    return {
+      message:
+        err instanceof RangeError
+          ? 'This JSON is nested too deeply to read'
+          : 'This deeply nested JSON is not valid',
+      offset: 0,
+      line: 1,
+      column: 1,
+    };
+  }
+}
+
+/**
+ * Re-indent valid JSON, two spaces per level, keeping every value exactly as
+ * written: `JSON.parse` + `JSON.stringify` would round large integers and
+ * turn `1e400` into `null`. Returns null for invalid JSON.
+ */
+export function formatJson(text: string): string | null {
+  if (checkJsonSyntax(text) !== null) return null;
+  const tokens = tokenizeJson(text).filter((t) => t.kind !== 'space');
+  let out = '';
+  let level = 0;
+  const newline = (): string => `\n${'  '.repeat(level)}`;
+  for (let k = 0; k < tokens.length; k++) {
+    const token = tokens[k];
+    if (token === undefined) continue;
+    const t = token.kind === 'punct' ? token.text : '';
+    if (t === '{' || t === '[') {
+      const next = tokens[k + 1];
+      if (next?.kind === 'punct' && (next.text === '}' || next.text === ']')) {
+        out += t + next.text;
+        k += 1;
+        continue;
+      }
+      level += 1;
+      out += t + newline();
+    } else if (t === '}' || t === ']') {
+      level -= 1;
+      out += newline() + t;
+    } else if (t === ',') out += `,${newline()}`;
+    else if (t === ':') out += ': ';
+    else out += token.text;
+  }
+  return out;
 }
 
 /** `"Line 4, column 9: …"` for notices and screen readers. */

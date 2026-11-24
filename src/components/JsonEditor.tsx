@@ -2,6 +2,7 @@ import { useId, useMemo, useRef } from 'react';
 import {
   checkJsonSyntax,
   describeJsonError,
+  formatJson,
   tokenizeJson,
   type JsonSyntaxError,
   type JsonTokenKind,
@@ -89,30 +90,29 @@ export function JsonEditor({
   onFormat?: (formatted: string) => void;
 }): React.JSX.Element {
   const statusId = useId();
-  const highlightRef = useRef<HTMLPreElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLSpanElement>(null);
+  const gutterRef = useRef<HTMLSpanElement>(null);
   const error: JsonSyntaxError | null = useMemo(
     () => (allowEmpty === true && value.trim() === '' ? null : checkJsonSyntax(value)),
     [value, allowEmpty],
   );
   const lines = useMemo(() => highlightLines(value, error?.offset), [value, error]);
+  // Move the colored copy and the line numbers with the textarea. A
+  // transform (not scrollTop) keeps them aligned even when the textarea's
+  // horizontal scroll bar makes it scroll further than they could.
   const syncScroll = (event: React.UIEvent<HTMLTextAreaElement>): void => {
     const { scrollTop, scrollLeft } = event.currentTarget;
-    if (highlightRef.current !== null) {
-      highlightRef.current.scrollTop = scrollTop;
-      highlightRef.current.scrollLeft = scrollLeft;
-    }
-    if (gutterRef.current !== null) gutterRef.current.scrollTop = scrollTop;
+    if (highlightRef.current !== null)
+      highlightRef.current.style.transform = `translate(${String(-scrollLeft)}px, ${String(-scrollTop)}px)`;
+    if (gutterRef.current !== null)
+      gutterRef.current.style.transform = `translateY(${String(-scrollTop)}px)`;
   };
   const format = (): void => {
     if (error !== null || value.trim() === '') return;
-    try {
-      const formatted = JSON.stringify(JSON.parse(value) as unknown, null, 2);
-      onChange?.(formatted);
-      onFormat?.(formatted);
-    } catch {
-      // checkJsonSyntax already accepted it; nothing to do.
-    }
+    const formatted = formatJson(value);
+    if (formatted === null) return;
+    onChange?.(formatted);
+    onFormat?.(formatted);
   };
   const empty = value.trim() === '';
   return (
@@ -121,26 +121,30 @@ export function JsonEditor({
       style={{ '--json-rows': rows } as React.CSSProperties}
     >
       <div className="json-editor-body">
-        <div className="json-gutter" ref={gutterRef} aria-hidden="true">
-          {lines.map((_, index) => (
-            <span
-              key={index}
-              className={error?.line === index + 1 ? 'is-error' : undefined}
-            >
-              {index + 1}
-            </span>
-          ))}
-        </div>
-        <div className="json-editor-text">
-          <pre className="json-highlight" ref={highlightRef} aria-hidden="true">
-            {lines.map((line, index) => (
+        <div className="json-gutter" aria-hidden="true">
+          <span className="json-layer" ref={gutterRef}>
+            {lines.map((_, index) => (
               <span
                 key={index}
-                className={`json-line${error?.line === index + 1 ? ' is-error' : ''}`}
+                className={error?.line === index + 1 ? 'is-error' : undefined}
               >
-                {renderLine(line)}
+                {index + 1}
               </span>
             ))}
+          </span>
+        </div>
+        <div className="json-editor-text">
+          <pre className="json-highlight" aria-hidden="true">
+            <span className="json-layer" ref={highlightRef}>
+              {lines.map((line, index) => (
+                <span
+                  key={index}
+                  className={`json-line${error?.line === index + 1 ? ' is-error' : ''}`}
+                >
+                  {renderLine(line)}
+                </span>
+              ))}
+            </span>
           </pre>
           <textarea
             id={id}
@@ -201,11 +205,7 @@ export function JsonView({
       const json = JSON.stringify(value, null, 2) as string | undefined;
       return json ?? '';
     }
-    try {
-      return JSON.stringify(JSON.parse(value) as unknown, null, 2);
-    } catch {
-      return value;
-    }
+    return formatJson(value) ?? value;
   }, [value]);
   const lines = useMemo(() => highlightLines(text), [text]);
   return (

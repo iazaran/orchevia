@@ -3604,11 +3604,15 @@ details[open] > .gen-summary::after {
   user-select: none;
   background: color-mix(in srgb, var(--json-bg) 85%, var(--bg-2));
 }
-.json-gutter > span {
+.json-layer {
+  display: block;
+  will-change: transform;
+}
+.json-gutter .json-layer > span {
   display: block;
   height: var(--json-line);
 }
-.json-gutter > span.is-error {
+.json-gutter .json-layer > span.is-error {
   color: var(--danger);
   font-weight: 700;
 }
