@@ -8,6 +8,13 @@ function hasControlCharacters(value: string): boolean {
     return code <= 31 || (code >= 127 && code <= 159);
   });
 }
+/** A playbook value suggested from a repository's own files. Mirrors `DetectedCommand`. */
+export interface DetectedCommand {
+  field: 'testCommand' | 'lintCommand' | 'buildCommand' | 'conventions';
+  value: string;
+  /** Where it came from, e.g. `package.json script "test" (pnpm)`. */
+  source: string;
+}
 export const PROJECT_FIELDS = [
   'testCommand',
   'lintCommand',

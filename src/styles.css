@@ -2738,28 +2738,179 @@ details[open] > .gen-summary::after {
 }
 
 .playbooks-view {
-  max-width: 1040px;
-  width: 100%;
+  /* Centered reading width; the scroll bar stays at the window edge. */
+  padding-inline: max(20px, calc((100% - 1080px) / 2));
 }
-.playbook-editor {
-  margin-bottom: 20px;
+.playbook-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 20px 28px;
+  align-items: center;
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-l);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-soft));
+  background:
+    radial-gradient(
+      120% 140% at 0% 0%,
+      color-mix(in srgb, var(--accent) 16%, transparent),
+      transparent 60%
+    ),
+    var(--bg-1);
+}
+.playbook-intro h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+.playbook-intro p {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.playbook-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  counter-reset: step;
+}
+.playbook-steps li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: 10px;
+  align-items: start;
+  font-size: 12.5px;
+}
+.playbook-steps li::before {
+  content: counter(step);
+  grid-row: span 2;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.playbook-steps strong {
+  color: var(--text-0);
+}
+.playbook-steps span {
+  color: var(--text-2);
+}
+@media (max-width: 900px) {
+  .playbook-intro {
+    grid-template-columns: 1fr;
+  }
+}
+.card {
+  border: 1px solid var(--border-card);
+  background: var(--bg-1);
+  border-radius: var(--radius-l);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.card-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+.card-head h2 code {
+  font-size: 14px;
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  background: var(--bg-2);
+}
+.card-subhead {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.card-head + .card-subhead {
+  margin-top: 0;
+}
+.card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+.playbook-repo-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 0 16px;
+}
+.playbook-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 0 16px;
 }
 .playbook-evidence {
-  margin-top: 16px;
+  margin-top: 12px;
 }
-.playbook-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
-  gap: 8px 16px;
+.playbook-detected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--text-2);
 }
-.playbook-fields .btn {
-  align-self: flex-start;
+.playbook-detected::before {
+  content: '✦';
+  color: var(--accent);
+}
+.playbook-detected code {
+  font-size: 11.5px;
+}
+.input-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+}
+.count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-1);
+  background: var(--bg-3);
 }
 .playbook-section {
-  margin-top: 12px;
-  padding: 10px 14px;
+  margin-top: 10px;
+  padding: 12px 16px;
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-m);
+  border-radius: var(--radius-l);
+  background: var(--bg-1);
   overflow-wrap: anywhere;
 }
 .playbook-section > summary {
@@ -2768,13 +2919,30 @@ details[open] > .gen-summary::after {
   cursor: pointer;
 }
 .playbook-section[open] > summary {
-  margin-bottom: 10px;
-}
-.playbook-learning {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin-bottom: 12px;
+}
+.pref-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.pref-row:first-of-type {
+  border-top: 0;
+}
+.pref-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.pref-title {
+  font-weight: 600;
+}
+.pref-actions {
+  display: flex;
+  gap: 6px;
 }
 
 /* Usage & costs page (v0.1.15): cards, responsive filters, bounded tables. */

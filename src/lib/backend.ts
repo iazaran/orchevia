@@ -26,6 +26,7 @@ import {
   validatePreference,
   validateObservation,
   observeEdit,
+  type DetectedCommand,
 } from './memory';
 import {
   builtinTemplates,
@@ -317,6 +318,12 @@ export interface Backend {
   markGenerationStatus(id: string, status: string): Promise<void>;
   listGenerations(limit?: number): Promise<StoredGeneration[]>;
   getProjectMemoryContext(repoDir?: string): Promise<ProjectMemoryContext>;
+  /**
+   * Suggest test/lint/build commands and conventions from the repository's
+   * manifest files (package.json, Cargo.toml, Makefile, …). Reads only;
+   * the browser preview has no file access and suggests nothing.
+   */
+  detectProjectCommands(repoDir: string): Promise<DetectedCommand[]>;
   saveProjectPreference(
     repoDir: string,
     field: string,
@@ -681,6 +688,9 @@ class TauriBackend implements Backend {
   }
   getProjectMemoryContext(repoDir?: string): Promise<ProjectMemoryContext> {
     return this.invoke('get_project_memory_context', { repoDir: repoDir ?? null });
+  }
+  detectProjectCommands(repoDir: string): Promise<DetectedCommand[]> {
+    return this.invoke('detect_project_commands', { repoDir });
   }
   saveProjectPreference(
     repoDir: string,
@@ -3265,6 +3275,12 @@ class MockBackend implements Backend {
       [...this.preferences.values()],
       repoDir?.trim() ? projectScope(repoDir) : undefined,
     );
+  }
+  async detectProjectCommands(repoDir: string): Promise<DetectedCommand[]> {
+    const dir = repoDir.trim();
+    if (!dir.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(dir))
+      throw new Error('Choose the repository by its full path.');
+    return [];
   }
   async saveProjectPreference(
     repoDir: string,
