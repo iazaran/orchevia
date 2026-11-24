@@ -605,10 +605,10 @@ describe('Automations view', () => {
       await expectNoAxeViolations();
       await user.click(screen.getByRole('button', { name: '+ New schedule' }));
       const editor = screen.getByRole('dialog', { name: 'Schedule editor' });
-      for (const cadence of ['oneTime', 'interval', 'daily', 'weekly', 'cron']) {
-        const chip = within(editor).getByRole('button', { name: cadence });
+      for (const cadence of ['Once', 'Every…', 'Daily', 'Weekly', 'Cron']) {
+        const chip = within(editor).getByRole('radio', { name: cadence });
         await user.click(chip);
-        expect(chip).toHaveAttribute('aria-pressed', 'true');
+        expect(chip).toBeChecked();
         await expectNoAxeViolations();
       }
       await user.keyboard('{Escape}');
