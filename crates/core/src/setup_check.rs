@@ -102,7 +102,7 @@ fn sign_in_hint(adapter: AdapterKind) -> &'static str {
         }
         AdapterKind::Codex => "Run `codex login` in a terminal, then check again.",
         AdapterKind::Muse => "Open `muse` in a terminal and complete the Meta sign-in, then check again.",
-        AdapterKind::Gemini => "Configure Enterprise or API-key authentication for `gemini` in your terminal, then check again.",
+        AdapterKind::Gemini => "Configure Enterprise or API-key authentication for `gemini` in your terminal and trust the repository folder once (headless runs stop in untrusted folders), then check again.",
         AdapterKind::Antigravity => "Open `agy` in a terminal and complete the Google sign-in, then check again.",
         AdapterKind::OpenCode => "Open `opencode` in a terminal and use `/connect` to configure a provider, then check again.",
         AdapterKind::Custom => {

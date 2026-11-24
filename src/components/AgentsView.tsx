@@ -3,6 +3,10 @@ import { getBackend } from '../lib/backend';
 import {
   ADAPTER_LABELS,
   ADAPTER_KINDS,
+  AGENT_INSTALL,
+  AGENT_SIGN_IN,
+  CUSTOM_CLI_PRESETS,
+  profileFromPreset,
   supportsProfileControls,
   supportsEffort,
   EFFORT_LEVELS,
@@ -35,6 +39,7 @@ import { Notice, useNoticeMessage } from './Notice';
 import { FormError, useSubmitValidation } from './FormValidation';
 import { errorMessage } from '../lib/errors';
 import { LinesTextarea } from './DraftText';
+import { CopyButton } from './CopyButton';
 import {
   SETUP_CHECK_COST_NOTE,
   SetupCheckResult,
@@ -259,47 +264,7 @@ export function AgentsView(): React.JSX.Element {
           and never runs an agent until you press ▶ Run.
         </Notice>
 
-        {adapters.length > 0 && (
-          <section aria-label="Detected adapters" style={{ marginBottom: 20 }}>
-            <h2 style={{ fontSize: 14 }}>Detected AI CLIs</h2>
-            <div className="tool-grid">
-              {adapters
-                .filter((a) => a.id !== 'custom')
-                .map((a) => {
-                  const installed = toolById(a.id);
-                  return (
-                    <div key={a.id} className="tool-card">
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                        }}
-                      >
-                        <h3 style={{ margin: 0 }}>{a.displayName}</h3>
-                        <span
-                          className={`status-pill ${installed ? 'status-succeeded' : 'status-cancelled'}`}
-                        >
-                          {installed ? 'Installed' : 'Not found'}
-                        </span>
-                      </div>
-                      <p className="field-hint" style={{ marginBottom: 0 }}>
-                        {a.notes}
-                      </p>
-                    </div>
-                  );
-                })}
-            </div>
-          </section>
-        )}
-
-        <ModelCatalog
-          customModels={customModels}
-          onAdd={addCustomModel}
-          onRemove={removeCustomModel}
-        />
-
+        <h2 className="section-title">Your agent profiles</h2>
         {profiles.length === 0 && editing === null && (
           <div className="empty-state">
             <h2>No Agent Profiles yet</h2>
@@ -451,6 +416,116 @@ export function AgentsView(): React.JSX.Element {
           })}
         </div>
 
+        {adapters.length > 0 && (
+          <section aria-label="Detected adapters">
+            <h2 className="section-title">AI CLIs on this computer</h2>
+            <div className="tool-grid">
+              {adapters
+                .filter(
+                  (a): a is typeof a & { id: Exclude<AdapterKind, 'custom'> } =>
+                    a.id !== 'custom',
+                )
+                .map((a) => {
+                  const installed = toolById(a.id);
+                  const version = tools.find((t) => t.id === a.id)?.version;
+                  const count = profiles.filter((p) => p.adapter === a.id).length;
+                  return (
+                    <div key={a.id} className="tool-card cli-card">
+                      <div className="cli-card-head">
+                        <h3>{a.displayName}</h3>
+                        <span
+                          className={`status-pill ${installed ? 'status-succeeded' : 'status-cancelled'}`}
+                        >
+                          {installed ? 'Installed' : 'Not found'}
+                        </span>
+                      </div>
+                      <p className="field-hint">{a.notes}</p>
+                      {installed ? (
+                        <p className="field-hint cli-card-meta">
+                          {version !== undefined && <code>{version}</code>}{' '}
+                          {AGENT_SIGN_IN[a.id]}
+                        </p>
+                      ) : (
+                        <div className="install-line">
+                          <code title={AGENT_INSTALL[a.id]}>{AGENT_INSTALL[a.id]}</code>
+                          <CopyButton
+                            className="btn btn-ghost btn-inline"
+                            text={AGENT_INSTALL[a.id]}
+                          />
+                        </div>
+                      )}
+                      <div className="card-actions">
+                        <button
+                          className={`btn${installed && count === 0 ? ' btn-primary' : ''}`}
+                          onClick={() => {
+                            setEditing(emptyForm(a.id));
+                            setMessage(null);
+                          }}
+                        >
+                          {count === 0 ? 'Create profile' : 'Add another profile'}
+                        </button>
+                        {count > 0 && (
+                          <span className="field-hint">
+                            {String(count)} profile{count === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </section>
+        )}
+
+        <section aria-label="More coding CLIs">
+          <h2 className="section-title">More coding CLIs</h2>
+          <p className="field-hint section-hint">
+            These run through the Custom CLI adapter: Orchevia passes the arguments below,
+            then your prompt. Review the profile, save it, then use Check setup.
+          </p>
+          <div className="tool-grid">
+            {CUSTOM_CLI_PRESETS.map((preset) => (
+              <div key={preset.id} className="tool-card cli-card">
+                <div className="cli-card-head">
+                  <h3>{preset.name}</h3>
+                  <span className="tag">Custom CLI</span>
+                </div>
+                <p className="field-hint">{preset.notes}</p>
+                <code className="cli-command">
+                  {[preset.executable, ...preset.extraArgs, '"<prompt>"'].join(' ')}
+                </code>
+                <div className="install-line">
+                  <code title={preset.install}>{preset.install}</code>
+                  <CopyButton
+                    className="btn btn-ghost btn-inline"
+                    text={preset.install}
+                  />
+                </div>
+                <div className="card-actions">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setEditing(profileFromPreset(preset));
+                      setMessage(null);
+                    }}
+                  >
+                    Set up {preset.name}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <details className="playbook-section">
+          <summary>Known models</summary>
+          <ModelCatalog
+            customModels={customModels}
+            onAdd={addCustomModel}
+            onRemove={removeCustomModel}
+          />
+        </details>
+
         {knownFolders.length > 0 && (
           <section aria-label="Recent project folders" style={{ marginTop: 20 }}>
             <h2 style={{ fontSize: 14 }}>Recent project folders (local only)</h2>
@@ -511,8 +586,7 @@ function ModelCatalog({
     setDrafts((prev) => ({ ...prev, [adapter]: '' }));
   };
   return (
-    <section aria-label="Known models" style={{ marginBottom: 20 }}>
-      <h2 style={{ fontSize: 14 }}>Known models</h2>
+    <section aria-label="Known models">
       <p className="field-hint" style={{ maxWidth: 720 }}>
         Add any model name your CLI supports. Saved names appear as suggestions in every
         profile editor; availability depends on your CLI and account.

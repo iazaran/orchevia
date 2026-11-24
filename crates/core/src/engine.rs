@@ -5701,6 +5701,9 @@ async fn run_command_with_output(
     cmd.env("PATH", crate::tools::child_path());
     if let Some(dir) = working_dir {
         cmd.current_dir(dir);
+        if let Some(pwd) = crate::process::child_pwd(dir) {
+            cmd.env("PWD", pwd);
+        }
     }
     cmd.stdin(if stdin.is_some() {
         std::process::Stdio::piped()

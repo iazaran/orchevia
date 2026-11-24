@@ -207,3 +207,62 @@ describe('agent setup check', () => {
     expect(within(items[3]!).getByText('Full access').tagName).toBe('CODE');
   });
 });
+
+describe('CLI setup help', () => {
+  it('shows install commands for missing CLIs and creates a profile from a card', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    useAppStore.setState({
+      profiles: [],
+      adapters: [
+        {
+          id: 'gemini',
+          displayName: 'Gemini CLI',
+          defaultExecutable: 'gemini',
+          supportsModelFlag: true,
+          supportsSessionResume: false,
+          notes: 'Runs Gemini CLI headlessly.',
+        },
+        {
+          id: 'codex',
+          displayName: 'Codex',
+          defaultExecutable: 'codex',
+          supportsModelFlag: true,
+          supportsSessionResume: true,
+          notes: 'Streams tokens through Codex.',
+        },
+      ],
+      tools: [{ id: 'codex', name: 'codex', installed: true, version: '0.170.0' }],
+      knownFolders: [],
+    });
+    const user = userEvent.setup();
+    render(<AgentsView />);
+    const clis = screen.getByRole('region', { name: 'Detected adapters' });
+    expect(within(clis).getByText('npm install -g @google/gemini-cli')).toBeVisible();
+    expect(within(clis).getByText('0.170.0')).toBeVisible();
+    const buttons = within(clis).getAllByRole('button', { name: 'Create profile' });
+    await user.click(buttons[1] ?? buttons[0] ?? clis);
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    await waitFor(async () =>
+      expect((await backend.listAgentProfiles())[0]?.adapter).toBe('codex'),
+    );
+  });
+
+  it('prefills a Custom CLI profile from a preset', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    useAppStore.setState({ profiles: [], adapters: [], tools: [], knownFolders: [] });
+    const user = userEvent.setup();
+    render(<AgentsView />);
+    await user.click(screen.getByRole('button', { name: 'Set up GitHub Copilot CLI' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    await waitFor(async () =>
+      expect((await backend.listAgentProfiles())[0]).toMatchObject({
+        adapter: 'custom',
+        name: 'GitHub Copilot CLI',
+        executable: 'copilot',
+        extraArgs: ['-s', '-p'],
+      }),
+    );
+  });
+});

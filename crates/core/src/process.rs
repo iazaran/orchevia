@@ -241,6 +241,14 @@ fn is_text_busy(error: &std::io::Error) -> bool {
     }
 }
 
+/// `PWD` for a child started in `dir`. The inherited value names Orchevia's
+/// own folder, and some CLIs (OpenCode) take their project folder from
+/// `PWD` before the real working directory, so it must match `dir`. Only
+/// absolute folders are passed on; a relative one has no correct `PWD`.
+pub(crate) fn child_pwd(dir: &str) -> Option<&str> {
+    std::path::Path::new(dir).is_absolute().then_some(dir)
+}
+
 /// Write `input` to a child's stdin on a detached thread, then close it (EOF).
 /// A child that exits without reading produces `EPIPE`, which is ignored; the
 /// writer never delays result collection.
@@ -280,6 +288,9 @@ pub fn run_command(
     cmd.env("PATH", crate::tools::child_path());
     if let Some(dir) = spec.working_dir.as_deref() {
         cmd.current_dir(dir);
+        if let Some(pwd) = child_pwd(dir) {
+            cmd.env("PWD", pwd);
+        }
     }
     // Avoid interactive prompts inheriting the terminal.
     cmd.stdin(if spec.stdin.is_some() {
@@ -639,6 +650,24 @@ mod tests {
         };
         let preview = spec.preview();
         assert!(preview.contains("hello\\ world") || preview.contains("'hello world'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn children_see_their_working_folder_as_pwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        // `env` prints the environment as received, unlike a shell, which
+        // would recompute PWD itself.
+        let spec = CommandSpec {
+            executable: "env".into(),
+            args: vec![],
+            working_dir: Some(path.clone()),
+            stdin: None,
+        };
+        let out = run_command(&spec, Some(Duration::from_secs(10))).unwrap();
+        assert!(out.stdout.lines().any(|line| line == format!("PWD={path}")));
+        assert_eq!(child_pwd("relative/dir"), None);
     }
 
     #[cfg(unix)]
