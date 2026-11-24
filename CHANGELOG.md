@@ -6,6 +6,59 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-25
+
+### Added
+
+- **n8n import and export.** Workflows → **Import / Export** turns the open
+  workflow into n8n workflow JSON (paste it onto an n8n canvas) or Orchevia
+  Simple JSON, and imports either format as a new workflow. Templates import
+  accepts n8n JSON and export offers it too. Every conversion lists what
+  changed, and n8n nodes or expressions without an Orchevia equivalent are
+  reported instead of dropped silently.
+- **22 MCP setups in the new server form**, each with sign-in steps, the
+  variables to export with a presence check, and tools to call: Google
+  Workspace (Gmail, Drive, Docs, Calendar and Sheets in one server), Microsoft
+  365, Slack, Notion, Jira and Confluence, GitHub, GitLab, Linear, Sentry,
+  Fetch, AWS Knowledge, Context7, Brave Search, Cloudflare Docs, Playwright,
+  Supabase, PostgreSQL, Stripe, Filesystem, Git, Memory and Figma.
+- **MCP templates:** Summarize a Web Page (Fetch), Answer from AWS Docs (AWS
+  Knowledge) and Slack Channel Digest (Slack). They need no repository, and
+  the Use dialog names the setup each one expects.
+- **Detect commands** in Playbooks reads package.json, Cargo.toml, Makefile,
+  justfile, go.mod, pyproject.toml, composer.json, deno.json, Gradle, Maven
+  and mix.exs to suggest test, lint and build commands. Nothing runs.
+- **More coding CLIs** in one click through the Custom CLI adapter: GitHub
+  Copilot CLI, Cursor CLI, Qwen Code, Amp, Aider, Goose and Kiro CLI. Each
+  supported CLI shows its install command or version and a Create profile
+  button.
+- A **JSON editor** with syntax colors, line numbers, Format, and the line and
+  column of the first syntax error, in the workflow JSON, import, dry-run
+  fixture and playbook dialogs. Read-only JSON is colored too.
+
+### Changed
+
+- **Playbooks** explains what a playbook is for and uses one form per
+  repository with a single **Save playbook** button. Emptying a saved field
+  clears it.
+- A shared **switch** replaces button pairs for Simple and Advanced JSON,
+  schedule cadence, the usage date range, command or script mode and the theme.
+- **Run progress** is a full-width bar split into done, failed, skipped and
+  active steps, with the percentage beside the counts.
+- A refreshed interface: line icons in the sidebar, consistent buttons, fields,
+  cards, pills, dialogs and scroll bars, a grouped workflow toolbar, template
+  cards with tags and inputs, and run history rows that lead with the workflow.
+- Agents lists your profiles first. Known models moved into a collapsible section.
+- The Google Docs and Gmail recipes are replaced by the Google Workspace setup;
+  servers you already saved keep working.
+
+### Fixed
+
+- Agent CLIs and commands now see a `PWD` that matches their working folder.
+  OpenCode reads its project folder from `PWD`, so it ran in Orchevia's own
+  folder instead of the step's repository.
+- The Gemini setup hint explains that headless runs stop in untrusted folders.
+
 ## [0.3.0] - 2026-11-24
 
 ### Added
@@ -1098,7 +1151,11 @@ repository release access.
 - Commands are not sandboxed. CLI output is stored locally and can contain
   sensitive information; review logs before sharing them.
 
-[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.1.22...HEAD
+[Unreleased]: https://github.com/iazaran/orchevia/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/iazaran/orchevia/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/iazaran/orchevia/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/iazaran/orchevia/compare/v0.1.24...v0.2.0
+[0.1.23]: https://github.com/iazaran/orchevia/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/iazaran/orchevia/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/iazaran/orchevia/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/iazaran/orchevia/compare/v0.1.19...v0.1.20

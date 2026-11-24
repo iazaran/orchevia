@@ -23,6 +23,7 @@ import {
   type Workflow,
   type WorkflowLimits,
 } from '../lib/workflow';
+import { JsonEditor } from './JsonEditor';
 
 /**
  * One floating start-run form for live and dry runs (v0.1.14). Inputs and
@@ -206,13 +207,12 @@ export function StartRunDialog({
           <label className="field-label" htmlFor="run-fixtures">
             Fixture results JSON
           </label>
-          <textarea
+          <JsonEditor
             id="run-fixtures"
-            className="fixture-editor"
+            rows={10}
             value={fixtures}
-            disabled={busy}
-            onChange={(e) => setFixtures(e.target.value)}
-            spellCheck={false}
+            readOnly={busy}
+            onChange={setFixtures}
           />
           <p className="field-hint">
             Each node has an ordered array for successive visits/attempts. Tool statuses:
