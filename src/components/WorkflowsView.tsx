@@ -45,6 +45,9 @@ import { ToolGrantNotice } from './ToolGrantNotice';
 import { Modal } from './Modal';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
+import { Segmented } from './Segmented';
+import { JsonEditor, JsonView } from './JsonEditor';
+import { WorkflowTransfer } from './WorkflowTransfer';
 
 function explainGenerationError(raw: string): string {
   if (raw.includes('Ticket nodes need a ticketKey')) {
@@ -389,6 +392,30 @@ export function WorkflowsView(): React.JSX.Element {
         setJsonError(errorMessage(err));
       }
     })();
+  };
+
+  const importTransferred = async (
+    wf: StoredWorkflow['definition'],
+    notes: string[],
+  ): Promise<void> => {
+    const backend = getBackend();
+    const stored = await backend.saveWorkflow(wf);
+    await refreshWorkflows();
+    selectWorkflow(stored.id);
+    const issues = await backend.validateWorkflow(stored.definition).catch(() => []);
+    setValidation(issues);
+    setTransferOpen(false);
+    const errors = issues.filter((issue) => issue.severity === 'error').length;
+    const parts = [
+      `Imported '${stored.name}' with ${String(wf.nodes.length)} steps.`,
+      notes.length > 0
+        ? `${String(notes.length)} conversion note${notes.length === 1 ? '' : 's'}: ${notes[0] ?? ''}`
+        : '',
+      errors > 0
+        ? `${String(errors)} validation error${errors === 1 ? '' : 's'} to fix before it runs; select a step to see them.`
+        : '',
+    ].filter((part) => part !== '');
+    setRunMessage(parts.join(' '), errors > 0 || notes.length > 0 ? 'warn' : 'info');
   };
 
   const updateActiveWorkflowAfterCreate = (wf: StoredWorkflow['definition']): void => {
@@ -787,6 +814,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [jsonIds, setJsonIds] = useState<Record<string, string>>({});
   const [jsonBusy, setJsonBusy] = useState(false);
   const [jsonModal, setJsonModal] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError, , jsonErrorEvent] = useNoticeMessage('error');
   const [templateName, setTemplateName] = useState('');
@@ -947,6 +975,13 @@ export function WorkflowsView(): React.JSX.Element {
             JSON
           </button>
           <button
+            className="btn btn-ghost"
+            onClick={() => setTransferOpen(true)}
+            title="Export to n8n or Orchevia JSON, or import a workflow from either"
+          >
+            Import / Export
+          </button>
+          <button
             className="btn"
             disabled={active === null || starting}
             onClick={() => openStartForm('dry')}
@@ -978,6 +1013,13 @@ export function WorkflowsView(): React.JSX.Element {
           </button>
         </fieldset>
       </div>
+      {transferOpen && (
+        <WorkflowTransfer
+          workflow={active?.definition ?? null}
+          onClose={() => setTransferOpen(false)}
+          onImport={importTransferred}
+        />
+      )}
       {startMode !== null && active !== null && (
         <StartRunDialog
           key={`${active.id}-${startMode}`}
@@ -1720,13 +1762,12 @@ export function WorkflowsView(): React.JSX.Element {
                 </h3>
                 <details>
                   <summary>Configuration</summary>
-                  <pre className="log-block" style={{ maxHeight: 240, overflow: 'auto' }}>
-                    {JSON.stringify(
-                      overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)?.config,
-                      null,
-                      2,
-                    )}
-                  </pre>
+                  <JsonView
+                    value={
+                      overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)
+                        ?.config ?? {}
+                    }
+                  />
                 </details>
                 {overlayResults
                   .filter((r) => r.nodeId === selectedNodeId)
@@ -1771,36 +1812,38 @@ export function WorkflowsView(): React.JSX.Element {
               Shape-checked on save; semantic validation runs too — errors ask before
               saving.
             </p>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <button
-                className="btn"
-                disabled={jsonBusy || jsonMode === 'simple'}
-                onClick={() => switchJsonMode('simple')}
-              >
-                Simple JSON
-              </button>
-              <button
-                className="btn"
-                disabled={jsonBusy || jsonMode === 'raw'}
-                onClick={() => switchJsonMode('raw')}
-              >
-                Advanced JSON
-              </button>
+            <div className="json-modal-mode">
+              <Segmented
+                label="JSON format"
+                value={jsonMode}
+                disabled={jsonBusy}
+                options={[
+                  {
+                    value: 'simple',
+                    label: 'Simple JSON',
+                    title: 'Readable keys, configuration and connections',
+                  },
+                  {
+                    value: 'raw',
+                    label: 'Advanced JSON',
+                    title: 'The full runtime definition with IDs and positions',
+                  },
+                ]}
+                onChange={switchJsonMode}
+              />
             </div>
             <div className="field">
               <label className="field-label" htmlFor="wf-json">
                 Workflow JSON
               </label>
-              <textarea
+              <JsonEditor
                 id="wf-json"
-                className="textarea"
                 rows={18}
                 value={jsonText}
-                onChange={(e) => {
-                  setJsonText(e.target.value);
+                onChange={(next) => {
+                  setJsonText(next);
                   setJsonError(null);
                 }}
-                spellCheck={false}
               />
             </div>
             {jsonError !== null && (

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ADAPTER_LABELS } from '../lib/agents';
 import { getBackend } from '../lib/backend';
 import type { WorkflowTemplate } from '../lib/generation';
@@ -11,6 +11,10 @@ import { ToolGrantNotice } from './ToolGrantNotice';
 import { errorMessage } from '../lib/errors';
 import { setWorkflowDefaults, validateWorkflowLocal } from '../lib/workflow';
 import { DirPicker } from './DirPicker';
+import { CopyButton } from './CopyButton';
+import { JsonEditor, JsonView } from './JsonEditor';
+import { Segmented } from './Segmented';
+import { prepareImportText, toN8n } from '../lib/n8n';
 
 const STARTER_TEMPLATE = 'first-workflow';
 
@@ -38,9 +42,18 @@ export function TemplatesView(): React.JSX.Element {
   const mcpServers = useAppStore((s) => s.mcpServers);
   const [importText, setImportText] = useState('');
   const [ioModal, setIoModal] = useState<
-    { mode: 'import' } | { mode: 'export'; name: string; json: string } | null
+    | { mode: 'import' }
+    | {
+        mode: 'export';
+        name: string;
+        json: string;
+        workflow: WorkflowTemplate['workflow'];
+      }
+    | null
   >(null);
-  const [copied, setCopied] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'orchevia' | 'n8n'>('orchevia');
+  const profiles = useAppStore((s) => s.profiles);
+  const importPrepared = useMemo(() => prepareImportText(importText), [importText]);
   // The last imported template, checked against the profiles its roles map to.
   const [imported, setImported] = useState<{
     template: WorkflowTemplate;
@@ -149,8 +162,13 @@ export function TemplatesView(): React.JSX.Element {
     void getBackend()
       .exportTemplate(template.id, builtin)
       .then((json) => {
-        setCopied(false);
-        setIoModal({ mode: 'export', name: template.name, json });
+        setExportFormat('orchevia');
+        setIoModal({
+          mode: 'export',
+          name: template.name,
+          json,
+          workflow: template.workflow,
+        });
       })
       .catch((err: unknown) => {
         setMessage(errorMessage(err), 'error');
@@ -162,12 +180,18 @@ export function TemplatesView(): React.JSX.Element {
       setMessage('Paste workflow or template JSON first, then Import.', 'warn');
       return;
     }
+    const prepared = importPrepared;
     void getBackend()
-      .importTemplate(importText)
+      .importTemplate(prepared.json)
       .then(async (t) => {
         setImportText('');
         setIoModal(null);
-        setMessage(`Imported template '${t.name}'.`);
+        setMessage(
+          prepared.source === 'n8n'
+            ? `Imported n8n workflow as template '${t.name}'. ${String(prepared.notes.length)} conversion note${prepared.notes.length === 1 ? '' : 's'}: ${prepared.notes.join(' ')}`
+            : `Imported template '${t.name}'.`,
+          prepared.source === 'n8n' && prepared.notes.length > 0 ? 'warn' : 'info',
+        );
         reload();
         const roleMap = await getBackend()
           .roleMapDefault()
@@ -448,25 +472,44 @@ export function TemplatesView(): React.JSX.Element {
               <>
                 <h3 style={{ marginTop: 0 }}>Import template JSON</h3>
                 <p className="field-hint">
-                  Paste Simple JSON, Advanced workflow JSON, or an exported template. A
-                  new template is created directly; configuration and role references are
-                  preserved. Invalid JSON and secrets are refused.
+                  Paste Simple JSON, Advanced workflow JSON, an exported template, or an{' '}
+                  <strong>n8n workflow</strong>. A new template is created directly;
+                  configuration and role references are preserved. Invalid JSON and
+                  secrets are refused.
                 </p>
                 <div className="field">
-                  <label className="field-label" htmlFor="tpl-import">
-                    Workflow or template JSON
-                  </label>
-                  <textarea
+                  <div className="field-row">
+                    <label className="field-label" htmlFor="tpl-import">
+                      Workflow or template JSON
+                    </label>
+                    {importText.trim() !== '' && (
+                      <span
+                        className={`format-badge ${importPrepared.source === 'n8n' ? 'is-n8n' : ''}`}
+                      >
+                        {importPrepared.source === 'n8n'
+                          ? 'n8n workflow'
+                          : 'Orchevia JSON'}
+                      </span>
+                    )}
+                  </div>
+                  <JsonEditor
                     id="tpl-import"
-                    className="textarea"
-                    rows={8}
+                    rows={10}
+                    allowEmpty
                     value={importText}
-                    onChange={(e) => {
-                      setImportText(e.target.value);
-                    }}
-                    placeholder='{"version": 1, "name": "My template", "nodes": [...], "edges": [...]}'
+                    onChange={setImportText}
                   />
                 </div>
+                {importPrepared.source === 'n8n' && importPrepared.notes.length > 0 && (
+                  <div className="transfer-notes" style={{ marginBottom: 12 }}>
+                    <span className="field-label">Conversion notes</span>
+                    <ul>
+                      {importPrepared.notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button className="btn btn-primary" onClick={doImport}>
                     Import into my library
@@ -485,32 +528,42 @@ export function TemplatesView(): React.JSX.Element {
               <>
                 <h3 style={{ marginTop: 0 }}>Export: {ioModal.name}</h3>
                 <p className="field-hint">
-                  Portable JSON — no secrets inside by construction. Copy and share it, or
-                  import it on another machine.
+                  {exportFormat === 'n8n'
+                    ? 'n8n workflow JSON: paste it onto an n8n canvas (Ctrl+V or ⌘V) or import it from a file.'
+                    : 'Portable JSON — no secrets inside by construction. Copy and share it, or import it on another machine.'}
                 </p>
-                <textarea
-                  className="textarea"
-                  rows={10}
-                  readOnly
-                  value={ioModal.json}
-                  aria-label="Exported template JSON"
+                <Segmented
+                  label="Export format"
+                  className="transfer-switches"
+                  value={exportFormat}
+                  onChange={setExportFormat}
+                  options={[
+                    { value: 'orchevia', label: 'Orchevia template' },
+                    { value: 'n8n', label: 'n8n workflow' },
+                  ]}
+                />
+                <JsonView
+                  className="transfer-output"
+                  value={
+                    exportFormat === 'n8n'
+                      ? toN8n(ioModal.workflow, profiles).workflow
+                      : ioModal.json
+                  }
                 />
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <button
+                  <CopyButton
                     className="btn btn-primary"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(ioModal.json)
-                        .then(() => {
-                          setCopied(true);
-                        })
-                        .catch(() => {
-                          setCopied(false);
-                        });
-                    }}
-                  >
-                    {copied ? 'Copied ✓' : 'Copy'}
-                  </button>
+                    label={exportFormat === 'n8n' ? 'Copy n8n JSON' : 'Copy'}
+                    text={
+                      exportFormat === 'n8n'
+                        ? JSON.stringify(
+                            toN8n(ioModal.workflow, profiles).workflow,
+                            null,
+                            2,
+                          )
+                        : ioModal.json
+                    }
+                  />
                   <button
                     className="btn"
                     onClick={() => {
