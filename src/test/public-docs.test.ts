@@ -180,6 +180,31 @@ describe('public page scripts', () => {
     expect(el('[data-demo-log]').textContent).toContain('Draft PR #214 opened');
   });
 
+  it('switches to the MCP research scenario and saves the brief after approval', async () => {
+    load();
+    el('[data-scenario="research"]').click();
+    expect(el('[data-scenario="research"]').getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelector('[data-node="codex-review"]')).toBeNull();
+    expect(el('[data-node="fetch"]').textContent).toContain('MCP · Fetch');
+    el('[data-demo-run]').click();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(state('fetch')).toBe('succeeded');
+    expect(state('docs')).toBe('succeeded');
+    expect(state('approve')).toBe('paused');
+    el('[data-demo-approve]').click();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(state('save')).toBe('succeeded');
+    expect(el('[data-demo-stats]').textContent).toMatch(
+      /^Succeeded · .* 1 agent attempt$/,
+    );
+    // The scheduled digest needs no approval.
+    el('[data-scenario="digest"]').click();
+    el('[data-demo-run]').click();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(state('end')).toBe('succeeded');
+    expect(el('[data-demo-log]').textContent).toContain('Schedule fired');
+  });
+
   it('reset abandons a paused run without resuming it', async () => {
     load();
     el('[data-demo-run]').click();
