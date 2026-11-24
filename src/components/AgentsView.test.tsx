@@ -232,7 +232,7 @@ describe('CLI setup help', () => {
           notes: 'Streams tokens through Codex.',
         },
       ],
-      tools: [{ id: 'codex', name: 'codex', installed: true, version: '0.170.0' }],
+      tools: [{ id: 'codex', displayName: 'Codex', installed: true, version: '0.170.0' }],
       knownFolders: [],
     });
     const user = userEvent.setup();
