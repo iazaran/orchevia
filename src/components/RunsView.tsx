@@ -259,8 +259,15 @@ function RunProgressLine({
     live && progress.toGo > 0 ? `${String(progress.toGo)} still to run` : '',
   ].filter((part) => part !== '');
   const finished = progress.done + progress.failed + progress.skipped;
+  const percent = Math.round((finished / progress.total) * 100);
+  const share = (count: number): string => `${String((count / progress.total) * 100)}%`;
+  const active = live ? progress.running.length + progress.waiting.length : 0;
   return (
-    <div className="run-progress">
+    <div className={`run-progress${live ? ' is-live' : ''}`}>
+      <div className="run-progress-head">
+        <span className="run-progress-percent">{String(percent)}%</span>
+        <p className="run-progress-text">{parts.join(' · ')}</p>
+      </div>
       <div
         className="run-progress-bar"
         role="progressbar"
@@ -268,10 +275,21 @@ function RunProgressLine({
         aria-valuemin={0}
         aria-valuemax={progress.total}
         aria-valuenow={finished}
+        aria-valuetext={`${String(finished)} of ${String(progress.total)} steps finished`}
       >
-        <span style={{ width: `${String((finished / progress.total) * 100)}%` }} />
+        {progress.done > 0 && (
+          <span className="seg seg-done" style={{ width: share(progress.done) }} />
+        )}
+        {progress.failed > 0 && (
+          <span className="seg seg-failed" style={{ width: share(progress.failed) }} />
+        )}
+        {progress.skipped > 0 && (
+          <span className="seg seg-skipped" style={{ width: share(progress.skipped) }} />
+        )}
+        {active > 0 && (
+          <span className="seg seg-active" style={{ width: share(active) }} />
+        )}
       </div>
-      <p className="run-progress-text">{parts.join(' · ')}</p>
       {/* One polite region for the whole run, so parallel steps do not each announce. */}
       <p className="run-progress-now" aria-live="polite">
         {live && progress.running.length > 0

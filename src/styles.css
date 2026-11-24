@@ -1882,15 +1882,33 @@ details[open] > .gen-summary::after {
   margin-top: 6px;
 }
 .run-progress {
-  margin-top: 10px;
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-l);
+  background: color-mix(in srgb, var(--bg-2) 55%, var(--bg-1));
 }
 .run-progress p {
   margin: 0;
   font-size: 12.5px;
   color: var(--text-1);
+}
+.run-progress-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.run-progress-percent {
+  font-size: 18px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-0);
+  letter-spacing: -0.01em;
 }
 .run-progress-now:empty {
   display: none;
@@ -1900,22 +1918,62 @@ details[open] > .gen-summary::after {
   font-weight: 600;
 }
 .run-progress-bar {
-  height: 6px;
+  display: flex;
+  width: 100%;
+  height: 10px;
   border-radius: 999px;
-  background: var(--bg-2);
+  background: var(--bg-3);
   overflow: hidden;
-  max-width: 420px;
+  gap: 2px;
 }
-.run-progress-bar > span {
+.run-progress-bar > .seg {
   display: block;
   height: 100%;
-  background: var(--accent);
+  min-width: 4px;
+  transition: width 0.4s ease;
+}
+.run-progress-bar > .seg:first-child {
+  border-radius: 999px 0 0 999px;
+}
+.run-progress-bar > .seg:last-child {
+  border-radius: 0 999px 999px 0;
+}
+.run-progress-bar > .seg:only-child {
   border-radius: 999px;
-  transition: width 0.3s ease;
+}
+.seg-done {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--success) 75%, #0d9488),
+    var(--success)
+  );
+}
+.seg-failed {
+  background: var(--danger);
+}
+.seg-skipped {
+  background: color-mix(in srgb, var(--text-2) 55%, var(--bg-3));
+}
+.seg-active {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--accent) 0 8px,
+    color-mix(in srgb, var(--accent) 60%, var(--bg-1)) 8px 16px
+  );
+  background-size: 22.6px 22.6px;
+  animation: progress-stripes 1s linear infinite;
+}
+@keyframes progress-stripes {
+  to {
+    background-position: 22.6px 0;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .run-progress-bar > span {
+  .run-progress-bar > .seg {
     transition: none;
+  }
+  .seg-active {
+    animation: none;
   }
 }
 .step-feedback-toggle {
