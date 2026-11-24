@@ -19,16 +19,17 @@ import { readLocal, writeLocal } from './lib/storage';
 import { getBackend } from './lib/backend';
 import { version } from '../package.json';
 import { UpdateBanner, useAutomaticUpdateChecks } from './components/Updates';
+import { BrandMark, Icon, type IconName } from './components/Icon';
 
-const NAV: { id: View; label: string; icon: string }[] = [
-  { id: 'workflows', label: 'Workflows', icon: '◈' },
-  { id: 'agents', label: 'Agents', icon: '✦' },
-  { id: 'templates', label: 'Templates', icon: '▤' },
-  { id: 'automations', label: 'Automations', icon: '⏰' },
-  { id: 'memory', label: 'Playbooks', icon: '🧠' },
-  { id: 'runs', label: 'Runs', icon: '▶' },
-  { id: 'environment', label: 'Environment', icon: '◍' },
-  { id: 'usage', label: 'Usage & costs', icon: '◔' },
+const NAV: { id: View; label: string; icon: IconName }[] = [
+  { id: 'workflows', label: 'Workflows', icon: 'workflows' },
+  { id: 'agents', label: 'Agents', icon: 'agents' },
+  { id: 'templates', label: 'Templates', icon: 'templates' },
+  { id: 'automations', label: 'Automations', icon: 'automations' },
+  { id: 'memory', label: 'Playbooks', icon: 'playbooks' },
+  { id: 'runs', label: 'Runs', icon: 'runs' },
+  { id: 'environment', label: 'Environment', icon: 'environment' },
+  { id: 'usage', label: 'Usage & costs', icon: 'usage' },
 ];
 
 export function App(): React.JSX.Element {
@@ -92,7 +93,7 @@ export function App(): React.JSX.Element {
         <div className="sidebar-header">
           <div className="brand">
             <div className="brand-mark" aria-hidden="true">
-              O
+              <BrandMark />
             </div>
             <div className="brand-copy">
               <div className="brand-name">Orchevia</div>
@@ -125,7 +126,7 @@ export function App(): React.JSX.Element {
             aria-current={view === item.id ? 'page' : undefined}
           >
             <span className="nav-icon" aria-hidden="true">
-              {item.icon}
+              <Icon name={item.icon} />
             </span>
             <span className="nav-btn-label">{item.label}</span>
           </button>
@@ -155,7 +156,7 @@ export function App(): React.JSX.Element {
           aria-current={view === 'inbox' ? 'page' : undefined}
         >
           <span className="nav-icon" aria-hidden="true">
-            🔔
+            <Icon name="inbox" />
           </span>
           <span className="nav-btn-label">Inbox</span>
           {unread > 0 && (

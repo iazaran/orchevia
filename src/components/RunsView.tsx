@@ -1101,19 +1101,23 @@ export function RunsView(): React.JSX.Element {
                   onClick={() => void selectRun(run.id)}
                   title={run.id}
                 >
-                  <span className={`status-pill status-${run.status}`}>{run.status}</span>
-                  {run.execution?.options.dryRun && (
-                    <span className="status-pill status-paused">DRY RUN</span>
-                  )}
-                  {(run.status === 'running' || run.status === 'paused') && (
-                    <span className="live-badge" aria-label="Live run">
-                      <span className="live-dot" aria-hidden="true" />
-                      LIVE
+                  <span className="run-row-body">
+                    <span className="run-row-title">{runWorkflowName(run)}</span>
+                    <span className="run-row-badges">
+                      <span className={`status-pill status-${run.status}`}>
+                        {run.status}
+                      </span>
+                      {run.execution?.options.dryRun && (
+                        <span className="status-pill status-paused">DRY RUN</span>
+                      )}
+                      {(run.status === 'running' || run.status === 'paused') && (
+                        <span className="live-badge" aria-label="Live run">
+                          <span className="live-dot" aria-hidden="true" />
+                          LIVE
+                        </span>
+                      )}
                     </span>
-                  )}
-                  <span style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 600 }}>{runWorkflowName(run)}</div>
-                    <div
+                    <span
                       className="wf-card-meta run-row-meta"
                       title={
                         // A paused run has a finishedAt (when it paused) but has
@@ -1131,7 +1135,7 @@ export function RunsView(): React.JSX.Element {
                         : runElapsed(run, now) === ''
                           ? ''
                           : ` · took ${runElapsed(run, now)}`}
-                    </div>
+                    </span>
                   </span>
                 </button>
                 <CloseButton

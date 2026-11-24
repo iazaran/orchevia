@@ -905,106 +905,116 @@ export function WorkflowsView(): React.JSX.Element {
           style={{ border: 0, margin: 0, marginLeft: 'auto', padding: 0, minWidth: 0 }}
           disabled={overlayRunId !== null}
         >
-          <button className="btn" onClick={createWorkflow}>
-            + New
-          </button>
+          <div className="btn-group" role="group" aria-label="Create">
+            <button className="btn" onClick={createWorkflow}>
+              + New
+            </button>
+            <button
+              className="btn"
+              title="Ready-made sample workflows to explore and adapt"
+              onClick={() => {
+                setShowSamples(true);
+              }}
+            >
+              Samples…
+            </button>
+            {active !== null &&
+              overlayRunId === null &&
+              activeSaveState?.status === 'error' && (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    void retryWorkflowSave(active.id).catch((err: unknown) =>
+                      setRunMessage(errorMessage(err), 'error'),
+                    );
+                  }}
+                >
+                  Retry save
+                </button>
+              )}
+            <button
+              className="btn"
+              title="Draft a workflow from a goal using your own local AI CLI"
+              onClick={() => {
+                setAssistanceBase(null);
+                setPreview(null);
+                setShowGenerator(true);
+              }}
+            >
+              ✦ Generate
+            </button>
+          </div>
+          <div className="btn-group" role="group" aria-label="Edit">
+            <button
+              className="btn"
+              disabled={active === null}
+              title="Arrange or improve this workflow using a configured local CLI; review before applying"
+              onClick={() => {
+                if (active === null) return;
+                setAssistanceBase(structuredClone(active.definition));
+                setAssistanceMode('optimize');
+                setGenRepoDir(assistanceRepoDir(active.definition));
+                setGenBranch(active.definition.defaults?.branch ?? '');
+                setGoal('');
+                setPreview(null);
+                setGenError(null);
+                setLastGenError(null);
+                setShowAdvancedProfile(true);
+                setAdvancedProfileId('');
+                setShowGenerator(true);
+              }}
+            >
+              ✦ Assist
+            </button>
+            <button
+              className="btn"
+              onClick={openSaveAsTemplate}
+              disabled={active === null}
+            >
+              Save as template
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={openJsonEditor}
+              disabled={active === null}
+              title="View and edit this workflow as raw JSON"
+            >
+              JSON
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setTransferOpen(true)}
+              title="Export to n8n or Orchevia JSON, or import a workflow from either"
+            >
+              Import / Export
+            </button>
+          </div>
+          <div className="btn-group" role="group" aria-label="Run">
+            <button
+              className="btn"
+              disabled={active === null || starting}
+              onClick={() => openStartForm('dry')}
+            >
+              Dry run
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={active === null || starting}
+              title="Edit this workflow's saved usage limits"
+              onClick={() => setLimitsOpen(true)}
+            >
+              Usage limits
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => openStartForm('live')}
+              disabled={active === null || starting}
+            >
+              {starting ? 'Starting…' : '▶ Run'}
+            </button>
+          </div>
           <button
-            className="btn"
-            title="Ready-made sample workflows to explore and adapt"
-            onClick={() => {
-              setShowSamples(true);
-            }}
-          >
-            Samples…
-          </button>
-          {active !== null &&
-            overlayRunId === null &&
-            activeSaveState?.status === 'error' && (
-              <button
-                className="btn"
-                onClick={() => {
-                  void retryWorkflowSave(active.id).catch((err: unknown) =>
-                    setRunMessage(errorMessage(err), 'error'),
-                  );
-                }}
-              >
-                Retry save
-              </button>
-            )}
-          <button
-            className="btn"
-            title="Draft a workflow from a goal using your own local AI CLI"
-            onClick={() => {
-              setAssistanceBase(null);
-              setPreview(null);
-              setShowGenerator(true);
-            }}
-          >
-            ✦ Generate
-          </button>
-          <button
-            className="btn"
-            disabled={active === null}
-            title="Arrange or improve this workflow using a configured local CLI; review before applying"
-            onClick={() => {
-              if (active === null) return;
-              setAssistanceBase(structuredClone(active.definition));
-              setAssistanceMode('optimize');
-              setGenRepoDir(assistanceRepoDir(active.definition));
-              setGenBranch(active.definition.defaults?.branch ?? '');
-              setGoal('');
-              setPreview(null);
-              setGenError(null);
-              setLastGenError(null);
-              setShowAdvancedProfile(true);
-              setAdvancedProfileId('');
-              setShowGenerator(true);
-            }}
-          >
-            ✦ Assist
-          </button>
-          <button className="btn" onClick={openSaveAsTemplate} disabled={active === null}>
-            Save as template
-          </button>
-          <button
-            className="btn btn-ghost"
-            onClick={openJsonEditor}
-            disabled={active === null}
-            title="View and edit this workflow as raw JSON"
-          >
-            JSON
-          </button>
-          <button
-            className="btn btn-ghost"
-            onClick={() => setTransferOpen(true)}
-            title="Export to n8n or Orchevia JSON, or import a workflow from either"
-          >
-            Import / Export
-          </button>
-          <button
-            className="btn"
-            disabled={active === null || starting}
-            onClick={() => openStartForm('dry')}
-          >
-            Dry run
-          </button>
-          <button
-            className="btn btn-ghost"
-            disabled={active === null || starting}
-            title="Edit this workflow's saved usage limits"
-            onClick={() => setLimitsOpen(true)}
-          >
-            Usage limits
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => openStartForm('live')}
-            disabled={active === null || starting}
-          >
-            {starting ? 'Starting…' : '▶ Run'}
-          </button>
-          <button
-            className="btn btn-ghost"
+            className="btn btn-ghost danger-hover"
             onClick={deleteActive}
             disabled={active === null}
             title="Delete this workflow (asks first)"

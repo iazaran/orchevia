@@ -18,6 +18,23 @@ import { prepareImportText, toN8n } from '../lib/n8n';
 
 const STARTER_TEMPLATE = 'first-workflow';
 
+function categoryTone(category: string): string {
+  switch (category) {
+    case 'getting-started':
+      return 'green';
+    case 'review':
+      return 'violet';
+    case 'bugfix':
+      return 'red';
+    case 'feature':
+      return 'blue';
+    case 'integration':
+      return 'pink';
+    default:
+      return 'amber';
+  }
+}
+
 export function TemplatesView(): React.JSX.Element {
   const builtinTemplates = useAppStore((s) => s.builtinTemplates);
   const starter = builtinTemplates.find((template) => template.id === STARTER_TEMPLATE);
@@ -224,7 +241,7 @@ export function TemplatesView(): React.JSX.Element {
     template: WorkflowTemplate,
     builtin: boolean,
   ): React.JSX.Element => (
-    <div key={template.id} className="tool-card" style={{ position: 'relative' }}>
+    <div key={template.id} className="tool-card template-card">
       {!builtin && (
         <CloseButton
           variant="card"
@@ -233,23 +250,38 @@ export function TemplatesView(): React.JSX.Element {
           onClose={() => removeUser(template.id, template.name)}
         />
       )}
-      <h3 style={{ paddingRight: builtin ? 0 : 40 }}>{template.name}</h3>
-      <div style={{ margin: '6px 0', display: 'flex', gap: 6 }}>
-        <span className="status-pill status-running">{template.category}</span>
-        <span className="status-pill status-paused">v{template.version}</span>
+      <div className="template-card-head" style={{ paddingRight: builtin ? 0 : 36 }}>
+        <h3>{template.name}</h3>
+        <div className="template-tags">
+          <span className={`tag tag-${categoryTone(template.category)}`}>
+            {template.category}
+          </span>
+          {template.workflow.nodes.some(
+            (n) => n.type === 'mcp' || n.type === 'ticket',
+          ) && (
+            <span className="tag tag-mcp" title="Needs an MCP server from Environment">
+              MCP
+            </span>
+          )}
+          <span className="tag">
+            {String(template.workflow.nodes.length)} steps · v{template.version}
+          </span>
+        </div>
       </div>
-      <p className="field-hint">{template.description}</p>
-      <div className="tool-version">{template.workflow.nodes.length} nodes</div>
+      <p className="template-desc">{template.description}</p>
       {(template.workflow.inputs?.length ?? 0) > 0 && (
-        <p className="field-hint">
-          Asks when run:{' '}
-          {template.workflow.inputs?.map((i) => i.label ?? i.name).join(' · ')}
+        <p className="template-inputs">
+          <span>Asks for</span>{' '}
+          {template.workflow.inputs?.map((i) => (
+            <code key={i.name} title={i.label ?? i.name}>
+              {i.name}
+            </code>
+          ))}
         </p>
       )}
-      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'nowrap' }}>
+      <div className="template-actions">
         <button
           className="btn btn-primary"
-          style={{ whiteSpace: 'nowrap' }}
           onClick={() => {
             openUse(template, builtin);
           }}
@@ -258,8 +290,7 @@ export function TemplatesView(): React.JSX.Element {
         </button>
         <button
           className="btn btn-ghost"
-          style={{ whiteSpace: 'nowrap' }}
-          title="Show this template as portable JSON (validated, secrets refused)"
+          title="Copy this template as Orchevia or n8n JSON (validated, secrets refused)"
           onClick={() => doExport(template, builtin)}
         >
           Export JSON

@@ -137,7 +137,9 @@ it('asks for the repository before creating a workflow from a template', async (
   });
   render(<TemplatesView />);
   const user = userEvent.setup();
-  const card = screen.getByRole('heading', { name: 'Ticket to Draft PR' }).parentElement;
+  const card = screen
+    .getByRole('heading', { name: 'Ticket to Draft PR' })
+    .closest<HTMLElement>('.template-card');
   if (!card) throw new Error('template card');
   await user.click(within(card).getByRole('button', { name: 'Use template' }));
   const dialog = await screen.findByRole('dialog', {

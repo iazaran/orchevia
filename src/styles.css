@@ -24,6 +24,10 @@
     'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-l: 0 24px 64px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   /* Controls and surfaces. Dark values keep cards, buttons and selected tabs
      distinct from the page (button borders >= 3:1 against cards and page); the
      light theme maps every token to its existing look. */
@@ -55,6 +59,8 @@
   --accent: #2f6fed;
   --accent-strong: #2059cc;
   --shadow: 0 8px 24px rgba(20, 30, 50, 0.1);
+  --shadow-s: 0 1px 2px rgba(20, 30, 50, 0.08);
+  --shadow-l: 0 24px 64px rgba(20, 30, 50, 0.18), 0 2px 8px rgba(20, 30, 50, 0.08);
   --border-card: var(--border-soft);
   --input-border: var(--border);
   --btn-bg: var(--bg-2);
@@ -199,15 +205,17 @@ textarea {
 }
 
 .brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #4c8dff, #a78bfa);
+  width: 32px;
+  height: 32px;
+  flex: none;
   display: grid;
   place-items: center;
-  font-weight: 800;
-  color: white;
-  font-size: 16px;
+  filter: drop-shadow(0 4px 10px rgba(109, 100, 246, 0.35));
+}
+
+.brand-mark svg {
+  width: 32px;
+  height: 32px;
 }
 
 .brand-name {
@@ -221,6 +229,7 @@ textarea {
 }
 
 .nav-btn {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -232,6 +241,10 @@ textarea {
   cursor: pointer;
   color: var(--text-1);
   text-align: left;
+  font-weight: 550;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .nav-btn:hover {
@@ -240,16 +253,33 @@ textarea {
 }
 
 .nav-btn.active {
-  background: var(--bg-2);
-  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-soft));
   color: var(--text-0);
+}
+
+.nav-btn.active::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
 }
 
 .nav-icon {
   width: 24px;
   min-width: 24px;
-  text-align: center;
-  font-size: 17px;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+.nav-btn:hover .nav-icon,
+.nav-btn.active .nav-icon {
+  color: var(--accent);
 }
 
 .sidebar-foot {
@@ -278,15 +308,22 @@ textarea {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 20px;
+  min-height: 60px;
+  padding: 12px 20px;
   border-bottom: 1px solid var(--border-soft);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-1) 70%, var(--bg-0)),
+    var(--bg-0)
+  );
   flex-wrap: wrap;
 }
 
 .topbar h1 {
-  font-size: 16px;
+  font-size: 17px;
   margin: 0;
-  font-weight: 650;
+  font-weight: 700;
+  letter-spacing: -0.015em;
 }
 
 .topbar-sub {
@@ -306,17 +343,35 @@ textarea {
 .btn {
   border: 1px solid var(--btn-border);
   background: var(--btn-bg);
-  border-radius: var(--radius-m);
-  padding: 7px 13px;
+  border-radius: 9px;
+  min-height: 34px;
+  padding: 6px 14px;
   cursor: pointer;
-  font-weight: 550;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
+  box-shadow: var(--shadow-s);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.1s ease;
 }
 
 .btn:hover {
   background: var(--btn-bg-hover);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn .icon {
+  flex: none;
 }
 
 .btn:disabled {
@@ -325,13 +380,22 @@ textarea {
 }
 
 .btn-primary {
-  background: var(--accent-strong);
-  border-color: transparent;
+  background: linear-gradient(180deg, #5b93ff, var(--accent-strong));
+  border-color: color-mix(in srgb, var(--accent-strong) 70%, #000);
   color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 4px 14px color-mix(in srgb, var(--accent-strong) 28%, transparent);
 }
 
 .btn-primary:hover {
-  background: var(--accent);
+  background: linear-gradient(180deg, #6fa1ff, #4a88ff);
+}
+
+[data-theme='light'] .btn-primary {
+  background: linear-gradient(180deg, #3d7cf5, var(--accent-strong));
+  border-color: var(--accent-strong);
 }
 
 .btn-danger {
@@ -343,6 +407,7 @@ textarea {
   background: transparent;
   border-color: var(--btn-ghost-border);
   color: var(--text-1);
+  box-shadow: none;
 }
 
 .btn-ghost:hover {
@@ -369,9 +434,32 @@ textarea {
 .textarea {
   background: var(--bg-1);
   border: 1px solid var(--input-border);
-  border-radius: var(--radius-m);
-  padding: 7px 10px;
+  border-radius: 9px;
+  min-height: 36px;
+  padding: 7px 11px;
   width: 100%;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: color-mix(in srgb, var(--input-border) 60%, var(--text-2));
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+  outline: none;
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: color-mix(in srgb, var(--text-2) 80%, transparent);
 }
 
 .textarea {
@@ -388,11 +476,11 @@ textarea {
 }
 
 .field-label {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 650;
   color: var(--text-1);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
 }
 
 .field-hint {
@@ -734,7 +822,7 @@ button.setup-issue:focus-visible {
 }
 
 .status-pill {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -742,6 +830,7 @@ button.setup-issue:focus-visible {
   border-radius: 999px;
   border: 1px solid var(--border);
   white-space: nowrap;
+  background: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .status-running {
@@ -786,20 +875,35 @@ button.setup-issue:focus-visible {
 /* Environment */
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
   gap: 14px;
 }
 
 .tool-card {
+  position: relative;
   border: 1px solid var(--border-card);
-  background: var(--bg-1);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-2) 35%, var(--bg-1)),
+    var(--bg-1)
+  );
   border-radius: var(--radius-l);
-  padding: 16px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-s);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.2s ease;
+}
+
+.tool-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-card));
 }
 
 .tool-card h3 {
   margin: 0 0 4px;
-  font-size: 14px;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
 }
 
 .tool-version {
@@ -951,7 +1055,8 @@ input[type='radio'] {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(5, 8, 14, 0.62);
+  backdrop-filter: blur(3px);
   display: grid;
   place-items: center;
   z-index: 50;
@@ -971,9 +1076,29 @@ input[type='radio'] {
   overflow: auto;
   border: 1px solid var(--border);
   background: var(--bg-1);
-  border-radius: var(--radius-l);
-  padding: 20px;
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  padding: 22px 24px;
+  box-shadow: var(--shadow-l);
+  animation: modal-in 0.18s var(--ease);
+}
+
+.modal-card h3:first-child,
+.modal-card > div > h3:first-child {
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-card {
+    animation: none;
+  }
 }
 
 /* Ghost button that turns red on hover (inline dismiss/close actions). */
@@ -3686,4 +3811,214 @@ details[open] > .gen-summary::after {
 }
 [data-theme='light'] .format-badge.is-n8n {
   color: #c2185b;
+}
+
+/* Template cards */
+.template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.template-card-head h3 {
+  margin-bottom: 8px;
+}
+.template-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+.tag-blue {
+  color: #8fb8ff;
+  background: rgba(79, 134, 255, 0.12);
+  border-color: rgba(79, 134, 255, 0.35);
+}
+.tag-green {
+  color: #6ee7b7;
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.35);
+}
+.tag-violet {
+  color: #c4b5fd;
+  background: rgba(167, 139, 250, 0.13);
+  border-color: rgba(167, 139, 250, 0.38);
+}
+.tag-red {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+.tag-amber {
+  color: #fcd34d;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.35);
+}
+.tag-pink,
+.tag-mcp {
+  color: #f9a8d4;
+  background: rgba(236, 72, 153, 0.12);
+  border-color: rgba(236, 72, 153, 0.35);
+}
+[data-theme='light'] .tag-blue {
+  color: #1d4ed8;
+}
+[data-theme='light'] .tag-green {
+  color: #047857;
+}
+[data-theme='light'] .tag-violet {
+  color: #6d28d9;
+}
+[data-theme='light'] .tag-red {
+  color: #b91c1c;
+}
+[data-theme='light'] .tag-amber {
+  color: #92400e;
+}
+[data-theme='light'] .tag-pink,
+[data-theme='light'] .tag-mcp {
+  color: #be185d;
+}
+.template-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-1);
+}
+.template-inputs {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.template-inputs code {
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+.template-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+/* Section headings inside views. */
+.view > h2,
+.section-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-2);
+  margin: 22px 0 12px;
+}
+.view > h2:first-child {
+  margin-top: 4px;
+}
+
+/* Collapsed rail: the active marker sits at the rail edge. */
+.app-shell.sidebar-collapsed .nav-btn.active::before {
+  left: -8px;
+}
+
+/* Theme switch in the sidebar. */
+.theme-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Thin, quiet scroll bars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-2) 40%, transparent) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-2) 35%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-2) 55%, transparent);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Toolbar groups with quiet dividers. */
+.btn-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-group + .btn-group {
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
+}
+
+/* The workflow toolbar is wide: give it the whole bar on smaller windows. */
+@media (max-width: 1720px) {
+  .workflow-topbar .topbar-sub {
+    display: none;
+  }
+}
+
+/* Run history rows: name first, then status, then time. */
+.run-list .run-row {
+  align-items: flex-start;
+  border-radius: var(--radius-l);
+  padding: 12px 14px;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.run-list .run-row:hover {
+  background: color-mix(in srgb, var(--bg-2) 60%, var(--bg-1));
+}
+.run-list .run-row.selected {
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-1));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.run-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.run-row-title {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.run-row-body .run-row-meta {
+  display: block;
 }
