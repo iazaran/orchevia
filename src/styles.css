@@ -4084,3 +4084,174 @@ details[open] > .gen-summary::after {
   margin: -4px 0 12px;
   max-width: 760px;
 }
+
+/* Environment: MCP setup picker and guide. */
+.section-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.section-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.empty-inline {
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-l);
+  color: var(--text-1);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.mcp-picker-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0 14px;
+}
+.mcp-picker-bar .input {
+  flex: 1 1 220px;
+  width: auto;
+}
+.mcp-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  gap: 10px;
+  max-height: min(56vh, 520px);
+  overflow: auto;
+  padding: 2px;
+}
+.mcp-preset-tile {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 12px;
+  border-radius: var(--radius-l);
+  border: 1px solid var(--border-card);
+  background: var(--bg-1);
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.1s ease;
+}
+.mcp-preset-tile:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-1));
+}
+.mcp-preset-tile:active {
+  transform: translateY(1px);
+}
+.mcp-preset-tile.is-blank {
+  border-style: dashed;
+}
+.mcp-tile-icon {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: var(--bg-3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+.mcp-preset-tile.is-blank .mcp-tile-icon {
+  color: var(--text-1);
+  font-size: 18px;
+}
+.mcp-tile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+.mcp-tile-text strong {
+  font-size: 13.5px;
+  color: var(--text-0);
+}
+.mcp-tile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.mcp-tile-tags .tag {
+  height: 19px;
+  font-size: 10.5px;
+  padding: 0 7px;
+}
+.mcp-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.mcp-editor-head .btn {
+  margin-left: auto;
+}
+.mcp-guide {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-l);
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-2) 45%, var(--bg-1));
+}
+.mcp-guide-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mcp-guide-summary {
+  margin: 10px 0 6px;
+  font-weight: 600;
+}
+.mcp-guide-steps {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.mcp-guide-env .log-block {
+  margin: 0;
+  color: var(--json-string);
+}
+.mcp-guide-tools {
+  margin-top: 10px;
+  font-size: 13px;
+}
+.mcp-guide-tools summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.mcp-guide-tools ul {
+  margin: 8px 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+.mcp-guide-source {
+  margin: 8px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mcp-guide-source code {
+  overflow-wrap: anywhere;
+}

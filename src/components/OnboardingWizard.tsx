@@ -314,9 +314,11 @@ export function OnboardingWizard({
             </p>
             <h3 style={{ fontSize: 14 }}>MCP connections</h3>
             <p className="field-hint">
-              Environment has setup recipes for{' '}
-              {MCP_PRESETS.map((preset) => preset.name).join(', ')}. Jira works with
-              Ticket steps. The other recipes expose tools for MCP Tool steps.
+              Environment has {String(MCP_PRESETS.length)} ready-made setups, including{' '}
+              {MCP_PRESETS.slice(0, 6)
+                .map((preset) => preset.name)
+                .join(', ')}
+              . Jira works with Ticket steps; the others give MCP Tool steps their tools.
             </p>
             <p className="field-hint">
               After setup, open <strong>Environment</strong> to register a server and run
