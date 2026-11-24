@@ -48,6 +48,7 @@ import { errorMessage } from '../lib/errors';
 import { Segmented } from './Segmented';
 import { JsonEditor, JsonView } from './JsonEditor';
 import { WorkflowTransfer } from './WorkflowTransfer';
+import { Icon } from './Icon';
 
 function explainGenerationError(raw: string): string {
   if (raw.includes('Ticket nodes need a ticketKey')) {
@@ -1014,12 +1015,13 @@ export function WorkflowsView(): React.JSX.Element {
             </button>
           </div>
           <button
-            className="btn btn-ghost danger-hover"
+            className="btn btn-ghost danger-hover btn-icon"
             onClick={deleteActive}
             disabled={active === null}
+            aria-label="Delete"
             title="Delete this workflow (asks first)"
           >
-            Delete
+            <Icon name="trash" size={17} />
           </button>
         </fieldset>
       </div>

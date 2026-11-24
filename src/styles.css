@@ -4263,3 +4263,19 @@ details[open] > .gen-summary::after {
 [data-theme='light'] .tag-cyan {
   color: #0e7490;
 }
+
+/* The workflow toolbar holds many actions: keep them compact on one row. */
+.workflow-topbar .btn {
+  min-height: 32px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+}
+.workflow-topbar .btn-group {
+  gap: 5px;
+}
+.workflow-topbar .btn-group + .btn-group {
+  padding-left: 8px;
+}
+.btn.btn-icon {
+  padding-inline: 8px;
+}
