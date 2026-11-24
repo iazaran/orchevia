@@ -48,9 +48,15 @@ keeps your Claude Code and Codex configuration in charge, and a refused tool the
 fails the step. If you skip it, the first run or template asks once. See
 [tool permissions](./agents.md#tool-permissions).
 
-Open **Environment → MCP connections** for Jira, Slack, AWS Knowledge, Google Docs
-and Gmail recipes. Follow [integrations](./integrations.md#connection-recipes) for
-installation and sign-in.
+More CLIs (GitHub Copilot CLI, Cursor CLI, Qwen Code, Amp, Aider, Goose and Kiro
+CLI) set up in one click under **Agents → More coding CLIs**.
+
+Open **Environment → + New MCP server** and pick one of 22 setups, such as Google
+Workspace (Gmail, Drive, Docs, Calendar and Sheets), Microsoft 365, Slack, Notion,
+Jira, GitHub, Linear or Sentry. Each one shows how to sign in and which variables
+to export, and checks that Orchevia can see them. Follow
+[integrations](./integrations.md#connection-recipes) for details. Try **Templates →
+Summarize a Web Page** with the Fetch setup: it needs no account.
 
 ## Make your first development flow
 
@@ -109,9 +115,14 @@ Unsupported integration operations may need Command nodes or manual steps.
 - Use **Simple JSON** for readable node keys and portable profile selections.
   **Advanced JSON** preserves the full runtime definition. Importing and editing
   do not execute a workflow. Use **Arrange** when the graph grows.
-- In **Playbooks**, save project knowledge with test commands, conventions, and
-  review choices. Suggestions require acceptance. Promote a command from a
-  successful run explicitly; full logs are not copied into the playbook.
+- In **Playbooks**, pick a repository and choose **Detect commands**: Orchevia
+  reads package.json, Cargo.toml, Makefile, go.mod, pyproject.toml and similar
+  files to suggest test, lint and build commands. Review them, add conventions and
+  reviewers, and **Save playbook**. Generate and Assist then use your real
+  commands. Suggestions require acceptance. Promote a command from a successful
+  run explicitly; full logs are not copied into the playbook.
+- **Import / Export** in Workflows moves a workflow to or from **n8n**. See
+  [n8n import and export](./integrations.md#n8n-import-and-export).
 - Add **Automations** only after a manual run works. Schedules run locally while
   Orchevia stays open; opt into background mode to keep them active with the
   window hidden. Review watchers' repository scope and trust permissions.

@@ -95,23 +95,96 @@ data or credentials.
 
 ## Connection recipes
 
-Open **Environment → MCP connections**, choose a recipe, and review its command
-and arguments. Install and authenticate the listed tool outside Orchevia. Save
-the server and choose **Check server**. Then select the server and one of its
-listed tools in an **MCP Tool** step. Jira also works in a **Ticket** step.
+Open **Environment → + New MCP server** and pick a setup, or start from a blank
+server. A setup fills in the command and arguments, lists how to sign in, writes
+the `export` lines for your shell profile, checks which of those variables the
+running app can see (names only, never values), and lists tools you can call.
+Save the server, choose **Check server**, then select the server and one of its
+tools in an **MCP Tool** step. Jira also works in a **Ticket** step.
 
-| Recipe        | Setup                                                                                                                                                                                                                          | Tools exposed by the recipe                           |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| Jira          | Install `uv` and configure [mcp-atlassian](https://github.com/sooperset/mcp-atlassian/blob/main/docs/configuration.mdx) in the launch environment.                                                                             | Jira and any other services you enable in the server. |
-| Slack         | Install [`slack-mcp-server`](https://github.com/korotovsky/slack-mcp-server) and set `SLACK_MCP_XOXB_TOKEN` outside Orchevia. Use a workspace-approved bot and invite it to the channels it needs.                             | Channel list, history and replies.                    |
-| AWS Knowledge | Install `uv` for the documented [AWS Knowledge stdio proxy](https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server).                                                                                                   | Public AWS documentation, without account access.     |
-| Google Docs   | Install and authenticate [`gws`](https://github.com/googleworkspace/cli), then install [`gws-mcp-server`](https://github.com/conorbronsdon/gws-mcp-server). Enable the Docs and Drive APIs and grant the read scopes you need. | Read-only Docs and Drive tools.                       |
-| Gmail         | Use the same `gws` and `gws-mcp-server` setup. Enable the Gmail API and grant Gmail read access.                                                                                                                               | Read-only Gmail tools.                                |
+Credentials never enter Orchevia: servers read them from the environment the app
+was started from. Remote services run through
+[`mcp-remote`](https://github.com/geelen/mcp-remote), which signs in through your
+browser and keeps its tokens in `~/.mcp-auth`; a header such as
+`Authorization:Bearer ${STRIPE_AGENT_API_KEY}` holds only the variable name, and
+`mcp-remote` expands it. Setups with a placeholder (a folder, a repository or a
+project reference) cannot be saved until you replace it.
+
+| Category       | Setup              | Command                                                                                                   | Sign-in                                                |
+| -------------- | ------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Work & docs    | Google Workspace   | `uvx workspace-mcp --tools gmail drive calendar docs sheets --read-only`                                  | `GOOGLE_OAUTH_CLIENT_ID`/`SECRET`, `USER_GOOGLE_EMAIL` |
+|                | Microsoft 365      | `npx -y @softeria/ms-365-mcp-server --read-only`                                                          | One-time `--login` in a terminal                       |
+|                | Slack              | `npx -y slack-mcp-server@latest --transport stdio --enabled-tools …`                                      | `SLACK_MCP_XOXP_TOKEN` or `SLACK_MCP_XOXB_TOKEN`       |
+|                | Notion             | `npx -y @notionhq/notion-mcp-server`                                                                      | `NOTION_TOKEN`                                         |
+| Code & tickets | Jira & Confluence  | `uvx mcp-atlassian --read-only`                                                                           | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`          |
+|                | GitHub             | `docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server stdio --read-only …` | `GITHUB_PERSONAL_ACCESS_TOKEN`                         |
+|                | GitLab             | `npx -y mcp-remote https://gitlab.com/api/v4/mcp`                                                         | Browser                                                |
+|                | Linear             | `npx -y mcp-remote https://mcp.linear.app/mcp/readonly`                                                   | Browser                                                |
+|                | Sentry             | `npx -y @sentry/mcp-server@latest --skills=inspect`                                                       | `SENTRY_AUTH_TOKEN`                                    |
+| Web & research | Fetch web pages    | `uvx mcp-server-fetch`                                                                                    | None                                                   |
+|                | AWS Knowledge      | `uvx fastmcp run https://knowledge-mcp.global.api.aws`                                                    | None                                                   |
+|                | Context7           | `npx -y @upstash/context7-mcp`                                                                            | Optional `CONTEXT7_API_KEY`                            |
+|                | Brave Search       | `npx -y @brave/brave-search-mcp-server --transport stdio`                                                 | `BRAVE_API_KEY`                                        |
+|                | Cloudflare Docs    | `npx -y mcp-remote https://docs.mcp.cloudflare.com/mcp`                                                   | None                                                   |
+|                | Playwright browser | `npx -y @playwright/mcp@latest --headless --isolated`                                                     | None                                                   |
+| Data & cloud   | Supabase           | `npx -y @supabase/mcp-server-supabase@latest --read-only --project-ref=…`                                 | `SUPABASE_ACCESS_TOKEN`                                |
+|                | PostgreSQL         | `uvx postgres-mcp --access-mode=restricted`                                                               | `DATABASE_URI`                                         |
+|                | Stripe             | `npx -y mcp-remote https://mcp.stripe.com --header Authorization:Bearer ${STRIPE_AGENT_API_KEY}`          | `STRIPE_AGENT_API_KEY`                                 |
+| Local          | Filesystem         | `npx -y @modelcontextprotocol/server-filesystem --read-only /path/to/folder`                              | None                                                   |
+|                | Git                | `uvx mcp-server-git --repository /path/to/repo`                                                           | None                                                   |
+|                | Memory graph       | `npx -y @modelcontextprotocol/server-memory`                                                              | Optional `MEMORY_FILE_PATH`                            |
+|                | Figma              | `npx -y mcp-remote http://127.0.0.1:3845/mcp`                                                             | Figma desktop app with Dev Mode                        |
+
+The commands, flags, variables and tool names were checked against each project's
+README or registry entry in November 2026. The earlier Google Docs and Gmail
+recipes became the single Google Workspace setup; servers you already saved keep
+working. If you use the `gws` CLI, `npx -y gws-mcp-server --read-only --services
+docs,drive,gmail` still works as a blank server.
 
 Use the provider's own setup for agent-managed MCP, such as the [Slack MCP
 server for coding agents](https://docs.slack.dev/ai/slack-mcp-server/connect-to-harnesses/)
 or [Google Workspace remote MCP](https://developers.google.com/workspace/guides/configure-mcp-servers).
 Environment registers the local servers used by workflow nodes.
+
+### MCP templates
+
+Three templates call an MCP tool and hand its result to a planning agent as
+data. They need no repository; the Use dialog names the setup each expects.
+
+| Template             | MCP tool                                        | Setup           |
+| -------------------- | ----------------------------------------------- | --------------- |
+| Summarize a Web Page | `fetch` (`url`, `max_length`)                   | Fetch web pages |
+| Answer from AWS Docs | `aws___search_documentation` (`search_phrase`)  | AWS Knowledge   |
+| Slack Channel Digest | `conversations_history` (`channel_id`, `limit`) | Slack           |
+
+## n8n import and export
+
+Workflows → **Import / Export** exports the open workflow as n8n workflow JSON or
+Orchevia Simple JSON, and imports either as a new workflow (laid out
+automatically). Templates → **Import JSON…** accepts n8n JSON too, and **Export
+JSON** offers both formats. Paste exported n8n JSON onto an n8n canvas (Ctrl+V or
+⌘V), or save it as a `.json` file and use _Import from File_.
+
+| Orchevia step        | n8n node                                      | Notes                                                                        |
+| -------------------- | --------------------------------------------- | ---------------------------------------------------------------------------- |
+| Start and run inputs | `manualTrigger` and a “Workflow inputs” `set` | `{{input.x}}` becomes an expression on the inputs node.                      |
+| Command, Git, GitHub | `executeCommand`                              | The same `git` and `gh` commands; a working folder becomes `cd <dir> &&`.    |
+| AI agent             | `executeCommand`                              | Calls the profile's CLI (`claude -p`, `codex exec`, `gemini --prompt`, …).   |
+| Condition            | `if`                                          | True and false outputs keep their branches.                                  |
+| Failure edge         | error output                                  | The node uses “continue (using error output)”.                               |
+| Approval             | `wait`                                        | Resumes on its webhook; swap in a “send and wait” node to approve from chat. |
+| Ticket               | `jira` (issue → get)                          | Connect Jira credentials in n8n.                                             |
+| MCP tool             | `noOp` placeholder                            | n8n calls MCP only from an AI Agent; the note keeps the tool and arguments.  |
+
+Import maps triggers to Start (schedule and webhook triggers get a note),
+`executeCommand` to Command (or back to an Agent step when it calls a known
+agent CLI), `httpRequest` to a `curl` Command without headers or credentials,
+`if` to Condition, `wait`, `form` and “send and wait” nodes to Approval, Jira
+“get issue” to Ticket, and AI Agent, LLM chain and model nodes to an Agent step
+for your Implementation profile. Set nodes become run inputs with their values as
+defaults. Code, merge and other data-shaping nodes are left out and their
+neighbours joined. Every conversion lists what changed, and an n8n expression
+Orchevia cannot read is kept as visible text for you to replace.
 
 ## Example: ticket-to-draft-PR
 

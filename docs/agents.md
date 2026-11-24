@@ -25,6 +25,38 @@ in Orchevia itself.
 | OpenCode               | `opencode`      | [Install](https://opencode.ai/docs/) and use `/connect` to configure a model provider.                                                             |
 | Custom CLI             | Your executable | Set its full path and list any arguments before the prompt.                                                                                        |
 
+**Agents** lists each supported CLI with its install command (or the version it
+found) and a **Create profile** button. Install commands checked in November 2026:
+`curl -fsSL https://claude.ai/install.sh | bash`, `npm install -g @openai/codex`,
+`curl -fsSL https://dev.meta.ai/install.sh | bash`,
+`curl -fsSL https://antigravity.google/cli/install.sh | bash`,
+`npm install -g @google/gemini-cli` and `npm install -g opencode-ai`. Gemini CLI
+stops headless runs in folders it does not trust: open `gemini` in the repository
+once and trust it.
+
+### More CLIs through the Custom CLI adapter
+
+**Agents → More coding CLIs** prefills a Custom CLI profile for each of these.
+Orchevia passes the extra arguments, then the prompt as the last argument; review
+the profile, save it and use **Check setup**.
+
+| CLI                | Program    | Arguments before the prompt                | Notes                                                            |
+| ------------------ | ---------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| GitHub Copilot CLI | `copilot`  | `-s -p`                                    | Add `--allow-all-tools` to let it act without asking.            |
+| Cursor CLI         | `agent`    | `-p --output-format text`                  | Print mode can edit files. Older installs use `cursor-agent`.    |
+| Qwen Code          | `qwen`     | `-p`                                       | Add `--approval-mode yolo` to let it act without asking.         |
+| Amp                | `amp`      | `-x`                                       | Execute mode.                                                    |
+| Aider              | `aider`    | `--no-auto-commits --yes-always --message` | Commits stay with the workflow.                                  |
+| Goose              | `goose`    | `run --no-session -t`                      | Leave Model empty; choose it with `goose configure`.             |
+| Kiro CLI           | `kiro-cli` | `chat --no-interactive`                    | Tools it would ask about are refused unless `--trust-all-tools`. |
+
+A Custom CLI adds `--model <m>` before the extra arguments when Model is set, so
+leave Model empty for CLIs whose model flag belongs after a subcommand (Goose,
+Kiro CLI).
+
+Every CLI starts with `PWD` set to the step's working folder. OpenCode reads its
+project folder from `PWD`; before 0.3.1 it could run in Orchevia's own folder.
+
 Muse Code, both Google CLIs, and OpenCode run headlessly with text output,
 their own permissions, and a fresh invocation for each step. The model is
 optional. Leave it blank to use the CLI default. Antigravity also supports
