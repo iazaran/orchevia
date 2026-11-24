@@ -98,37 +98,40 @@ const KIND_LABEL: Record<WorkflowNode['type'], string> = {
   end: 'End',
 };
 
-const CLI_PROMPT: Record<AdapterKind, (prompt: string, model?: string) => string> = {
-  claude: (p, m) => `claude -p ${m ? `--model ${shellQuote(m)} ` : ''}${shellQuote(p)}`,
-  codex: (p, m) => `codex exec ${m ? `--model ${shellQuote(m)} ` : ''}${shellQuote(p)}`,
-  muse: (p, m) => `muse exec ${m ? `--model ${shellQuote(m)} ` : ''}-- ${shellQuote(p)}`,
-  gemini: (p, m) =>
-    `gemini ${m ? `--model ${shellQuote(m)} ` : ''}--prompt ${shellQuote(p)}`,
-  antigravity: (p, m) =>
-    `agy ${m ? `--model ${shellQuote(m)} ` : ''}--print ${shellQuote(p)}`,
-  opencode: (p, m) =>
-    `opencode run ${m ? `--model ${shellQuote(m)} ` : ''}-- ${shellQuote(p)}`,
-  custom: (p) => `your-cli ${shellQuote(p)}`,
+/** Quotes one shell word; values inside it are escaped for the quotes. */
+type Quote = (arg: string) => string;
+
+const CLI_PROMPT: Record<
+  AdapterKind,
+  (prompt: string, model: string | undefined, q: Quote) => string
+> = {
+  claude: (p, m, q) => `claude -p ${m ? `--model ${q(m)} ` : ''}${q(p)}`,
+  codex: (p, m, q) => `codex exec ${m ? `--model ${q(m)} ` : ''}${q(p)}`,
+  muse: (p, m, q) => `muse exec ${m ? `--model ${q(m)} ` : ''}-- ${q(p)}`,
+  gemini: (p, m, q) => `gemini ${m ? `--model ${q(m)} ` : ''}--prompt ${q(p)}`,
+  antigravity: (p, m, q) => `agy ${m ? `--model ${q(m)} ` : ''}--print ${q(p)}`,
+  opencode: (p, m, q) => `opencode run ${m ? `--model ${q(m)} ` : ''}-- ${q(p)}`,
+  custom: (p, _m, q) => `your-cli ${q(p)}`,
 };
 
-function gitCommand(op: GitOp): string {
+function gitCommand(op: GitOp, q: Quote): string {
   switch (op.op) {
     case 'status':
       return 'git status --short --branch';
     case 'diffSummary':
       return 'git diff --stat';
     case 'branchCreate':
-      return `git switch -c ${shellQuote(op.name)}`;
+      return `git switch -c ${q(op.name)}`;
     case 'checkout':
-      return `git switch ${shellQuote(op.name)}`;
+      return `git switch ${q(op.name)}`;
     case 'stage':
-      return `git add -- ${(op.paths ?? ['.']).map(shellQuote).join(' ') || '.'}`;
+      return `git add -- ${(op.paths ?? ['.']).map(q).join(' ') || '.'}`;
     case 'commit':
-      return `git commit -m ${shellQuote(op.message)}`;
+      return `git commit -m ${q(op.message)}`;
     case 'worktreeAdd':
-      return `git worktree add ${op.branch ? `-b ${shellQuote(op.branch)} ` : ''}${shellQuote(op.path)}`;
+      return `git worktree add ${op.branch ? `-b ${q(op.branch)} ` : ''}${q(op.path)}`;
     case 'worktreeRemove':
-      return `git worktree remove ${shellQuote(op.path)}`;
+      return `git worktree remove ${q(op.path)}`;
     case 'worktreeList':
       return 'git worktree list';
     case 'remotes':
@@ -136,12 +139,12 @@ function gitCommand(op: GitOp): string {
   }
 }
 
-function githubCommand(op: GitHubOp): string {
+function githubCommand(op: GitHubOp, q: Quote): string {
   switch (op.op) {
     case 'prStatus':
       return 'gh pr status';
     case 'listPrs':
-      return `gh pr list${op.state ? ` --state ${shellQuote(op.state)}` : ''}`;
+      return `gh pr list${op.state ? ` --state ${q(op.state)}` : ''}`;
     case 'prDetails':
       return `gh pr view ${String(op.number)}`;
     case 'prFiles':
@@ -151,17 +154,30 @@ function githubCommand(op: GitHubOp): string {
     case 'createPr':
       return [
         'gh pr create',
-        `--title ${shellQuote(op.title)}`,
-        `--body ${shellQuote(op.body ?? '')}`,
-        `--base ${shellQuote(op.base)}`,
-        `--head ${shellQuote(op.head)}`,
+        `--title ${q(op.title)}`,
+        `--body ${q(op.body ?? '')}`,
+        `--base ${q(op.base)}`,
+        `--head ${q(op.head)}`,
         op.draft === true ? '--draft' : '',
       ]
         .filter(Boolean)
         .join(' ');
     case 'postComment':
-      return `gh pr comment ${String(op.number)} --body ${shellQuote(op.body)}`;
+      return `gh pr comment ${String(op.number)} --body ${q(op.body)}`;
   }
+}
+
+const REF = /\{\{\s*([^{}]+?)\s*\}\}/g;
+
+/**
+ * An n8n expression that yields `path` as text with every single quote
+ * written as `'\''`, so the value stays one word inside single quotes. No
+ * literal quote appears in the expression itself.
+ */
+function inQuotes(path: string): string {
+  // `'` is a single quote inside the n8n expression's JS strings.
+  const quote = '\\u0027';
+  return `String(${path} ?? "").replaceAll("${quote}", "${quote}\\\\${quote}${quote}")`;
 }
 
 const OP_TO_N8N: Record<ConditionOp, { type: string; operation: string }> = {
@@ -196,52 +212,85 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
   );
   const kindOf = new Map(workflow.nodes.map((n) => [n.id, n.type]));
 
-  /** Orchevia `{{…}}` references → n8n expressions. */
-  const expr = (text: string): string => {
-    const state = { changed: false };
-    const out = text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (whole, ref: string) => {
-      const input = /^input\.([\w-]+)$/.exec(ref);
-      if (input !== null) {
-        state.changed = true;
-        return `{{ $(${JSON.stringify(INPUTS_NODE)}).item.json[${JSON.stringify(input[1])}] }}`;
+  /** The n8n expression path for an Orchevia reference, or null. */
+  const pathOf = (ref: string): string | null => {
+    const input = /^input\.([\w-]+)$/.exec(ref);
+    if (input !== null)
+      return `$(${JSON.stringify(INPUTS_NODE)}).item.json[${JSON.stringify(input[1])}]`;
+    const node = /^node\.([\w-]+)(?:\.(output|exitCode|stdout|stderr|severity))?$/.exec(
+      ref,
+    );
+    if (node !== null) {
+      const target = names.get(node[1] ?? '');
+      if (target === undefined) return null;
+      if (node[2] === 'severity')
+        notes.add(
+          'Review severity has no n8n field; the reviewer output is used instead.',
+        );
+      const field =
+        node[2] === 'exitCode' ? 'exitCode' : node[2] === 'stderr' ? 'stderr' : 'stdout';
+      return `$(${JSON.stringify(target)}).item.json.${field}`;
+    }
+    const ticket = /^ticket\.(key|title|description|acceptanceCriteria)$/.exec(ref);
+    if (ticket !== null) {
+      const ticketNode = workflow.nodes.find((n) => n.type === 'ticket');
+      const target = ticketNode === undefined ? undefined : names.get(ticketNode.id);
+      if (target === undefined) return null;
+      const path =
+        ticket[1] === 'key'
+          ? 'key'
+          : ticket[1] === 'title'
+            ? 'fields.summary'
+            : 'fields.description';
+      return `$(${JSON.stringify(target)}).item.json.${path}`;
+    }
+    return null;
+  };
+  const unknownRef = (ref: string): string => {
+    notes.add(
+      `The reference {{${ref}}} has no n8n equivalent and was kept as the text [[${ref}]].`,
+    );
+    return `[[${ref}]]`;
+  };
+
+  /**
+   * One n8n parameter. `q` quotes a shell word and escapes values inside it;
+   * `raw` inserts values as they are (a shell script, a field); `done` adds
+   * the `=` that turns on n8n expressions when a value was inserted.
+   */
+  const param = (): {
+    q: Quote;
+    raw: (text: string) => string;
+    done: (text: string) => string;
+  } => {
+    let expression = false;
+    const q: Quote = (arg) => {
+      if (!arg.includes('{{')) return shellQuote(arg);
+      let out = '';
+      let last = 0;
+      for (const match of arg.matchAll(REF)) {
+        out += arg.slice(last, match.index).replaceAll("'", `'\\''`);
+        const ref = (match[1] ?? '').trim();
+        const path = pathOf(ref);
+        if (path === null) out += unknownRef(ref).replaceAll("'", `'\\''`);
+        else {
+          expression = true;
+          out += `{{ ${inQuotes(path)} }}`;
+        }
+        last = match.index + match[0].length;
       }
-      const node = /^node\.([\w-]+)(?:\.(output|exitCode|stdout|stderr|severity))?$/.exec(
-        ref,
-      );
-      if (node !== null) {
-        const target = names.get(node[1] ?? '');
-        if (target === undefined) return whole;
-        state.changed = true;
-        const field =
-          node[2] === 'exitCode'
-            ? 'exitCode'
-            : node[2] === 'stderr'
-              ? 'stderr'
-              : 'stdout';
-        if (node[2] === 'severity')
-          notes.add(
-            'Review severity has no n8n field; the reviewer output is used instead.',
-          );
-        return `{{ $(${JSON.stringify(target)}).item.json.${field} }}`;
-      }
-      const ticket = /^ticket\.(key|title|description|acceptanceCriteria)$/.exec(ref);
-      if (ticket !== null) {
-        const ticketNode = workflow.nodes.find((n) => n.type === 'ticket');
-        const target = ticketNode === undefined ? undefined : names.get(ticketNode.id);
-        if (target === undefined) return whole;
-        state.changed = true;
-        const path =
-          ticket[1] === 'key'
-            ? 'key'
-            : ticket[1] === 'title'
-              ? 'fields.summary'
-              : 'fields.description';
-        return `{{ $(${JSON.stringify(target)}).item.json.${path} }}`;
-      }
-      notes.add(`The reference {{${ref}}} has no n8n equivalent and was kept as text.`);
-      return whole;
-    });
-    return state.changed ? `=${out}` : out;
+      out += arg.slice(last).replaceAll("'", `'\\''`);
+      return `'${out}'`;
+    };
+    const raw = (text: string): string =>
+      text.replace(REF, (_whole, inner: string) => {
+        const ref = inner.trim();
+        const path = pathOf(ref);
+        if (path === null) return unknownRef(ref);
+        expression = true;
+        return `{{ ${path} }}`;
+      });
+    return { q, raw, done: (text) => (expression ? `=${text}` : text) };
   };
 
   const cdPrefix = (config: NodeConfig): string => {
@@ -272,9 +321,18 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
     type: 'n8n-nodes-base.executeCommand',
     typeVersion: 1,
     position: position(node),
-    parameters: { command: expr(command) },
+    parameters: { command },
     ...(note === undefined ? {} : { notes: note, notesInFlow: true }),
-    ...(failureSources.has(node.id) ? { onError: 'continueErrorOutput' } : {}),
+  });
+  const placeholder = (node: WorkflowNode, note: string): N8nNode => ({
+    id: stableUuid(`${workflow.id}:${node.id}`),
+    name: names.get(node.id) ?? node.id,
+    type: 'n8n-nodes-base.noOp',
+    typeVersion: 1,
+    position: position(node),
+    parameters: {},
+    notes: note,
+    notesInFlow: true,
   });
 
   for (const node of workflow.nodes) {
@@ -305,17 +363,19 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
       case 'command': {
         const args = c.args ?? [];
         const exe = (c.executable ?? '').trim();
+        const p = param();
         let command: string;
         if (c.scriptFile !== undefined)
-          command = [exe || 'bash', c.scriptFile, ...args].map(shellQuote).join(' ');
+          command = [exe || 'bash', c.scriptFile, ...args].map(p.q).join(' ');
         else if (
           ['sh', 'bash', 'zsh'].includes(exe) &&
           args[0] === '-c' &&
-          args.length >= 2
+          args.length === 2
         )
-          command = args[1] ?? '';
-        else command = [exe, ...args].map(shellQuote).join(' ');
-        nodes.push(execute(node, cdPrefix(c) + command));
+          // The step's own shell script: values go in as they do in Orchevia.
+          command = p.raw(args[1] ?? '');
+        else command = [exe, ...args].map(p.q).join(' ');
+        nodes.push(execute(node, p.done(cdPrefix(c) + command)));
         break;
       }
       case 'agent': {
@@ -328,15 +388,16 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
           )
           .join('');
         const prompt = (c.prompt ?? '') + context;
+        const p = param();
         nodes.push(
           execute(
             node,
-            cdPrefix(c) + CLI_PROMPT[adapter](prompt, profile?.model),
+            p.done(cdPrefix(c) + CLI_PROMPT[adapter](prompt, profile?.model, p.q)),
             `AI agent step (${profile?.name ?? c.agentRole ?? 'default profile'}). Runs the local CLI; n8n must run where it is installed and signed in.`,
           ),
         );
         notes.add(
-          'AI agent steps call your local CLI through Execute Command nodes, so n8n must run on a machine where that CLI is installed and signed in.',
+          'AI agent steps call your local CLI through Execute Command nodes, so n8n must run on a machine where that CLI is installed and signed in. Permission levels and sessions stay with the CLI’s own settings.',
         );
         if (profile?.adapter === 'custom')
           notes.add(
@@ -344,14 +405,24 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
           );
         break;
       }
-      case 'git':
-        if (c.gitOp !== undefined)
-          nodes.push(execute(node, cdPrefix(c) + gitCommand(c.gitOp)));
+      case 'git': {
+        const p = param();
+        nodes.push(
+          c.gitOp === undefined
+            ? placeholder(node, 'Git step without an operation.')
+            : execute(node, p.done(cdPrefix(c) + gitCommand(c.gitOp, p.q))),
+        );
         break;
-      case 'github':
-        if (c.githubOp !== undefined)
-          nodes.push(execute(node, cdPrefix(c) + githubCommand(c.githubOp)));
+      }
+      case 'github': {
+        const p = param();
+        nodes.push(
+          c.githubOp === undefined
+            ? placeholder(node, 'GitHub step without an operation.')
+            : execute(node, p.done(cdPrefix(c) + githubCommand(c.githubOp, p.q))),
+        );
         break;
+      }
       case 'approval':
         nodes.push({
           id,
@@ -383,12 +454,15 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
                 typeValidation: 'loose',
                 version: 2,
               },
-              conditions: clauses.map((clause, index) => ({
-                id: stableUuid(`${workflow.id}:${node.id}:${String(index)}`),
-                leftValue: expr(`{{${clause.left}}}`),
-                rightValue: clause.right,
-                operator: OP_TO_N8N[clause.op],
-              })),
+              conditions: clauses.map((clause, index) => {
+                const p = param();
+                return {
+                  id: stableUuid(`${workflow.id}:${node.id}:${String(index)}`),
+                  leftValue: p.done(p.raw(`{{${clause.left}}}`)),
+                  rightValue: clause.right,
+                  operator: OP_TO_N8N[clause.op],
+                };
+              }),
               combinator: c.condition?.logic ?? 'and',
             },
             looseTypeValidation: true,
@@ -407,7 +481,7 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
           parameters: {
             resource: 'issue',
             operation: 'get',
-            issueKey: expr(c.ticketKey ?? ''),
+            issueKey: ((p) => p.done(p.raw(c.ticketKey ?? '')))(param()),
             additionalFields: {},
           },
         });
@@ -465,7 +539,25 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
     );
   }
 
-  const connections: N8nWorkflow['connections'] = {};
+  for (const id of failureSources) {
+    const failing = nodes.find((n) => n.name === names.get(id));
+    if (failing !== undefined) failing.onError = 'continueErrorOutput';
+  }
+  if (
+    workflow.nodes.some(
+      (n) =>
+        n.config.timeoutSecs !== undefined ||
+        n.config.retry !== undefined ||
+        (n.config.maxVisits ?? 1) > 1,
+    ) ||
+    workflow.limits !== undefined
+  )
+    notes.add(
+      'Timeouts, retries, loop limits and usage limits are not exported; set the ones you need on the n8n nodes.',
+    );
+
+  // No prototype: a step may be named "__proto__" or "constructor".
+  const connections = Object.create(null) as N8nWorkflow['connections'];
   const link = (from: string, output: number, to: string): void => {
     const main = (connections[from] ??= { main: [] }).main ?? [];
     while (main.length <= output) main.push([]);
@@ -519,6 +611,7 @@ export function isN8nWorkflow(value: unknown): boolean {
 }
 
 const TRIGGER = /trigger$/i;
+/** Nodes that only reshape n8n items: left out, their neighbours joined. */
 const PASS_THROUGH = new Set([
   'n8n-nodes-base.noOp',
   'n8n-nodes-base.set',
@@ -527,7 +620,6 @@ const PASS_THROUGH = new Set([
   'n8n-nodes-base.itemLists',
   'n8n-nodes-base.splitOut',
   'n8n-nodes-base.aggregate',
-  'n8n-nodes-base.filter',
   'n8n-nodes-base.sort',
   'n8n-nodes-base.limit',
   'n8n-nodes-base.removeDuplicates',
@@ -592,17 +684,74 @@ export function fromN8n(value: unknown): N8nImport {
     disabled: n.disabled === true,
     onError: stringParam(n.onError),
     notes: stringParam(n.notes),
-    position: Array.isArray(n.position) ? (n.position as unknown[]) : [],
   }));
   const byName = new Map(n8nNodes.map((n) => [n.name, n]));
+
+  // Main connections, in output order.
+  type Link = { to: string; output: number };
+  const out = new Map<string, Link[]>();
+  for (const [from, outputs] of Object.entries(raw.connections)) {
+    if (!isRecord(outputs) || !Array.isArray(outputs.main)) continue;
+    (outputs.main as unknown[]).forEach((list, output) => {
+      if (!Array.isArray(list)) return;
+      for (const target of list as unknown[])
+        if (isRecord(target))
+          out.set(from, [
+            ...(out.get(from) ?? []),
+            { to: stringParam(target.node), output },
+          ]);
+    });
+  }
+  const predecessors = new Map<string, string[]>();
+  for (const [from, links] of out)
+    for (const link of links)
+      predecessors.set(link.to, [...(predecessors.get(link.to) ?? []), from]);
+
+  // What each node becomes: the Start step, a step, a pass-through, or nothing.
+  type Role = 'trigger' | 'step' | 'pass' | 'skip';
+  const roles = new Map<string, Role>();
+  for (const n of n8nNodes) {
+    let role: Role = 'step';
+    if (n.type === 'n8n-nodes-base.stickyNote' || AI_SUBNODE.test(n.type)) role = 'skip';
+    else if (n.disabled) {
+      // n8n passes items through a disabled node unchanged.
+      role = 'pass';
+      note(`Disabled node "${n.name}" was left out.`);
+    } else if (
+      TRIGGER.test(n.type) ||
+      n.type === 'n8n-nodes-base.webhook' ||
+      n.type === 'n8n-nodes-base.cron'
+    )
+      role = 'trigger';
+    else if (PASS_THROUGH.has(n.type)) role = 'pass';
+    roles.set(n.name, role);
+  }
+  const triggers = new Set(
+    n8nNodes.filter((n) => roles.get(n.name) === 'trigger').map((n) => n.name),
+  );
+  // n8n never runs a node no trigger reaches; neither should the import.
+  if (triggers.size > 0) {
+    const reached = new Set<string>(triggers);
+    const queue = [...triggers];
+    for (let next = queue.shift(); next !== undefined; next = queue.shift())
+      for (const link of out.get(next) ?? [])
+        if (!reached.has(link.to)) {
+          reached.add(link.to);
+          queue.push(link.to);
+        }
+    for (const n of n8nNodes)
+      if (roles.get(n.name) === 'step' && !reached.has(n.name)) {
+        roles.set(n.name, 'skip');
+        note(`"${n.name}" had no input in n8n, so it never ran there; it was left out.`);
+      }
+  }
 
   // Keys: readable, unique, valid (`^[a-zA-Z_][\w-]{0,63}$`).
   const keys = new Map<string, string>();
   const usedKeys = new Set<string>(['start', 'end']);
-  const keyFor = (name: string): string => {
-    const existing = keys.get(name);
-    if (existing !== undefined) return existing;
-    let base = name
+  for (const n of n8nNodes) {
+    if (roles.get(n.name) !== 'step' || keys.has(n.name)) continue;
+    let base = n.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '')
@@ -610,16 +759,10 @@ export function fromN8n(value: unknown): N8nImport {
     if (!/^[a-z_]/.test(base)) base = `step_${base}`;
     if (base === '' || base === 'step_') base = 'step';
     let key = base;
-    for (let n = 2; usedKeys.has(key); n++) key = `${base}_${String(n)}`;
+    for (let i = 2; usedKeys.has(key); i++) key = `${base}_${String(i)}`;
     usedKeys.add(key);
-    keys.set(name, key);
-    return key;
-  };
-
-  const triggers = new Set<string>();
-  const kept = new Map<string, DeveloperNode>();
-  const inputs = new Set<string>();
-  const outputIsCondition = new Set<string>();
+    keys.set(n.name, key);
+  }
 
   // Values a Set node assigns become run input defaults when steps read them.
   const setValues = new Map<string, Map<string, string>>();
@@ -629,13 +772,11 @@ export function fromN8n(value: unknown): N8nImport {
     const list = isRecord(outer) ? outer.assignments : undefined;
     const values = new Map<string, string>();
     if (Array.isArray(list))
-      for (const item of list as unknown[]) {
-        if (!isRecord(item)) continue;
-        const value = stringParam(item.value);
-        values.set(stringParam(item.name), value.startsWith('=') ? '' : value);
-      }
+      for (const item of list as unknown[])
+        if (isRecord(item)) values.set(stringParam(item.name), stringParam(item.value));
     setValues.set(n.name, values);
   }
+  const inputs = new Set<string>();
   const inputDefaults = new Map<string, string>();
 
   /** n8n expression text → Orchevia template text (best effort). */
@@ -646,7 +787,10 @@ export function fromN8n(value: unknown): N8nImport {
   ): string => {
     const body = text.startsWith('=') ? text.slice(1) : text;
     return body.replace(/\{\{\s*([\s\S]+?)\s*\}\}/g, (whole, inner: string) => {
-      const ref = inner.trim();
+      // Orchevia's own export wraps values: String(<path> ?? "").replaceAll(…).
+      const ref =
+        /^String\((.+?)\s*\?\?\s*""\)(?:\.replaceAll\(.*\))?$/.exec(inner.trim())?.[1] ??
+        inner.trim();
       const named =
         /^\$\(\s*['"](.+?)['"]\s*\)\.(?:item|first\(\)|last\(\))\.json(?:\.([\w.]+)|\[\s*['"](.+?)['"]\s*\])$/.exec(
           ref,
@@ -664,12 +808,16 @@ export function fromN8n(value: unknown): N8nImport {
           const name = field.replace(/[^\w-]/g, '_');
           inputs.add(name);
           const preset = setValues.get(source)?.get(field);
-          if (preset !== undefined && preset !== '' && !inputDefaults.has(name))
+          if (preset !== undefined && preset.startsWith('='))
+            note(
+              `"${source}" computes ${field} with an n8n expression; it became a run input you fill in.`,
+            );
+          else if (preset !== undefined && preset !== '' && !inputDefaults.has(name))
             inputDefaults.set(name, preset);
           return `{{input.${name}}}`;
         }
-        if (sourceNode !== undefined && keys.has(source)) {
-          const key = keys.get(source) ?? '';
+        const key = keys.get(source);
+        if (sourceNode !== undefined && key !== undefined) {
           if (field === 'exitCode') return `{{node.${key}.exitCode}}`;
           if (field === 'key' && sourceNode.type === 'n8n-nodes-base.jira')
             return '{{ticket.key}}';
@@ -685,48 +833,17 @@ export function fromN8n(value: unknown): N8nImport {
     });
   };
 
-  // Incoming connection per node (first predecessor) for `$json` lookups.
-  const predecessors = new Map<string, string[]>();
-  for (const [from, outputs] of Object.entries(raw.connections)) {
-    if (!isRecord(outputs) || !Array.isArray(outputs.main)) continue;
-    for (const list of outputs.main as unknown[]) {
-      if (!Array.isArray(list)) continue;
-      for (const target of list as unknown[]) {
-        if (!isRecord(target)) continue;
-        const to = stringParam(target.node);
-        predecessors.set(to, [...(predecessors.get(to) ?? []), from]);
-      }
-    }
-  }
-
-  // First pass: classify and assign keys in n8n order.
+  const steps: DeveloperNode[] = [];
+  const conditions = new Set<string>();
   for (const n of n8nNodes) {
-    if (n.type === 'n8n-nodes-base.stickyNote') continue;
-    if (n.disabled) {
-      note(`Disabled node "${n.name}" was left out.`);
-      continue;
-    }
-    if (
-      TRIGGER.test(n.type) ||
-      n.type === 'n8n-nodes-base.webhook' ||
-      n.type === 'n8n-nodes-base.cron'
-    ) {
-      triggers.add(n.name);
-      continue;
-    }
-    if (AI_SUBNODE.test(n.type)) continue;
-    keyFor(n.name);
-  }
-
-  for (const n of n8nNodes) {
-    if (!keys.has(n.name)) continue;
-    const key = keys.get(n.name) ?? '';
+    const key = keys.get(n.name);
+    if (key === undefined) continue;
     const previous = predecessors.get(n.name)?.[0];
     const p = n.parameters;
     const t = (text: string): string => translate(text, previous, n.name);
-    let node: DeveloperNode | null = null;
+    let node: DeveloperNode;
     if (n.type === 'n8n-nodes-base.executeCommand') {
-      node = commandNode(key, n.name, t(stringParam(p.command)));
+      node = commandNode(key, n.name, t(stringParam(p.command)), note);
     } else if (n.type === 'n8n-nodes-base.httpRequest') {
       const method = stringParam(p.method) || stringParam(p.requestMethod) || 'GET';
       node = {
@@ -742,14 +859,18 @@ export function fromN8n(value: unknown): N8nImport {
         note(
           `"${n.name}" became a curl command without its headers, body or credentials; add what it needs.`,
         );
-    } else if (n.type === 'n8n-nodes-base.if') {
+    } else if (n.type === 'n8n-nodes-base.if' || n.type === 'n8n-nodes-base.filter') {
       node = {
         key,
         type: 'condition',
         label: n.name,
         config: { condition: ifCondition(p, t, n.name, note) },
       };
-      outputIsCondition.add(n.name);
+      conditions.add(n.name);
+      if (n.type === 'n8n-nodes-base.filter')
+        note(
+          `Filter "${n.name}" became a condition: the steps after it run only when it matches, otherwise the run ends.`,
+        );
     } else if (
       n.type === 'n8n-nodes-base.wait' ||
       n.type === 'n8n-nodes-base.form' ||
@@ -792,63 +913,60 @@ export function fromN8n(value: unknown): N8nImport {
       note(
         'AI nodes became Agent steps for your Implementation profile; their model and tool sub-nodes were not converted. Give the CLI tools through its own MCP settings.',
       );
-    } else if (n.type === 'n8n-nodes-base.code') {
+    } else {
+      // Kept as a visible step that stops the run, so nothing after it runs
+      // by accident and references to it still resolve.
+      node = {
+        key,
+        type: 'command',
+        label: n.name,
+        config: {
+          executable: 'sh',
+          args: [
+            '-c',
+            `printf '%s\\n' ${shellQuote(
+              `Replace this step: the n8n node "${n.name}" (${shortType(n.type)}) was not converted.`,
+            )} >&2; exit 1`,
+          ],
+        },
+      };
       note(
-        `Code node "${n.name}" was left out: n8n JavaScript does not run outside n8n. Add a Command step if you need it.`,
+        n.type === 'n8n-nodes-base.code'
+          ? `Code node "${n.name}" became a step that stops the run: n8n JavaScript does not run outside n8n. Replace it with a Command step.`
+          : `"${n.name}" (${shortType(n.type)}) has no Orchevia equivalent; it became a step that stops the run until you replace it.`,
       );
-    } else if (PASS_THROUGH.has(n.type)) {
+    }
+    steps.push(node);
+  }
+  for (const n of n8nNodes)
+    if (roles.get(n.name) === 'pass') {
       if (n.type === 'n8n-nodes-base.noOp') {
         if (n.notes.trim() !== '')
           note(`Placeholder "${n.name}" was left out: ${n.notes.trim()}`);
-      } else if (n.type !== 'n8n-nodes-base.set')
+      } else if (n.type === 'n8n-nodes-base.splitInBatches')
+        note(`Loop "${n.name}" was left out: the steps in it run once.`);
+      else if (n.type !== 'n8n-nodes-base.set')
         note(
           `"${n.name}" (${shortType(n.type)}) only reshapes n8n data and was left out.`,
         );
-    } else {
+    }
+  for (const name of triggers) {
+    const type = byName.get(name)?.type ?? '';
+    if (/schedule|cron|interval/i.test(type))
+      note(`Schedule trigger "${name}": set the same schedule in Automations.`);
+    else if (/webhook|chatTrigger|formTrigger/i.test(type))
       note(
-        `"${n.name}" (${shortType(n.type)}) has no Orchevia equivalent and was left out.`,
+        `Trigger "${name}" starts runs from outside n8n; in Orchevia, run the workflow yourself or from Automations.`,
       );
-    }
-    if (node !== null) kept.set(n.name, node);
-  }
-  if (triggers.size > 0) {
-    for (const name of triggers) {
-      const type = byName.get(name)?.type ?? '';
-      if (/schedule|cron|interval/i.test(type))
-        note(`Schedule trigger "${name}": set the same schedule in Automations.`);
-      else if (/webhook|chatTrigger|formTrigger/i.test(type))
-        note(
-          `Trigger "${name}" starts runs from outside n8n; in Orchevia, run the workflow yourself or from Automations.`,
-        );
-    }
   }
 
-  // Edges between kept nodes; dropped nodes pass their connections through.
-  type Link = { to: string; label?: string };
-  const out = new Map<string, Link[]>();
-  for (const [from, outputs] of Object.entries(raw.connections)) {
-    if (!isRecord(outputs) || !Array.isArray(outputs.main)) continue;
-    const source = byName.get(from);
-    (outputs.main as unknown[]).forEach((list, index) => {
-      if (!Array.isArray(list)) return;
-      for (const target of list as unknown[]) {
-        if (!isRecord(target)) continue;
-        let label: string | undefined;
-        if (outputIsCondition.has(from)) label = index === 0 ? 'true' : 'false';
-        else if (index === 1 && source?.onError === 'continueErrorOutput')
-          label = 'failure';
-        out.set(from, [
-          ...(out.get(from) ?? []),
-          { to: stringParam(target.node), ...(label === undefined ? {} : { label }) },
-        ]);
-      }
-    });
-  }
-  // A path that ends in a dropped node (End, a Code step) ends the workflow.
+  // Edges between steps; a pass-through node joins its neighbours, and a
+  // path that ends in one ends the workflow.
   const END = '\u0000end';
   const resolve = (name: string, seen: Set<string>): string[] => {
-    if (kept.has(name)) return [name];
-    if (seen.has(name)) return [];
+    const role = roles.get(name);
+    if (keys.has(name)) return [name];
+    if (role !== 'pass' || seen.has(name)) return role === 'pass' ? [] : [END];
     seen.add(name);
     const next = out.get(name) ?? [];
     if (next.length === 0) return [END];
@@ -859,33 +977,37 @@ export function fromN8n(value: unknown): N8nImport {
     if (edges.some((e) => e.from === from && e.to === to && e.label === label)) return;
     edges.push({ from, to, ...(label === undefined ? {} : { label }) });
   };
-  const sources = [...triggers, ...kept.keys()];
-  for (const from of sources) {
+  for (const from of [...triggers, ...keys.keys()]) {
     const fromKey = triggers.has(from) ? 'start' : (keys.get(from) ?? '');
+    const source = byName.get(from);
     for (const link of out.get(from) ?? []) {
+      const label = conditions.has(from)
+        ? link.output === 0
+          ? 'true'
+          : 'false'
+        : link.output === 1 && source?.onError === 'continueErrorOutput'
+          ? 'failure'
+          : undefined;
       for (const to of resolve(link.to, new Set([from]))) {
         if (to === END && fromKey === 'start') continue;
-        addEdge(fromKey, to === END ? 'end' : (keys.get(to) ?? ''), link.label);
+        const toKey = to === END ? 'end' : (keys.get(to) ?? '');
+        if (toKey === fromKey) {
+          note(`The n8n loop through "${from}" was not converted: the step runs once.`);
+          continue;
+        }
+        addEdge(fromKey, toKey, label);
       }
     }
   }
 
-  const steps = [...kept.values()];
   const withIncoming = new Set(edges.map((e) => e.to));
   for (const step of steps) if (!withIncoming.has(step.key)) addEdge('start', step.key);
-  const withOutgoing = new Set(edges.map((e) => e.from));
   for (const step of steps) {
-    if (withOutgoing.has(step.key)) continue;
+    const labels = edges.filter((e) => e.from === step.key).map((e) => e.label);
     if (step.type === 'condition') {
-      const labels = edges.filter((e) => e.from === step.key).map((e) => e.label);
       if (!labels.includes('true')) addEdge(step.key, 'end', 'true');
       if (!labels.includes('false')) addEdge(step.key, 'end', 'false');
-    } else addEdge(step.key, 'end');
-  }
-  for (const step of steps.filter((s) => s.type === 'condition')) {
-    const labels = edges.filter((e) => e.from === step.key).map((e) => e.label);
-    if (!labels.includes('true')) addEdge(step.key, 'end', 'true');
-    if (!labels.includes('false')) addEdge(step.key, 'end', 'false');
+    } else if (labels.every((label) => label === 'failure')) addEdge(step.key, 'end');
   }
   if (steps.length === 0) addEdge('start', 'end');
 
@@ -948,6 +1070,14 @@ function ifCondition(
     );
     return translated.replace(/^\{\{\s*|\s*\}\}$/g, '');
   };
+  // Orchevia compares with fixed text: an n8n expression cannot be kept.
+  const literal = (text: string): string => {
+    if (!text.startsWith('=') && !text.includes('{{')) return text;
+    note(
+      `Condition "${name}" compares with the n8n expression ${text}; Orchevia compares with fixed text, so set the value to test.`,
+    );
+    return text.replace(/^=/, '').replaceAll('{{', '[[').replaceAll('}}', ']]');
+  };
   let logic: 'and' | 'or' = 'and';
   const v2 = isRecord(p.conditions) ? p.conditions : undefined;
   if (v2 !== undefined && Array.isArray(v2.conditions)) {
@@ -965,7 +1095,7 @@ function ifCondition(
       clauses.push({
         left: leftRef(stringParam(raw.leftValue)),
         op,
-        right: stringParam(raw.rightValue),
+        right: literal(stringParam(raw.rightValue)),
       });
     }
   } else if (v2 !== undefined) {
@@ -986,7 +1116,7 @@ function ifCondition(
         clauses.push({
           left: leftRef(stringParam(raw.value1)),
           op,
-          right: stringParam(raw.value2),
+          right: literal(stringParam(raw.value2)),
         });
       }
     }
@@ -998,11 +1128,17 @@ function ifCondition(
   return { logic, clauses };
 }
 
-/** Split a POSIX shell command into words (quotes and backslashes). */
-export function shellWords(command: string): string[] | null {
+/**
+ * Words of a shell command, and whether it needs a shell: an operator,
+ * expansion, glob or comment outside quotes, an expansion inside double
+ * quotes, or an inserted value (`{{…}}`) outside single quotes. Null when a
+ * quote is never closed.
+ */
+export function shellTokens(command: string): { words: string[]; shell: boolean } | null {
   const words: string[] = [];
   let current = '';
   let inWord = false;
+  let shell = false;
   for (let i = 0; i < command.length; i++) {
     const c = command.charAt(i);
     if (c === "'") {
@@ -1014,10 +1150,15 @@ export function shellWords(command: string): string[] | null {
     } else if (c === '"') {
       let j = i + 1;
       for (; j < command.length && command.charAt(j) !== '"'; j++) {
-        if (command.charAt(j) === '\\' && j + 1 < command.length) {
+        const d = command.charAt(j);
+        if (d === '\\' && '$`"\\'.includes(command.charAt(j + 1))) {
           j += 1;
           current += command.charAt(j);
-        } else current += command.charAt(j);
+          continue;
+        }
+        if (d === '$' || d === '`' || (d === '{' && command.charAt(j + 1) === '{'))
+          shell = true;
+        current += d;
       }
       if (j >= command.length) return null;
       inWord = true;
@@ -1031,75 +1172,153 @@ export function shellWords(command: string): string[] | null {
       current = '';
       inWord = false;
     } else {
+      if (';&|<>()$`*?[~#!'.includes(c) || (c === '{' && command.charAt(i + 1) === '{'))
+        shell = true;
       current += c;
       inWord = true;
     }
   }
   if (inWord) words.push(current);
-  return words;
+  return { words, shell };
 }
 
-const AGENT_CLIS: { words: string[]; promptFlag?: string }[] = [
-  { words: ['claude', '-p'] },
-  { words: ['codex', 'exec'] },
-  { words: ['gemini'], promptFlag: '--prompt' },
-  { words: ['agy'], promptFlag: '--print' },
-  { words: ['opencode', 'run'] },
-  { words: ['muse', 'exec'] },
-];
+/** Split a POSIX shell command into words (quotes and backslashes). */
+export function shellWords(command: string): string[] | null {
+  return shellTokens(command)?.words ?? null;
+}
 
 /**
- * An Execute Command node: a local agent CLI call becomes an Agent step,
- * anything else a `sh -c` Command step. A leading `cd <dir> &&` becomes the
- * step's working folder.
+ * Local agent CLI calls Orchevia itself exports. Only these flags are
+ * understood: anything else keeps the command as it is.
  */
-function commandNode(key: string, label: string, command: string): DeveloperNode {
+const AGENT_CLIS: {
+  cmd: string[];
+  /** Flags that take a value (the model is recorded). */
+  valued: string[];
+  /** Flags without a value; one of `required` must appear. */
+  bare?: string[];
+  required?: string[];
+  /** Flags whose value is the prompt; otherwise the prompt is positional. */
+  promptFlags?: string[];
+}[] = [
+  {
+    cmd: ['claude'],
+    valued: ['--model', '--output-format'],
+    bare: ['-p', '--print'],
+    required: ['-p', '--print'],
+  },
+  { cmd: ['codex', 'exec'], valued: ['--model', '-m'] },
+  {
+    cmd: ['gemini'],
+    valued: ['--model', '-m', '--output-format'],
+    promptFlags: ['--prompt', '-p'],
+  },
+  {
+    cmd: ['agy'],
+    valued: ['--model', '--output-format'],
+    promptFlags: ['--print', '-p', '--prompt'],
+  },
+  { cmd: ['opencode', 'run'], valued: ['--model', '-m'] },
+  { cmd: ['muse', 'exec'], valued: ['--model'] },
+];
+
+/** The prompt (and model) of an agent CLI call, or null when any word is not understood. */
+function agentCall(words: string[]): { prompt: string; model?: string } | null {
+  for (const cli of AGENT_CLIS) {
+    if (!cli.cmd.every((w, i) => words[i] === w)) continue;
+    const args = words.slice(cli.cmd.length);
+    let prompt: string | undefined;
+    let model: string | undefined;
+    let required = cli.required === undefined;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i] ?? '';
+      if (arg === '--') {
+        if (prompt !== undefined || args.length !== i + 2) return null;
+        prompt = args[i + 1];
+        break;
+      }
+      if (cli.promptFlags?.includes(arg) === true) {
+        if (prompt !== undefined || i + 1 >= args.length) return null;
+        prompt = args[++i];
+      } else if (cli.valued.includes(arg)) {
+        if (i + 1 >= args.length) return null;
+        const flagValue = args[++i];
+        if (arg === '--model' || arg === '-m') model = flagValue;
+      } else if (cli.bare?.includes(arg) === true) {
+        if (cli.required?.includes(arg) === true) required = true;
+      } else if (
+        arg.startsWith('-') ||
+        prompt !== undefined ||
+        cli.promptFlags !== undefined
+      )
+        return null;
+      else prompt = arg;
+    }
+    if (!required || prompt === undefined || prompt.trim() === '') return null;
+    return model === undefined ? { prompt } : { prompt, model };
+  }
+  return null;
+}
+
+/**
+ * An Execute Command node. A call to a known agent CLI becomes an Agent
+ * step, a plain command becomes an argv Command step, and anything that
+ * needs a shell stays `sh -c`. A leading `cd <dir> &&` becomes the step's
+ * working folder.
+ */
+function commandNode(
+  key: string,
+  label: string,
+  command: string,
+  note: (text: string) => void,
+): DeveloperNode {
   let rest = command.trim();
   let workingDir: string | undefined;
-  const cd = /^cd\s+('[^']*'|"[^"]*"|[^\s&;]+)\s*&&\s*/.exec(rest);
+  const cd = /^cd\s+('[^']*'|"[^"]*"|[^\s&;|]+)\s*&&\s*/.exec(rest);
   if (cd?.[1] !== undefined) {
-    const dir = shellWords(cd[1])?.[0];
-    if (dir !== undefined && !dir.includes('{{')) {
-      workingDir = dir;
+    const dir = shellTokens(cd[1]);
+    if (dir !== null && !dir.shell && dir.words.length === 1 && !cd[1].includes('{{')) {
+      workingDir = dir.words[0];
       rest = rest.slice(cd[0].length);
     }
   }
-  const words = /[;&|<>`$()]/.test(rest.replace(/'[^']*'/g, "''"))
-    ? null
-    : shellWords(rest);
-  if (words !== null) {
-    for (const cli of AGENT_CLIS) {
-      if (!cli.words.every((w, i) => words[i] === w)) continue;
-      const args = words.slice(cli.words.length);
-      let prompt: string | undefined;
-      for (let i = 0; i < args.length; i++) {
-        const arg = args[i] ?? '';
-        if (arg === '--model') i += 1;
-        else if (arg === '--') prompt = args.slice(i + 1).join(' ');
-        else if (cli.promptFlag !== undefined && arg === cli.promptFlag)
-          prompt = args[i + 1];
-        else if (cli.promptFlag === undefined && !arg.startsWith('-')) prompt = arg;
-        if (prompt !== undefined) break;
-      }
-      if (prompt !== undefined && prompt.trim() !== '')
-        return {
-          key,
-          type: 'agent',
-          label,
-          role: 'implementation',
-          config: { prompt, ...(workingDir === undefined ? {} : { workingDir }) },
-        };
+  const folder = workingDir === undefined ? {} : { workingDir };
+  const tokens = shellTokens(rest);
+  if (tokens !== null && !tokens.shell && tokens.words.length > 0) {
+    const agent = agentCall(tokens.words);
+    if (agent !== null) {
+      if (agent.model !== undefined)
+        note(
+          `"${label}" asked for the model ${agent.model}; pick a profile that uses it.`,
+        );
+      return {
+        key,
+        type: 'agent',
+        label,
+        role: 'implementation',
+        config: { prompt: agent.prompt, ...folder },
+      };
     }
+    return {
+      key,
+      type: 'command',
+      label,
+      config: {
+        executable: tokens.words[0] ?? '',
+        args: tokens.words.slice(1),
+        ...folder,
+      },
+    };
   }
+  if (rest.includes('{{'))
+    note(
+      `"${label}" runs a shell command with values inserted into its text, as in n8n; check them before running.`,
+    );
   return {
     key,
     type: 'command',
     label,
-    config: {
-      executable: 'sh',
-      args: ['-c', rest],
-      ...(workingDir === undefined ? {} : { workingDir }),
-    },
+    config: { executable: 'sh', args: ['-c', rest], ...folder },
   };
 }
 

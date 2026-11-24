@@ -104,6 +104,26 @@ const workflow: Workflow = {
   ],
 };
 
+/**
+ * What n8n does with an exported command: evaluate each `{{ }}` against item
+ * data, then the shell splits the text into words.
+ */
+function runAsN8n(
+  command: unknown,
+  data: Record<string, Record<string, unknown>>,
+): string[] | null {
+  const text = String(command).replace(/^=/, '');
+  const evaluated = text.replace(/\{\{\s*([\s\S]+?)\s*\}\}/g, (_whole, code: string) => {
+    const $ = (name: string): { item: { json: Record<string, unknown> } } => ({
+      item: { json: data[name] ?? {} },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const run = new Function('$', `return (${code});`) as (select: typeof $) => unknown;
+    return String(run($));
+  });
+  return shellWords(evaluated);
+}
+
 describe('toN8n', () => {
   const { workflow: out, notes } = toN8n(workflow, [codex]);
   const node = (name: string): N8nNode | undefined =>
@@ -112,9 +132,13 @@ describe('toN8n', () => {
   it('maps each step to the closest n8n node', () => {
     expect(node('Start')?.type).toBe('n8n-nodes-base.manualTrigger');
     expect(node('Workflow inputs')?.type).toBe('n8n-nodes-base.set');
-    expect(node('Implement')?.parameters.command).toBe(
-      `=cd /repo && claude -p 'Do {{ $("Workflow inputs").item.json["task"] }}. Don'\\''t commit.'`,
-    );
+    // A value with quotes and shell syntax stays one argument in n8n too.
+    const hostile = "x'; rm -rf ~; echo '";
+    expect(
+      runAsN8n(node('Implement')?.parameters.command, {
+        'Workflow inputs': { task: hostile },
+      }),
+    ).toEqual(['cd', '/repo', '&&', 'claude', '-p', `Do ${hostile}. Don't commit.`]);
     expect(node('Run tests')).toMatchObject({
       type: 'n8n-nodes-base.executeCommand',
       parameters: { command: 'cd /repo && npm test' },
@@ -124,15 +148,17 @@ describe('toN8n', () => {
       "codex exec --model gpt-5.5 'Review the diff.",
     );
     expect(String(node('Review')?.parameters.command)).toContain(
-      '{{ $("Run tests").item.json.stdout }}',
+      '$("Run tests").item.json.stdout',
     );
     expect(node('Approve')).toMatchObject({
       type: 'n8n-nodes-base.wait',
       notes: 'Commit now?',
     });
-    expect(node('Commit')?.parameters.command).toBe(
-      `=cd /repo && git commit -m 'feat: {{ $("Workflow inputs").item.json["task"] }}'`,
-    );
+    expect(
+      runAsN8n(node('Commit')?.parameters.command, {
+        'Workflow inputs': { task: "it's $(done)" },
+      }),
+    ).toEqual(['cd', '/repo', '&&', 'git', 'commit', '-m', "feat: it's $(done)"]);
     expect(node('Post to Slack')?.type).toBe('n8n-nodes-base.noOp');
     const gate = node('Tests passed?');
     expect(gate?.type).toBe('n8n-nodes-base.if');
@@ -161,6 +187,32 @@ describe('toN8n', () => {
     expect(notes.join(' ')).toMatch(/Execute Command/);
     expect(notes.join(' ')).toMatch(/Wait nodes/);
     expect(notes.join(' ')).toMatch(/MCP/);
+  });
+
+  it('keeps steps named like object built-ins connected', () => {
+    const named: Workflow = {
+      ...workflow,
+      inputs: [],
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'p',
+          type: 'command',
+          label: '__proto__',
+          position: { x: 0, y: 1 },
+          config: { executable: 'ls' },
+        },
+        { id: 'end', type: 'end', position: { x: 0, y: 2 }, config: {} },
+      ],
+      edges: [
+        { id: '1', source: 'start', target: 'p' },
+        { id: '2', source: 'p', target: 'end' },
+      ],
+    };
+    const json = JSON.parse(JSON.stringify(toN8n(named).workflow)) as {
+      connections: Record<string, unknown>;
+    };
+    expect(Object.keys(json.connections)).toEqual(['Start', '__proto__']);
   });
 
   it('keeps node names unique', () => {
@@ -210,7 +262,16 @@ describe('fromN8n', () => {
     });
     expect(byLabel('Run tests')).toMatchObject({
       type: 'command',
-      config: { executable: 'sh', args: ['-c', 'npm test'], workingDir: '/repo' },
+      config: { executable: 'npm', args: ['test'], workingDir: '/repo' },
+    });
+    // Quoted values come back as one argument, not shell text.
+    expect(byLabel('Commit')).toMatchObject({
+      type: 'command',
+      config: {
+        executable: 'git',
+        args: ['commit', '-m', 'feat: {{input.task}}'],
+        workingDir: '/repo',
+      },
     });
     expect(byLabel('Tests passed?')?.config.condition).toEqual({
       logic: 'and',
@@ -312,9 +373,12 @@ describe('fromN8n', () => {
       'fetch_page:command',
       'ai_agent:agent',
       'is_urgent:condition',
+      'shape:command',
       'ask:approval',
       'end:end',
     ]);
+    // An unconverted node stops the run instead of disappearing.
+    expect(document.nodes[4]?.config.args?.[1]).toMatch(/Replace this step.*exit 1$/);
     expect(document.nodes[1]?.config).toEqual({
       executable: 'curl',
       args: ['-sS', '-X', 'POST', '{{input.url}}'],
@@ -335,11 +399,12 @@ describe('fromN8n', () => {
       'fetch_page>ai_agent',
       'ai_agent>is_urgent',
       'is_urgent>ask:true',
-      'is_urgent>end:false',
+      'is_urgent>shape:false',
+      'shape>end',
       'ask>end',
     ]);
     const text = notes.join('\n');
-    expect(text).toMatch(/Code node "Shape" was left out/);
+    expect(text).toMatch(/Code node "Shape" became a step that stops the run/);
     expect(text).toMatch(/Trigger "Webhook"/);
     expect(text).toMatch(/AI nodes became Agent steps/);
     const decoded = decodeDocument(JSON.stringify(document), [], {
@@ -364,6 +429,150 @@ describe('fromN8n', () => {
     });
     expect(document.nodes[1]?.config.args).toEqual(['-c', 'echo [[ $now.toISO() ]]']);
     expect(notes.join(' ')).toMatch(/kept as plain text/);
+  });
+
+  const n8nNode = (
+    name: string,
+    kind: string,
+    parameters: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({ name, type: `n8n-nodes-base.${kind}`, parameters });
+  const links = (...targets: string[][]): Record<string, unknown> => ({
+    main: targets.map((list) => list.map((node) => ({ node, type: 'main', index: 0 }))),
+  });
+  const importCommand = (command: string): DeveloperNode | undefined =>
+    fromN8n({
+      nodes: [
+        n8nNode('Go', 'manualTrigger'),
+        n8nNode('Run', 'executeCommand', { command }),
+      ],
+      connections: { Go: links(['Run']) },
+    }).document.nodes[1];
+
+  it('turns a command into an agent step only when every flag is understood', () => {
+    expect(importCommand("claude -p --model opus 'Fix it'")).toMatchObject({
+      type: 'agent',
+      config: { prompt: 'Fix it' },
+    });
+    expect(importCommand("gemini --prompt 'Review it'")?.type).toBe('agent');
+    // A flag's value is never taken for the prompt.
+    expect(importCommand("claude -p --allowedTools Bash 'do thing'")).toMatchObject({
+      type: 'command',
+      config: {
+        executable: 'claude',
+        args: ['-p', '--allowedTools', 'Bash', 'do thing'],
+      },
+    });
+    expect(importCommand("codex exec --sandbox workspace-write 'fix it'")?.type).toBe(
+      'command',
+    );
+    // Globs, operators and unquoted values keep their shell.
+    expect(importCommand('claude -p fix *.ts')?.config.args).toEqual([
+      '-c',
+      'claude -p fix *.ts',
+    ]);
+    expect(importCommand('npm test && npm run lint')?.config.executable).toBe('sh');
+  });
+
+  it('round-trips prompts with apostrophes and shell characters', () => {
+    const prompt = "Don't stop (see notes); check $HOME & `ls`.";
+    const wf: Workflow = {
+      ...workflow,
+      inputs: [],
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'a',
+          type: 'agent',
+          label: 'Agent',
+          position: { x: 0, y: 1 },
+          config: { agentRole: 'implementation', prompt },
+        },
+        { id: 'end', type: 'end', position: { x: 0, y: 2 }, config: {} },
+      ],
+      edges: [
+        { id: '1', source: 'start', target: 'a' },
+        { id: '2', source: 'a', target: 'end' },
+      ],
+    };
+    const back = fromN8n(JSON.parse(JSON.stringify(toN8n(wf).workflow)));
+    expect(back.document.nodes[1]).toMatchObject({ type: 'agent', config: { prompt } });
+  });
+
+  it('maps filters to conditions and leaves out nodes n8n never ran', () => {
+    const { document, notes } = fromN8n({
+      nodes: [
+        n8nNode('Go', 'manualTrigger'),
+        n8nNode('Check', 'filter', {
+          conditions: {
+            conditions: [
+              {
+                leftValue: '={{ $json.ok }}',
+                rightValue: 'yes',
+                operator: { operation: 'equals' },
+              },
+            ],
+          },
+        }),
+        n8nNode('Print', 'executeCommand', { command: 'echo hello' }),
+        n8nNode('Orphan', 'executeCommand', { command: 'rm -rf build' }),
+      ],
+      connections: { Go: links(['Check']), Check: links(['Print']) },
+    });
+    expect(document.nodes.map((n) => n.key)).toEqual(['start', 'check', 'print', 'end']);
+    const edges = document.edges.map(
+      (e) => `${e.from}>${e.to}${e.label ? `:${e.label}` : ''}`,
+    );
+    expect(edges).toContain('check>print:true');
+    expect(edges).toContain('check>end:false');
+    expect(notes.join(' ')).toMatch(/"Orphan" had no input in n8n/);
+  });
+
+  it('does not loop a step onto itself through a dropped loop node', () => {
+    const { document, notes } = fromN8n({
+      nodes: [
+        n8nNode('Go', 'manualTrigger'),
+        n8nNode('Items', 'splitInBatches'),
+        n8nNode('Work', 'executeCommand', { command: 'echo work' }),
+      ],
+      connections: {
+        Go: links(['Items']),
+        Items: links(['Work']),
+        Work: links(['Items']),
+      },
+    });
+    expect(document.edges.some((e) => e.from === e.to)).toBe(false);
+    expect(notes.join(' ')).toMatch(/loop through "Work" was not converted/);
+    const decoded = decodeDocument(JSON.stringify(document), [], {});
+    expect(validateWorkflowLocal(decoded).filter((i) => i.severity === 'error')).toEqual(
+      [],
+    );
+  });
+
+  it('notes values Orchevia cannot carry over', () => {
+    const { document, notes } = fromN8n({
+      nodes: [
+        n8nNode('Go', 'manualTrigger'),
+        n8nNode('Cfg', 'set', {
+          assignments: { assignments: [{ name: 'when', value: '={{ $now }}' }] },
+        }),
+        n8nNode('Is it?', 'if', {
+          conditions: {
+            conditions: [
+              {
+                leftValue: '={{ $json.when }}',
+                rightValue: '={{ $("Cfg").item.json.when }}',
+                operator: { operation: 'equals' },
+              },
+            ],
+          },
+        }),
+      ],
+      connections: { Go: links(['Cfg']), Cfg: links(['Is it?']) },
+    });
+    expect(document.inputs).toEqual([{ name: 'when', label: 'when', required: true }]);
+    const text = notes.join(' ');
+    expect(text).toMatch(/"Cfg" computes when with an n8n expression/);
+    expect(text).toMatch(/compares with the n8n expression/);
   });
 
   it('refuses JSON that is not an n8n workflow', () => {

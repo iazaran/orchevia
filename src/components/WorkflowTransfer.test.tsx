@@ -66,10 +66,10 @@ it('imports n8n JSON as a new, arranged workflow', async () => {
   const [created, notes] = onImport.mock.calls[0] ?? [];
   expect(created?.name).toBe('From n8n');
   expect(created?.nodes.map((n) => n.type)).toEqual(['start', 'command', 'end']);
-  expect(created?.nodes.find((n) => n.type === 'command')?.config.args).toEqual([
-    '-c',
-    'ls -la',
-  ]);
+  expect(created?.nodes.find((n) => n.type === 'command')?.config).toMatchObject({
+    executable: 'ls',
+    args: ['-la'],
+  });
   // Arranged top to bottom rather than stacked at one point.
   const ys = created?.nodes.map((n) => n.position.y) ?? [];
   expect(new Set(ys).size).toBe(3);
