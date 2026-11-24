@@ -6,7 +6,7 @@
     <title>Orchevia — Your AI coding CLIs as reviewable pipelines</title>
     <meta
       name="description"
-      content="Orchevia is a free, open-source desktop app that runs Claude Code, Codex, git, gh and your test commands as visual, reviewable workflows on your own machine. No account, no API keys, no telemetry."
+      content="Orchevia is a free, open-source desktop app for local coding workflows. Run your agents, approve changes, compare review rounds and connect the tools you use."
     />
     <link rel="canonical" href="https://iazaran.github.io/orchevia/" />
     <meta name="robots" content="index, follow" />
@@ -18,7 +18,7 @@
     />
     <meta
       property="og:description"
-      content="Plan, approve, implement, test and cross-review with Claude Code and Codex, on your own machine. Free and open source; no account, no API keys, no telemetry."
+      content="Plan, approve, test and cross-review on your own machine. Run Claude Code, Codex, Muse Code, Gemini or OpenCode in a visual workflow."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://iazaran.github.io/orchevia/" />
@@ -40,7 +40,7 @@
     />
     <meta
       name="twitter:description"
-      content="Visual workflows for Claude Code, Codex, git and gh — running locally on your machine."
+      content="Local visual workflows for coding agents, tests, approvals and review rounds."
     />
     <meta
       name="twitter:image"
@@ -65,7 +65,7 @@
         "url": "https://iazaran.github.io/orchevia/",
         "downloadUrl": "https://github.com/iazaran/orchevia/releases/latest",
         "image": "https://iazaran.github.io/orchevia/images/social-preview.jpg",
-        "description": "Local-first desktop app that runs Claude Code, Codex, git, gh and your test commands as visual, reviewable workflows. No account, no API keys, no telemetry."
+        "description": "Local-first desktop app for visual workflows with coding agents, Git, testing, approvals and review history."
       }
     </script>
     <style>
@@ -352,6 +352,29 @@
         display: block;
         color: var(--text);
         font-size: 15px;
+      }
+      .connection-card {
+        display: flex;
+        flex-direction: column;
+      }
+      .connection-card > a {
+        align-self: flex-start;
+        margin-top: auto;
+      }
+      .connection-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        list-style: none;
+        padding: 0;
+        margin: 6px 0 14px;
+      }
+      .connection-list li {
+        border: 1px solid var(--border-strong);
+        border-radius: 7px;
+        padding: 3px 9px;
+        color: var(--text);
+        font-size: 13px;
       }
       section.block {
         padding: 46px 0;
@@ -938,10 +961,10 @@
         </a>
         <nav class="site" aria-label="Site">
           <a href="#demo">Demo</a>
-          <a href="#generate">Generator</a>
+          <a href="#connections">Connections</a>
           <a href="#tour">Tour</a>
           <a href="#workflows">Workflows</a>
-          <a href="#local-first">Safety</a>
+          <a href="#start">Quick start</a>
           <a href="#install">Install</a>
           <a href="#faq">FAQ</a>
           <a class="gh" href="https://github.com/iazaran/orchevia">★ GitHub</a>
@@ -952,17 +975,17 @@
         <div class="hero">
           <span class="pill"><b>●</b> Free &amp; open source · macOS &amp; Linux</span>
           <h1>
-            Your AI coding CLIs, as
-            <span class="grad">reviewable pipelines</span>.
+            Run your coding agents in
+            <span class="grad">one workflow</span>.
           </h1>
           <p class="lead">
-            Orchevia runs Claude Code, Codex, <code>git</code>, <code>gh</code> and your
-            test commands as a visual workflow on your own machine. Plan, approve,
-            implement, test and cross-review — with the subscriptions you already have.
+            Plan a change, approve it, run your tests and see which review findings were
+            fixed. Orchevia connects the tools you already use and runs them on your
+            machine.
           </p>
           <div class="cta">
             <a class="btn primary" href="#install" data-download-cta>Download Orchevia</a>
-            <a class="btn" href="#demo">▶ See a run</a>
+            <a class="btn" href="#start">Try your first workflow</a>
             <a class="btn" href="https://github.com/iazaran/orchevia">★ Star on GitHub</a>
           </div>
           <p class="fineprint">No account · No API keys · No telemetry · Apache-2.0</p>
@@ -988,22 +1011,65 @@
 
         <div class="proof">
           <div>
-            <strong>🔑 Your subscriptions</strong>Agent steps call your signed-in
-            <code>claude</code> and <code>codex</code>. No keys, no Orchevia bill.
+            <strong>Review rounds</strong>See which findings were fixed, stayed open,
+            appeared for the first time or came back.
           </div>
           <div>
-            <strong>🤝 Claude + Codex together</strong>One implements, the other reviews —
-            in parallel, with P0–P3 findings.
+            <strong>Project playbooks</strong>Save each repository’s test commands,
+            conventions and reviewer choices.
           </div>
           <div>
-            <strong>🧭 Predictable</strong>A fixed graph with approvals, bounded loops and
-            timeouts. Nothing runs until you press Run.
+            <strong>Human decisions</strong>Approve a step or give feedback while the run
+            is going.
           </div>
           <div>
-            <strong>🔒 Local-first</strong>Workflows and history in local SQLite. No
-            accounts, no hosted runner, no telemetry.
+            <strong>Local history</strong>Reopen the exact graph, results and logs behind
+            a run on your machine.
           </div>
         </div>
+
+        <section class="block" id="connections" aria-labelledby="connections-h">
+          <h2 id="connections-h">Connect your agents and tools</h2>
+          <div class="two-col">
+            <div class="card connection-card">
+              <h3>Agent profiles</h3>
+              <ul class="connection-list" aria-label="Supported agents">
+                <li>Claude Code</li>
+                <li>Codex</li>
+                <li>Muse Code</li>
+                <li>Google Antigravity CLI</li>
+                <li>Gemini CLI</li>
+                <li>OpenCode</li>
+              </ul>
+              <p>
+                Sign in through the CLI, then run Check setup. Choose a profile for each
+                planning, implementation or review step.
+              </p>
+              <a
+                href="https://github.com/iazaran/orchevia/blob/main/docs/agents.md#supported-clis"
+                >Set up an agent</a
+              >
+            </div>
+            <div class="card connection-card">
+              <h3>MCP connection recipes</h3>
+              <ul class="connection-list" aria-label="MCP connection recipes">
+                <li>Jira</li>
+                <li>Slack</li>
+                <li>AWS Knowledge</li>
+                <li>Google Docs</li>
+                <li>Gmail</li>
+              </ul>
+              <p>
+                Start with a prefilled server in Environment. Check that it can list tools
+                and select the operation in your workflow.
+              </p>
+              <a
+                href="https://github.com/iazaran/orchevia/blob/main/docs/integrations.md#connection-recipes"
+                >Connect an MCP tool</a
+              >
+            </div>
+          </div>
+        </section>
 
         <section class="block" id="demo" aria-labelledby="demo-h">
           <p class="eyebrow">Try it here</p>
@@ -1144,14 +1210,14 @@ Press ▶ Run demo to start. The run pauses at the approval gate until you appro
           <p class="eyebrow">Workflow generator</p>
           <h2 id="generate-h">Describe the task. Get a graph you can check.</h2>
           <p class="section-intro">
-            ✦ Generate asks your own Claude Code or Codex CLI to draft the workflow.
-            Orchevia validates and compiles the draft into a preview — it never runs it.
+            ✦ Generate asks a configured agent to draft the workflow. Orchevia validates
+            and compiles the draft into a preview — it never runs it.
           </p>
           <div class="steps-grid">
             <div>
               <ol class="numbered">
                 <li>
-                  <strong>Open Workflows → ✦ Generate.</strong> Pick Claude Code or Codex
+                  <strong>Open Workflows → ✦ Generate.</strong> Pick a configured agent
                   and, optionally, a repository: the AI is asked to inspect it without
                   changing anything, so the draft uses your real paths and conventions. It
                   runs with that profile's permissions.
@@ -1371,8 +1437,8 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
                   deep review, generation — each with its own CLI, model and effort.
                 </li>
                 <li>
-                  <strong>Any CLI:</strong> Claude Code, Codex, or a custom binary that
-                  takes the prompt last.
+                  <strong>Custom CLI:</strong> Use another binary that takes the prompt
+                  last.
                 </li>
                 <li>
                   <strong>Detected on your login shell's PATH,</strong> including nvm,
@@ -1388,7 +1454,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
           <h2 id="workflows-h">Start with a workflow you already do</h2>
           <p class="section-intro">
             Build a small manual flow first. Add integrations and scheduling once its
-            steps work in your repository. Nine built-in templates help you start.
+            steps work in your repository. Ten built-in templates help you start.
           </p>
           <div class="grid">
             <article class="card">
@@ -1466,7 +1532,7 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             </div>
             <div class="card">
               <span class="icon" aria-hidden="true">📚</span>
-              <h3>Reuse and memory</h3>
+              <h3>Templates and Playbooks</h3>
               <p>
                 Templates with typed inputs, JSON import/export, and a project playbook of
                 accepted commands and conventions.
@@ -1582,8 +1648,8 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
             <div class="card">
               <h3>Full access</h3>
               <p>
-                Bypasses permission checks, for every agent or one profile. Never chosen
-                for you, and a schedule that uses it needs its own trust opt-in.
+                Claude Code and Codex can run with full access if you enable it for those
+                CLIs or a specific profile. Schedules that use it require trust.
               </p>
             </div>
           </div>
@@ -1619,46 +1685,28 @@ Read Jira ticket {{input.ticket}} and plan it with Claude, then pause for my app
           <div class="two-col">
             <ol class="steps">
               <li>
-                <strong>Install and open Orchevia.</strong> The setup wizard detects
-                <code>git</code>, <code>gh</code>, <code>claude</code> and
-                <code>codex</code>
-                and creates recommended agent profiles.
+                <strong><a href="#install">Install Orchevia</a></strong> on macOS or
+                Linux.
               </li>
               <li>
-                <strong
-                  >Workflows → Samples… → Plan → Implement → Review → Create.</strong
-                >
-                A ready-made graph appears on the canvas.
+                <strong>Open Templates → First Workflow.</strong> Create a copy of the
+                starter with two local commands and a human approval.
               </li>
               <li>
-                <strong>Select any node</strong> to set its profile, prompt or timeout.
-                Canvas badges flag problems before you run.
-              </li>
-              <li>
-                <strong>Press ▶ Run.</strong> Approve the paused gate, follow each step in
-                Runs, send feedback to a step, cancel at any time.
-              </li>
-              <li>
-                <strong>Go further:</strong> ✦ Generate from a goal, save Templates, or
-                schedule runs under Automations.
+                <strong>Choose Dry run or Run.</strong> Open Runs, inspect the first step
+                and approve to continue.
               </li>
             </ol>
-            <div class="card">
-              <h3>Start without any AI</h3>
+            <div class="card connection-card">
+              <h3>Ready to make a code change?</h3>
               <p>
-                The
-                <a
-                  href="https://github.com/iazaran/orchevia/blob/main/docs/getting-started.md"
-                  >getting-started guide</a
-                >
-                begins with a one-step <code>echo</code> workflow, then adds an agent,
-                tests, an approval gate and reuse.
+                Set up a local agent, then open <strong>Implement a Task</strong>. Choose
+                your repository, paste a task and tell Orchevia how to run your tests.
               </p>
-              <p>
-                Headless Claude Code refuses tools its settings don't allow. If a step
-                reports
-                <em>tools refused</em>, add the listed rules to the profile in one click.
-              </p>
+              <a
+                href="https://github.com/iazaran/orchevia/blob/main/docs/getting-started.md"
+                >Read the first-run guide</a
+              >
             </div>
           </div>
         </section>
@@ -1782,9 +1830,9 @@ pnpm tauri dev</code></pre>
           <details>
             <summary>Do I need an Orchevia account or a model API key?</summary>
             <p>
-              No. Orchevia orchestrates CLIs you install and sign in to yourself, so AI
-              steps use your existing Claude or ChatGPT/Codex plan and its limits. A
-              command-only workflow needs no AI CLI at all.
+              First Workflow runs with local commands. For AI steps, use your provider’s
+              sign-in or credential setup through its CLI. Orchevia has no account or
+              model API key field.
             </p>
           </details>
           <details>

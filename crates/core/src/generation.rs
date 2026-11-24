@@ -410,6 +410,11 @@ fn compile_proposal_inner(
     // 3. Role resolution (agent nodes carry roles, never raw profile ids).
     let (resolved, unmapped) = resolve_agent_roles(&workflow, role_map);
     workflow = resolved;
+    if saved.is_empty() {
+        for label in crate::agents::use_supported_sessions(&mut workflow, profiles) {
+            all_repairs.push(format!("'{label}' uses a fresh session because its profile cannot resume managed sessions."));
+        }
+    }
     // 4. Full structural validation.
     let issues = validate_workflow(&workflow);
     let unavailable: Vec<String> = unmapped
@@ -1313,7 +1318,7 @@ Rules (violations are rejected, be precise):
 - Emit COMPACT JSON: no indentation, short labels, no duplicated text — long pretty-printed proposals get truncated mid-string. Compact output is an efficiency aid, never a reason to omit material steps.
 - Honor stated timeouts: "timeout 15m" means "timeoutSecs": 900, "timeout 40m" means 2400. Long AI steps routinely need 3600-14400; never invent a small default when the goal states one.
 - Agent nodes: config needs "role" (one of: {roles}) and "prompt" (concrete instructions using {{{{workflow.name}}}}, {{{{input.*}}}}, {{{{node.<key>.output}}}} variables). Add config.profileName with an exact unique configured name when a provider/model or a specific reviewer is requested; this takes precedence over role fallback and can select two different reviewers with the same role. Missing or ambiguous names need setup. Never hardcode profile ids.
-- Agent cost controls are optional: config.sessionGroup (a short name or template, max 256 characters) reuses context only within this run, exact profile and directory; sessionMaxTurns is 1-20, default 4. Share a group between an implementer and later fixes, with a short follow-up prompt. Keep independent reviewers fresh or in separate groups. In multi-item loops include an item key in the group so unrelated items do not share context. Never duplicate a full earlier prompt/output when the session already knows it.
+- Agent cost controls are optional. Use a session group only when the assigned profile is Claude Code or Codex. Other profiles use contextRefs to pass relevant prior outputs. config.sessionGroup (a short name or template, max 256 characters) reuses context only within this run, exact profile and directory; sessionMaxTurns is 1-20, default 4. Share a group between an implementer and later fixes, with a short follow-up prompt. Keep independent reviewers fresh or in separate groups. In multi-item loops include an item key in the group so unrelated items do not share context. Never duplicate a full earlier prompt/output when the session already knows it.
 - For cross-agent handoffs use config.contextRefs ["<completed-node-key>"] (max 16) and contextMaxChars (256-64000, default 12000 combined excerpt characters). These append marked head/tail excerpts and retain full run logs. Include only relevant predecessors; do not also inline the same outputs in the prompt. This is truncation, not semantic summarization; choose a sufficient budget when exact detail matters. Longer sessions may cost more; no guaranteed savings. Preserve existing cost settings when assisting unless the user requests a change. Custom CLI profiles cannot use session groups.
 - Prompts are task instructions, never CLI invocations: no bare `-p`/`--model`/binary names/permission flags inside prompts. Those belong to Agent Profiles, not to the text the agent reads.
 - Labels are short canvas titles: imperative, at most ~60 characters, no file paths, no $VARIABLES, no ticket keys. Details go in the prompt/config, not the label.
@@ -1791,6 +1796,35 @@ Good luck!"#;
             &[profile.clone(), profile]
         )
         .is_err());
+    }
+
+    #[test]
+    fn new_proposals_use_fresh_sessions_for_profiles_without_resume() {
+        let profiles: Vec<crate::agents::AgentProfile> =
+            serde_json::from_value(serde_json::json!([
+                {"id": "p-plan", "name": "Codex planner", "adapter": "codex"},
+                {"id": "p-impl", "name": "Muse implementation", "adapter": "muse"}
+            ]))
+            .unwrap();
+        let mut proposal = parse_proposal(PROPOSAL).unwrap();
+        proposal.nodes[1].config.session_group = Some("plan".into());
+        proposal.nodes[3].config.session_group = Some("implementation".into());
+        proposal.nodes[3].config.session_max_turns = Some(3);
+        proposal.nodes[3].config.context_refs = Some(vec!["plan".into()]);
+        let preview =
+            compile_proposal_with_profiles(&proposal, &role_map(), "wf", None, &profiles).unwrap();
+        assert_eq!(
+            preview.workflow.nodes[1].config.session_group.as_deref(),
+            Some("plan")
+        );
+        let config = &preview.workflow.nodes[3].config;
+        assert!(config.session_group.is_none());
+        assert!(config.session_max_turns.is_none());
+        assert_eq!(config.context_refs, ["plan"]);
+        assert!(preview
+            .repairs
+            .iter()
+            .any(|note| note.contains("'Implement' uses a fresh session")));
     }
 
     #[test]

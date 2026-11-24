@@ -90,7 +90,7 @@ pub fn adapter_capabilities(adapter: AdapterKind) -> AdapterCapabilities {
             spend_estimate: Capability::Unsupported,
             note: "Attempts enforced per run by Orchevia. No verified Codex turn/spend flags: turns and subagents are advisory guidance; tool-completion events are observed where the CLI reports them. Codex runs report no USD.".into(),
         },
-        AdapterKind::Custom => AdapterCapabilities {
+        _ => AdapterCapabilities {
             adapter: adapter.as_str().into(),
             agent_attempts: Capability::Enforced,
             agent_turns: Capability::Unsupported,
@@ -114,7 +114,7 @@ pub fn policy_coverage_note(adapter: AdapterKind) -> &'static str {
         AdapterKind::Codex => {
             "Only the run attempt budget is enforced; turns and subagents are advisory, tool completions observed."
         }
-        AdapterKind::Custom => {
+        _ => {
             "Only the run attempt budget applies; this CLI reports no internal usage."
         }
     }

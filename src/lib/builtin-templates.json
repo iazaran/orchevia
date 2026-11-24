@@ -3,7 +3,7 @@
     "id": "implement-ticket",
     "version": 1,
     "name": "Implement a Task",
-    "description": "Plan → you approve → implement → test → review. Works from a description or pasted ticket text; no Jira setup needed. Leaves the change uncommitted for you.",
+    "description": "Plan → you approve → implement → test → review. Paste a task or ticket description. Give feedback in Runs while work is in progress. Changes stay in your working tree.",
     "category": "feature",
     "workflow": {
       "schemaVersion": 6,
@@ -165,7 +165,7 @@
     "id": "review-pr",
     "version": 1,
     "name": "Review Pull Request",
-    "description": "Load a PR and its diff → Claude and Codex review in parallel → if they find P0/P1 problems, you approve posting one comment; otherwise it is marked clean.",
+    "description": "Load a PR and its diff, then run two configured reviewers in parallel. Approve before posting a comment when they find P0/P1 problems.",
     "category": "review",
     "workflow": {
       "schemaVersion": 6,
@@ -231,7 +231,7 @@
             "contextMaxChars": 48000,
             "extendOnOutput": false
           },
-          "label": "Claude review"
+          "label": "Fast review"
         },
         {
           "id": "revB",
@@ -248,7 +248,7 @@
             "contextMaxChars": 48000,
             "extendOnOutput": false
           },
-          "label": "Codex review"
+          "label": "Deep review"
         },
         {
           "id": "gate",
@@ -315,7 +315,7 @@
             "githubOp": {
               "op": "postComment",
               "number": 0,
-              "body": "Review findings from Orchevia (Claude and Codex)\n\n### Claude\n\n{{node.revA.output}}\n\n### Codex\n\n{{node.revB.output}}"
+              "body": "Review findings from Orchevia\n\n### Fast review\n\n{{node.revA.output}}\n\n### Deep review\n\n{{node.revB.output}}"
             }
           },
           "label": "Post comment"
@@ -848,7 +848,7 @@
     "id": "multi-agent-review",
     "version": 1,
     "name": "Run Multi-Agent Review",
-    "description": "Diff this branch and your uncommitted work against a base branch → Claude and Codex review in parallel → triage P0/P1 findings or mark it clean.",
+    "description": "Compare this branch and its working tree with a base branch. Two configured reviewers run in parallel. A triage step checks their P0/P1 findings against the code.",
     "category": "review",
     "workflow": {
       "schemaVersion": 6,
@@ -897,7 +897,7 @@
             "contextMaxChars": 48000,
             "extendOnOutput": false
           },
-          "label": "Claude review"
+          "label": "Fast review"
         },
         {
           "id": "revB",
@@ -914,7 +914,7 @@
             "contextMaxChars": 48000,
             "extendOnOutput": false
           },
-          "label": "Codex review"
+          "label": "Deep review"
         },
         {
           "id": "gate",
@@ -1411,10 +1411,10 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from the review above. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
+            "prompt": "Read the repository instructions first. Verify and address the P0/P1 findings against the original PR feedback and the current diff. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "sessionGroup": "feedback-{{input.prNumber}}",
             "sessionMaxTurns": 4,
-            "contextRefs": ["review"],
+            "contextRefs": ["review", "feedback"],
             "contextMaxChars": 12000,
             "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false,
@@ -1503,7 +1503,7 @@
     "id": "ticket-to-pr",
     "version": 1,
     "name": "Ticket to Draft PR",
-    "description": "Jira ticket → branch → implement → test → Claude and Codex review → fix loop → you review → commit, push and open a draft PR. Needs a Jira MCP server.",
+    "description": "Implement a Jira ticket, run tests and compare both reviewers’ findings across fix rounds. Approve before Orchevia commits, pushes and opens a draft PR.",
     "category": "feature",
     "workflow": {
       "schemaVersion": 6,
@@ -1605,7 +1605,7 @@
             "extendOnOutput": false,
             "maxVisits": 3
           },
-          "label": "Claude review"
+          "label": "Fast review"
         },
         {
           "id": "rev_deep",
@@ -1623,7 +1623,7 @@
             "extendOnOutput": false,
             "maxVisits": 3
           },
-          "label": "Codex review"
+          "label": "Deep review"
         },
         {
           "id": "gate",
@@ -1674,10 +1674,10 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Read the repository instructions first. Fix the P0/P1 findings from both reviews above. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
+            "prompt": "Read the repository instructions first. Verify the current P0/P1 findings for {{ticket.key}} against the ticket and the diff. Fix the findings that hold up. Explain any you could not confirm or chose to leave open so the next reviewer can check the resulting code independently. Do not run tests, builds or package managers, and do not commit; the workflow does that.",
             "sessionGroup": "implementation-{{input.ticket}}",
             "sessionMaxTurns": 4,
-            "contextRefs": ["rev_fast", "rev_deep"],
+            "contextRefs": ["rev_fast", "rev_deep", "ticket"],
             "contextMaxChars": 12000,
             "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false,
@@ -1768,7 +1768,7 @@
             "githubOp": {
               "op": "createPr",
               "title": "{{ticket.key}}: {{ticket.title}}",
-              "body": "Implements {{ticket.key}}. Tested with `{{input.testCommand}}` and reviewed by Claude and Codex in Orchevia.",
+              "body": "Implements {{ticket.key}}. Tested with `{{input.testCommand}}` and reviewed with Orchevia's fast and deep review profiles.",
               "base": "{{input.base}}",
               "head": "{{input.branch}}",
               "draft": true
@@ -1895,6 +1895,110 @@
           "label": "Base branch for the pull request",
           "default": "main",
           "required": false
+        }
+      ]
+    }
+  },
+  {
+    "id": "first-workflow",
+    "version": 1,
+    "name": "First Workflow",
+    "description": "Try a run with a local command, an approval and a second command. Open Runs to see what happened. Start with Dry run to try the controls without running commands.",
+    "category": "getting-started",
+    "workflow": {
+      "schemaVersion": 6,
+      "id": "tpl-first-workflow",
+      "name": "First Workflow",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "position": {
+            "x": 80.0,
+            "y": 0.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "Start"
+        },
+        {
+          "id": "hello",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 120.0
+          },
+          "config": {
+            "executable": "echo",
+            "args": ["Hello from Orchevia"],
+            "extendOnOutput": false
+          },
+          "label": "Print a message"
+        },
+        {
+          "id": "approve",
+          "type": "approval",
+          "position": {
+            "x": 80.0,
+            "y": 240.0
+          },
+          "config": {
+            "args": [],
+            "message": "Open the first step in Runs to see its output, then approve to continue.",
+            "extendOnOutput": false
+          },
+          "label": "Continue?"
+        },
+        {
+          "id": "done",
+          "type": "command",
+          "position": {
+            "x": 80.0,
+            "y": 360.0
+          },
+          "config": {
+            "executable": "echo",
+            "args": ["Approval received"],
+            "extendOnOutput": false
+          },
+          "label": "Finish the run"
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "position": {
+            "x": 80.0,
+            "y": 480.0
+          },
+          "config": {
+            "args": [],
+            "extendOnOutput": false
+          },
+          "label": "End"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e0",
+          "source": "start",
+          "target": "hello"
+        },
+        {
+          "id": "e1",
+          "source": "hello",
+          "target": "approve"
+        },
+        {
+          "id": "e2",
+          "source": "approve",
+          "target": "done"
+        },
+        {
+          "id": "e3",
+          "source": "done",
+          "target": "end"
         }
       ]
     }

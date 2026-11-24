@@ -1162,13 +1162,18 @@ impl Engine {
                 );
             }
             RunStatus::Succeeded => {
-                let actionable = self.actionable_finding_count(workflow, run_id);
+                let findings = self.review_findings(workflow, run_id);
+                let actionable = findings
+                    .iter()
+                    .filter(|group| !group.sources.is_empty() && group.finding.actionable())
+                    .count();
                 if actionable > 0 {
                     crate::notify::emit_event(
                         &self.db,
                         &crate::notify::NotifyEvent::ActionableFindings {
                             run_id: run_id.to_string(),
                             count: actionable,
+                            rounds: crate::review::review_round_summary(&findings),
                         },
                     );
                 }
@@ -1185,40 +1190,15 @@ impl Engine {
         }
     }
 
-    /// Count actionable findings across agent node outputs in a run.
-    fn actionable_finding_count(&self, workflow: &Workflow, run_id: &str) -> usize {
-        let agent_nodes: Vec<&Node> = workflow
-            .nodes
-            .iter()
-            .filter(|n| n.kind == NodeKind::Agent)
-            .collect();
-        if agent_nodes.is_empty() {
-            return 0;
-        }
+    fn review_findings(
+        &self,
+        workflow: &Workflow,
+        run_id: &str,
+    ) -> Vec<crate::review::GroupedFinding> {
         let rows = self.db.list_node_results(run_id).unwrap_or_default();
-        let mut outputs: Vec<(String, String, String)> = Vec::new();
-        for node in agent_nodes {
-            let profile_label = node
-                .config
-                .agent_profile_id
-                .as_deref()
-                .and_then(|id| self.db.get_agent_profile(id).ok().flatten())
-                .map(|p| p.name)
-                .unwrap_or_default();
-            if let Some(row) = rows
-                .iter()
-                .rev()
-                .find(|r| r.node_id == node.id && r.status == "succeeded")
-            {
-                if run_controls::is_new_execution(row) {
-                    outputs.push((node.id.clone(), profile_label, row.stdout.clone()));
-                }
-            }
-        }
-        crate::review::grouped_findings(&outputs)
-            .into_iter()
-            .filter(|grouped| grouped.finding.actionable())
-            .count()
+        crate::review::run_review_findings(workflow, &rows, |id| {
+            self.db.get_agent_profile(id).ok().flatten().map(|p| p.name)
+        })
     }
 
     async fn execute_inner(
@@ -6102,7 +6082,7 @@ mod tests {
         })
         .unwrap();
         let engine = Engine::new(db, Default::default());
-        assert_eq!(engine.actionable_finding_count(&wf, "findings"), 0);
+        assert!(engine.review_findings(&wf, "findings").is_empty());
     }
 
     #[test]
@@ -10559,7 +10539,7 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"done","usage":{}}'"#;
         assert!(!rows
             .iter()
             .any(|r| r.node_id == "agent2" && r.status == "succeeded"));
-        assert_eq!(engine.actionable_finding_count(&wf, "usage-review"), 0);
+        assert!(engine.review_findings(&wf, "usage-review").is_empty());
     }
 
     #[cfg(unix)]

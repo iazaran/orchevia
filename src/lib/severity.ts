@@ -15,7 +15,7 @@ const isWordChar = (c: string | undefined): boolean =>
 const lastChar = (text: string): string | undefined => Array.from(text).at(-1);
 const firstChar = (text: string): string | undefined => Array.from(text)[0];
 
-function findingSeverities(text: string): string[] {
+export function findingFields(text: string): Map<string, string>[] {
   const blocks: string[][] = [];
   let current: string[] | null = null;
   for (const line of text.split(/\r?\n/)) {
@@ -29,7 +29,7 @@ function findingSeverities(text: string): string[] {
       current.push(line);
     }
   }
-  const severities: string[] = [];
+  const findings: Map<string, string>[] = [];
   for (const block of blocks) {
     const fields = new Map<string, string>();
     for (const line of block) {
@@ -42,10 +42,14 @@ function findingSeverities(text: string): string[] {
       fields.set(key, previous === undefined ? value : `${previous}\n${value}`);
     }
     if ((fields.get('title') ?? '').trim() === '') continue;
-    const raw = (fields.get('severity') ?? 'info').trim().toUpperCase();
-    severities.push(LEVELS.find((level) => raw.includes(level)) ?? 'info');
+    findings.push(fields);
   }
-  return severities;
+  return findings;
+}
+
+export function normalizeSeverity(text: string): Level | 'info' {
+  const raw = text.trim().toUpperCase();
+  return LEVELS.find((level) => raw.includes(level)) ?? 'info';
 }
 
 function startsWithLevel(text: string): boolean {
@@ -121,7 +125,9 @@ function tagged(line: string, level: Level): boolean {
 }
 
 export function reportedSeverity(text: string): Level | null {
-  const findings = findingSeverities(text);
+  const findings = findingFields(text).map((fields) =>
+    normalizeSeverity(fields.get('severity') ?? ''),
+  );
   if (findings.length > 0)
     return LEVELS.find((level) => findings.includes(level)) ?? null;
   const lines = text.split(/\r?\n/);

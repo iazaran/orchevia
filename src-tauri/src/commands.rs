@@ -312,14 +312,10 @@ pub fn adapter_capabilities(
     state: State<AppState>,
 ) -> Result<Vec<orchevia_core::usage::AdapterCapabilities>, String> {
     let _ = state;
-    Ok([
-        orchevia_core::agents::AdapterKind::Claude,
-        orchevia_core::agents::AdapterKind::Codex,
-        orchevia_core::agents::AdapterKind::Custom,
-    ]
-    .into_iter()
-    .map(orchevia_core::usage::adapter_capabilities)
-    .collect())
+    Ok(orchevia_core::agents::AdapterKind::all()
+        .into_iter()
+        .map(|info| orchevia_core::usage::adapter_capabilities(info.id))
+        .collect())
 }
 
 #[tauri::command]
@@ -965,30 +961,18 @@ pub fn get_run_findings(
         .db
         .list_node_results(&run_id)
         .map_err(|e| e.to_string())?;
-    let mut outputs: Vec<(String, String, String)> = Vec::new();
-    for node in workflow
-        .nodes
-        .iter()
-        .filter(|n| n.kind == orchevia_core::workflow::NodeKind::Agent)
-    {
-        let profile = node
-            .config
-            .agent_profile_id
-            .as_deref()
-            .and_then(|id| state.db.get_agent_profile(id).ok().flatten())
-            .map(|p| p.name)
-            .unwrap_or_default();
-        if let Some(row) = results
-            .iter()
-            .rev()
-            .find(|r| r.node_id == node.id && r.status == "succeeded")
-        {
-            if orchevia_core::run_controls::is_new_execution(row) {
-                outputs.push((node.id.clone(), profile, row.stdout.clone()));
-            }
-        }
-    }
-    Ok(orchevia_core::review::grouped_findings(&outputs))
+    Ok(orchevia_core::review::run_review_findings(
+        &workflow,
+        &results,
+        |id| {
+            state
+                .db
+                .get_agent_profile(id)
+                .ok()
+                .flatten()
+                .map(|p| p.name)
+        },
+    ))
 }
 
 #[tauri::command]
@@ -1057,13 +1041,8 @@ const ALLOWED_SETTINGS: &[&str] = &[
 /// for — so users teach Orchevia their models once, and every profile editor
 /// suggests the union of presets + these. Stored as JSON in settings.
 fn custom_models_key(adapter: &str) -> Option<String> {
-    match adapter.trim().to_ascii_lowercase().as_str() {
-        "claude" | "codex" | "custom" => Some(format!(
-            "models.custom.{}",
-            adapter.trim().to_ascii_lowercase()
-        )),
-        _ => None,
-    }
+    let kind = orchevia_core::agents::AdapterKind::parse(adapter.trim())?;
+    Some(format!("models.custom.{}", kind.as_str()))
 }
 
 fn parse_custom_models(json: &str) -> Result<Vec<String>, String> {
@@ -1478,6 +1457,8 @@ fn find_template(
 pub struct InstantiationPreview {
     pub workflow: Workflow,
     pub setup_needed: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fresh_session_steps: Vec<String>,
 }
 
 #[tauri::command]
@@ -1489,10 +1470,17 @@ pub fn instantiate_template(
 ) -> Result<InstantiationPreview, String> {
     let template = find_template(&state, &id, builtin)?;
     let map = role_map.unwrap_or_else(|| default_role_map(&state));
-    let instantiated = orchevia_core::templates::instantiate(&template, &map, true)?;
+    let mut instantiated = orchevia_core::templates::instantiate(&template, &map, true)?;
+    let fresh_session_steps = if builtin {
+        let profiles = state.db.list_agent_profiles().map_err(|e| e.to_string())?;
+        orchevia_core::agents::use_supported_sessions(&mut instantiated.workflow, &profiles)
+    } else {
+        Vec::new()
+    };
     Ok(InstantiationPreview {
         workflow: instantiated.workflow,
         setup_needed: instantiated.setup_needed,
+        fresh_session_steps,
     })
 }
 
@@ -2215,6 +2203,10 @@ mod tests {
         assert!(custom_models_key("claude").is_some());
         assert!(custom_models_key(" Codex ").is_some());
         assert!(custom_models_key("custom").is_some());
+        assert_eq!(
+            custom_models_key(" Gemini ").as_deref(),
+            Some("models.custom.gemini")
+        );
         assert!(custom_models_key("gpt").is_none());
         assert_eq!(
             parse_custom_models(r#"["a", "b", "a", "  "]"#).expect("parse"),

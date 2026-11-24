@@ -4,16 +4,17 @@ Orchevia focuses on repeatable developer workflows using local CLI agents and
 integrations. The 0.2 line adds a run you can read and steer while it works: step
 cards that say what each step is doing and achieved, and feedback on a step that is
 checked, applied and rerun before anything is published. Source, installers and the
-project page are public.
+project page are public. The 0.3 release adds review comparisons, a repository-first
+Playbooks page and setup for more agents and MCP servers.
 
 ## Implemented
 
 | Area            | Current capabilities                                                                                                                                                                         |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps, publishing-step marker                                      |
-| Agent profiles  | Claude Code, Codex, custom CLI, model and effort settings, optional skills, tool permissions, command previews, real setup check                                                             |
+| Agent profiles  | Claude Code, Codex, Muse Code, Google Antigravity CLI, Gemini CLI, OpenCode and custom profiles, command previews and real setup checks                                                      |
 | Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard, feedback on steps during a run with correction rounds     |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools with an on-request server check, CLI fallback                                                                  |
+| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools with connection recipes for Slack, AWS Knowledge, Google Docs and Gmail, on-request server checks              |
 | Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history                                                                            |
 | Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode                                                                          |
 | Onboarding      | Tool detection, setup wizard, install/auth guidance, setup check for every profile, system/light/dark themes                                                                                 |

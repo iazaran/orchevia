@@ -25,7 +25,7 @@ const NAV: { id: View; label: string; icon: string }[] = [
   { id: 'agents', label: 'Agents', icon: '✦' },
   { id: 'templates', label: 'Templates', icon: '▤' },
   { id: 'automations', label: 'Automations', icon: '⏰' },
-  { id: 'memory', label: 'Memory', icon: '🧠' },
+  { id: 'memory', label: 'Playbooks', icon: '🧠' },
   { id: 'runs', label: 'Runs', icon: '▶' },
   { id: 'environment', label: 'Environment', icon: '◍' },
   { id: 'usage', label: 'Usage & costs', icon: '◔' },

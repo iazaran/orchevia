@@ -92,6 +92,7 @@ export interface WorkflowTemplate {
 export interface InstantiationPreview {
   workflow: Workflow;
   setupNeeded: string[];
+  freshSessionSteps?: string[];
 }
 
 export interface Preference {

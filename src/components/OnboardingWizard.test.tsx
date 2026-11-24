@@ -7,6 +7,30 @@ import { useAppStore } from '../store';
 import { createDefaultProfile } from '../lib/agents';
 
 afterEach(() => vi.restoreAllMocks());
+
+it('can start with only OpenCode installed', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({
+    profiles: [],
+    tools: [{ id: 'opencode', displayName: 'OpenCode', installed: true }],
+    githubState: null,
+  });
+  vi.spyOn(useAppStore.getState(), 'refreshAll').mockResolvedValue(undefined);
+  render(<OnboardingWizard onClose={() => {}} />);
+  const user = userEvent.setup();
+  for (let i = 0; i < 3; i++)
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+  expect(screen.getByLabelText('Assistance CLI')).toHaveValue('opencode');
+  expect(screen.getByLabelText('Assistance model')).toHaveValue('');
+  await user.click(screen.getByRole('button', { name: 'Create recommended profiles' }));
+  await waitFor(async () => expect(await backend.listAgentProfiles()).toHaveLength(7));
+  expect(
+    (await backend.listAgentProfiles()).every(
+      (profile) => profile.adapter === 'opencode',
+    ),
+  ).toBe(true);
+});
 it('creates both reviewers even when their CLIs are unavailable', async () => {
   localStorage.clear();
   const backend = __setMockBackendForTests();

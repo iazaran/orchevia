@@ -153,7 +153,7 @@ describe('plan cost', () => {
     ]);
     expect(cost.totalUsd).toBeCloseTo(2.25);
     expect(cost.complete).toBe(false);
-    expect(planCostGap(cost)).toBe('No plan entered for custom');
+    expect(planCostGap(cost)).toBe('No plan entered for Custom CLI');
     // Pay per use with no dollar report is unknown, never USD 0.
     const codex = estimatePlanCost([providerDay({ adapter: 'codex' })], {
       codex: { billing: 'api' },

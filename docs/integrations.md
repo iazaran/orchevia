@@ -93,6 +93,26 @@ silent server is stopped after 45 seconds, and **Cancel check** stops it sooner.
 check proves the server answers and lists its tools, not that a tool works with your
 data or credentials.
 
+## Connection recipes
+
+Open **Environment → MCP connections**, choose a recipe, and review its command
+and arguments. Install and authenticate the listed tool outside Orchevia. Save
+the server and choose **Check server**. Then select the server and one of its
+listed tools in an **MCP Tool** step. Jira also works in a **Ticket** step.
+
+| Recipe        | Setup                                                                                                                                                                                                                          | Tools exposed by the recipe                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| Jira          | Install `uv` and configure [mcp-atlassian](https://github.com/sooperset/mcp-atlassian/blob/main/docs/configuration.mdx) in the launch environment.                                                                             | Jira and any other services you enable in the server. |
+| Slack         | Install [`slack-mcp-server`](https://github.com/korotovsky/slack-mcp-server) and set `SLACK_MCP_XOXB_TOKEN` outside Orchevia. Use a workspace-approved bot and invite it to the channels it needs.                             | Channel list, history and replies.                    |
+| AWS Knowledge | Install `uv` for the documented [AWS Knowledge stdio proxy](https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server).                                                                                                   | Public AWS documentation, without account access.     |
+| Google Docs   | Install and authenticate [`gws`](https://github.com/googleworkspace/cli), then install [`gws-mcp-server`](https://github.com/conorbronsdon/gws-mcp-server). Enable the Docs and Drive APIs and grant the read scopes you need. | Read-only Docs and Drive tools.                       |
+| Gmail         | Use the same `gws` and `gws-mcp-server` setup. Enable the Gmail API and grant Gmail read access.                                                                                                                               | Read-only Gmail tools.                                |
+
+Use the provider's own setup for agent-managed MCP, such as the [Slack MCP
+server for coding agents](https://docs.slack.dev/ai/slack-mcp-server/connect-to-harnesses/)
+or [Google Workspace remote MCP](https://developers.google.com/workspace/guides/configure-mcp-servers).
+Environment registers the local servers used by workflow nodes.
+
 ## Example: ticket-to-draft-PR
 
 ```text

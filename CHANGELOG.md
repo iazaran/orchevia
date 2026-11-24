@@ -6,6 +6,30 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
+### Added
+
+- **Review rounds** in Runs show fixed, still-open, new and reintroduced
+  findings, with severity changes and links to the visits that reported them.
+  P0/P1 notifications include a round summary when available. [Issue #55](https://github.com/iazaran/orchevia/issues/55)
+- Agent profiles and setup checks for **Muse Code**, **Google Antigravity CLI**,
+  **Gemini CLI**, and **OpenCode**, alongside Claude Code, Codex and custom CLIs.
+- Environment recipes for **Slack**, **AWS Knowledge**, **Google Docs**, **Gmail**
+  and **Jira** prefill the local server editor and guide you through setup.
+- The **First Workflow** template introduces commands, Runs and human approvals
+  without a repository or an AI agent.
+
+### Changed
+
+- **Playbooks** opens saved repositories directly so you can reuse commands,
+  conventions and reviewer choices. Suggestions, preferences, exports and
+  generation history are still available from Playbooks.
+- The run history and selected run details scroll independently.
+- Setup recommends profiles for detected CLIs. Review templates use role labels
+  and Ticket to Draft PR asks the fixer to verify current findings before editing.
+- The README and website lead with installation and the first workflow.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added

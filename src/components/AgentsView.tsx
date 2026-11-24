@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import {
   ADAPTER_LABELS,
+  ADAPTER_KINDS,
+  supportsProfileControls,
+  supportsEffort,
   EFFORT_LEVELS,
   MODEL_PRESETS,
   mergeModelSuggestions,
@@ -56,14 +59,12 @@ export function AgentsView(): React.JSX.Element {
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const setupChecks = useSetupChecks();
   const [newAdapter, setNewAdapter] = useState<AdapterKind>('claude');
-  const [customModels, setCustomModels] = useState<Record<AdapterKind, string[]>>({
-    claude: [],
-    codex: [],
-    custom: [],
-  });
+  const [customModels, setCustomModels] = useState<
+    Partial<Record<AdapterKind, string[]>>
+  >({});
 
   const reloadCustomModels = useCallback((): void => {
-    for (const adapter of ['claude', 'codex', 'custom'] as AdapterKind[]) {
+    for (const adapter of ADAPTER_KINDS) {
       void getBackend()
         .listCustomModels(adapter)
         .then((models) => {
@@ -86,13 +87,10 @@ export function AgentsView(): React.JSX.Element {
       return;
     }
     const before = profiles.find((p) => p.id === profile.id);
-    if (
-      profile.permissionLevel === 'fullAccess' &&
-      before?.permissionLevel !== 'fullAccess'
-    ) {
+    if (hasFullAccess(profile) && (before === undefined || !hasFullAccess(before))) {
       void confirmDialog({
         title: `Give '${profile.name}' full access?`,
-        message: `${ADAPTER_LABELS[profile.adapter]} will skip every permission check for runs with this profile: it can run any command, change any file and call any MCP tool without asking. Schedules that use it need the trusted opt-in.`,
+        message: `${ADAPTER_LABELS[profile.adapter]} can run tools without asking under this configuration. Schedules that use it need the trusted opt-in.`,
         confirmLabel: 'Allow full access',
         danger: true,
       }).then((ok) => {
@@ -131,7 +129,7 @@ export function AgentsView(): React.JSX.Element {
             .then((suggestions) => {
               if (suggestions.length > 0) {
                 setMessage(
-                  `Saved. Orchevia suggests a new preference — see Memory (${suggestions[0]?.key ?? ''}).`,
+                  `Saved. Review the suggested preference in Playbooks (${suggestions[0]?.key ?? ''}).`,
                 );
               }
             })
@@ -166,7 +164,7 @@ export function AgentsView(): React.JSX.Element {
   const addCustomModel = (adapter: AdapterKind, name: string): void => {
     const trimmed = name.trim();
     if (trimmed === '') return;
-    const current = customModels[adapter];
+    const current = customModels[adapter] ?? [];
     if (current.some((m) => m.toLowerCase() === trimmed.toLowerCase())) return;
     void getBackend()
       .saveCustomModels(adapter, [...current, trimmed])
@@ -182,7 +180,7 @@ export function AgentsView(): React.JSX.Element {
     void getBackend()
       .saveCustomModels(
         adapter,
-        customModels[adapter].filter((m) => m !== name),
+        (customModels[adapter] ?? []).filter((m) => m !== name),
       )
       .then((models) => {
         setCustomModels((prev) => ({ ...prev, [adapter]: models }));
@@ -209,9 +207,11 @@ export function AgentsView(): React.JSX.Element {
             }}
             style={{ width: 'auto' }}
           >
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-            <option value="custom">Custom CLI</option>
+            {ADAPTER_KINDS.map((id) => (
+              <option key={id} value={id}>
+                {ADAPTER_LABELS[id]}
+              </option>
+            ))}
           </select>
           <button
             className="btn btn-primary"
@@ -263,31 +263,33 @@ export function AgentsView(): React.JSX.Element {
           <section aria-label="Detected adapters" style={{ marginBottom: 20 }}>
             <h2 style={{ fontSize: 14 }}>Detected AI CLIs</h2>
             <div className="tool-grid">
-              {adapters.map((a) => {
-                const installed = toolById(a.id);
-                return (
-                  <div key={a.id} className="tool-card">
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 8,
-                      }}
-                    >
-                      <h3 style={{ margin: 0 }}>{a.displayName}</h3>
-                      <span
-                        className={`status-pill ${installed ? 'status-succeeded' : 'status-cancelled'}`}
+              {adapters
+                .filter((a) => a.id !== 'custom')
+                .map((a) => {
+                  const installed = toolById(a.id);
+                  return (
+                    <div key={a.id} className="tool-card">
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
                       >
-                        {installed ? 'Installed' : 'Not found'}
-                      </span>
+                        <h3 style={{ margin: 0 }}>{a.displayName}</h3>
+                        <span
+                          className={`status-pill ${installed ? 'status-succeeded' : 'status-cancelled'}`}
+                        >
+                          {installed ? 'Installed' : 'Not found'}
+                        </span>
+                      </div>
+                      <p className="field-hint" style={{ marginBottom: 0 }}>
+                        {a.notes}
+                      </p>
                     </div>
-                    <p className="field-hint" style={{ marginBottom: 0 }}>
-                      {a.notes}
-                    </p>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           </section>
         )}
@@ -302,10 +304,8 @@ export function AgentsView(): React.JSX.Element {
           <div className="empty-state">
             <h2>No Agent Profiles yet</h2>
             <p>
-              Create one for Claude Code and one for Codex — e.g. “Claude —
-              Implementation” and “Codex — Deep Review” — then reference them from AI
-              Agent nodes. Using another coding CLI? Choose “Custom CLI” and point it at
-              the binary.
+              Create a profile for a CLI you use, check its setup, then select it in an AI
+              Agent step.
             </p>
           </div>
         )}
@@ -388,7 +388,7 @@ export function AgentsView(): React.JSX.Element {
                     <dt>Timeout</dt>
                     <dd>{p.defaultTimeoutSecs}s</dd>
                   </div>
-                  {p.adapter !== 'custom' && (
+                  {supportsProfileControls(p.adapter) && (
                     <div>
                       <dt>Permissions</dt>
                       <dd
@@ -501,17 +501,13 @@ function ModelCatalog({
   onAdd,
   onRemove,
 }: {
-  customModels: Record<AdapterKind, string[]>;
+  customModels: Partial<Record<AdapterKind, string[]>>;
   onAdd: (adapter: AdapterKind, name: string) => void;
   onRemove: (adapter: AdapterKind, name: string) => void;
 }): React.JSX.Element {
-  const [drafts, setDrafts] = useState<Record<AdapterKind, string>>({
-    claude: '',
-    codex: '',
-    custom: '',
-  });
+  const [drafts, setDrafts] = useState<Partial<Record<AdapterKind, string>>>({});
   const submit = (adapter: AdapterKind): void => {
-    onAdd(adapter, drafts[adapter]);
+    onAdd(adapter, drafts[adapter] ?? '');
     setDrafts((prev) => ({ ...prev, [adapter]: '' }));
   };
   return (
@@ -522,7 +518,7 @@ function ModelCatalog({
         profile editor; availability depends on your CLI and account.
       </p>
       <div className="tool-grid">
-        {(['claude', 'codex', 'custom'] as AdapterKind[]).map((adapter) => (
+        {ADAPTER_KINDS.map((adapter) => (
           <div key={adapter} className="tool-card">
             <h3 style={{ margin: 0 }}>{ADAPTER_LABELS[adapter]}</h3>
             <div
@@ -538,7 +534,7 @@ function ModelCatalog({
                   {m}
                 </span>
               ))}
-              {customModels[adapter].map((m) => (
+              {(customModels[adapter] ?? []).map((m) => (
                 <span
                   key={m}
                   className="status-pill status-succeeded"
@@ -556,7 +552,7 @@ function ModelCatalog({
                 </span>
               ))}
               {MODEL_PRESETS[adapter].length === 0 &&
-                customModels[adapter].length === 0 && (
+                (customModels[adapter] ?? []).length === 0 && (
                   <span className="field-hint">
                     No suggestions — type any model name.
                   </span>
@@ -565,7 +561,7 @@ function ModelCatalog({
             <div style={{ display: 'flex', gap: 6 }}>
               <input
                 className="input"
-                value={drafts[adapter]}
+                value={drafts[adapter] ?? ''}
                 placeholder="Add model name, e.g. gpt-6-turbo"
                 aria-label={`Add ${ADAPTER_LABELS[adapter]} model`}
                 onChange={(e) => {
@@ -578,7 +574,7 @@ function ModelCatalog({
               />
               <button
                 className="btn"
-                disabled={drafts[adapter].trim() === ''}
+                disabled={(drafts[adapter] ?? '').trim() === ''}
                 onClick={() => {
                   submit(adapter);
                 }}
@@ -600,7 +596,7 @@ function ProfileEditor({
   onSave,
 }: {
   initial: AgentProfile;
-  customModels: Record<AdapterKind, string[]>;
+  customModels: Partial<Record<AdapterKind, string[]>>;
   onCancel: () => void;
   onSave: (p: AgentProfile) => void;
 }): React.JSX.Element {
@@ -653,7 +649,7 @@ function ProfileEditor({
   const validation = useSubmitValidation(validateProfile(form));
   const suggestions = mergeModelSuggestions(
     MODEL_PRESETS[form.adapter],
-    customModels[form.adapter],
+    customModels[form.adapter] ?? [],
   );
   const set = (patch: Partial<AgentProfile>): void => {
     setForm((f) => ({ ...f, ...patch }));
@@ -704,6 +700,7 @@ function ProfileEditor({
               set({
                 adapter,
                 skills: [],
+                effort: supportsEffort(adapter) ? form.effort : undefined,
                 // Keep only what the new CLI can express (agents.rs validation).
                 permissionLevel: permissionLevels(adapter).includes(level)
                   ? level
@@ -712,9 +709,11 @@ function ProfileEditor({
               });
             }}
           >
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-            <option value="custom">Custom CLI</option>
+            {ADAPTER_KINDS.map((id) => (
+              <option key={id} value={id}>
+                {ADAPTER_LABELS[id]}
+              </option>
+            ))}
           </select>
           {form.adapter === 'custom' && (
             <span className="field-hint">
@@ -758,11 +757,8 @@ function ProfileEditor({
               set({ executable: e.target.value === '' ? undefined : e.target.value });
             }}
             placeholder={
-              form.adapter === 'claude'
-                ? 'claude'
-                : form.adapter === 'codex'
-                  ? 'codex'
-                  : '/home/user/.local/bin/aichat'
+              effectiveExecutable({ ...form, executable: undefined }) ||
+              '/home/user/.local/bin/aichat'
             }
           />
         </div>
@@ -813,8 +809,8 @@ function ProfileEditor({
           )}
           <span className="field-hint">
             Suggestions only — type any model your CLI accepts (names evolve; check{' '}
-            <code>{form.adapter === 'custom' ? 'your CLI' : form.adapter} --help</code>{' '}
-            for the current list). Blank means the CLI default.
+            <code>{effectiveExecutable(form) || 'your CLI'} --help</code> for the current
+            list). Blank means the CLI default.
           </span>
         </div>
         <div className="field">
@@ -823,6 +819,7 @@ function ProfileEditor({
           </label>
           <select
             id="prof-effort"
+            disabled={!supportsEffort(form.adapter)}
             className="input"
             value={(form.effort ?? '').toLowerCase()}
             onChange={(e) => {
@@ -837,12 +834,13 @@ function ProfileEditor({
             ))}
           </select>
           <span className="field-hint">
-            Claude: adds --effort · Codex: sets model_reasoning_effort · Custom: ignored.
-            Higher effort usually means slower, more thorough runs.
+            {supportsEffort(form.adapter)
+              ? 'Higher effort usually means slower, more thorough runs.'
+              : 'Set reasoning effort in this CLI’s own configuration.'}
           </span>
         </div>
       </div>
-      {form.adapter !== 'custom' && (
+      {supportsProfileControls(form.adapter) && (
         <div className="field">
           <label className="field-label" htmlFor="prof-skill-name">
             Skills (optional)
@@ -929,7 +927,7 @@ function ProfileEditor({
           </span>
         </div>
       )}
-      {form.adapter !== 'custom' && (
+      {supportsProfileControls(form.adapter) && (
         <PermissionsEditor
           adapter={form.adapter}
           level={form.permissionLevel ?? 'appDefault'}

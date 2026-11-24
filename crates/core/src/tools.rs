@@ -55,9 +55,9 @@ pub struct ToolStatus {
     pub path: Option<String>,
 }
 
-/// Default registry: the four optional CLIs from Milestone 1.
+/// Default registry: Git, GitHub CLI and the built-in agent adapters.
 pub fn default_tools() -> Vec<ToolDefinition> {
-    vec![
+    let developer_tools = [
         ToolDefinition {
             id: "git".into(),
             display_name: "Git".into(),
@@ -70,19 +70,20 @@ pub fn default_tools() -> Vec<ToolDefinition> {
             executables: vec!["gh".into()],
             version_args: vec!["--version".into()],
         },
-        ToolDefinition {
-            id: "claude".into(),
-            display_name: "Claude Code".into(),
-            executables: vec!["claude".into()],
-            version_args: vec!["--version".into()],
-        },
-        ToolDefinition {
-            id: "codex".into(),
-            display_name: "Codex".into(),
-            executables: vec!["codex".into()],
-            version_args: vec!["--version".into()],
-        },
-    ]
+    ];
+    developer_tools
+        .into_iter()
+        .chain(
+            crate::agents::AdapterKind::BUILTIN
+                .into_iter()
+                .map(|id| ToolDefinition {
+                    id: id.as_str().into(),
+                    display_name: id.display_name().into(),
+                    executables: vec![id.default_executable().into()],
+                    version_args: vec!["--version".into()],
+                }),
+        )
+        .collect()
 }
 
 /// Discover all registered tools. Probes are independent and individually
@@ -283,6 +284,7 @@ pub fn well_known_dirs(home: Option<&Path>) -> Vec<PathBuf> {
             ".bun/bin",
             ".cargo/bin",
             ".claude/local",
+            ".opencode/bin",
         ] {
             dirs.push(h.join(sub));
         }
@@ -877,14 +879,15 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_has_four_tools() {
+    fn default_registry_has_developer_tools_and_each_builtin_agent() {
         let tools = default_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 2 + crate::agents::AdapterKind::BUILTIN.len());
         let ids: Vec<&str> = tools.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains(&"git"));
         assert!(ids.contains(&"gh"));
-        assert!(ids.contains(&"claude"));
-        assert!(ids.contains(&"codex"));
+        for adapter in crate::agents::AdapterKind::BUILTIN {
+            assert!(ids.contains(&adapter.as_str()));
+        }
     }
 
     #[cfg(unix)]
@@ -1044,6 +1047,7 @@ mod tests {
             ".bun/bin",
             ".cargo/bin",
             ".claude/local",
+            ".opencode/bin",
             ".local/share/pnpm",
         ] {
             assert!(dirs.contains(&dir.path().join(expected)), "{expected}");

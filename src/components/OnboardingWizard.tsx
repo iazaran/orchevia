@@ -2,10 +2,17 @@ import { useEffect, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import {
   createDefaultProfile,
+  ADAPTERS,
   ADAPTER_LABELS,
+  AGENT_SETUP_GUIDE,
+  AGENT_SIGN_IN,
+  BUILTIN_ADAPTERS,
   recommendedProfiles,
+  supportsEffort,
   type AdapterKind,
+  type AgentProfile,
 } from '../lib/agents';
+import { MCP_PRESETS, MCP_SETUP_GUIDE } from '../lib/integrations';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 import { AgentPermissionsSettings } from './AgentPermissions';
@@ -41,26 +48,15 @@ const INSTALL_HINTS: InstallHint[] = [
       'Back here → Re-detect tools.',
     ],
   },
-  {
-    id: 'claude',
-    name: 'Claude Code',
-    blurb: 'One of the AI CLIs that powers Agent nodes.',
+  ...BUILTIN_ADAPTERS.map((id) => ({
+    id,
+    name: ADAPTERS[id].name,
+    blurb: ADAPTERS[id].notes,
     steps: [
-      'Install from your Claude dashboard, then make sure `claude` is on PATH (`claude --version` in a terminal).',
-      'Authenticate: run `claude login` (or the provider flow) in a terminal.',
-      'Back here → Re-detect tools; the last step checks that each profile can work.',
+      `Install the CLI and verify \`${ADAPTERS[id].executable} --version\` in a terminal.`,
+      AGENT_SIGN_IN[id],
     ],
-  },
-  {
-    id: 'codex',
-    name: 'Codex',
-    blurb: 'The other AI CLI that powers Agent nodes.',
-    steps: [
-      'Install from your Codex dashboard, then make sure `codex` is on PATH (`codex --version` in a terminal).',
-      'Complete the Codex login flow in a terminal.',
-      'Back here → Re-detect tools; the last step checks that each profile can work.',
-    ],
-  },
+  })),
 ];
 
 /** Render `code` spans inside help strings. */
@@ -94,9 +90,20 @@ export function OnboardingWizard({
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [busy, setBusy] = useState(false);
   const [assistanceProfileId, setAssistanceProfileId] = useState('');
-  const [assistanceAdapter, setAssistanceAdapter] = useState<AdapterKind>('claude');
-  const [assistanceModel, setAssistanceModel] = useState('fable');
+  const [pickedAdapter, setPickedAdapter] = useState<AdapterKind | null>(null);
+  const [modelDraft, setAssistanceModel] = useState<string | null>(null);
   const [assistanceEffort, setAssistanceEffort] = useState('high');
+  const detectedAgents = BUILTIN_ADAPTERS.filter((id) =>
+    tools.some((tool) => tool.id === id && tool.installed),
+  );
+  const assistanceAdapter = pickedAdapter ?? detectedAgents[0] ?? 'claude';
+  const assistanceModel =
+    modelDraft ??
+    (assistanceAdapter === 'claude'
+      ? 'fable'
+      : assistanceAdapter === 'codex'
+        ? 'gpt-6.1-sol'
+        : '');
 
   useEffect(() => {
     let cancelled = false;
@@ -120,12 +127,47 @@ export function OnboardingWizard({
       : profiles.find(
           (p) => p.role === 'workflowAssistance' && p.adapter === assistanceAdapter,
         );
-  const needsProfiles =
-    recommendedProfiles(profiles).some((p) => p.role !== 'workflowAssistance') ||
-    existingAssistant === undefined;
+  const missingProfiles = (): AgentProfile[] => {
+    const recommended = recommendedProfiles(profiles).filter(
+      (p) => p.role !== 'workflowAssistance',
+    );
+    if (detectedAgents.length === 0) return recommended;
+    const usable = recommended.filter((p) =>
+      detectedAgents.some((id) => id === p.adapter),
+    );
+    const covered = new Set(
+      [...profiles, ...usable]
+        .filter((p) => detectedAgents.some((id) => id === p.adapter))
+        .map((p) => p.role),
+    );
+    for (const [role, label] of [
+      ['planning', 'Planning'],
+      ['implementation', 'Implementation'],
+      ['fastReview', 'Fast review'],
+      ['deepReview', 'Deep review'],
+      ['workflowGenerator', 'Workflow generator'],
+      ['generalPurpose', 'General purpose'],
+    ] as const) {
+      if (covered.has(role)) continue;
+      const adapter = detectedAgents[0] ?? assistanceAdapter;
+      usable.push({
+        ...createDefaultProfile(adapter),
+        name: `${ADAPTER_LABELS[adapter]} — ${label}`,
+        role,
+      });
+    }
+    return usable;
+  };
+  const needsProfiles = missingProfiles().length > 0 || existingAssistant === undefined;
 
   const installed = (id: string): boolean =>
     tools.some((t) => t.id === id && t.installed);
+
+  const openGuide = (url: string): void => {
+    void getBackend()
+      .openExternalUrl(url)
+      .catch((error: unknown) => setMessage(errorMessage(error), 'error'));
+  };
 
   const finish = (): void => {
     void (async () => {
@@ -146,15 +188,13 @@ export function OnboardingWizard({
   const seedProfiles = (): void => {
     setBusy(true);
     setMessage(null);
-    const missing = recommendedProfiles(profiles).filter(
-      (p) => p.role !== 'workflowAssistance',
-    );
+    const missing = missingProfiles();
     const assistant = existingAssistant ?? {
       ...createDefaultProfile(assistanceAdapter),
       name: `${ADAPTER_LABELS[assistanceAdapter]} — Workflow assistance`,
       role: 'workflowAssistance',
       ...(assistanceModel.trim() ? { model: assistanceModel.trim() } : {}),
-      effort: assistanceEffort,
+      ...(supportsEffort(assistanceAdapter) ? { effort: assistanceEffort } : {}),
     };
     if (!existingAssistant) missing.push(assistant);
     void (async () => {
@@ -188,15 +228,13 @@ export function OnboardingWizard({
         {step === 0 && (
           <>
             <p className="field-hint">
-              Orchevia runs <strong>local-first</strong>: visual workflows that drive CLIs
-              you already installed — Claude Code, Codex, <code>git</code>,{' '}
-              <code>gh</code> — plus Jira via MCP. No accounts, no API keys, no telemetry.
-              Third-party CLIs may contact their own providers; Orchevia itself sends
-              nothing anywhere.
+              Orchevia runs visual workflows on your machine using the developer tools you
+              connect. You sign in to each provider through its own CLI. Orchevia stores
+              workflows and run history locally.
             </p>
             <p className="field-hint">
-              This wizard detects your tools, helps you install/log in where needed, and
-              creates your first Agent Profiles. Nothing runs until you press ▶ Run.
+              Set up an agent now, or try <strong>Templates → First Workflow</strong> with
+              a local command and an approval. You can return to this wizard anytime.
             </p>
           </>
         )}
@@ -253,6 +291,12 @@ export function OnboardingWizard({
             >
               Re-detect tools
             </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => openGuide(AGENT_SETUP_GUIDE)}
+            >
+              Agent setup guide
+            </button>
           </>
         )}
 
@@ -268,21 +312,20 @@ export function OnboardingWizard({
                     : 'Installed but not authenticated — run `gh auth login`, then Re-detect.'
                   : 'Install `gh` and run `gh auth login` to enable GitHub nodes.'}
             </p>
-            <h3 style={{ fontSize: 14 }}>Jira via MCP</h3>
+            <h3 style={{ fontSize: 14 }}>MCP connections</h3>
             <p className="field-hint">
-              Ticket nodes read Jira through a local MCP server (tool{' '}
-              <code>jira_get_issue</code> by default). Register it under Environment → MCP
-              servers: press <strong>+ New MCP server</strong>, open the{' '}
-              <strong>Setting up Jira?</strong> guide inside the editor, and use{' '}
-              <strong>Fill Jira example</strong>. Credentials live in your shell profile
-              (never in Orchevia) — the guide has a “Check what Orchevia sees” button
-              proving they reached the app. Ticket text is untrusted input — passed to
-              agents as data, never executed.
+              Environment has setup recipes for{' '}
+              {MCP_PRESETS.map((preset) => preset.name).join(', ')}. Jira works with
+              Ticket steps. The other recipes expose tools for MCP Tool steps.
             </p>
             <p className="field-hint">
-              After finishing here: open <strong>Environment</strong> in the sidebar to
-              register the MCP server and check GitHub auth.
+              After setup, open <strong>Environment</strong> to register a server and run
+              <strong> Check server</strong>. Sign in through the tool or its launch
+              environment.
             </p>
+            <button className="btn" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
+              MCP setup guide
+            </button>
           </>
         )}
 
@@ -348,12 +391,15 @@ export function OnboardingWizard({
                     value={assistanceAdapter}
                     onChange={(e) => {
                       const adapter = e.target.value as AdapterKind;
-                      setAssistanceAdapter(adapter);
-                      setAssistanceModel(adapter === 'codex' ? 'gpt-6.1-sol' : 'fable');
+                      setPickedAdapter(adapter);
+                      setAssistanceModel(null);
                     }}
                   >
-                    <option value="claude">Claude Code</option>
-                    <option value="codex">Codex</option>
+                    {BUILTIN_ADAPTERS.map((id) => (
+                      <option key={id} value={id}>
+                        {ADAPTER_LABELS[id]}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div className="field">
@@ -375,6 +421,7 @@ export function OnboardingWizard({
                   <select
                     id="setup-assistance-effort"
                     className="input"
+                    disabled={!supportsEffort(assistanceAdapter)}
                     value={assistanceEffort}
                     onChange={(e) => setAssistanceEffort(e.target.value)}
                   >
@@ -401,12 +448,9 @@ export function OnboardingWizard({
               )}
             </div>
             <p className="field-hint" style={{ marginTop: 8 }}>
-              One click creates missing Claude and Codex recommendations, including Claude
-              — General purpose (Opus, medium effort), with configured models (missing
-              CLIs show as unavailable, never break). In Agents you can set models and
-              effort (low/medium/high/xhigh) per profile. Using another coding CLI
-              (aichat, sgpt, mods, …)? Add it manually in Agents → New profile → Custom
-              CLI with the full binary path.
+              {detectedAgents.length > 0
+                ? 'Recommendations use the CLIs Orchevia detected. You can change their role and model in Agents.'
+                : 'Install and re-detect an agent to use it in these recommendations, or create starter profiles for Claude Code and Codex.'}
             </p>
           </>
         )}
@@ -416,8 +460,9 @@ export function OnboardingWizard({
             <p className="field-hint">
               Claude Code and Codex run headless in workflows, so they cannot stop and ask
               for permission: a tool they are not allowed is refused, and the step fails.
-              Choose once what they may do. Change it anytime in Environment → Agent
-              permissions, or give one profile its own level in Agents.
+              Choose what those two CLIs may do here or in Environment → Agent
+              permissions. Muse Code, Gemini CLI, Antigravity and OpenCode use their own
+              CLI settings.
             </p>
             <AgentPermissionsSettings idPrefix="setup-permissions" />
           </>
@@ -426,8 +471,8 @@ export function OnboardingWizard({
         {step === 5 && (
           <>
             <p className="field-hint">
-              Start from a template (9 built-in), generate from a goal (validated preview,
-              never auto-runs), or open the Plan → Approve → Implement → Review demo in{' '}
+              Start from a template, generate from a goal (validated preview, never
+              auto-runs), or open the Plan → Approve → Implement → Review demo in{' '}
               <strong>Workflows</strong>. Schedules and PR watchers live under{' '}
               <strong>Automations</strong>.
             </p>

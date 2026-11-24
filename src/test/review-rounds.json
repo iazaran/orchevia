@@ -1,0 +1,36 @@
+{
+  "visits": [
+    {
+      "nodeId": "review-a",
+      "resultId": 1,
+      "stdout": "```finding\nseverity: P1\nfile: a.rs\nline: 14\ntitle: Missing lock\nexplanation: First explanation\n```\n```finding\nseverity: P2\nfile: b.rs\nline: 30\ntitle: Missing bounds\n```\n```finding\nseverity: P1\nfile: c.rs\ntitle: Lost status\n```"
+    },
+    {
+      "nodeId": "review-a",
+      "resultId": 2,
+      "stdout": "```finding\nseverity: P1\nfile: a.rs\nline: 17\ntitle: Missing lock\n```\n```finding\nseverity: P2\nfile: b.rs\nline: 29\ntitle: Missing bounds\n```"
+    },
+    {
+      "nodeId": "review-b",
+      "resultId": 3,
+      "stdout": "```finding\nseverity: P3\nfile: a.rs\nline: 7\ntitle: Missing lock\n```"
+    },
+    {
+      "nodeId": "review-a",
+      "resultId": 4,
+      "stdout": "```finding\nseverity: P2\nfile: ./a.rs\nline: 20\ntitle: MISSING   LOCK.\nexplanation: New explanation\n```\n```finding\nseverity: P1\nfile: c.rs\nline: 9\ntitle: Lost status\n```\n```finding\nseverity: P3\nfile: a.rs\nline: 7\ntitle: Missing lock\n```\n```finding\nseverity: P3\nfile: d.rs\ntitle: New failure\n```"
+    }
+  ],
+  "expected": [
+    { "title": "Lost status", "state": "reintroduced", "resultIds": [1, 4] },
+    {
+      "title": "MISSING   LOCK.",
+      "state": "stillOpen",
+      "resultIds": [1, 2, 4],
+      "previousSeverity": "P1"
+    },
+    { "title": "Missing bounds", "state": "fixed", "resultIds": [1, 2] },
+    { "title": "Missing lock", "state": "new", "resultIds": [4] },
+    { "title": "New failure", "state": "new", "resultIds": [4] }
+  ]
+}

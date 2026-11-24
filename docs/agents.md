@@ -6,12 +6,31 @@ in Orchevia itself.
 
 ## How Orchevia finds local AI CLIs
 
-- On the Environment screen Orchevia probes `claude` and `codex` on your `PATH`
-  (plus `git` and `gh`) and runs `<exe> --version` with a short timeout to show
-  availability. Nothing is installed or logged in on your behalf.
+- Environment looks for the supported executables, `git` and `gh` on your login
+  shell's `PATH`, then runs `<exe> --version` to show availability. Install and
+  sign in through the CLI, then choose **Re-detect**.
 - If a CLI disappears later, profiles that use it are preserved and show
   **Unavailable**; workflows referencing them fail validation with
   `agent-cli-unavailable` instead of running half-configured.
+
+## Supported CLIs
+
+| CLI                    | Executable      | Setup                                                                                                                                              |
+| ---------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code            | `claude`        | [Install](https://code.claude.com/docs/en/quickstart) and sign in in the terminal.                                                                 |
+| Codex                  | `codex`         | [Install](https://developers.openai.com/codex/cli) and run `codex login`.                                                                          |
+| Muse Code              | `muse`          | [Install](https://dev.meta.ai/docs/muse-code) and complete Meta sign-in.                                                                           |
+| Google Antigravity CLI | `agy`           | [Install](https://antigravity.google/docs/cli/tutorial/) and sign in with Google. This is Google's current Gemini CLI experience for individuals.  |
+| Gemini CLI             | `gemini`        | Use [an eligible Enterprise or API-key setup](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/). |
+| OpenCode               | `opencode`      | [Install](https://opencode.ai/docs/) and use `/connect` to configure a model provider.                                                             |
+| Custom CLI             | Your executable | Set its full path and list any arguments before the prompt.                                                                                        |
+
+Muse Code, both Google CLIs, and OpenCode run headlessly with text output,
+their own permissions, and a fresh invocation for each step. The model is
+optional. Leave it blank to use the CLI default. Antigravity also supports
+profile effort. Orchevia records attempts and transcripts for these profiles.
+Structured activity, provider-reported usage, managed session groups and profile
+skill selection remain available for Claude Code and Codex.
 
 ## What an Agent Profile is
 
@@ -20,7 +39,7 @@ A profile is a persisted, inspectable recipe for invoking one CLI:
 | Field                  | Meaning                                                                                                                                         |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Name                   | Human label, e.g. “Claude — Implementation”                                                                                                     |
-| Provider/CLI           | `claude`, `codex`, or a custom CLI with an explicit executable                                                                                  |
+| Provider/CLI           | A built-in adapter or a custom CLI with an explicit executable                                                                                  |
 | Executable             | Blank = auto-detect the adapter default on `PATH`; or pin an explicit path                                                                      |
 | Model                  | Free-form, adapter-specific (e.g. `opus`); validated lightly since names evolve                                                                 |
 | Additional arguments   | Passed verbatim as argv (no shell); credential-like flags are rejected                                                                          |
@@ -34,7 +53,7 @@ Manage profiles in the **Agents** tab: create, rename, reconfigure, **Test** (pr
 CLI without running a workflow), or delete (workflows referencing it fail validation
 until remapped).
 
-## How to configure Claude / Codex
+## Configure a profile
 
 1. Install and authenticate the CLIs yourself (e.g. `claude` from Claude Code,
    `codex` from Codex CLI) and verify they work in a terminal. Orchevia reads your
@@ -52,6 +71,10 @@ Command shapes (built by the adapter, never by the engine or UI):
 
 - Claude: `claude -p --output-format stream-json --verbose [--model <model>] [--effort <level>] [permission flags] [extra args…]`, prompt on stdin
 - Codex: `codex exec --json [--model <model>] [-c model_reasoning_effort="high"] [permission flag] [extra args…] -`, prompt on stdin
+- Muse Code: `muse exec [--model <model>] [extra args…] -- <prompt>`
+- Antigravity: `agy [--model <model>] [--effort <level>] [extra args…] --output-format text --print=<prompt>`
+- Gemini CLI: `gemini [--model <model>] [extra args…] --output-format text --prompt=<prompt>`
+- OpenCode: `opencode run [--model <provider/model>] [extra args…] -- <prompt>`
 - Custom: `<executable> [--model <model>] [extra args…] <prompt>`
 
 Claude and Codex nodes decode the structured stream into the final response

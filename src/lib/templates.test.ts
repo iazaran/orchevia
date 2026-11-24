@@ -20,9 +20,9 @@ it('creates independent workflow clones on repeated template use', () => {
   expect(first.nodes.map((n) => n.id)).not.toEqual(second.nodes.map((n) => n.id));
 });
 
-it('mirrors nine portable templates, required commands and role setup', () => {
+it('mirrors ten portable templates, required commands and role setup', () => {
   const templates = builtinTemplates();
-  expect(templates).toHaveLength(9);
+  expect(templates).toHaveLength(10);
   for (const template of templates) {
     const roles = Object.fromEntries(
       template.workflow.nodes.flatMap((n) =>
@@ -55,6 +55,20 @@ it('mirrors nine portable templates, required commands and role setup', () => {
       deepReview: 'deep',
     }).setupNeeded.length,
   ).toBeGreaterThan(0);
+});
+
+it('starts the first workflow without a repository or agent profile', () => {
+  const starter = builtinTemplates().find((t) => t.id === 'first-workflow');
+  if (!starter) throw new Error('Missing First Workflow template');
+  const preview = instantiateTemplateLocal(starter, {});
+  expect(preview.setupNeeded).toEqual([]);
+  expect(preview.workflow.nodes.map((n) => n.type)).toEqual([
+    'start',
+    'command',
+    'approval',
+    'command',
+    'end',
+  ]);
 });
 
 it('persists user templates and uses simple portable documents', async () => {
@@ -183,7 +197,7 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
     ticket.workflow.nodes.find((n) => n.id === id)!.config;
   expect(config('impl').sessionGroup).toBe('implementation-{{input.ticket}}');
   expect(config('fix').sessionGroup).toBe(config('impl').sessionGroup);
-  expect(config('fix').contextRefs).toEqual(['rev_fast', 'rev_deep']);
+  expect(config('fix').contextRefs).toEqual(['rev_fast', 'rev_deep', 'ticket']);
   expect(config('rev_fast').sessionGroup).toBeUndefined();
   const preview = instantiateTemplateLocal(ticket, {
     implementation: 'impl-profile',
@@ -192,9 +206,9 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
   });
   const fix = preview.workflow.nodes.find((n) => n.label === 'Fix findings')!;
   expect(fix.config.contextRefs).toEqual(
-    preview.workflow.nodes
-      .filter((n) => ['Claude review', 'Codex review'].includes(n.label ?? ''))
-      .map((n) => n.id),
+    ['Fast review', 'Deep review', 'Load Jira ticket'].map(
+      (label) => preview.workflow.nodes.find((n) => n.label === label)?.id,
+    ),
   );
   for (const template of templates) {
     for (const node of template.workflow.nodes.filter(
@@ -205,6 +219,26 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
         node.config.contextRefs?.includes('diff') === true ? 48000 : 12000,
       );
   }
+});
+
+it('uses fresh invocations for built-in template steps when the local CLI cannot resume', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = await backend.saveAgentProfile(createDefaultProfile('muse'));
+  const roles = {
+    implementation: profile.id,
+    fastReview: profile.id,
+    deepReview: profile.id,
+  };
+  const preview = await backend.instantiateTemplate('ticket-to-pr', true, roles);
+  expect(preview.freshSessionSteps).toEqual(['Implement', 'Fix findings']);
+  expect(
+    preview.workflow.nodes.every(
+      (node) =>
+        node.config.sessionGroup === undefined &&
+        node.config.sessionMaxTurns === undefined,
+    ),
+  ).toBe(true);
 });
 
 it('imports declared tools and reports which ones the mapped profiles lack', async () => {

@@ -9,12 +9,19 @@ use crate::process::CommandSpec;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// Linux limits a single argv string to 128 KiB on 4 KiB-page systems.
+const MAX_ARG_PROMPT_BYTES: usize = 120 * 1024;
+
 /// Supported AI CLI adapters. Serialized lowercase for stability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AdapterKind {
     Claude,
     Codex,
+    Muse,
+    Gemini,
+    Antigravity,
+    OpenCode,
     /// User-registered CLI (added manually in Agents). Contract: prompt is
     /// passed as the final argv element; `--model <m>` is added only when a
     /// model is set; `extra_args` come first. Effort is intentionally
@@ -23,70 +30,75 @@ pub enum AdapterKind {
 }
 
 impl AdapterKind {
+    pub const BUILTIN: [Self; 6] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Muse,
+        Self::Antigravity,
+        Self::Gemini,
+        Self::OpenCode,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
-            AdapterKind::Claude => "claude",
-            AdapterKind::Codex => "codex",
-            AdapterKind::Custom => "custom",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Muse => "muse",
+            Self::Gemini => "gemini",
+            Self::Antigravity => "antigravity",
+            Self::OpenCode => "opencode",
+            Self::Custom => "custom",
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
-            AdapterKind::Claude => "Claude Code",
-            AdapterKind::Codex => "Codex",
-            AdapterKind::Custom => "Custom CLI",
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Muse => "Muse Code",
+            Self::Gemini => "Gemini CLI",
+            Self::Antigravity => "Google Antigravity CLI",
+            Self::OpenCode => "OpenCode",
+            Self::Custom => "Custom CLI",
         }
     }
 
     pub fn default_executable(self) -> &'static str {
         match self {
-            AdapterKind::Claude => "claude",
-            AdapterKind::Codex => "codex",
-            // Custom has no default: the user must set an explicit path.
-            AdapterKind::Custom => "",
+            Self::Antigravity => "agy",
+            Self::Custom => "",
+            _ => self.as_str(),
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "claude" => Some(AdapterKind::Claude),
-            "codex" => Some(AdapterKind::Codex),
-            "custom" => Some(AdapterKind::Custom),
-            _ => None,
-        }
+        Self::BUILTIN
+            .into_iter()
+            .chain([Self::Custom])
+            .find(|kind| s.eq_ignore_ascii_case(kind.as_str()))
+    }
+
+    pub fn supports_profile_controls(self) -> bool {
+        matches!(self, Self::Claude | Self::Codex)
     }
 
     pub fn all() -> Vec<AdapterInfo> {
-        vec![
-            AdapterInfo {
-                id: AdapterKind::Claude,
-                display_name: "Claude Code".to_string(),
-                default_executable: "claude".to_string(),
-                supports_model_flag: true,
-                supports_session_resume: true,
-                notes: "Uses `claude -p --output-format stream-json --verbose` with the prompt on stdin, so runs report tokens and USD. Model via `--model`."
-                    .to_string(),
-            },
-            AdapterInfo {
-                id: AdapterKind::Custom,
-                display_name: "Custom CLI".to_string(),
-                default_executable: String::new(),
-                supports_model_flag: true,
-                supports_session_resume: false,
-                notes: "Your own coding CLI (aichat, sgpt, mods, …). Set the full binary path; prompt goes last, `--model` only when set."
-                    .to_string(),
-            },
-            AdapterInfo {
-                id: AdapterKind::Codex,
-                display_name: "Codex".to_string(),
-                default_executable: "codex".to_string(),
-                supports_model_flag: true,
-                supports_session_resume: true,
-                notes: "Uses `codex exec --json -` with the prompt on stdin, so runs report tokens. Model via `--model`. Non-interactive."
-                    .to_string(),
-            },
-        ]
+        Self::BUILTIN.into_iter().chain([Self::Custom]).map(|id| AdapterInfo {
+            id,
+            display_name: id.display_name().into(),
+            default_executable: id.default_executable().into(),
+            supports_model_flag: true,
+            supports_session_resume: id.supports_profile_controls(),
+            notes: match id {
+                Self::Claude => "Streams tokens and reported USD through Claude Code. Prompt on stdin.",
+                Self::Codex => "Streams tokens through Codex. Prompt on stdin.",
+                Self::Muse => "Runs muse exec with Muse Code's permission settings.",
+                Self::Gemini => "Runs Gemini CLI headlessly. Requires a supported enterprise or API-key setup.",
+                Self::Antigravity => "Runs agy in print mode using your Google sign-in and CLI settings.",
+                Self::OpenCode => "Runs opencode run with your connected provider and CLI settings.",
+                Self::Custom => "Your own coding CLI. Set the full binary path; prompt goes last.",
+            }.into(),
+        }).collect()
     }
 }
 
@@ -132,7 +144,7 @@ fn discover_agent_skills_in(
             vec![home.join(".agents/skills"), home.join(".codex/skills")],
             ".agents/skills",
         ),
-        AdapterKind::Custom => return Vec::new(),
+        _ => return Vec::new(),
     };
     if let Some(dir) = working_dir.filter(|dir| dir.is_dir()) {
         let root = dir
@@ -341,7 +353,7 @@ fn permission_flags(adapter: AdapterKind) -> &'static [&'static str] {
             "--full-auto",
             "--approve-for-me",
         ],
-        AdapterKind::Custom => &[],
+        _ => &[],
     }
 }
 
@@ -411,7 +423,7 @@ impl AgentProfile {
                 errors.push(e);
             }
         }
-        if self.adapter == AdapterKind::Custom && !self.skills.is_empty() {
+        if !self.adapter.supports_profile_controls() && !self.skills.is_empty() {
             errors
                 .push("Skills are supported only for Claude Code and Codex profiles.".to_string());
         }
@@ -456,7 +468,7 @@ impl AgentProfile {
         ));
         match (self.adapter, self.permission_level) {
             (_, PermissionLevel::AppDefault | PermissionLevel::CliSettings) => {}
-            (AdapterKind::Custom, _) => errors.push(
+            (adapter, _) if !adapter.supports_profile_controls() => errors.push(
                 "Permission levels apply only to Claude Code and Codex profiles.".to_string(),
             ),
             (AdapterKind::Codex, PermissionLevel::AllowedTools) => errors.push(
@@ -512,7 +524,7 @@ impl AgentProfile {
         if self.permission_level == PermissionLevel::AppDefault {
             self.permission_level = match default {
                 PermissionLevel::FullAccess
-                    if self.adapter != AdapterKind::Custom
+                    if self.adapter.supports_profile_controls()
                         && self.permission_argument().is_none() =>
                 {
                     PermissionLevel::FullAccess
@@ -549,6 +561,19 @@ impl AgentProfile {
                     ) || (matches!(arg.as_str(), "--sandbox" | "-s")
                         && next == Some("danger-full-access"))
                 }
+                AdapterKind::Muse => matches!(
+                    arg.as_str(),
+                    "--yolo" | "--disable-approval" | "--disable-sandbox"
+                ),
+                AdapterKind::Gemini => {
+                    matches!(arg.as_str(), "--yolo" | "-y" | "--approval-mode=yolo")
+                        || (arg == "--approval-mode" && next == Some("yolo"))
+                }
+                AdapterKind::Antigravity => {
+                    arg == "--dangerously-skip-permissions"
+                        || arg == "--dangerously-skip-permissions=true"
+                }
+                AdapterKind::OpenCode => arg == "--auto" || arg == "--auto=true",
                 AdapterKind::Custom => false,
             }
         })
@@ -639,7 +664,7 @@ pub fn structured_output(profile: &AgentProfile) -> StructuredOutput {
     let flags: &[&str] = match profile.adapter {
         AdapterKind::Claude => &["--output-format"],
         AdapterKind::Codex => &["--json", "--experimental-json"],
-        AdapterKind::Custom => return StructuredOutput::Unsupported,
+        _ => return StructuredOutput::Unsupported,
     };
     for flag in flags {
         if let Some(arg) = has_flag(profile, flag) {
@@ -691,9 +716,7 @@ fn prepare(
         let prefix = match profile.adapter {
             AdapterKind::Claude => "/",
             AdapterKind::Codex => "$",
-            AdapterKind::Custom => {
-                return Err("Custom CLI profiles cannot invoke skills.".to_string())
-            }
+            _ => return Err("This CLI profile cannot invoke skills.".to_string()),
         };
         format!(
             "{}\n\n{rendered_prompt}",
@@ -724,7 +747,10 @@ fn push_model_and_effort(args: &mut Vec<String>, profile: &AgentProfile, effort:
         args.push(model.trim().to_string());
     }
     if let Some(effort) = effort {
-        if profile.adapter == AdapterKind::Claude {
+        if matches!(
+            profile.adapter,
+            AdapterKind::Claude | AdapterKind::Antigravity
+        ) {
             args.push("--effort".to_string());
             args.push(effort.to_string());
         } else if profile.adapter == AdapterKind::Codex {
@@ -788,6 +814,13 @@ pub fn build_text_agent_command(
         prompt,
         effort,
     } = prepare(profile, rendered_prompt, node_working_dir)?;
+    if matches!(
+        profile.adapter,
+        AdapterKind::Muse | AdapterKind::OpenCode | AdapterKind::Antigravity | AdapterKind::Gemini
+    ) && prompt.len() > MAX_ARG_PROMPT_BYTES
+    {
+        return Err(format!("{} takes prompts as a command argument. Shorten the prompt or reduce the step's context character limit. The prompt must fit in 120 KiB.", profile.adapter.display_name()));
+    }
     let mut args: Vec<String> = Vec::new();
     let stdin = match profile.adapter {
         AdapterKind::Claude if claude_reads_custom_input(profile).is_some() => {
@@ -818,6 +851,32 @@ pub fn build_text_agent_command(
             args.extend(profile.extra_args.iter().cloned());
             Some(prompt)
         }
+        AdapterKind::Muse | AdapterKind::OpenCode => {
+            args.push(
+                if profile.adapter == AdapterKind::Muse {
+                    "exec"
+                } else {
+                    "run"
+                }
+                .into(),
+            );
+            push_model_and_effort(&mut args, profile, None);
+            args.extend(profile.extra_args.iter().cloned());
+            args.extend(["--".into(), prompt]);
+            None
+        }
+        AdapterKind::Gemini | AdapterKind::Antigravity => {
+            push_model_and_effort(&mut args, profile, effort.as_deref());
+            args.extend(profile.extra_args.iter().cloned());
+            args.extend(["--output-format".into(), "text".into()]);
+            let flag = if profile.adapter == AdapterKind::Gemini {
+                "--prompt"
+            } else {
+                "--print"
+            };
+            args.push(format!("{flag}={prompt}"));
+            None
+        }
         AdapterKind::Custom => {
             push_model_and_effort(&mut args, profile, None);
             args.extend(profile.extra_args.iter().cloned());
@@ -841,8 +900,8 @@ fn build_structured_command(
     node_working_dir: Option<&str>,
     resume_id: Option<&str>,
 ) -> Result<CommandSpec, String> {
-    if profile.adapter == AdapterKind::Custom {
-        return Err("Custom CLI profiles do not support structured output.".into());
+    if !profile.adapter.supports_profile_controls() {
+        return Err("This CLI profile does not support structured output.".into());
     }
     let Prepared {
         working_dir,
@@ -883,11 +942,37 @@ fn build_structured_command(
     })
 }
 
+/// Use ordinary handoffs for automatically created steps whose mapped profile
+/// cannot resume a managed session. The caller reports the affected steps.
+pub fn use_supported_sessions(
+    workflow: &mut crate::workflow::Workflow,
+    profiles: &[AgentProfile],
+) -> Vec<String> {
+    let mut changed = Vec::new();
+    for node in &mut workflow.nodes {
+        if node.kind != crate::workflow::NodeKind::Agent || node.config.session_group.is_none() {
+            continue;
+        }
+        let profile = profiles
+            .iter()
+            .find(|p| Some(p.id.as_str()) == node.config.agent_profile_id.as_deref());
+        if profile.is_some_and(|p| !p.adapter.supports_profile_controls()) {
+            node.config.session_group = None;
+            node.config.session_max_turns = None;
+            changed.push(node.label.clone().unwrap_or_else(|| node.id.clone()));
+        }
+    }
+    changed
+}
+
 /// Managed conversations require explicit ids and structured output. Conflicting
 /// user flags are rejected before invoking the CLI rather than overriding them.
 pub fn validate_session_profile(profile: &AgentProfile) -> Result<(), String> {
-    if profile.adapter == AdapterKind::Custom {
-        return Err("Custom CLI profiles do not support session groups.".into());
+    if !profile.adapter.supports_profile_controls() {
+        return Err(format!(
+            "{} profiles do not support session groups.",
+            profile.adapter.display_name()
+        ));
     }
     let flags: &[&str] = match profile.adapter {
         AdapterKind::Claude => &[
@@ -962,6 +1047,62 @@ pub fn preview_agent_command(profile: &AgentProfile, rendered_prompt: &str) -> S
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_adapters_use_headless_text_and_keep_cli_permissions() {
+        for (kind, executable, expected) in [
+            (
+                AdapterKind::Muse,
+                "muse",
+                vec!["exec", "--model", "test-model", "--", "--prompt-like"],
+            ),
+            (
+                AdapterKind::Gemini,
+                "gemini",
+                vec![
+                    "--model",
+                    "test-model",
+                    "--output-format",
+                    "text",
+                    "--prompt=--prompt-like",
+                ],
+            ),
+            (
+                AdapterKind::Antigravity,
+                "agy",
+                vec![
+                    "--model",
+                    "test-model",
+                    "--output-format",
+                    "text",
+                    "--print=--prompt-like",
+                ],
+            ),
+            (
+                AdapterKind::OpenCode,
+                "opencode",
+                vec!["run", "--model", "test-model", "--", "--prompt-like"],
+            ),
+        ] {
+            let mut profile = AgentProfile {
+                adapter: kind,
+                ..claude_profile()
+            };
+            profile.permission_level = PermissionLevel::AppDefault;
+            profile.model = Some("test-model".into());
+            let profile = profile.with_app_default(PermissionLevel::FullAccess);
+            assert_eq!(profile.permission_level, PermissionLevel::CliSettings);
+            assert!(validate_session_profile(&profile).is_err());
+            assert!(matches!(
+                structured_output(&profile),
+                StructuredOutput::Unsupported
+            ));
+            let actual = build_agent_command(&profile, "--prompt-like", None).unwrap();
+            assert_eq!(actual.executable, executable);
+            assert_eq!(actual.args, expected);
+            assert!(actual.stdin.is_none());
+        }
+    }
+
     fn claude_profile() -> AgentProfile {
         AgentProfile {
             id: "p1".to_string(),
@@ -979,6 +1120,16 @@ mod tests {
             permission_level: PermissionLevel::CliSettings,
             allowed_tools: vec![],
         }
+    }
+
+    #[test]
+    fn oversized_multibyte_prompt_has_an_actionable_error() {
+        let profile = AgentProfile {
+            adapter: AdapterKind::Muse,
+            ..claude_profile()
+        };
+        let error = build_agent_command(&profile, &"💬".repeat(32_000), None).unwrap_err();
+        assert!(error.contains("prompt must fit in 120 KiB"), "{error}");
     }
 
     #[test]

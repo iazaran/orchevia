@@ -569,7 +569,7 @@ fn template(
     }
 }
 
-/// The nine built-in templates.
+/// Portable built-in templates for preview and desktop.
 pub fn builtin_templates() -> Vec<Template> {
     vec![
         implement_task(),
@@ -581,7 +581,29 @@ pub fn builtin_templates() -> Vec<Template> {
         create_draft_pr(),
         address_feedback(),
         ticket_to_pr(),
+        first_workflow(),
     ]
+}
+
+fn first_workflow() -> Template {
+    template(
+        "first-workflow",
+        "First Workflow",
+        "getting-started",
+        "Try a run with a local command, an approval and a second command. Open Runs to see what happened. Start with Dry run to try the controls without running commands.",
+        vec![],
+        vec![
+            start(),
+            command("hello", MAIN, row(1), "Print a message", "echo", &["Hello from Orchevia"]),
+            approval("approve", MAIN, row(2), "Continue?", "Open the first step in Runs to see its output, then approve to continue."),
+            command("done", MAIN, row(3), "Finish the run", "echo", &["Approval received"]),
+            end(row(4)),
+        ],
+        edges(&[
+            ("start", "hello", None), ("hello", "approve", None),
+            ("approve", "done", None), ("done", "end", None),
+        ]),
+    )
 }
 
 fn implement_task() -> Template {
@@ -589,7 +611,7 @@ fn implement_task() -> Template {
         "implement-ticket",
         "Implement a Task",
         "feature",
-        "Plan → you approve → implement → test → review. Works from a description or pasted ticket text; no Jira setup needed. Leaves the change uncommitted for you.",
+        "Plan → you approve → implement → test → review. Paste a task or ticket description. Give feedback in Runs while work is in progress. Changes stay in your working tree.",
         vec![
             input(
                 "task",
@@ -653,7 +675,7 @@ fn review_pull_request() -> Template {
         "review-pr",
         "Review Pull Request",
         "review",
-        "Load a PR and its diff → Claude and Codex review in parallel → if they find P0/P1 problems, you approve posting one comment; otherwise it is marked clean.",
+        "Load a PR and its diff, then run two configured reviewers in parallel. Approve before posting a comment when they find P0/P1 problems.",
         vec![pr_input()],
         vec![
             start(),
@@ -669,7 +691,7 @@ fn review_pull_request() -> Template {
             reviewer(
                 "revA",
                 (LEFT, row(3)),
-                "Claude review",
+                "Fast review",
                 "fastReview",
                 "Review pull request #{{input.prNumber}} using its details and diff above. Open files in this repository for context when the diff is not enough.",
                 &["details", "diff"],
@@ -678,7 +700,7 @@ fn review_pull_request() -> Template {
             reviewer(
                 "revB",
                 (RIGHT, row(3)),
-                "Codex review",
+                "Deep review",
                 "deepReview",
                 "Deep review of pull request #{{input.prNumber}} (details and diff above): correctness, security and missing tests.",
                 &["details", "diff"],
@@ -701,7 +723,7 @@ fn review_pull_request() -> Template {
                 NodeConfig {
                     github_op: Some(GitHubOp::PostComment {
                         number: 0,
-                        body: "Review findings from Orchevia (Claude and Codex)\n\n### Claude\n\n{{node.revA.output}}\n\n### Codex\n\n{{node.revB.output}}".into(),
+                        body: "Review findings from Orchevia\n\n### Fast review\n\n{{node.revA.output}}\n\n### Deep review\n\n{{node.revB.output}}".into(),
                     }),
                     ..NodeConfig::default()
                 },
@@ -899,7 +921,7 @@ fn multi_agent_review() -> Template {
         "multi-agent-review",
         "Run Multi-Agent Review",
         "review",
-        "Diff this branch and your uncommitted work against a base branch → Claude and Codex review in parallel → triage P0/P1 findings or mark it clean.",
+        "Compare this branch and its working tree with a base branch. Two configured reviewers run in parallel. A triage step checks their P0/P1 findings against the code.",
         vec![input("base", "Compare against branch", Some("main"))],
         vec![
             start(),
@@ -914,7 +936,7 @@ fn multi_agent_review() -> Template {
             reviewer(
                 "revA",
                 (LEFT, row(2)),
-                "Claude review",
+                "Fast review",
                 "fastReview",
                 "Review the changes in the diff above (this branch and uncommitted work compared with {{input.base}}). Open files in this repository for context when the diff is not enough.",
                 &["diff"],
@@ -923,7 +945,7 @@ fn multi_agent_review() -> Template {
             reviewer(
                 "revB",
                 (RIGHT, row(2)),
-                "Codex review",
+                "Deep review",
                 "deepReview",
                 "Deep review of the diff above (compared with {{input.base}}): correctness, security and missing tests.",
                 &["diff"],
@@ -1086,8 +1108,8 @@ fn address_feedback() -> Template {
                 LEFT,
                 row(6),
                 "Fix findings",
-                "Fix the P0/P1 findings from the review above.",
-                &["review"],
+                "Verify and address the P0/P1 findings against the original PR feedback and the current diff.",
+                &["review", "feedback"],
             ),
             end(row(7)),
         ],
@@ -1123,7 +1145,7 @@ fn ticket_to_pr() -> Template {
         "ticket-to-pr",
         "Ticket to Draft PR",
         "feature",
-        "Jira ticket → branch → implement → test → Claude and Codex review → fix loop → you review → commit, push and open a draft PR. Needs a Jira MCP server.",
+        "Implement a Jira ticket, run tests and compare both reviewers’ findings across fix rounds. Approve before Orchevia commits, pushes and opens a draft PR.",
         vec![
             input("ticket", "Jira ticket key or URL (e.g. DEV-1234)", None),
             input("branch", "New branch name (e.g. dev-1234-short-title)", None),
@@ -1163,7 +1185,7 @@ fn ticket_to_pr() -> Template {
             reviewer(
                 "rev_fast",
                 (LEFT, row(5)),
-                "Claude review",
+                "Fast review",
                 "fastReview",
                 "Review the uncommitted changes for {{ticket.key}} (run `git diff`) against the ticket above.",
                 &["ticket", "tests"],
@@ -1172,7 +1194,7 @@ fn ticket_to_pr() -> Template {
             reviewer(
                 "rev_deep",
                 (RIGHT, row(5)),
-                "Codex review",
+                "Deep review",
                 "deepReview",
                 "Deep review of the uncommitted changes for {{ticket.key}} (run `git diff`): correctness, security and missing tests.",
                 &["ticket", "tests"],
@@ -1184,8 +1206,8 @@ fn ticket_to_pr() -> Template {
                 LEFT - 260.0,
                 row(6),
                 "Fix findings",
-                "Fix the P0/P1 findings from both reviews above.",
-                &["rev_fast", "rev_deep"],
+                "Verify the current P0/P1 findings for {{ticket.key}} against the ticket and the diff. Fix the findings that hold up. Explain any you could not confirm or chose to leave open so the next reviewer can check the resulting code independently.",
+                &["rev_fast", "rev_deep", "ticket"],
             ),
             approval(
                 "approve",
@@ -1217,7 +1239,7 @@ fn ticket_to_pr() -> Template {
                 "Open draft PR",
                 GitHubOp::CreatePr {
                     title: "{{ticket.key}}: {{ticket.title}}".into(),
-                    body: "Implements {{ticket.key}}. Tested with `{{input.testCommand}}` and reviewed by Claude and Codex in Orchevia.".into(),
+                    body: "Implements {{ticket.key}}. Tested with `{{input.testCommand}}` and reviewed with Orchevia's fast and deep review profiles.".into(),
                     base: "{{input.base}}".into(),
                     head: "{{input.branch}}".into(),
                     draft: true,
@@ -1720,6 +1742,12 @@ done
                         (visits("fix"), visits("rev_deep"), visits("rev_fast")),
                         (1, 2, 2)
                     );
+                    let findings = crate::review::run_review_findings(&workflow, &rows, |_| None);
+                    assert!(findings.iter().any(|group| group.sources.is_empty()
+                        && group
+                            .history
+                            .iter()
+                            .any(|item| item.state == crate::review::FindingState::Fixed)));
                     assert_eq!(
                         git(&remote, &["log", "-1", "--format=%s", "dev-1234-cart"]),
                         "DEV-1234: Cart bug"
@@ -1907,7 +1935,7 @@ done
                 template.id
             );
         }
-        assert_eq!(builtin_templates().len(), 9);
+        assert_eq!(builtin_templates().len(), 10);
     }
 
     #[test]
@@ -1918,6 +1946,26 @@ done
             .expect("template");
         let err = instantiate(&template, &HashMap::new(), false).expect_err("must fail");
         assert!(err.contains("planning"), "{err}");
+    }
+
+    #[test]
+    fn builtin_session_fallback_keeps_reviewer_handoffs() {
+        let profile: crate::agents::AgentProfile = serde_json::from_value(serde_json::json!({
+            "id": "muse", "name": "Muse", "adapter": "muse", "extraArgs": [],
+            "workingDirMode": "node", "defaultTimeoutSecs": 60
+        }))
+        .unwrap();
+        let mut workflow = ticket_to_pr().workflow;
+        for node in &mut workflow.nodes {
+            if node.config.agent_role.as_deref() == Some("implementation") {
+                node.config.agent_profile_id = Some(profile.id.clone());
+            }
+        }
+        let changed = crate::agents::use_supported_sessions(&mut workflow, &[profile]);
+        assert_eq!(changed, ["Implement", "Fix findings"]);
+        let fix = workflow.nodes.iter().find(|n| n.id == "fix").unwrap();
+        assert!(fix.config.session_group.is_none() && fix.config.session_max_turns.is_none());
+        assert_eq!(fix.config.context_refs, ["rev_fast", "rev_deep", "ticket"]);
     }
 
     #[test]

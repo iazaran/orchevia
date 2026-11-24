@@ -1,6 +1,13 @@
 import { StartRunDialog, UsageLimitsDialog } from './RunControls';
 import { useEffect, useState } from 'react';
-import { ADAPTER_LABELS, createDefaultProfile, type AdapterKind } from '../lib/agents';
+import {
+  ADAPTER_LABELS,
+  BUILTIN_ADAPTERS,
+  applySupportedSessions,
+  createDefaultProfile,
+  type AdapterKind,
+  type AgentProfile,
+} from '../lib/agents';
 import { getBackend } from '../lib/backend';
 import {
   applyAssistancePreview,
@@ -44,7 +51,7 @@ function explainGenerationError(raw: string): string {
     return (
       'The AI proposed Ticket steps (great for Jira flows), but no Jira MCP server ' +
       'or ticket key is configured, so the proposal was rejected. Either: (1) set up ' +
-      'Jira in Environment → MCP servers (Fill Jira example) and retry, or (2) rephrase ' +
+      'Jira in Environment → MCP connections and retry, or (2) rephrase ' +
       'the goal without tickets — e.g. “implement in branch X, review with Codex”. ' +
       `Details: ${raw}`
     );
@@ -133,7 +140,13 @@ export function WorkflowsView(): React.JSX.Element {
   const [showGenerator, setShowGenerator] = useState(false);
   const [assistanceBase, setAssistanceBase] = useState<Workflow | null>(null);
   const [assistanceMode, setAssistanceMode] = useState<AssistanceMode>('optimize');
-  const [generatorAdapter, setGeneratorAdapter] = useState<AdapterKind>('claude');
+  const [generatorChoice, setGeneratorAdapter] = useState<AdapterKind | null>(null);
+  const generatorAdapter =
+    generatorChoice ??
+    profiles.find(
+      (profile) => profile.role === 'workflowGenerator' && profile.adapter !== 'custom',
+    )?.adapter ??
+    'claude';
   const [advancedProfileId, setAdvancedProfileId] = useState('');
   const [showAdvancedProfile, setShowAdvancedProfile] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -266,7 +279,13 @@ export function WorkflowsView(): React.JSX.Element {
       reviewA: profiles.find((p) => p.role === 'fastReview')?.id ?? claude,
       reviewB: profiles.find((p) => p.role === 'deepReview')?.id ?? codex,
     });
+    const fresh = applySupportedSessions(wf, profiles);
     updateActiveWorkflowAfterCreate(wf);
+    if (fresh.length > 0)
+      setRunMessage(
+        `These steps use fresh sessions with the selected CLI: ${fresh.join(', ')}.`,
+        'info',
+      );
   };
 
   /** PR review demo: load PR → parallel reviews → condition → draft note. */
@@ -632,7 +651,7 @@ export function WorkflowsView(): React.JSX.Element {
             throw new Error('The original workflow no longer exists.');
           applyAssistancePreview(assistanceBase, persisted.definition, preview.workflow);
         }
-        const created: string[] = [];
+        const created: AgentProfile[] = [];
         // Auto-wire the MCP server when there is exactly one enabled choice:
         // ticket/mcp nodes without a server get it, so Jira flows accept
         // immediately when the user has their server configured.
@@ -674,7 +693,7 @@ export function WorkflowsView(): React.JSX.Element {
             role,
           };
           const saved = await backend.saveAgentProfile(fresh);
-          created.push(saved.name);
+          created.push(saved);
           for (const node of workflow.nodes) {
             if (node.type === 'agent' && node.config.agentRole === role) {
               node.config.agentProfileId = saved.id;
@@ -683,6 +702,8 @@ export function WorkflowsView(): React.JSX.Element {
           }
         }
         if (created.length > 0) await refreshProfiles();
+        const fresh =
+          assistanceBase === null ? applySupportedSessions(workflow, created) : [];
         if (assistanceBase !== null) {
           const persisted = await backend.getWorkflow(assistanceBase.id);
           if (persisted === null)
@@ -718,15 +739,12 @@ export function WorkflowsView(): React.JSX.Element {
             currentState.overlayRunId === null)
         )
           selectWorkflow(stored.id);
-        if (created.length > 0) {
-          setRunMessage(
-            `Accepted. Created profiles for missing roles: ${created.join(', ')}. Tune model/effort in Agents anytime.`,
-            'info',
-          );
-        }
         const notes: string[] = [];
+        if (fresh.length > 0) notes.push(`used fresh sessions for ${fresh.join(', ')}`);
         if (created.length > 0) {
-          notes.push(`created profiles for missing roles: ${created.join(', ')}`);
+          notes.push(
+            `created profiles for missing roles: ${created.map((profile) => profile.name).join(', ')}`,
+          );
         }
         if (autoServer !== null && assistanceBase === null) {
           notes.push('wired your MCP server into ticket/MCP nodes');
@@ -1261,8 +1279,11 @@ export function WorkflowsView(): React.JSX.Element {
                     setGeneratorAdapter(e.target.value as AdapterKind);
                   }}
                 >
-                  <option value="claude">Claude Code</option>
-                  <option value="codex">Codex</option>
+                  {BUILTIN_ADAPTERS.map((id) => (
+                    <option key={id} value={id}>
+                      {ADAPTER_LABELS[id]}
+                    </option>
+                  ))}
                 </select>
                 <button
                   className="btn btn-primary btn-generate"

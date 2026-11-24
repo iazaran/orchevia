@@ -2633,20 +2633,90 @@ details[open] > .gen-summary::after {
 .run-findings td {
   min-width: 0;
 }
-
-.runs-layout {
+.review-rounds > summary .field-hint {
+  margin-left: 8px;
+}
+.review-occurrences {
   display: grid;
-  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
-  gap: 20px;
+  gap: 8px;
+  padding-left: 20px;
+}
+
+.runs-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.runs-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(245px, 29%) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+}
+.runs-layout > .run-list,
+.run-details {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 4px;
+}
+.runs-layout > :focus-visible {
+  outline-offset: -2px;
 }
 @media (max-width: 900px) {
   .runs-layout {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, max-content) minmax(0, 1fr);
   }
   .runs-layout > .run-list {
-    max-height: 220px;
-    overflow: auto;
+    max-height: min(26vh, 220px);
   }
+}
+
+.playbooks-view {
+  max-width: 1040px;
+  width: 100%;
+}
+.playbook-editor {
+  margin-bottom: 20px;
+}
+.playbook-evidence {
+  margin-top: 16px;
+}
+.playbook-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 8px 16px;
+}
+.playbook-fields .btn {
+  align-self: flex-start;
+}
+.playbook-section {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-m);
+  overflow-wrap: anywhere;
+}
+.playbook-section > summary {
+  color: var(--text-0);
+  font-weight: 600;
+  cursor: pointer;
+}
+.playbook-section[open] > summary {
+  margin-bottom: 10px;
+}
+.playbook-learning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 /* Usage & costs page (v0.1.15): cards, responsive filters, bounded tables. */

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, useNoticeMessage } from './Notice';
 import { FormError, useSubmitValidation } from './FormValidation';
 import { getBackend } from '../lib/backend';
+import { ADAPTER_KINDS } from '../lib/agents';
 import { errorMessage } from '../lib/errors';
 import { estimateRangeUsd } from '../lib/run-controls';
 import { formatTime } from '../lib/time';
@@ -660,9 +661,11 @@ export function UsageView(): React.JSX.Element {
                 onChange={(e) => setAdapter(e.target.value)}
               >
                 <option value="">All providers</option>
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
-                <option value="custom">Custom</option>
+                {ADAPTER_KINDS.map((id) => (
+                  <option key={id} value={id}>
+                    {providerLabel(id)}
+                  </option>
+                ))}
                 <option value="unknown">Unknown (legacy)</option>
               </select>
             </div>

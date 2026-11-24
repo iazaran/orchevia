@@ -67,6 +67,11 @@ import {
 import {
   composeSkillPrompt,
   structuredOutputConflict,
+  ADAPTERS,
+  ADAPTER_KINDS,
+  BUILTIN_ADAPTERS,
+  supportsProfileControls,
+  applySupportedSessions,
   claudeInputFormatArg,
   composeAgentContext,
   renderPromptStrict,
@@ -125,6 +130,7 @@ import {
   type UpdateCheck,
 } from './updates';
 import { version as appVersion } from '../../package.json';
+import { runReviewFindings } from './review';
 import type {
   GroupedFinding,
   Notification,
@@ -973,8 +979,11 @@ class MockBackend implements Backend {
         version: 'git version 2.x (mock)',
       },
       { id: 'gh', displayName: 'GitHub CLI', installed: false },
-      { id: 'claude', displayName: 'Claude Code', installed: false },
-      { id: 'codex', displayName: 'Codex', installed: false },
+      ...BUILTIN_ADAPTERS.map((id) => ({
+        id,
+        displayName: ADAPTERS[id].name,
+        installed: false,
+      })),
     ];
   }
 
@@ -2511,11 +2520,7 @@ class MockBackend implements Backend {
   }
 
   async adapterCapabilities(): Promise<AdapterCapabilities[]> {
-    return [
-      adapterCapabilities('claude'),
-      adapterCapabilities('codex'),
-      adapterCapabilities('custom'),
-    ];
+    return ADAPTER_KINDS.map(adapterCapabilities);
   }
 
   async cancelRun(runId: string): Promise<boolean> {
@@ -2643,34 +2648,14 @@ class MockBackend implements Backend {
   }
 
   async listAdapters(): Promise<AdapterInfo[]> {
-    return [
-      {
-        id: 'claude',
-        displayName: 'Claude Code',
-        defaultExecutable: 'claude',
-        supportsModelFlag: true,
-        supportsSessionResume: true,
-        notes:
-          'Uses `claude -p --output-format stream-json --verbose` with the prompt on stdin, so runs report tokens and USD. Model via `--model`.',
-      },
-      {
-        id: 'codex',
-        displayName: 'Codex',
-        defaultExecutable: 'codex',
-        supportsModelFlag: true,
-        supportsSessionResume: true,
-        notes:
-          'Uses `codex exec --json -` with the prompt on stdin, so runs report tokens. Model via `--model`. Non-interactive.',
-      },
-      {
-        id: 'custom',
-        displayName: 'Custom CLI',
-        defaultExecutable: '',
-        supportsModelFlag: true,
-        supportsSessionResume: false,
-        notes: 'Your own CLI: set the binary path, prompt goes last.',
-      },
-    ];
+    return ADAPTER_KINDS.map((id) => ({
+      id,
+      displayName: ADAPTERS[id].name,
+      defaultExecutable: ADAPTERS[id].executable,
+      supportsModelFlag: true,
+      supportsSessionResume: supportsProfileControls(id),
+      notes: ADAPTERS[id].notes,
+    }));
   }
 
   async listAgentProfiles(): Promise<AgentProfile[]> {
@@ -2744,10 +2729,20 @@ class MockBackend implements Backend {
         ? 'prompt preview (unresolved variables shown verbatim)'
         : promptTemplate,
     );
+    if (
+      profile.adapter !== 'custom' &&
+      !supportsProfileControls(profile.adapter) &&
+      new TextEncoder().encode(effectivePrompt).length > 120 * 1024
+    ) {
+      throw new Error(
+        `${ADAPTERS[profile.adapter].name} takes prompts as a command argument. Shorten the prompt or reduce the step's context character limit. The prompt must fit in 120 KiB.`,
+      );
+    }
     // Mirrors agents.rs build_agent_command: Claude/Codex read the prompt from
     // stdin, structured unless the profile's own arguments pick a format.
     const structured =
-      profile.adapter !== 'custom' && structuredOutputConflict(profile) === null;
+      supportsProfileControls(profile.adapter) &&
+      structuredOutputConflict(profile) === null;
     // Claude profiles with their own --input-format keep the argument prompt.
     const argumentPrompt = claudeInputFormatArg(profile) !== null;
     const args: string[] =
@@ -2762,12 +2757,20 @@ class MockBackend implements Backend {
           ? structured
             ? ['exec', '--json']
             : ['exec']
-          : [];
+          : profile.adapter === 'muse'
+            ? ['exec']
+            : profile.adapter === 'opencode'
+              ? ['run']
+              : [];
     if ((profile.model ?? '').trim() !== '') {
       args.push('--model', (profile.model ?? '').trim());
     }
     const effort = (profile.effort ?? '').trim().toLowerCase();
-    if (effort !== '' && profile.adapter === 'claude') args.push('--effort', effort);
+    if (
+      effort !== '' &&
+      (profile.adapter === 'claude' || profile.adapter === 'antigravity')
+    )
+      args.push('--effort', effort);
     if (effort !== '' && profile.adapter === 'codex') {
       args.push('-c', `model_reasoning_effort="${effort}"`);
     }
@@ -2776,8 +2779,14 @@ class MockBackend implements Backend {
     args.push(...profile.extraArgs);
     if (profile.adapter === 'codex' && structured) args.push('-');
     if (profile.adapter === 'custom') args.push(effectivePrompt);
+    if (profile.adapter === 'muse' || profile.adapter === 'opencode')
+      args.push('--', effectivePrompt);
+    if (profile.adapter === 'gemini' || profile.adapter === 'antigravity') {
+      const flag = profile.adapter === 'gemini' ? '--prompt' : '--print';
+      args.push('--output-format', 'text', `${flag}=${effectivePrompt}`);
+    }
     const stdinNote =
-      profile.adapter === 'custom' || argumentPrompt
+      !supportsProfileControls(profile.adapter) || argumentPrompt
         ? []
         : [`<prompt via stdin, ${String(Array.from(effectivePrompt).length)} chars>`];
     return {
@@ -2829,8 +2838,7 @@ class MockBackend implements Backend {
   // setting, so the lists survive a reload.
   private customModelsKey(adapter: string): string {
     const name = adapter.trim().toLowerCase();
-    if (!['claude', 'codex', 'custom'].includes(name))
-      throw new Error('Unknown adapter.');
+    if (!Object.hasOwn(ADAPTERS, name)) throw new Error('Unknown adapter.');
     return `models.custom.${name}`;
   }
 
@@ -3024,8 +3032,15 @@ class MockBackend implements Backend {
     return workflowRisks(workflow, this.effectiveProfiles());
   }
 
-  async getRunFindings(): Promise<GroupedFinding[]> {
-    return [];
+  async getRunFindings(runId: string): Promise<GroupedFinding[]> {
+    if ((await this.getRun(runId))?.execution?.options.dryRun) return [];
+    const workflow = await this.getRunWorkflow(runId);
+    if (workflow === null) throw new Error(`Unknown run '${runId}'.`);
+    return runReviewFindings(
+      workflow,
+      await this.getRunResults(runId),
+      (id) => this.profiles.get(id)?.name,
+    );
   }
 
   async listNotifications(): Promise<Notification[]> {
@@ -3224,10 +3239,15 @@ class MockBackend implements Backend {
     builtin: boolean,
     roleMap?: Record<string, string>,
   ): Promise<InstantiationPreview> {
-    return instantiateTemplateLocal(
+    const preview = instantiateTemplateLocal(
       this.findTemplate(id, builtin),
       roleMap ?? (await this.roleMapDefault()),
     );
+    if (!builtin) return preview;
+    const freshSessionSteps = applySupportedSessions(preview.workflow, [
+      ...this.profiles.values(),
+    ]);
+    return freshSessionSteps.length > 0 ? { ...preview, freshSessionSteps } : preview;
   }
 
   async generateWorkflow(): Promise<GenerationPreview> {

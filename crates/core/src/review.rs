@@ -21,7 +21,15 @@
 //! appear in the findings list.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+fn normalize(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,21 +71,15 @@ pub fn fingerprint(
     title: &str,
     explanation: &str,
 ) -> String {
-    let norm = |s: &str| {
-        s.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_lowercase()
-    };
     // Truncate explanation to its head: long prose shouldn't fork identity.
     let head: String = explanation.chars().take(160).collect();
     let key = format!(
         "{}|{}|{}|{}|{}",
-        norm(severity),
-        norm(file.unwrap_or("")),
+        normalize(severity),
+        normalize(file.unwrap_or("")),
         line_start.unwrap_or(-1),
-        norm(title),
-        norm(&head)
+        normalize(title),
+        normalize(&head)
     );
     // FNV-1a 64-bit: dependency-free, stable across runs/platforms.
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -321,7 +323,11 @@ pub fn deduplicate(findings: Vec<ReviewFinding>) -> Vec<(ReviewFinding, Vec<Stri
         severity_rank(&a.0.severity)
             .cmp(&severity_rank(&b.0.severity))
             .then_with(|| a.0.title.cmp(&b.0.title))
+            .then_with(|| a.0.fingerprint.cmp(&b.0.fingerprint))
     });
+    for (_, sources) in &mut out {
+        sources.sort();
+    }
     out
 }
 
@@ -335,42 +341,350 @@ fn severity_rank(severity: &str) -> u8 {
     }
 }
 
-/// Collect + deduplicate findings from agent node outputs in a run.
-/// `outputs` maps node id -> (profile label, stdout).
-pub fn collect_run_findings(
-    outputs: &[(String, String, String)],
-) -> Vec<(ReviewFinding, Vec<String>)> {
-    let mut all = Vec::new();
-    for (node_id, profile, stdout) in outputs {
-        let source = if profile.trim().is_empty() {
-            node_id.clone()
-        } else {
-            format!("{node_id} ({profile})")
-        };
-        all.extend(extract_findings(stdout, &source));
-    }
-    deduplicate(all)
-}
-
 /// Serializable grouped finding for API/UI layers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupedFinding {
     pub finding: ReviewFinding,
+    /// Empty for findings absent from every latest review visit.
     pub sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub result_ids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<FindingHistory>,
 }
 
-/// Collect + deduplicate into serializable groups.
-pub fn grouped_findings(outputs: &[(String, String, String)]) -> Vec<GroupedFinding> {
-    collect_run_findings(outputs)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FindingState {
+    Fixed,
+    StillOpen,
+    New,
+    Reintroduced,
+}
+
+pub fn review_round_summary(groups: &[GroupedFinding]) -> Option<String> {
+    let entries: Vec<_> = groups.iter().flat_map(|group| &group.history).collect();
+    let counts = [
+        (FindingState::Fixed, "fixed"),
+        (FindingState::StillOpen, "still open"),
+        (FindingState::New, "new"),
+        (FindingState::Reintroduced, "reintroduced"),
+    ];
+    (!entries.is_empty()).then(|| {
+        counts
+            .into_iter()
+            .map(|(state, label)| {
+                let count = entries.iter().filter(|item| item.state == state).count();
+                format!("{count} {label}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingOccurrence {
+    pub result_id: i64,
+    pub visit: usize,
+    pub finding: ReviewFinding,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingHistory {
+    pub id: String,
+    pub state: FindingState,
+    pub occurrences: Vec<FindingOccurrence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_severity: Option<String>,
+}
+
+pub struct ReviewVisit<'a> {
+    pub node_id: &'a str,
+    pub result_id: i64,
+    pub source: String,
+    pub stdout: &'a str,
+}
+
+/// Use successful, actual visits. Empty output is a visit, but a running or
+/// failed attempt, a reused result and a feedback decision are not reviews.
+pub fn run_review_findings(
+    workflow: &crate::workflow::Workflow,
+    rows: &[crate::db::StoredNodeResult],
+    mut profile_name: impl FnMut(&str) -> Option<String>,
+) -> Vec<GroupedFinding> {
+    let sources: HashMap<_, _> = workflow
+        .nodes
+        .iter()
+        .filter(|node| node.kind == crate::workflow::NodeKind::Agent)
+        .map(|node| {
+            let profile = node
+                .config
+                .agent_profile_id
+                .as_deref()
+                .and_then(&mut profile_name);
+            let source = match profile.filter(|name| !name.trim().is_empty()) {
+                Some(name) => format!("{} ({name})", node.id),
+                None => node.id.clone(),
+            };
+            (node.id.as_str(), source)
+        })
+        .collect();
+    let visits: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            let source = sources.get(row.node_id.as_str())?;
+            if row.status != "succeeded" || !crate::run_controls::is_new_execution(row) {
+                return None;
+            }
+            if serde_json::from_str::<serde_json::Value>(&row.structured_json)
+                .is_ok_and(|metadata| metadata.get("feedbackCheck").is_some())
+            {
+                return None;
+            }
+            Some(ReviewVisit {
+                node_id: &row.node_id,
+                result_id: row.id,
+                source: source.clone(),
+                stdout: &row.stdout,
+            })
+        })
+        .collect();
+    grouped_review_findings(&visits)
+}
+
+/// Compare each reviewer independently. Exact fingerprints still group the
+/// latest findings across reviewers and determine current notification counts.
+pub fn grouped_review_findings(visits: &[ReviewVisit<'_>]) -> Vec<GroupedFinding> {
+    let mut by_node: BTreeMap<&str, Vec<&ReviewVisit<'_>>> = BTreeMap::new();
+    for visit in visits {
+        by_node.entry(visit.node_id).or_default().push(visit);
+    }
+    let mut current = Vec::new();
+    let mut result_ids: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut histories = Vec::new();
+    for (node_id, mut visits) in by_node {
+        visits.sort_by_key(|v| v.result_id);
+        let visits: Vec<_> = visits
+            .into_iter()
+            .map(|v| {
+                let mut seen = HashSet::new();
+                let findings = extract_findings(v.stdout, &v.source)
+                    .into_iter()
+                    .filter(|f| seen.insert(f.fingerprint.clone()))
+                    .collect::<Vec<_>>();
+                (v.result_id, findings)
+            })
+            .collect();
+        if let Some((result_id, findings)) = visits.last() {
+            current.extend(findings.iter().cloned());
+            for finding in findings {
+                result_ids
+                    .entry(finding.fingerprint.clone())
+                    .or_default()
+                    .push(*result_id);
+            }
+        }
+        if visits.len() > 1 {
+            histories.extend(compare_visits(node_id, visits));
+        }
+    }
+    let mut groups: Vec<_> = deduplicate(current)
         .into_iter()
-        .map(|(finding, sources)| GroupedFinding { finding, sources })
+        .map(|(finding, sources)| {
+            let result_ids = result_ids.remove(&finding.fingerprint).unwrap_or_default();
+            GroupedFinding {
+                finding,
+                sources,
+                result_ids,
+                history: Vec::new(),
+            }
+        })
+        .collect();
+    let mut indexes: HashMap<_, _> = groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| (group.finding.fingerprint.clone(), index))
+        .collect();
+    for history in histories {
+        let Some(last) = history.occurrences.last() else {
+            continue;
+        };
+        let index = *indexes
+            .entry(last.finding.fingerprint.clone())
+            .or_insert_with(|| {
+                groups.push(GroupedFinding {
+                    finding: last.finding.clone(),
+                    sources: Vec::new(),
+                    result_ids: Vec::new(),
+                    history: Vec::new(),
+                });
+                groups.len() - 1
+            });
+        groups[index].history.push(history);
+    }
+    groups
+}
+
+fn comparison_key(finding: &ReviewFinding) -> (Option<&str>, String) {
+    let file = finding
+        .file
+        .as_deref()
+        .map(|file| file.trim_start_matches("./"));
+    let title = finding
+        .title
+        .trim_start_matches('#')
+        .trim()
+        .trim_end_matches(['.', ':']);
+    (file, normalize(title))
+}
+
+fn match_distance(a: &ReviewFinding, b: &ReviewFinding) -> Option<u64> {
+    let (start_a, start_b) = (a.line_start?, b.line_start?);
+    let end_a = a.line_end.unwrap_or(start_a).max(start_a);
+    let end_b = b.line_end.unwrap_or(start_b).max(start_b);
+    Some(start_a.abs_diff(start_b).min(if end_a < start_b {
+        end_a.abs_diff(start_b)
+    } else if end_b < start_a {
+        end_b.abs_diff(start_a)
+    } else {
+        0
+    }))
+}
+
+fn compare_visits(node_id: &str, visits: Vec<(i64, Vec<ReviewFinding>)>) -> Vec<FindingHistory> {
+    let latest = visits.len();
+    let mut tracks: Vec<Vec<FindingOccurrence>> = Vec::new();
+    for (offset, (result_id, findings)) in visits.into_iter().enumerate() {
+        let visit = offset + 1;
+        let mut previous: HashMap<_, Vec<_>> = HashMap::new();
+        for (index, track) in tracks.iter().enumerate() {
+            if let Some(last) = track.last() {
+                previous
+                    .entry(comparison_key(&last.finding))
+                    .or_default()
+                    .push((index, last));
+            }
+        }
+        let keys: Vec<_> = findings.iter().map(comparison_key).collect();
+        let mut counts = HashMap::new();
+        for key in &keys {
+            *counts.entry(key).or_insert(0) += 1;
+        }
+        let mut candidates = Vec::new();
+        for (index, (key, finding)) in keys.iter().zip(&findings).enumerate() {
+            let Some(prior) = previous.get(key) else {
+                continue;
+            };
+            let unique = prior.len() == 1 && counts.get(key) == Some(&1);
+            for &(track, last) in prior {
+                let distance = match_distance(&last.finding, finding);
+                if unique || distance.is_some_and(|lines| lines <= 20) {
+                    candidates.push((distance.unwrap_or(21), Reverse(last.visit), track, index));
+                }
+            }
+        }
+        candidates.sort_unstable();
+        let mut used = HashSet::new();
+        let mut matches = HashMap::new();
+        for (_, _, track, index) in candidates {
+            if !matches.contains_key(&index) && used.insert(track) {
+                matches.insert(index, track);
+            }
+        }
+        for (index, finding) in findings.into_iter().enumerate() {
+            let occurrence = FindingOccurrence {
+                result_id,
+                visit,
+                finding,
+            };
+            if let Some(track) = matches.get(&index) {
+                tracks[*track].push(occurrence);
+            } else {
+                tracks.push(vec![occurrence]);
+            }
+        }
+    }
+    tracks
+        .into_iter()
+        .filter_map(|occurrences| {
+            let first = occurrences.first()?;
+            let last = occurrences.last()?;
+            let previous = occurrences.iter().rev().nth(1);
+            let state = if last.visit < latest {
+                FindingState::Fixed
+            } else if let Some(previous) = previous {
+                if previous.visit + 1 == latest {
+                    FindingState::StillOpen
+                } else {
+                    FindingState::Reintroduced
+                }
+            } else {
+                FindingState::New
+            };
+            let previous_severity = previous
+                .filter(|p| p.finding.severity != last.finding.severity)
+                .map(|p| p.finding.severity.clone());
+            Some(FindingHistory {
+                id: format!(
+                    "{node_id}:{}:{}",
+                    first.result_id, first.finding.fingerprint
+                ),
+                state,
+                occurrences,
+                previous_severity,
+            })
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_review_comparison_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../src/test/review-rounds.json")).unwrap();
+        let visits: Vec<_> = fixture["visits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| ReviewVisit {
+                node_id: value["nodeId"].as_str().unwrap(),
+                result_id: value["resultId"].as_i64().unwrap(),
+                source: value["nodeId"].as_str().unwrap().into(),
+                stdout: value["stdout"].as_str().unwrap(),
+            })
+            .collect();
+        let groups = grouped_review_findings(&visits);
+        let mut actual: Vec<_> = groups
+            .iter()
+            .flat_map(|group| &group.history)
+            .map(|item| {
+                let mut value = serde_json::json!({
+                    "title": item.occurrences.last().unwrap().finding.title,
+                    "state": item.state,
+                    "resultIds": item.occurrences.iter().map(|o| o.result_id).collect::<Vec<_>>()
+                });
+                if let Some(severity) = &item.previous_severity {
+                    value["previousSeverity"] = serde_json::json!(severity);
+                }
+                value
+            })
+            .collect();
+        let mut expected = fixture["expected"].as_array().unwrap().clone();
+        actual.sort_by(|a, b| a["title"].as_str().cmp(&b["title"].as_str()));
+        expected.sort_by(|a, b| a["title"].as_str().cmp(&b["title"].as_str()));
+        assert_eq!(actual, expected);
+        let shared = groups
+            .iter()
+            .find(|g| g.finding.title == "Missing lock")
+            .unwrap();
+        assert_eq!(shared.sources, ["review-a", "review-b"]);
+    }
 
     /// Shared with `src/lib/severity.test.ts`; keep both tables identical.
     const SEVERITY_CASES: &[(&str, Option<&str>)] = &[
@@ -445,11 +759,12 @@ Trailing prose.
     fn ordinary_agent_answer_is_not_a_review_finding() {
         let findings = extract_findings("## Answer\nHere is the explanation.", "codex");
         assert!(findings.is_empty());
-        let run_findings = collect_run_findings(&[(
-            "answer".into(),
-            "Codex".into(),
-            "## Answer\nHere is the explanation.".into(),
-        )]);
+        let run_findings = grouped_review_findings(&[ReviewVisit {
+            node_id: "answer",
+            result_id: 1,
+            source: "answer (Codex)".into(),
+            stdout: "## Answer\nHere is the explanation.",
+        }]);
         assert!(run_findings.is_empty());
     }
 
