@@ -3189,7 +3189,7 @@ mod tests {
                 .expect("get")
                 .expect("some")
         };
-        assert_eq!(resolved(&db).browser, Some(false));
+        assert_eq!(resolved(&db).browser, None);
         db.set_setting(
             crate::abilities::ABILITIES_SETTING,
             r#"{"browser":true,"allowedTools":["mcp__claude_ai_Slack"]}"#,
@@ -3205,7 +3205,7 @@ mod tests {
         // A broken value grants nothing.
         db.set_setting(crate::abilities::ABILITIES_SETTING, "{")
             .expect("set");
-        assert_eq!(resolved(&db).browser, Some(false));
+        assert_eq!(resolved(&db).browser, None);
         assert_eq!(resolved(&db).permission_level, PermissionLevel::CliSettings);
     }
 

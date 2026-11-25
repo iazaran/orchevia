@@ -97,7 +97,8 @@ pub struct HostConnector {
     pub status: &'static str,
     /// `account` (claude.ai), `plugin` or `local`.
     pub scope: &'static str,
-    /// Its URL or command, for display.
+    /// Its program and URL origin, for display ([`display_target`]): never
+    /// its arguments, which can hold credentials.
     pub target: String,
 }
 
@@ -119,6 +120,9 @@ pub struct HostAbilities {
     pub adapter: AdapterKind,
     pub installed: bool,
     pub connectors: Vec<HostConnector>,
+    /// The CLI listed its servers. `false` when the listing could not run or
+    /// failed, so an empty `connectors` says nothing about what is set up.
+    pub connectors_listed: bool,
     /// Why the connector list is missing or may be incomplete.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connectors_note: Option<String>,
@@ -163,6 +167,43 @@ pub fn claude_server_key(name: &str) -> String {
     collapsed.trim_matches('_').to_string()
 }
 
+/// The origin of a URL token (`scheme://host[:port]`), without the user
+/// name, password, path or query, any of which can hold a secret.
+fn url_origin(token: &str) -> Option<String> {
+    let (scheme, rest) = token.split_once("://")?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    (!host.is_empty()).then(|| format!("{scheme}://{host}"))
+}
+
+/// A server's command line or URL as safe to show: the program's name and the
+/// first URL's origin. Arguments, URL paths, queries and credentials can hold
+/// secrets (a password in a connection URI, a token in a URL path), so they
+/// never leave the backend.
+pub fn display_target(raw: &str) -> String {
+    let mut tokens = raw.split_whitespace();
+    let first = tokens.next().unwrap_or("");
+    if let Some(origin) = url_origin(first) {
+        return origin;
+    }
+    let program = Path::new(first)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match tokens.find_map(url_origin) {
+        Some(origin) if !program.is_empty() => format!("{program} · {origin}"),
+        Some(origin) => origin,
+        None => program,
+    }
+}
+
 const STATUS_MARKERS: [&str; 7] = [" - ✔", " - ✓", " - ✘", " - ✗", " - !", " - ⏸", " - ⚠"];
 
 /// Parse `claude mcp list`: one `name: target - <mark> status` line per
@@ -185,17 +226,24 @@ pub fn parse_claude_mcp_list(text: &str) -> Vec<HostConnector> {
         if name.is_empty() {
             continue;
         }
-        let status_text = rest[at + 3..].trim();
-        let lower = status_text.to_ascii_lowercase();
-        let status = if lower.contains("connected") && !lower.contains("failed") {
+        // The words after the mark: "✔ Connected", "! Needs authentication",
+        // "✘ Failed to connect — 401 Unauthorized". Judge by how they start,
+        // so "Disconnected" or a 401 in a failure never reads as usable.
+        let status_text = rest[at + 3..]
+            .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
+            .to_ascii_lowercase();
+        let status = if status_text.starts_with("connected") {
             "connected"
-        } else if lower.contains("auth") {
+        } else if status_text.starts_with("needs auth") {
             "needsAuth"
-        } else if lower.contains("pending") {
+        } else if status_text.starts_with("pending") {
             "pending"
-        } else if lower.contains("disabled") {
+        } else if status_text.starts_with("disabled") {
             "disabled"
-        } else if lower.contains("fail") || lower.contains("error") {
+        } else if status_text.starts_with("fail")
+            || status_text.starts_with("error")
+            || status_text.starts_with("disconnected")
+        {
             "failed"
         } else {
             "unknown"
@@ -212,7 +260,7 @@ pub fn parse_claude_mcp_list(text: &str) -> Vec<HostConnector> {
             rule: Some(format!("mcp__{}", claude_server_key(name))),
             status,
             scope,
-            target: rest[..at].trim().to_string(),
+            target: display_target(&rest[..at]),
         });
     }
     connectors
@@ -240,7 +288,7 @@ pub fn parse_codex_mcp_list(json: &str) -> Result<Vec<HostConnector>, String> {
             let target = transport
                 .and_then(|t| t.get("url"))
                 .and_then(|v| v.as_str())
-                .map(str::to_string)
+                .map(display_target)
                 .or_else(|| {
                     let command = transport?.get("command")?.as_str()?;
                     let args: Vec<&str> = transport
@@ -248,12 +296,12 @@ pub fn parse_codex_mcp_list(json: &str) -> Result<Vec<HostConnector>, String> {
                         .and_then(|v| v.as_array())
                         .map(|args| args.iter().filter_map(|a| a.as_str()).collect())
                         .unwrap_or_default();
-                    Some(
-                        std::iter::once(command)
+                    Some(display_target(
+                        &std::iter::once(command)
                             .chain(args)
                             .collect::<Vec<_>>()
                             .join(" "),
-                    )
+                    ))
                 })
                 .unwrap_or_default();
             Some(HostConnector {
@@ -539,6 +587,7 @@ pub fn detect_abilities(
             Ok(HostAbilities {
                 adapter,
                 installed,
+                connectors_listed: connectors_note.is_none(),
                 connectors,
                 connectors_note,
                 browser: claude_browser(&home),
@@ -578,6 +627,7 @@ pub fn detect_abilities(
             Ok(HostAbilities {
                 adapter,
                 installed,
+                connectors_listed: connectors_note.is_none(),
                 connectors,
                 connectors_note,
                 browser: codex_browser(&home, &plugins),
@@ -655,14 +705,21 @@ plugin:context7:context7: npx -y @upstash/context7-mcp - ✔ Connected\n";
                 ),
             ]
         );
-        assert_eq!(list[0].target, "https://mcp.atlassian.com/v1/mcp");
-        assert_eq!(
-            list[3].target,
-            "uvx mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp --metadata INSTALL_SOURCE=aws-cli"
-        );
+        assert_eq!(list[0].target, "https://mcp.atlassian.com");
+        assert_eq!(list[2].target, "http://127.0.0.1:64442");
+        assert_eq!(list[3].target, "uvx · https://aws-mcp.us-east-1.api.aws");
         assert!(
             parse_claude_mcp_list("No MCP servers configured. Use `claude mcp add`.").is_empty()
         );
+        // A failure that mentions authorization, or a disconnected server, is
+        // not usable.
+        let failing = parse_claude_mcp_list(
+            "a: https://a.example/mcp - ✘ Failed to connect — 401 Unauthorized\n\
+b: https://b.example/mcp - ✘ Disconnected\n\
+c: https://c.example/mcp - ✔ Connected (3 tools)\n",
+        );
+        let statuses: Vec<&str> = failing.iter().map(|c| c.status).collect();
+        assert_eq!(statuses, ["failed", "failed", "connected"]);
     }
 
     #[test]
@@ -673,12 +730,9 @@ plugin:context7:context7: npx -y @upstash/context7-mcp - ✔ Connected\n";
         ]"#;
         let list = parse_codex_mcp_list(json).expect("list");
         assert_eq!(list[0].status, "enabled");
-        assert_eq!(
-            list[0].target,
-            "uvx mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp"
-        );
+        assert_eq!(list[0].target, "uvx · https://aws-mcp.us-east-1.api.aws");
         assert_eq!(list[1].status, "disabled");
-        assert_eq!(list[1].target, "https://example.com/mcp");
+        assert_eq!(list[1].target, "https://example.com");
         assert!(list.iter().all(|c| c.rule.is_none()));
         assert!(parse_codex_mcp_list("not json").is_err());
 
@@ -743,6 +797,13 @@ gmail@openai-curated-remote          installed, enabled  0.1.10  x\n";
         assert_eq!(ok.allowed_tools, ["mcp__claude_ai_Slack", "WebFetch"]);
         assert!(parse_abilities_setting(r#"{"allowedTools":["Bash(rm -rf /"]}"#).is_err());
         assert!(parse_abilities_setting("[]").is_err());
+        // Missing fields take their defaults; an explicit null is refused.
+        assert!(parse_abilities_setting(r#"{"browser":null}"#).is_err());
+        assert!(parse_abilities_setting(r#"{"allowedTools":null}"#).is_err());
+        assert_eq!(
+            parse_abilities_setting("{}").expect("empty"),
+            AppAbilities::default()
+        );
         assert_eq!(stored_abilities(Some("{oops")), AppAbilities::default());
         assert_eq!(stored_abilities(None), AppAbilities::default());
         assert_eq!(
@@ -787,15 +848,25 @@ gmail@openai-curated-remote          installed, enabled  0.1.10  x\n";
             Some("mcp__claude_ai_Slack")
         );
         assert!(found.connectors_note.is_none());
+        assert!(found.connectors_listed);
         assert_eq!(std::fs::read_to_string(&log).expect("log"), "mcp list\n");
 
+        let codex_log = dir.path().join("codex-calls");
         let codex = fake_cli(
             &dir,
             "codex",
-            "case \"$*\" in\n  'mcp list --json') echo '[{\"name\":\"docs\",\"enabled\":true,\"transport\":{\"url\":\"https://d.example/mcp\"}}]' ;;\n  'plugin list') echo 'chrome@openai-bundled   installed, enabled  1  x' ;;\n  *) exit 9 ;;\nesac",
+            &format!("echo \"$*\" >> {}\n", codex_log.display()),
         );
+        let codex_body = std::fs::read_to_string(&codex).expect("script")
+            + "case \"$*\" in\n  'mcp list --json') echo '[{\"name\":\"docs\",\"enabled\":true,\"transport\":{\"url\":\"https://d.example/mcp\"}}]' ;;\n  'plugin list') echo 'chrome@openai-bundled   installed, enabled  1  x' ;;\n  *) exit 9 ;;\nesac\n";
+        std::fs::write(&codex, codex_body).expect("script");
         let found = detect_abilities(AdapterKind::Codex, Some(&codex), Duration::from_secs(10))
             .expect("detect");
+        assert_eq!(
+            std::fs::read_to_string(&codex_log).expect("log"),
+            "mcp list --json\nplugin list\n"
+        );
+        assert!(found.connectors_listed);
         assert_eq!(found.connectors[0].name, "docs");
         assert_eq!(found.plugins, ["chrome"]);
         assert!(found.browser.available && !found.browser.switchable);
@@ -804,6 +875,10 @@ gmail@openai-curated-remote          installed, enabled  0.1.10  x\n";
         let found = detect_abilities(AdapterKind::Claude, Some(&broken), Duration::from_secs(10))
             .expect("detect");
         assert!(found.connectors.is_empty());
+        assert!(
+            !found.connectors_listed,
+            "a failed listing is not an empty one"
+        );
         assert!(
             found
                 .connectors_note
@@ -823,5 +898,27 @@ gmail@openai-curated-remote          installed, enabled  0.1.10  x\n";
             missing.connectors_note.as_deref(),
             Some("Claude Code is not installed.")
         );
+    }
+
+    #[test]
+    fn server_targets_never_carry_arguments_or_credentials() {
+        for (raw, shown) in [
+            (
+                "npx -y pg-mcp postgresql://admin:s3cret@db.example:5432/app?sslmode=require",
+                "npx · postgresql://db.example:5432",
+            ),
+            (
+                "https://mcp.zapier.com/api/mcp/s/SECRET-TOKEN/sse",
+                "https://mcp.zapier.com",
+            ),
+            ("/opt/tools/my-server --token abc123", "my-server"),
+            ("uvx server --api-key=xyz", "uvx"),
+            ("", ""),
+        ] {
+            assert_eq!(display_target(raw), shown, "{raw}");
+        }
+        let list = parse_claude_mcp_list("db: npx -y pg-mcp postgresql://u:pw@h/x - ✔ Connected\n");
+        assert_eq!(list[0].target, "npx · postgresql://h");
+        assert!(!format!("{list:?}").contains("pw"));
     }
 }

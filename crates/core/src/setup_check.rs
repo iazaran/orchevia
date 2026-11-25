@@ -425,7 +425,7 @@ fn edit_refused(profile: &AgentProfile, outcome: &Outcome) -> SetupCheckItem {
                 CheckStatus::Warning,
                 format!("Steps that edit files will be refused with these allowed tools. {what}"),
             ),
-            "Add `Edit` and `Write` to this profile's allowed tools, or give it Full access.",
+            "Give this profile `Edit` and `Write` in Agents (Allowed tools), or choose “Let agents work without asking” in Environment → Agent permissions.",
         ),
         PermissionLevel::AppDefault | PermissionLevel::CliSettings => {
             let settings = profile.adapter.display_name();
