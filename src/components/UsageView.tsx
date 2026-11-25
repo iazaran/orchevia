@@ -557,7 +557,7 @@ export function UsageView(): React.JSX.Element {
         </span>
         <div className="topbar-actions">
           <button className="btn btn-ghost" onClick={() => setView('runs')}>
-            Runs →
+            Runs <span aria-hidden="true">→</span>
           </button>
           <button className="btn" onClick={refresh} disabled={loading}>
             {loading ? 'Loading…' : 'Refresh'}

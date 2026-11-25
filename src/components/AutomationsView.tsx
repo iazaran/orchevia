@@ -1318,7 +1318,7 @@ function NotificationPrefsEditor({
       <p className="field-hint">
         {unreadCount} unread — approvals, failures, and findings live in the{' '}
         <button className="btn btn-ghost" onClick={onOpenInbox}>
-          Inbox →
+          Inbox <span aria-hidden="true">→</span>
         </button>
       </p>
       {(

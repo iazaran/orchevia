@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeDocument } from '../lib/workflow-document';
@@ -55,7 +56,8 @@ describe('public documentation', () => {
     // Continuation lines keep every line readable without sideways scrolling.
     for (const line of pageApt.split('\n'))
       expect(line.length, line).toBeLessThanOrEqual(90);
-    const commands = pageApt.replace(/ \\\n\s*/g, ' ').split('\n');
+    // Only spaces may follow a continuation: a blank line would end the command.
+    const commands = pageApt.replace(/ \\\n[ \t]*/g, ' ').split('\n');
     expect(commands).toEqual([
       'curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg > /dev/null',
       expect.stringMatching(
@@ -68,6 +70,10 @@ describe('public documentation', () => {
       required(commands[1], 'echo').matchAll(/"([^"]*)"/g),
       (m) => m[1],
     );
+    // Both shells parse the snippet as pasted.
+    for (const shell of ['bash', 'zsh'])
+      if (spawnSync(shell, ['-c', 'true']).status === 0)
+        expect(spawnSync(shell, ['-n', '-c', pageApt]).status, shell).toBe(0);
     expect(echoed.join(' ')).toBe(
       'deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg] https://iazaran.github.io/orchevia/apt stable main',
     );

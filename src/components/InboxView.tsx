@@ -106,7 +106,7 @@ export function InboxView(): React.JSX.Element {
               setView('automations');
             }}
           >
-            Automations →
+            Automations <span aria-hidden="true">→</span>
           </button>
         </div>
       </div>

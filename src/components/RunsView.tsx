@@ -1084,7 +1084,7 @@ export function RunsView(): React.JSX.Element {
             title="Aggregated usage, your plans and estimated cost"
             onClick={() => setView('usage')}
           >
-            Usage & costs →
+            Usage & costs <span aria-hidden="true">→</span>
           </button>
           <button className="btn" onClick={() => void refreshRunData()}>
             Refresh

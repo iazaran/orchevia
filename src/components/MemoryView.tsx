@@ -561,7 +561,7 @@ export function MemoryView(): React.JSX.Element {
         </span>
         <div className="topbar-actions">
           <button className="btn btn-ghost" onClick={() => setView('templates')}>
-            Templates →
+            Templates <span aria-hidden="true">→</span>
           </button>
           <button className="btn" onClick={() => void refreshLibrary()}>
             Refresh

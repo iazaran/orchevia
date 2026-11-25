@@ -229,7 +229,7 @@ export function EnvironmentView(): React.JSX.Element {
                   setView('agents');
                 }}
               >
-                Agents →
+                Agents <span aria-hidden="true">→</span>
               </button>
               <button
                 className="btn btn-ghost"
@@ -425,7 +425,7 @@ export function EnvironmentView(): React.JSX.Element {
                       if (check?.state === 'error')
                         return (
                           <Notice variant="error" style={{ marginBottom: 0 }}>
-                            Check failed: {check.message}
+                            Checking {s.name} failed: {check.message}
                           </Notice>
                         );
                       return null;
@@ -450,7 +450,7 @@ export function EnvironmentView(): React.JSX.Element {
                     )}
                     {tools.state === 'error' && (
                       <Notice variant="error" style={{ marginBottom: 0 }}>
-                        Failed: {tools.message}
+                        Listing tools for {s.name} failed: {tools.message}
                       </Notice>
                     )}
                   </div>

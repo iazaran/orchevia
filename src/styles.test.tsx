@@ -117,7 +117,11 @@ it('fills the sidebar theme switch with three equal options', () => {
   expect(getComputedStyle(group).width).toBe('100%');
   const options = screen.getAllByRole('radio');
   expect(options).toHaveLength(3);
-  for (const option of options) expect(getComputedStyle(option).flexGrow).toBe('1');
+  for (const option of options) {
+    expect(getComputedStyle(option).flexGrow).toBe('1');
+    // A zero basis is what makes them equal: "auto" sizes each by its label.
+    expect(['0', '0px', '0%']).toContain(getComputedStyle(option).flexBasis);
+  }
 });
 
 it('starts every view at the same left edge and keeps section actions by their text', () => {
@@ -134,8 +138,14 @@ it('starts every view at the same left edge and keeps section actions by their t
   const view = container.firstElementChild as HTMLElement;
   expect(getComputedStyle(view).paddingLeft).toBe('20px');
   expect(getComputedStyle(view).paddingRight).toBe('20px');
+  // No view centres itself with inline padding (jsdom does not map logical
+  // padding onto left and right, so read the rules themselves).
+  expect(css).not.toMatch(/\.[a-z-]*view[^{]*\{[^}]*padding-inline/);
   const actions = view.querySelector('.section-actions') as HTMLElement;
-  expect(getComputedStyle(actions).justifyContent).not.toBe('space-between');
+  expect(['normal', 'flex-start', 'start', '']).toContain(
+    getComputedStyle(actions).justifyContent,
+  );
+  expect(rule('.section-actions')).not.toMatch(/margin-left|margin-inline|auto/);
   const empty = view.querySelector('.empty-state') as HTMLElement;
   expect(getComputedStyle(empty).marginLeft).toBe('0px');
   // Prose, single panels and empty states share one reading width.
