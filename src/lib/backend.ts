@@ -83,7 +83,8 @@ import {
   permissionArgs,
   parsePermissionDefault,
   readPermissionDefault,
-  withAppDefault,
+  resolveForRun,
+  browserArgs,
   PERMISSION_DEFAULT_SETTING,
   type AdapterInfo,
   type AgentProfile,
@@ -94,6 +95,14 @@ import {
   type AdapterKind,
 } from './agents';
 import { evalCondition } from './conditions';
+import {
+  ABILITIES_SETTING,
+  mockHostAbilities,
+  parseAbilitiesSetting,
+  storedAbilities,
+  type AppAbilities,
+  type HostAbilities,
+} from './abilities';
 import {
   validateMcpServer,
   type GitHubState,
@@ -243,6 +252,11 @@ export interface Backend {
   }>;
   /** Sends one short real prompt with the profile; only on user request. */
   checkAgentSetup(profileId: string): Promise<SetupCheckReport>;
+  /**
+   * What Claude Code or Codex brings from the user's own setup. Runs the
+   * CLI's listing commands only (no prompt); up to a minute.
+   */
+  detectAgentAbilities(adapter: 'claude' | 'codex'): Promise<HostAbilities>;
   listKnownFolders(limit?: number): Promise<string[]>;
   listCustomModels(adapter: string): Promise<string[]>;
   saveCustomModels(adapter: string, models: string[]): Promise<string[]>;
@@ -519,6 +533,9 @@ class TauriBackend implements Backend {
   }
   checkAgentSetup(profileId: string): Promise<SetupCheckReport> {
     return this.invoke('check_agent_setup', { profileId });
+  }
+  detectAgentAbilities(adapter: 'claude' | 'codex'): Promise<HostAbilities> {
+    return this.invoke('detect_agent_abilities', { adapter });
   }
   listKnownFolders(limit = 20): Promise<string[]> {
     return this.invoke('list_known_folders', { limit });
@@ -2706,10 +2723,18 @@ class MockBackend implements Backend {
     );
   }
 
+  /** Mirror of `SqliteDb::agent_app_settings` abilities. */
+  private abilities(): AppAbilities {
+    return storedAbilities(this.settings.get(ABILITIES_SETTING) ?? null);
+  }
+
   /** Mirror of `SqliteDb::list_effective_agent_profiles`. */
   private effectiveProfiles(): AgentProfile[] {
     const appDefault = this.permissionDefault();
-    return [...this.profiles.values()].map((p) => withAppDefault(p, appDefault));
+    const abilities = this.abilities();
+    return [...this.profiles.values()].map((p) =>
+      resolveForRun(p, appDefault, abilities),
+    );
   }
 
   async deleteAgentProfile(id: string): Promise<boolean> {
@@ -2729,7 +2754,7 @@ class MockBackend implements Backend {
   }> {
     const stored = this.profiles.get(profileId);
     if (stored === undefined) throw new Error(`Unknown Agent Profile '${profileId}'.`);
-    const profile = withAppDefault(stored, this.permissionDefault());
+    const profile = resolveForRun(stored, this.permissionDefault(), this.abilities());
     const exe = effectiveExecutable(profile);
     // Like commands.rs: a prompt that is not written yet still previews the
     // command, with a placeholder in its place.
@@ -2784,7 +2809,7 @@ class MockBackend implements Backend {
     if (effort !== '' && profile.adapter === 'codex') {
       args.push('-c', `model_reasoning_effort="${effort}"`);
     }
-    args.push(...permissionArgs(profile));
+    args.push(...permissionArgs(profile), ...browserArgs(profile));
     if (profile.adapter === 'codex' && !structured) args.push('-');
     args.push(...profile.extraArgs);
     if (profile.adapter === 'codex' && structured) args.push('-');
@@ -2838,6 +2863,11 @@ class MockBackend implements Backend {
       ],
       durationMs: 0,
     };
+  }
+
+  async detectAgentAbilities(adapter: 'claude' | 'codex'): Promise<HostAbilities> {
+    // The browser preview runs no CLI: it shows demo data, marked as such.
+    return mockHostAbilities(adapter);
   }
 
   async listKnownFolders(): Promise<string[]> {
@@ -3094,6 +3124,7 @@ class MockBackend implements Backend {
         'onboarding.completed',
         'workflow.assistanceProfileId',
         PERMISSION_DEFAULT_SETTING,
+        ABILITIES_SETTING,
         'usage.plans',
         'usage.planShare',
       ].includes(key)
@@ -3108,7 +3139,8 @@ class MockBackend implements Backend {
     if (key === 'updates.dismissedVersion' && parseVersion(value) === null)
       throw new Error(`'${value}' is not a release version.`);
     if (key === PERMISSION_DEFAULT_SETTING) parsePermissionDefault(value);
-    const maxLen = key.startsWith('usage.') ? 8000 : 200;
+    if (key === ABILITIES_SETTING) parseAbilitiesSetting(value);
+    const maxLen = key.startsWith('usage.') || key === ABILITIES_SETTING ? 8000 : 200;
     if (new TextEncoder().encode(value).length > maxLen)
       throw new Error('Setting value too long.');
     validateUsageSetting(key, value);

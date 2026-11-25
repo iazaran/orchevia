@@ -920,6 +920,48 @@ describe('mock backend (browser dev)', () => {
     await backend.setSetting('agents.permissionDefault', 'cliSettings');
     expect(await backend.workflowRisks(workflow)).not.toContain('fullAccessAgent');
   });
+
+  it('mirrors the app-wide abilities: --chrome, its rule and the browser risk', async () => {
+    const backend = __setMockBackendForTests();
+    await expect(backend.setSetting('agents.abilities', '[]')).rejects.toThrow(
+      'Agent abilities must be a JSON object.',
+    );
+    await expect(
+      backend.setSetting('agents.abilities', '{"allowedTools":["Bash(rm -rf /"]}'),
+    ).rejects.toThrow();
+    const profile = {
+      ...createDefaultProfile('claude'),
+      id: 'prof-browser',
+      model: undefined,
+    };
+    await backend.saveAgentProfile(profile);
+    const workflow = createEmptyWorkflow('Agent');
+    workflow.nodes.splice(1, 0, {
+      id: 'agent',
+      type: 'agent',
+      position: { x: 0, y: 0 },
+      config: { agentProfileId: profile.id, prompt: 'Work' },
+    });
+    expect(await backend.workflowRisks(workflow)).not.toContain('browserAgent');
+    await backend.setSetting(
+      'agents.abilities',
+      '{"browser":true,"allowedTools":["mcp__claude_ai_Slack"]}',
+    );
+    const args = (await backend.previewAgentCommand(profile.id, 'Review')).args;
+    expect(args.slice(args.indexOf('--allowedTools'))).toEqual([
+      '--allowedTools',
+      'mcp__claude_ai_Slack,mcp__claude-in-chrome',
+      '--chrome',
+    ]);
+    expect(await backend.workflowRisks(workflow)).toContain('browserAgent');
+    await backend.saveAgentProfile({ ...profile, browser: false });
+    expect(await backend.workflowRisks(workflow)).not.toContain('browserAgent');
+    expect((await backend.previewAgentCommand(profile.id, 'Review')).args).not.toContain(
+      '--chrome',
+    );
+    const found = await backend.detectAgentAbilities('claude');
+    expect(found.connectorsNote).toMatch(/Demo data/);
+  });
   beforeEach(() => {
     localStorage.clear();
     __setMockBackendForTests();

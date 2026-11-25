@@ -1,5 +1,5 @@
 import { projectScope } from './memory';
-import { hasFullAccess, referencedVariables } from './agents';
+import { hasFullAccess, referencedVariables, usesBrowser } from './agents';
 import type { AgentProfile } from './agents';
 import type { Workflow } from './workflow';
 import { formatTime } from './time';
@@ -76,7 +76,8 @@ export type RiskCategory =
   | 'repositoryMutation'
   | 'remoteWrite'
   | 'externalTool'
-  | 'fullAccessAgent';
+  | 'fullAccessAgent'
+  | 'browserAgent';
 
 export const RISK_LABELS: Record<RiskCategory, string> = {
   readOnly: 'Read repository',
@@ -85,6 +86,7 @@ export const RISK_LABELS: Record<RiskCategory, string> = {
   remoteWrite: 'Push / create or comment on PRs',
   externalTool: 'Invoke external tools (AI CLI / MCP)',
   fullAccessAgent: 'Run AI CLI with full access (permission checks bypassed)',
+  browserAgent: 'Use your browser and its signed-in sites',
 };
 
 const RISK_ORDER: RiskCategory[] = [
@@ -94,12 +96,13 @@ const RISK_ORDER: RiskCategory[] = [
   'remoteWrite',
   'externalTool',
   'fullAccessAgent',
+  'browserAgent',
 ];
 
 /**
  * Mirror of Rust `trust::workflow_risks_with_profiles`: the node mix plus
- * Agent nodes whose profile bypasses every permission check (a role-only
- * node counts every profile with that role).
+ * Agent nodes whose profile bypasses every permission check or uses the
+ * browser (a role-only node counts every profile with that role).
  */
 export function workflowRisks(
   workflow: Workflow,
@@ -124,6 +127,7 @@ export function workflowRisks(
             : config.agentRole !== undefined && p.role === config.agentRole,
         );
         if (candidates.some(hasFullAccess)) risks.add('fullAccessAgent');
+        if (candidates.some(usesBrowser)) risks.add('browserAgent');
         break;
       }
       case 'mcp':

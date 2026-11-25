@@ -11,6 +11,14 @@ import {
   type AppPermissionDefault,
 } from './lib/agents';
 import type { GitHubState, McpServerConfig } from './lib/integrations';
+import {
+  ABILITIES_SETTING,
+  NO_ABILITIES,
+  serializeAbilities,
+  storedAbilities,
+  type AppAbilities,
+  type HostAbilities,
+} from './lib/abilities';
 import type { Preference, StoredGeneration, WorkflowTemplate } from './lib/generation';
 import type { Notification, NotificationPrefs, Schedule, Watcher } from './lib/scheduler';
 import type {
@@ -24,6 +32,18 @@ import type {
 } from './lib/workflow';
 import { errorMessage } from './lib/errors';
 import type { UpdateCheck } from './lib/updates';
+
+/** One CLI's detection: running, its result, or why it failed. */
+export type HostAbilitiesState =
+  | { kind: 'detecting'; previous: HostAbilities | null }
+  | { kind: 'done'; abilities: HostAbilities }
+  | { kind: 'error'; message: string };
+
+function currentAbilities(state: HostAbilitiesState | undefined): HostAbilities | null {
+  if (state?.kind === 'done') return state.abilities;
+  if (state?.kind === 'detecting') return state.previous;
+  return null;
+}
 
 export interface UiNotice {
   id: string;
@@ -73,6 +93,10 @@ interface AppState {
   profiles: AgentProfile[];
   /** App-wide agent permission level; `null` until the user chooses. */
   agentPermissionDefault: AppPermissionDefault | null;
+  /** What Claude Code steps may use from the user's own setup (Environment). */
+  agentAbilities: AppAbilities;
+  /** Last detection of each CLI's own setup, this session. */
+  hostAbilities: Partial<Record<'claude' | 'codex', HostAbilitiesState>>;
   knownFolders: string[];
   mcpServers: McpServerConfig[];
   githubState: GitHubState | null;
@@ -116,6 +140,10 @@ interface AppState {
     level: AppPermissionDefault,
     profiles?: AgentProfile[],
   ) => Promise<void>;
+  /** Save the app-wide abilities; rejects with the backend error. */
+  setAgentAbilities: (abilities: AppAbilities) => Promise<void>;
+  /** Run the CLI's listing commands to see what it brings (no prompt). */
+  detectHostAbilities: (adapter: 'claude' | 'codex') => Promise<void>;
   refreshIntegrations: () => Promise<void>;
   refreshAutomations: () => Promise<void>;
   refreshNotifications: () => Promise<void>;
@@ -175,6 +203,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   adapters: [],
   profiles: [],
   agentPermissionDefault: null,
+  agentAbilities: NO_ABILITIES,
+  hostAbilities: {},
   knownFolders: [],
   mcpServers: [],
   githubState: null,
@@ -332,17 +362,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
   refreshProfiles: async () => {
     const backend = getBackend();
     try {
-      const [profiles, adapters, knownFolders, permissionDefault] = await Promise.all([
-        backend.listAgentProfiles(),
-        backend.listAdapters(),
-        backend.listKnownFolders(20).catch(() => [] as string[]),
-        backend.getSetting(PERMISSION_DEFAULT_SETTING).catch(() => null),
-      ]);
+      const [profiles, adapters, knownFolders, permissionDefault, abilities] =
+        await Promise.all([
+          backend.listAgentProfiles(),
+          backend.listAdapters(),
+          backend.listKnownFolders(20).catch(() => [] as string[]),
+          backend.getSetting(PERMISSION_DEFAULT_SETTING).catch(() => null),
+          backend.getSetting(ABILITIES_SETTING).catch(() => null),
+        ]);
       set({
         profiles,
         adapters,
         knownFolders,
         agentPermissionDefault: readPermissionDefault(permissionDefault),
+        agentAbilities: storedAbilities(abilities),
       });
     } catch {
       // Browser mock before profiles exist, or Tauri command missing in
@@ -362,6 +395,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ agentPermissionDefault: level });
     } finally {
       await get().refreshProfiles();
+    }
+  },
+
+  setAgentAbilities: async (abilities) => {
+    await getBackend().setSetting(ABILITIES_SETTING, serializeAbilities(abilities));
+    set({ agentAbilities: abilities });
+  },
+
+  detectHostAbilities: async (adapter) => {
+    set((state) => ({
+      hostAbilities: {
+        ...state.hostAbilities,
+        [adapter]: {
+          kind: 'detecting',
+          previous: currentAbilities(state.hostAbilities[adapter]),
+        },
+      },
+    }));
+    try {
+      const abilities = await getBackend().detectAgentAbilities(adapter);
+      set((state) => ({
+        hostAbilities: { ...state.hostAbilities, [adapter]: { kind: 'done', abilities } },
+      }));
+    } catch (err) {
+      set((state) => ({
+        hostAbilities: {
+          ...state.hostAbilities,
+          [adapter]: { kind: 'error', message: errorMessage(err) },
+        },
+      }));
     }
   },
 
