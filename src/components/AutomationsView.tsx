@@ -341,13 +341,9 @@ export function AutomationsView(): React.JSX.Element {
           </Notice>
         )}
 
-        <section
-          aria-label="Background mode"
-          className="tool-card"
-          style={{ marginBottom: 16, maxWidth: 680 }}
-        >
+        <section aria-label="Background mode" className="tool-card section-panel">
           <div className="background-card-head">
-            <h2 style={{ margin: 0, fontSize: 14 }}>Background mode</h2>
+            <h2 className="card-title">Background mode</h2>
             <Switch
               checked={backgroundMode}
               onChange={toggleBackground}
@@ -380,9 +376,9 @@ export function AutomationsView(): React.JSX.Element {
           </div>
         </section>
 
-        <h2 style={{ fontSize: 14 }}>Schedules ({schedules.length})</h2>
+        <h2 className="section-title">Schedules ({schedules.length})</h2>
         {schedules.length === 0 && (
-          <div className="empty-state" style={{ margin: '12px 0', padding: '28px 20px' }}>
+          <div className="empty-state">
             <h2>No schedules yet</h2>
             <p>
               Run a workflow nightly, weekly, or on a cron — disabled until you trust it.
@@ -517,9 +513,9 @@ export function AutomationsView(): React.JSX.Element {
           ))}
         </div>
 
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>Watchers ({watchers.length})</h2>
+        <h2 className="section-title">Watchers ({watchers.length})</h2>
         {watchers.length === 0 && (
-          <div className="empty-state" style={{ margin: '12px 0', padding: '28px 20px' }}>
+          <div className="empty-state">
             <h2>No watchers yet</h2>
             <p>
               Watchers poll GitHub for review requests, PR updates, or feedback — and run
@@ -542,7 +538,7 @@ export function AutomationsView(): React.JSX.Element {
           </div>
         )}
         {watchers.length > 0 && (
-          <p className="field-hint" style={{ maxWidth: 720 }}>
+          <p className="field-hint section-hint">
             Watchers poll GitHub for review requests, PR updates, or feedback — and run a
             workflow only for new revisions (SHA-tracked, own comments ignored).
           </p>
@@ -693,7 +689,7 @@ export function AutomationsView(): React.JSX.Element {
           </Modal>
         )}
 
-        <h2 style={{ fontSize: 14, marginTop: 24 }}>Notifications</h2>
+        <h2 className="section-title">Notifications</h2>
 
         <NotificationPrefsEditor
           // Remount once stored preferences arrive; later refreshes keep edits.
@@ -1307,13 +1303,9 @@ function NotificationPrefsEditor({
       });
   };
   return (
-    <section
-      aria-label="Notification preferences"
-      className="tool-card"
-      style={{ marginTop: 20, maxWidth: 680 }}
-    >
+    <section aria-label="Notification preferences" className="tool-card section-panel">
       <div className="background-card-head">
-        <h3 style={{ margin: 0 }}>Notification preferences</h3>
+        <h3 className="card-title">Notification preferences</h3>
         <Switch
           checked={osEnabled === true}
           onChange={setOs}

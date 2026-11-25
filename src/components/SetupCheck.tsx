@@ -151,18 +151,20 @@ export function SetupCheckPanel({
     );
   return (
     <div className="setup-check-panel">
-      <p className="field-hint" style={{ maxWidth: 720 }}>
+      <p className="field-hint section-hint">
         Proves each profile is signed in and can read and edit files in a headless run, at
         its permission level. Each check sends one short prompt with that profile, using
         your plan, and takes up to three minutes.
       </p>
-      <button
-        className="btn"
-        disabled={busy}
-        onClick={() => void run(profiles.map((p) => p.id))}
-      >
-        {busy ? 'Checking…' : 'Check every profile'}
-      </button>
+      <div className="section-actions">
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={() => void run(profiles.map((p) => p.id))}
+        >
+          {busy ? 'Checking…' : 'Check every profile'}
+        </button>
+      </div>
       <ul className="setup-check-profiles">
         {profiles.map((profile) => {
           const state = checks[profile.id];

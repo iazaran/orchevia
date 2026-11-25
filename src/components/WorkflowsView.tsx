@@ -1226,7 +1226,6 @@ export function WorkflowsView(): React.JSX.Element {
                       action={
                         <button
                           className="btn btn-ghost"
-                          style={{ padding: '2px 8px', fontSize: 12 }}
                           disabled={detectingGenBranch || genRepoDir.trim() === ''}
                           title="Fill in the current branch of the repository above"
                           onClick={() => {

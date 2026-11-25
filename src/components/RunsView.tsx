@@ -1049,22 +1049,22 @@ export function RunsView(): React.JSX.Element {
         <span className="topbar-sub">History of explicit workflow executions.</span>
         <div className="topbar-actions">
           <button
-            className="btn btn-ghost"
-            title="Aggregated usage, your plans and estimated cost"
-            onClick={() => setView('usage')}
-          >
-            Usage & costs
-          </button>
-          <button className="btn" onClick={() => void refreshRunData()}>
-            Refresh
-          </button>
-          <button
-            className="btn btn-ghost"
+            className="btn btn-ghost danger-hover"
             disabled={runs.length === 0}
             title="Delete every finished run (running or paused runs are kept)"
             onClick={clearFinished}
           >
             Clear finished
+          </button>
+          <button
+            className="btn btn-ghost"
+            title="Aggregated usage, your plans and estimated cost"
+            onClick={() => setView('usage')}
+          >
+            Usage & costs →
+          </button>
+          <button className="btn" onClick={() => void refreshRunData()}>
+            Refresh
           </button>
         </div>
       </div>

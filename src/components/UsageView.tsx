@@ -557,7 +557,7 @@ export function UsageView(): React.JSX.Element {
         </span>
         <div className="topbar-actions">
           <button className="btn btn-ghost" onClick={() => setView('runs')}>
-            Runs
+            Runs →
           </button>
           <button className="btn" onClick={refresh} disabled={loading}>
             {loading ? 'Loading…' : 'Refresh'}
@@ -565,7 +565,7 @@ export function UsageView(): React.JSX.Element {
         </div>
       </div>
       <div className="view usage-view">
-        <p className="field-hint" style={{ marginTop: 0 }}>
+        <p className="field-hint section-hint" style={{ marginTop: 0 }}>
           Estimated cost follows the plans you enter below; API value is what
           pay-as-you-go pricing would charge for the same tokens. Orchevia cannot see your
           remaining quota.
@@ -1011,7 +1011,11 @@ export function UsageView(): React.JSX.Element {
             </section>
             <section aria-label="Breakdown">
               <h2>Breakdown</h2>
-              <div className="usage-tabs" role="tablist" aria-label="Breakdown views">
+              <div
+                className="segmented usage-tabs"
+                role="tablist"
+                aria-label="Breakdown views"
+              >
                 {BREAKDOWN_TABS.map(([tab, label], index) => (
                   <button
                     key={tab}
@@ -1020,7 +1024,7 @@ export function UsageView(): React.JSX.Element {
                     aria-selected={breakdown === tab}
                     aria-controls={`usage-panel-${tab}`}
                     tabIndex={breakdown === tab ? 0 : -1}
-                    className={`btn btn-ghost${breakdown === tab ? ' active-tab' : ''}`}
+                    className={`segmented-option${breakdown === tab ? ' is-selected' : ''}`}
                     onClick={() => setBreakdown(tab)}
                     onKeyDown={(event) => {
                       const nextIndex =
@@ -1364,7 +1368,7 @@ export function UsageView(): React.JSX.Element {
         )}
         <section aria-label="Your plans" id="usage-plans">
           <h2>Your plans</h2>
-          <p className="field-hint">
+          <p className="field-hint section-hint">
             What you pay for each CLI, so the estimated cost above follows your bill
             instead of API prices. Enter what you are charged each month, tax included.
             Orchevia never looks prices up and never sends these figures anywhere.

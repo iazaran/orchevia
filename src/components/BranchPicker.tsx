@@ -54,14 +54,7 @@ export function BranchPicker({
   }, [dir]);
   return (
     <div className="field" style={{ marginBottom: 0 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          gap: 8,
-        }}
-      >
+      <div className="field-label-row">
         <label className="field-label" htmlFor={id}>
           {label}
         </label>
