@@ -38,10 +38,10 @@ Runs to see what each step did and which findings survived the fix round.
 - **Reuse and share.** Templates, Playbooks that detect your repository's commands, and
   **n8n import and export**.
 
-**New in 0.3.1:** n8n import and export · 22 MCP setups in the server form · MCP
+**New in 0.3:** n8n import and export · 22 MCP setups in the server form · MCP
 templates · Playbooks that detect your test, lint and build commands · seven more
-coding CLIs in one click · a JSON editor that points at errors · a refreshed interface.
-[Changelog](./CHANGELOG.md)
+coding CLIs in one click · a JSON editor that points at errors · one consistent layout
+on every screen. [Changelog](./CHANGELOG.md)
 
 ## Download
 
