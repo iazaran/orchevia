@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { EnvironmentView } from './EnvironmentView';
 import { useAppStore } from '../store';
 import { __setMockBackendForTests } from '../lib/backend';
+import { MCP_PRESETS } from '../lib/integrations';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -281,4 +282,60 @@ it('hides a listed tool list and a check result again with the same button', asy
   await screen.findByRole('list', { name: 'Server check for Jira' });
   fireEvent.click(screen.getByRole('button', { name: 'Hide check' }));
   expect(screen.queryByRole('list', { name: 'Server check for Jira' })).toBeNull();
+});
+
+it('moves keyboard focus to the section a jump link names', () => {
+  __setMockBackendForTests();
+  const scroll = vi.fn();
+  Element.prototype.scrollIntoView = scroll;
+  useAppStore.setState({ mcpServers: [], tools: [], adapters: [], profiles: [] });
+  render(<EnvironmentView />);
+  fireEvent.click(screen.getByRole('link', { name: 'Diagnostics' }));
+  expect(scroll).toHaveBeenCalled();
+  expect(document.activeElement).toBe(document.getElementById('env-diagnostics'));
+});
+
+it('shows a new offer for a server after an earlier one was dismissed', () => {
+  __setMockBackendForTests();
+  localStorage.clear();
+  const jira = {
+    id: 'j',
+    name: 'Jira',
+    command: 'uvx',
+    args: ['mcp-atlassian'],
+    enabled: true,
+  };
+  useAppStore.setState({ mcpServers: [jira], tools: [], adapters: [], profiles: [] });
+  render(<EnvironmentView />);
+  fireEvent.click(screen.getByRole('button', { name: "Keep 'Jira' as it is" }));
+  expect(screen.queryByRole('button', { name: 'Review the update' })).toBeNull();
+  // The user adds --read-only themselves: only the old name is left to offer.
+  act(() => {
+    useAppStore.setState({
+      mcpServers: [{ ...jira, args: ['mcp-atlassian', '--read-only'] }],
+    });
+  });
+  expect(screen.getByRole('list', { name: 'Changes to Jira' })).toHaveTextContent(
+    'Name: “Jira” → becomes “Jira & Confluence”',
+  );
+  localStorage.clear();
+});
+
+it('says so when every setup of a category is already set up', () => {
+  __setMockBackendForTests();
+  const servers = MCP_PRESETS.filter(
+    (preset) => preset.category === 'Code & tickets',
+  ).map((preset) => ({
+    id: preset.id,
+    name: preset.name,
+    command: preset.command,
+    args: [...preset.args],
+    enabled: true,
+  }));
+  useAppStore.setState({ mcpServers: servers, tools: [], adapters: [], profiles: [] });
+  render(<EnvironmentView />);
+  fireEvent.click(screen.getByRole('button', { name: '+ New MCP server' }));
+  fireEvent.click(screen.getByRole('radio', { name: 'Code & tickets' }));
+  expect(screen.getByText(/You already set up every setup here/)).toBeInTheDocument();
+  expect(screen.queryByText(/No setup matches/)).toBeNull();
 });

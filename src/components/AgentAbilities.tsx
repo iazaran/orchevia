@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import {
   abilityAccess,
+  automationsFollowingAppBrowser,
   missingConnectors,
+  unlistedAllowedRules,
   WEB_TOOL_RULES,
   withAllowedRules,
   type AbilityAccess,
@@ -30,13 +32,18 @@ export function AgentAbilitiesPanel(): React.JSX.Element {
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
   const abilities = useAppStore((s) => s.agentAbilities);
   const host = useAppStore((s) => s.hostAbilities);
+  const profiles = useAppStore((s) => s.profiles);
+  const schedules = useAppStore((s) => s.schedules);
+  const watchers = useAppStore((s) => s.watchers);
   const detect = useAppStore((s) => s.detectHostAbilities);
   const save = useAppStore((s) => s.setAgentAbilities);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Found on PATH, or set up through a profile's own executable path.
   const installed = (id: string): boolean =>
-    tools.some((tool) => tool.id === id && tool.installed);
+    tools.some((tool) => tool.id === id && tool.installed) ||
+    profiles.some((profile) => profile.adapter === id);
   const clis = (['claude', 'codex'] as const).filter(
     (id) => installed(id) || host[id] !== undefined,
   );
@@ -53,6 +60,12 @@ export function AgentAbilitiesPanel(): React.JSX.Element {
         setBusy(false);
       });
   };
+
+  const affected = automationsFollowingAppBrowser(
+    [...schedules, ...watchers],
+    workflows,
+    profiles,
+  );
 
   const detectAll = (): void => {
     for (const id of clis.length > 0 ? clis : (['claude', 'codex'] as const))
@@ -85,20 +98,25 @@ export function AgentAbilitiesPanel(): React.JSX.Element {
           state={host.claude}
           appDefault={appDefault}
           abilities={abilities}
+          affected={affected}
           busy={busy}
           workflows={workflows.map((w) => w.definition)}
           onChange={update}
         />
       ) : (
-        <ul className="ability-list" aria-label="Claude Code abilities">
-          <BrowserChoice
-            abilities={abilities}
-            appDefault={appDefault}
-            busy={busy}
-            detail="Claude Code is not installed. Install it to let steps use your browser."
-            onChange={update}
-          />
-        </ul>
+        <>
+          <ul className="ability-list" aria-label="Claude Code abilities">
+            <BrowserChoice
+              abilities={abilities}
+              affected={affected}
+              appDefault={appDefault}
+              busy={busy}
+              detail="Claude Code is not installed. Install it to let steps use your browser."
+              onChange={update}
+            />
+          </ul>
+          <StoredRules abilities={abilities} shown={[]} busy={busy} onChange={update} />
+        </>
       )}
       {(installed('codex') || host.codex !== undefined) && (
         <CodexAbilities state={host.codex} appDefault={appDefault} />
@@ -157,12 +175,15 @@ const STATUS_LABEL: Record<HostConnector['status'], [string, string]> = {
 
 function BrowserChoice({
   abilities,
+  affected,
   appDefault,
   busy,
   detail,
   onChange,
 }: {
   abilities: AppAbilities;
+  /** Enabled automations that would start using the browser. */
+  affected: string[];
   appDefault: AppPermissionDefault | null;
   busy: boolean;
   detail: string;
@@ -179,8 +200,9 @@ function BrowserChoice({
             {appDefault === 'fullAccess'
               ? ''
               : ', and may use the browser tools without asking'}
-            . Claude acts in your signed-in browser, so schedules that use it need the
-            trusted opt-in.
+            . Claude acts in your signed-in browser. Profiles whose Browser is set in
+            Agents keep their own choice, and workflows list it among their automation
+            risks.
           </p>
         )}
       </div>
@@ -198,8 +220,11 @@ function BrowserChoice({
             }
             void confirmDialog({
               title: 'Let workflow steps use your browser?',
-              message:
-                'Claude Code steps of profiles that follow the app default run with Claude in Chrome: Claude can open pages and act in the browser you are signed in to, without asking. Schedules that use them need the trusted opt-in.',
+              message: `Claude Code steps run with Claude in Chrome unless their profile's Browser is set to Off in Agents: Claude can open pages and act in the browser you are signed in to, without asking.${
+                affected.length > 0
+                  ? ` These enabled automations will use it too, unattended: ${affected.join(', ')}.`
+                  : ''
+              }`,
               confirmLabel: 'Use my browser',
               danger: true,
             }).then((ok) => {
@@ -216,6 +241,7 @@ function ClaudeAbilities({
   state,
   appDefault,
   abilities,
+  affected,
   busy,
   workflows,
   onChange,
@@ -223,11 +249,13 @@ function ClaudeAbilities({
   state: HostAbilitiesState | undefined;
   appDefault: AppPermissionDefault | null;
   abilities: AppAbilities;
+  affected: string[];
   busy: boolean;
   workflows: Parameters<typeof missingConnectors>[0];
   onChange: (next: AppAbilities) => void;
 }): React.JSX.Element {
   const found = resultOf(state);
+  const listed = found?.connectorsListed === true;
   const settingsRules = found?.allowedInSettings ?? [];
   const access = (rule: string): AbilityAccess =>
     abilityAccess(rule, appDefault, abilities, settingsRules);
@@ -240,7 +268,13 @@ function ClaudeAbilities({
   );
   const webAccess = WEB_TOOL_RULES.map(access);
   const webAllowed = webAccess.every((a) => a !== 'needed');
-  const missing = found === null ? [] : missingConnectors(workflows, found.connectors);
+  // Only a listing that ran can say a server is gone.
+  const missing = listed ? missingConnectors(workflows, connectors) : [];
+  const webOn = webAccess.every((a) => a === 'orchevia' || a === 'settings');
+  const shown = [
+    ...(listed ? connectors.flatMap((c) => (c.rule === undefined ? [] : [c.rule])) : []),
+    ...(webOn ? WEB_TOOL_RULES : []),
+  ];
   const browserDetail =
     found?.browser.detail ??
     'Lets steps open pages and act in the browser you are signed in to.';
@@ -259,6 +293,7 @@ function ClaudeAbilities({
       <ul className="ability-list" aria-label="Claude Code abilities">
         <BrowserChoice
           abilities={abilities}
+          affected={affected}
           appDefault={appDefault}
           busy={busy}
           detail={browserDetail}
@@ -277,7 +312,7 @@ function ClaudeAbilities({
             {appDefault !== 'fullAccess' && (
               <Switch
                 label="Let workflow steps search and read the web"
-                checked={webAccess.every((a) => a === 'orchevia' || a === 'settings')}
+                checked={webOn}
                 disabled={webAccess.every((a) => a === 'settings')}
                 busy={busy}
                 onText="Allowed"
@@ -369,9 +404,10 @@ function ClaudeAbilities({
           </li>
         )}
       </ul>
+      <StoredRules abilities={abilities} shown={shown} busy={busy} onChange={onChange} />
       {missing.length > 0 && (
         <Notice inline variant="warn" style={{ marginTop: 12, marginBottom: 0 }}>
-          <strong>Workflows ask for connectors Claude Code no longer lists.</strong>
+          <strong>Workflows ask for MCP servers Claude Code does not list.</strong>
           <ul className="mcp-update-changes">
             {missing.map((m) => (
               <li key={m.server}>
@@ -386,16 +422,62 @@ function ClaudeAbilities({
               </li>
             ))}
           </ul>
-          Reconnecting a connector can rename it. Update the step’s required tools and the
-          prompt that names it.
+          Reconnecting a connector can rename it; update the step’s required tools and the
+          prompt that names it. Servers added for one project only are listed when a step
+          runs there, so those may be fine.
         </Notice>
       )}
       {appDefault !== 'fullAccess' && (
         <p className="field-hint" style={{ marginBottom: 0, marginTop: 10 }}>
-          Allowed abilities apply to profiles that follow the app default. A profile with
-          its own level in Agents keeps its own rules.
+          Connectors and web tools allowed here reach profiles whose Permissions follow
+          the app default; a profile with its own level in Agents keeps its own rules. The
+          browser follows each profile’s Browser choice.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Allowed rules no switch above shows (not listed yet, or renamed or removed
+ * in Claude Code). They stay granted until removed, so they are always here.
+ */
+function StoredRules({
+  abilities,
+  shown,
+  busy,
+  onChange,
+}: {
+  abilities: AppAbilities;
+  shown: string[];
+  busy: boolean;
+  onChange: (next: AppAbilities) => void;
+}): React.JSX.Element | null {
+  const rules = unlistedAllowedRules(abilities, shown);
+  if (rules.length === 0) return null;
+  return (
+    <div className="ability-stored">
+      <p className="field-hint">
+        Also allowed for workflow steps (not in the list above: not listed yet, or renamed
+        or removed in Claude Code). Steps get these until you remove them.
+      </p>
+      <ul className="connector-list" aria-label="Other allowed abilities">
+        {rules.map((rule) => (
+          <li key={rule} className="connector-row">
+            <code title={rule}>{rule}</code>
+            <button
+              className="btn btn-ghost btn-inline danger-hover"
+              disabled={busy}
+              aria-label={`Stop allowing ${rule}`}
+              onClick={() => {
+                onChange(withAllowedRules(abilities, [rule], false));
+              }}
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

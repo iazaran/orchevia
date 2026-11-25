@@ -104,8 +104,19 @@ export function EnvironmentView(): React.JSX.Element {
     });
   };
 
+  // Scroll to the section and move keyboard focus there, as a fragment link
+  // would; no smooth scrolling for people who ask for reduced motion.
   const jump = (id: string): void => {
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const target = document.getElementById(id);
+    if (target === null) return;
+    let reduced = false;
+    try {
+      reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      // No media queries (tests): scroll smoothly.
+    }
+    target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    target.focus({ preventScroll: true });
   };
 
   const developerTools = tools.filter((tool) => tool.id === 'git' || tool.id === 'gh');
@@ -159,7 +170,7 @@ export function EnvironmentView(): React.JSX.Element {
           ))}
         </nav>
 
-        <section id="env-agents" aria-labelledby="env-agents-title">
+        <section id="env-agents" aria-labelledby="env-agents-title" tabIndex={-1}>
           <h2 id="env-agents-title" className="section-title">
             Agents
           </h2>
@@ -209,7 +220,7 @@ export function EnvironmentView(): React.JSX.Element {
           <SetupCheckPanel profiles={profiles} />
         </section>
 
-        <section id="env-mcp" aria-labelledby="env-mcp-title">
+        <section id="env-mcp" aria-labelledby="env-mcp-title" tabIndex={-1}>
           <h2 id="env-mcp-title" className="section-title">
             MCP servers ({mcpServers.length})
           </h2>
@@ -234,7 +245,9 @@ export function EnvironmentView(): React.JSX.Element {
             <div className="tool-grid">
               {mcpServers.map((server) => (
                 <McpServerCard
-                  key={server.id}
+                  // A new command starts a new card: listed tools and checks
+                  // belong to the command they ran.
+                  key={[server.id, server.command, ...server.args].join('\n')}
                   server={server}
                   onEdit={(next) => {
                     setEditing({ ...next, args: [...next.args] });
@@ -248,7 +261,7 @@ export function EnvironmentView(): React.JSX.Element {
           )}
         </section>
 
-        <section id="env-tools" aria-labelledby="env-tools-title">
+        <section id="env-tools" aria-labelledby="env-tools-title" tabIndex={-1}>
           <h2 id="env-tools-title" className="section-title">
             Local tools
           </h2>
@@ -300,12 +313,16 @@ export function EnvironmentView(): React.JSX.Element {
         )}
 
         {/* UpdatesSection is its own "Updates" region. */}
-        <div id="env-updates">
+        <div id="env-updates" tabIndex={-1}>
           <h2 className="section-title">Updates</h2>
           <UpdatesSection />
         </div>
 
-        <section id="env-diagnostics" aria-labelledby="env-diagnostics-title">
+        <section
+          id="env-diagnostics"
+          aria-labelledby="env-diagnostics-title"
+          tabIndex={-1}
+        >
           <h2 id="env-diagnostics-title" className="section-title">
             Diagnostics
           </h2>
@@ -459,10 +476,11 @@ function McpServerCard({
   const [check, setCheck] = useState<CheckState | null>(null);
   const preset = matchMcpPreset(server);
   const update = mcpSetupUpdate(server);
-  const updateKey = `${server.id}:${update?.preset.id ?? ''}:${update?.updated.name ?? ''}:${(update?.updated.args ?? []).join(' ')}`;
-  const [dismissed, setDismissed] = useState(() =>
-    dismissedUpdates().includes(updateKey),
-  );
+  // One key per offer: what it changes, so a different offer shows again.
+  const updateKey = `${server.id}:${JSON.stringify(update?.changes ?? [])}`;
+  // Dismissals are per offer: a different offer for the same server shows.
+  const [dismissedKeys, setDismissedKeys] = useState(dismissedUpdates);
+  const dismissed = dismissedKeys.includes(updateKey);
 
   const listTools = (): void => {
     setTools({ state: 'loading' });
@@ -532,11 +550,9 @@ function McpServerCard({
           style={{ marginTop: 10, marginBottom: 0 }}
           dismissLabel={`Keep '${server.name}' as it is`}
           onDismiss={() => {
-            setDismissed(true);
-            writeLocal(
-              DISMISSED_UPDATES_KEY,
-              JSON.stringify([...dismissedUpdates(), updateKey]),
-            );
+            const next = [...dismissedUpdates(), updateKey];
+            setDismissedKeys(next);
+            writeLocal(DISMISSED_UPDATES_KEY, JSON.stringify(next));
           }}
         >
           <strong>Saved from an older {update.preset.name} setup.</strong>
@@ -555,6 +571,10 @@ function McpServerCard({
               ),
             )}
           </ul>
+          <p className="field-hint" style={{ margin: '0 0 8px' }}>
+            Workflows keep using this server. After saving, choose Check server to see
+            that the tools they call are still there.
+          </p>
           <button
             className="btn btn-inline"
             onClick={() => {
@@ -889,7 +909,9 @@ function McpPresetPicker({
       </div>
       {list.length === 0 && (
         <p className="field-hint">
-          No setup matches “{query}”. Start from a blank server.
+          {needle === ''
+            ? 'You already set up every setup here. Start from a blank server, or choose Add another one below.'
+            : `No setup matches “${query}”. Start from a blank server.`}
         </p>
       )}
       {usedPresets.length > 0 && (

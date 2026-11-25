@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
 import { AgentAbilitiesPanel } from './AgentAbilities';
+import { mockHostAbilities } from '../lib/abilities';
 import { ConfirmHost } from './ConfirmDialog';
 import type { ToolStatus } from '../lib/workflow';
 
@@ -150,7 +151,7 @@ describe('agent abilities', () => {
     render(<AgentAbilitiesPanel />);
     await user.click(screen.getByRole('button', { name: 'Find what my agents can use' }));
     const warning = await screen.findByText(
-      'Workflows ask for connectors Claude Code no longer lists.',
+      'Workflows ask for MCP servers Claude Code does not list.',
     );
     expect(warning.parentElement).toHaveTextContent(
       'mcp__claude_ai_Atlassian_Rovo_2 in Ticket to PR — probably mcp__claude_ai_Atlassian_Rovo now.',
@@ -169,5 +170,133 @@ describe('agent abilities', () => {
     await user.click(screen.getByRole('button', { name: 'Find what my agents can use' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('spawn claude ENOENT');
     expect(screen.getByText('Could not check')).toBeInTheDocument();
+  });
+
+  it('shows and removes stored grants even before Find, and warns only after a listing ran', async () => {
+    const backend = __setMockBackendForTests();
+    reset();
+    const flow = {
+      id: 'w',
+      name: 'Ticket to PR',
+      createdAt: '',
+      updatedAt: '',
+      definition: {
+        schemaVersion: 6,
+        id: 'w',
+        name: 'Ticket to PR',
+        nodes: [
+          {
+            id: 'a',
+            type: 'agent' as const,
+            position: { x: 0, y: 0 },
+            config: { requiredTools: ['mcp__claude_ai_Atlassian_Rovo_2'] },
+          },
+        ],
+        edges: [],
+      },
+    };
+    useAppStore.setState({
+      workflows: [flow],
+      agentAbilities: {
+        browser: false,
+        allowedTools: ['mcp__claude_ai_Slack', 'WebSearch'],
+      },
+    });
+    vi.spyOn(backend, 'detectAgentAbilities').mockResolvedValue({
+      ...mockHostAbilities('claude'),
+      connectors: [],
+      connectorsListed: false,
+      connectorsNote: '`claude mcp list` did not finish within 60 s.',
+    });
+    const user = userEvent.setup();
+    render(<AgentAbilitiesPanel />);
+    // Nothing detected yet: the stored grants are still listed.
+    const stored = screen.getByRole('list', { name: 'Other allowed abilities' });
+    expect(within(stored).getByText('mcp__claude_ai_Slack')).toBeInTheDocument();
+    // Half of the web pair is not the web switch: it is listed too.
+    expect(within(stored).getByText('WebSearch')).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Stop allowing mcp__claude_ai_Slack' }),
+    );
+    await waitFor(() => {
+      expect(useAppStore.getState().agentAbilities).toEqual({
+        browser: false,
+        allowedTools: ['WebSearch'],
+      });
+    });
+    // A listing that failed says nothing about what is gone.
+    await user.click(screen.getByRole('button', { name: 'Find what my agents can use' }));
+    expect(
+      (await screen.findAllByText(/did not finish within 60 s/)).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByText('Workflows ask for MCP servers Claude Code does not list.'),
+    ).toBeNull();
+  });
+
+  it('names the enabled automations that would start using the browser', async () => {
+    __setMockBackendForTests();
+    reset();
+    const profile = {
+      id: 'p',
+      name: 'Claude',
+      adapter: 'claude' as const,
+      extraArgs: [],
+      workingDirMode: 'node' as const,
+      defaultTimeoutSecs: 60,
+    };
+    const workflow = {
+      id: 'w',
+      name: 'Nightly',
+      createdAt: '',
+      updatedAt: '',
+      definition: {
+        schemaVersion: 6,
+        id: 'w',
+        name: 'Nightly',
+        nodes: [
+          {
+            id: 'a',
+            type: 'agent' as const,
+            position: { x: 0, y: 0 },
+            config: { agentProfileId: 'p' },
+          },
+        ],
+        edges: [],
+      },
+    };
+    const schedule = (
+      name: string,
+      enabled: boolean,
+    ): { id: string; name: string; workflowId: string; enabled: boolean } => ({
+      id: name,
+      name,
+      workflowId: 'w',
+      enabled,
+    });
+    useAppStore.setState({
+      profiles: [profile, { ...profile, id: 'off', browser: false }],
+      workflows: [workflow],
+      schedules: [
+        schedule('Nightly review', true),
+        schedule('Paused one', false),
+      ] as never,
+      watchers: [],
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AgentAbilitiesPanel />
+        <ConfirmHost />
+      </>,
+    );
+    await user.click(
+      screen.getByRole('switch', { name: 'Let workflow steps use my browser' }),
+    );
+    const confirm = await screen.findByRole('alertdialog');
+    expect(confirm).toHaveTextContent(
+      'These enabled automations will use it too, unattended: Nightly review.',
+    );
+    expect(confirm).not.toHaveTextContent('Paused one');
   });
 });

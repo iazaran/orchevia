@@ -4512,3 +4512,19 @@ details[open] > .gen-summary::after {
   margin: 0;
   white-space: nowrap;
 }
+.ability-stored {
+  margin-top: 12px;
+}
+.ability-stored .connector-row .btn {
+  margin-left: auto;
+}
+.environment-view > section:focus,
+.environment-view > #env-updates:focus {
+  outline: none;
+}
+.environment-view > section:focus-visible,
+.environment-view > #env-updates:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius-m);
+}

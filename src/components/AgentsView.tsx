@@ -88,6 +88,21 @@ export function AgentsView(): React.JSX.Element {
 
   const toolById = (id: string): boolean => tools.some((t) => t.id === id && t.installed);
 
+  /** Enabled schedules and watchers whose workflow has a step with this profile. */
+  const automationsUsingProfile = (profileId: string): string[] => {
+    const { schedules, watchers, workflows } = useAppStore.getState();
+    return [...schedules, ...watchers]
+      .filter((automation) => automation.enabled)
+      .filter((automation) =>
+        (
+          workflows.find((w) => w.id === automation.workflowId)?.definition.nodes ?? []
+        ).some(
+          (node) => node.type === 'agent' && node.config.agentProfileId === profileId,
+        ),
+      )
+      .map((automation) => automation.name);
+  };
+
   const save = (profile: AgentProfile): void => {
     const errors = validateProfile(profile);
     if (errors.length > 0) {
@@ -102,13 +117,23 @@ export function AgentsView(): React.JSX.Element {
         message: `${ADAPTER_LABELS[profile.adapter]} can run tools without asking under this configuration. Schedules that use it need the trusted opt-in.`,
         confirmLabel: 'Allow full access',
       });
-    if (profile.browser === true && before?.browser !== true)
+    // Judged as runs resolve it, so --chrome among the extra arguments asks too.
+    const browserNow = usesBrowser(resolveForRun(profile, appDefault, appAbilities));
+    const browserBefore =
+      before !== undefined &&
+      usesBrowser(resolveForRun(before, appDefault, appAbilities));
+    if (browserNow && !browserBefore) {
+      const affected = automationsUsingProfile(profile.id);
       confirmations.push({
         title: `Let '${profile.name}' use your browser?`,
-        message:
-          'Its steps run Claude Code with Claude in Chrome: Claude can open pages and act in the browser you are signed in to, without asking. Schedules that use it need the trusted opt-in.',
+        message: `Its steps run Claude Code with Claude in Chrome: Claude can open pages and act in the browser you are signed in to, without asking.${
+          affected.length > 0
+            ? ` These enabled automations will use it too, unattended: ${affected.join(', ')}.`
+            : ''
+        }`,
         confirmLabel: 'Use my browser',
       });
+    }
     void (async () => {
       for (const confirmation of confirmations)
         if (!(await confirmDialog({ ...confirmation, danger: true }))) return;
@@ -373,11 +398,7 @@ export function AgentsView(): React.JSX.Element {
                             : undefined
                         }
                       >
-                        {p.browser === undefined
-                          ? `${appAbilities.browser ? 'On' : 'Off'} (app)`
-                          : p.browser
-                            ? 'On'
-                            : 'Off'}
+                        {browserFact(p, appAbilities.browser)}
                       </dd>
                     </div>
                   )}
@@ -1138,6 +1159,14 @@ function ProfileEditor({
   );
 }
 
+/** The Browser fact on a profile card: what its runs pass, and why. */
+function browserFact(profile: AgentProfile, appBrowser: boolean): string {
+  if (profile.extraArgs.includes('--chrome')) return 'On (extra argument)';
+  if (profile.extraArgs.includes('--no-chrome')) return 'Off (extra argument)';
+  if (profile.browser !== undefined) return profile.browser ? 'On' : 'Off';
+  return appBrowser ? 'On (app)' : 'Claude settings (app)';
+}
+
 /** Whether a Claude Code profile runs with Claude in Chrome (`--chrome`). */
 function BrowserField({
   value,
@@ -1164,15 +1193,17 @@ function BrowserField({
         }}
       >
         <option value="app">
-          App default ({appBrowser ? 'uses my browser' : 'off'})
+          App default ({appBrowser ? 'uses my browser' : 'Claude Code settings decide'})
         </option>
         <option value="on">Use my browser (Claude in Chrome)</option>
         <option value="off">Off</option>
       </select>
       <span className="field-hint">
-        {effective
-          ? 'Steps run Claude Code with --chrome: Claude can open pages and act in your signed-in browser, and may use the browser tools without asking. Schedules that use this profile need the trusted opt-in.'
-          : 'Steps run without Claude in Chrome. Turn it on here, or for every profile in Environment → Agents → Abilities.'}
+        {value === false
+          ? 'Steps run Claude Code with --no-chrome, whatever its own settings say.'
+          : effective
+            ? 'Steps run Claude Code with --chrome: Claude can open pages and act in your signed-in browser, and may use the browser tools without asking. Workflows using this profile list it among their automation risks.'
+            : 'Orchevia adds no browser flag, so your Claude Code settings decide. Turn it on here, or for every profile in Environment → Agents → Abilities.'}
       </span>
     </div>
   );
