@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { Notice, useNoticeMessage } from './Notice';
@@ -102,8 +103,12 @@ it('publishes repeated action errors after dismissal and while a prior one is vi
   expect(screen.queryByText('Pick a repository')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
   const dismiss = screen.getByRole('button', { name: 'Dismiss message' });
+  const text = screen.getByText('Pick a repository');
   dismiss.focus();
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  // Only the text is replaced, so the live region announces it again.
+  expect(screen.getByText('Pick a repository')).not.toBe(text);
+  expect(screen.getByText('Pick a repository')).toHaveClass('notice-repeated');
   // The repeat updates the visible message in place (v0.3.2): one copy, and a
   // focused Dismiss button keeps its focus while a failing action repeats.
   expect(screen.getAllByText('Pick a repository')).toHaveLength(1);
@@ -116,6 +121,8 @@ it('restarts the lifetime of a repeated message pushed as plain text', async () 
   act(() => useAppStore.getState().pushUiNotice({ content: 'Saved' }));
   await act(() => vi.advanceTimersByTime(4000));
   act(() => useAppStore.getState().pushUiNotice({ content: 'Saved' }));
+  expect(screen.getAllByText('Saved')).toHaveLength(1);
+  expect(useAppStore.getState().uiNotices.map((n) => n.revision ?? 0)).toEqual([1]);
   await act(() => vi.advanceTimersByTime(4000));
   expect(screen.getAllByText('Saved')).toHaveLength(1);
   // Five seconds after the repeat it leaves, then slides out.
@@ -171,4 +178,31 @@ it('removes an exiting notice when its slide finishes and dismisses only once', 
   expect(dismiss).toHaveBeenCalledTimes(1);
   await act(() => vi.advanceTimersByTime(1000));
   expect(dismiss).toHaveBeenCalledTimes(1);
+});
+
+it("keeps an owner's message when the same message comes back after a remount", () => {
+  // fail → clear → fail again: the second <Notice> instance updates the visible
+  // message, and the first, unmounted instance must not clear the owner.
+  function Owner(): React.JSX.Element {
+    const [error, setError] = useState<string | null>(null);
+    return (
+      <>
+        <button onClick={() => setError('Boom')}>Fail</button>
+        <button onClick={() => setError(null)}>Clear</button>
+        <span data-testid="owner">{error ?? 'none'}</span>
+        {error !== null && (
+          <Notice variant="error" onDismiss={() => setError(null)}>
+            {error}
+          </Notice>
+        )}
+      </>
+    );
+  }
+  render(<Owner />);
+  fireEvent.click(screen.getByRole('button', { name: 'Fail' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Fail' }));
+  expect(screen.getByTestId('owner')).toHaveTextContent('Boom');
+  const stack = screen.getByRole('region', { name: 'Messages' });
+  expect(within(stack).getAllByText('Boom')).toHaveLength(1);
 });

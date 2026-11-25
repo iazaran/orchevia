@@ -228,9 +228,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
                 .map((n) => (n.id === next.id ? next : n)),
       };
     });
-    // Its owner learns the older copy is gone, as if it had been dismissed.
-    if (previous?.onDismiss !== undefined && previous.onDismiss !== next.onDismiss)
-      previous.onDismiss();
+    // The previous copy's onDismiss is not called: after a remount it belongs
+    // to an unmounted <Notice> whose owner just set this same message again.
   },
   removeUiNotice: (id) => {
     set((current) => ({ uiNotices: current.uiNotices.filter((n) => n.id !== id) }));

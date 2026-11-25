@@ -185,7 +185,11 @@ function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
           }
         : {})}
     >
-      {notice.content}
+      {/* A repeat replaces only the text: the live region announces it again
+          and it flashes once, while the Dismiss button keeps its focus. */}
+      <span key={revision} className={revision > 0 ? 'notice-repeated' : undefined}>
+        {notice.content}
+      </span>
     </NoticeBody>
   );
 }
