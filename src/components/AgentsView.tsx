@@ -528,7 +528,7 @@ export function AgentsView(): React.JSX.Element {
 
         {knownFolders.length > 0 && (
           <section aria-label="Recent project folders" style={{ marginTop: 20 }}>
-            <h2 style={{ fontSize: 14 }}>Recent project folders (local only)</h2>
+            <h2 className="section-title">Recent project folders (local only)</h2>
             <ul>
               {knownFolders.map((f) => (
                 <li key={f} className="tool-version">

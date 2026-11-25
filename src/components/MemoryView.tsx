@@ -560,11 +560,11 @@ export function MemoryView(): React.JSX.Element {
           What Orchevia should know about each repository.
         </span>
         <div className="topbar-actions">
+          <button className="btn btn-ghost" onClick={() => setView('templates')}>
+            Templates <span aria-hidden="true">→</span>
+          </button>
           <button className="btn" onClick={() => void refreshLibrary()}>
             Refresh
-          </button>
-          <button className="btn btn-ghost" onClick={() => setView('templates')}>
-            Open templates
           </button>
         </div>
       </div>

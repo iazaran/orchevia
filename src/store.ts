@@ -33,6 +33,10 @@ export interface UiNotice {
   dismissLabel?: string;
   onDismiss?: () => void;
   group?: string;
+  /** Plain text of the message; the same text and variant again updates this notice. */
+  text?: string;
+  /** Bumped when the same message is published again, to restart its lifetime. */
+  revision?: number;
 }
 
 export type View =
@@ -196,12 +200,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
   error: null,
   uiNotices: [],
   pushUiNotice: (notice) => {
-    set((current) => ({
-      uiNotices: [
-        ...current.uiNotices.filter((n) => !notice.group || n.group !== notice.group),
-        { ...notice, id: newId('notice') },
-      ],
-    }));
+    const text =
+      notice.text ?? (typeof notice.content === 'string' ? notice.content.trim() : '');
+    // The same message again (Load after choosing a repository already loaded
+    // it, a save that fails twice, a poll that keeps failing) updates the
+    // visible one in place and restarts its lifetime: no stacked copies, and a
+    // focused Dismiss button keeps its focus.
+    const repeats = (n: UiNotice): boolean =>
+      text !== '' && n.text === text && n.variant === notice.variant;
+    const previous = get().uiNotices.find(repeats);
+    const next: UiNotice = {
+      ...notice,
+      ...(text === '' ? {} : { text }),
+      id: previous?.id ?? newId('notice'),
+      ...(previous === undefined ? {} : { revision: (previous.revision ?? 0) + 1 }),
+    };
+    set((current) => {
+      const kept = current.uiNotices.filter(
+        (n) => n.id === next.id || !notice.group || n.group !== notice.group,
+      );
+      return {
+        uiNotices:
+          previous === undefined
+            ? [...kept, next]
+            : kept
+                .filter((n) => n.id === next.id || !repeats(n))
+                .map((n) => (n.id === next.id ? next : n)),
+      };
+    });
+    // The previous copy's onDismiss is not called: after a remount it belongs
+    // to an unmounted <Notice> whose owner just set this same message again.
   },
   removeUiNotice: (id) => {
     set((current) => ({ uiNotices: current.uiNotices.filter((n) => n.id !== id) }));

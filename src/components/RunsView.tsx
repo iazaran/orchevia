@@ -129,14 +129,21 @@ function RunFacts({
   run,
   results,
   workflow,
+  countingWorkflow,
+  workflowLoaded,
   now,
 }: {
   run: StoredRun;
   results: StoredNodeResult[];
   workflow: Workflow | null;
+  /** The workflow when it describes every recorded step; the bar counts by it. */
+  countingWorkflow: Workflow | null;
+  /** False while the run's saved workflow is still on its way. */
+  workflowLoaded: boolean;
   now: number;
 }): React.JSX.Element {
   const setView = useAppStore((s) => s.setView);
+  const saved = useAppStore((s) => s.workflows).find((w) => w.id === run.workflowId);
   const dry = run.execution?.options.dryRun === true;
   const live = run.status === 'running' || run.status === 'paused';
   const limit = run.execution?.resolvedLimits?.maxAgentAttempts;
@@ -145,7 +152,28 @@ function RunFacts({
     (workflow ? countAgentAttempts(workflow, results) : 0);
   const spend = workflow ? reportedSpend(workflow, results, dry) : null;
   const planCost = useRunPlanCost(run);
-  const counts = stepCounts(results);
+  // The same steps the progress bar counts (no Start or End, each step by its
+  // latest result), so the header and the bar never disagree.
+  const progress = countingWorkflow ? runProgress(countingWorkflow, results) : null;
+  const counts =
+    progress !== null
+      ? {
+          total: progress.total,
+          skipped: progress.skipped,
+          failed: progress.failed,
+          rejected: progress.rejected,
+          cancelled: progress.cancelled,
+        }
+      : stepCounts(
+          results,
+          new Set(
+            // Today's workflow still tells Start and End apart when the run's
+            // own definition could not be read.
+            (workflow ?? saved?.definition)?.nodes
+              .filter((n) => n.type === 'start' || n.type === 'end')
+              .map((n) => n.id),
+          ),
+        );
   const elapsed = runElapsed(run, now);
   const costUsd = planCost?.plansEntered === true ? planCost.cost.totalUsd : null;
   return (
@@ -162,12 +190,18 @@ function RunFacts({
       )}
       <div>
         <dt>Steps</dt>
-        <dd>
-          {String(counts.total)}
-          {counts.skipped > 0 && <> · {String(counts.skipped)} skipped</>}
-          {counts.failed > 0 && <> · {String(counts.failed)} failed</>}
-          {counts.rejected > 0 && <> · {String(counts.rejected)} rejected</>}
-        </dd>
+        {workflowLoaded ? (
+          <dd>
+            {String(counts.total)}
+            {counts.skipped > 0 && <> · {String(counts.skipped)} skipped</>}
+            {counts.failed > 0 && <> · {String(counts.failed)} failed</>}
+            {counts.rejected > 0 && <> · {String(counts.rejected)} rejected</>}
+            {counts.cancelled > 0 && <> · {String(counts.cancelled)} cancelled</>}
+          </dd>
+        ) : (
+          // Counted once the saved workflow arrives, so the number never jumps.
+          <dd aria-busy="true">…</dd>
+        )}
       </div>
       <div>
         <dt>Agent attempts</dt>
@@ -255,10 +289,13 @@ function RunProgressLine({
   const parts = [
     `${String(progress.done)} of ${String(progress.total)} steps done`,
     progress.failed > 0 ? `${String(progress.failed)} failed` : '',
+    progress.rejected > 0 ? `${String(progress.rejected)} rejected` : '',
+    progress.cancelled > 0 ? `${String(progress.cancelled)} cancelled` : '',
     progress.skipped > 0 ? `${String(progress.skipped)} skipped` : '',
     live && progress.toGo > 0 ? `${String(progress.toGo)} still to run` : '',
   ].filter((part) => part !== '');
-  const finished = progress.done + progress.failed + progress.skipped;
+  const stopped = progress.failed + progress.rejected + progress.cancelled;
+  const finished = progress.done + stopped + progress.skipped;
   const percent = Math.round((finished / progress.total) * 100);
   const share = (count: number): string => `${String((count / progress.total) * 100)}%`;
   const active = live ? progress.running.length + progress.waiting.length : 0;
@@ -280,8 +317,8 @@ function RunProgressLine({
         {progress.done > 0 && (
           <span className="seg seg-done" style={{ width: share(progress.done) }} />
         )}
-        {progress.failed > 0 && (
-          <span className="seg seg-failed" style={{ width: share(progress.failed) }} />
+        {stopped > 0 && (
+          <span className="seg seg-failed" style={{ width: share(stopped) }} />
         )}
         {progress.skipped > 0 && (
           <span className="seg seg-skipped" style={{ width: share(progress.skipped) }} />
@@ -592,6 +629,8 @@ export function RunsView(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<{
     runId: string;
     workflow: Workflow | null;
+    /** The request failed: counts fall back to rows, the report stays hidden. */
+    failed?: boolean;
   } | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [recoveryId, setRecoveryId] = useState<string | null>(null);
@@ -617,6 +656,15 @@ export function RunsView(): React.JSX.Element {
   const pendingApproval = [...results].reverse().find((r) => r.status === 'paused');
   const stepNumber = new Map(results.map((r, index) => [r.id, index + 1]));
   const runWorkflow = snapshot?.runId === activeRunId ? snapshot.workflow : null;
+  // Runs from before snapshots fall back to today's workflow, which may no
+  // longer hold every step they ran: count those by their recorded rows.
+  const countingWorkflow =
+    runWorkflow !== null &&
+    results.every(
+      (row) => isBookkeeping(row) || runWorkflow.nodes.some((n) => n.id === row.nodeId),
+    )
+      ? runWorkflow
+      : null;
   // A deleted workflow keeps the name saved with its run.
   const workflowName =
     workflows.find((w) => w.id === activeRun?.workflowId)?.name ??
@@ -650,7 +698,10 @@ export function RunsView(): React.JSX.Element {
         if (!cancelled) setSnapshot({ runId: activeRunId, workflow });
       })
       .catch((error: unknown) => {
-        if (!cancelled) setActionError(errorMessage(error));
+        if (cancelled) return;
+        // Counted by its recorded rows instead of waiting forever.
+        setSnapshot({ runId: activeRunId, workflow: null, failed: true });
+        setActionError(errorMessage(error));
       });
     return () => {
       cancelled = true;
@@ -1036,22 +1087,22 @@ export function RunsView(): React.JSX.Element {
         <span className="topbar-sub">History of explicit workflow executions.</span>
         <div className="topbar-actions">
           <button
-            className="btn btn-ghost"
-            title="Aggregated usage, your plans and estimated cost"
-            onClick={() => setView('usage')}
-          >
-            Usage & costs
-          </button>
-          <button className="btn" onClick={() => void refreshRunData()}>
-            Refresh
-          </button>
-          <button
-            className="btn btn-ghost"
+            className="btn btn-ghost danger-hover"
             disabled={runs.length === 0}
             title="Delete every finished run (running or paused runs are kept)"
             onClick={clearFinished}
           >
             Clear finished
+          </button>
+          <button
+            className="btn btn-ghost"
+            title="Aggregated usage, your plans and estimated cost"
+            onClick={() => setView('usage')}
+          >
+            Usage & costs <span aria-hidden="true">→</span>
+          </button>
+          <button className="btn" onClick={() => void refreshRunData()}>
+            Refresh
           </button>
         </div>
       </div>
@@ -1177,12 +1228,14 @@ export function RunsView(): React.JSX.Element {
                     run={activeRun}
                     results={results}
                     workflow={runWorkflow}
+                    countingWorkflow={countingWorkflow}
+                    workflowLoaded={snapshot?.runId === activeRun.id}
                     now={now}
                   />
-                  {runWorkflow !== null && (
+                  {countingWorkflow !== null && (
                     <RunProgressLine
                       run={activeRun}
-                      workflow={runWorkflow}
+                      workflow={countingWorkflow}
                       results={results}
                     />
                   )}
@@ -1329,6 +1382,7 @@ export function RunsView(): React.JSX.Element {
                   if (
                     !finished ||
                     snapshot?.runId !== activeRunId ||
+                    snapshot.failed === true ||
                     (report === undefined && failedRow === undefined)
                   )
                     return null;

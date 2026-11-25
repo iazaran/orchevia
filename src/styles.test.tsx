@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { render } from '@testing-library/react';
+import { readdirSync, readFileSync } from 'node:fs';
+import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { RunTimeline } from './components/RunTimeline';
+import { ThemeToggle } from './components/ThemeToggle';
 import type { StoredNodeResult, StoredRun, Workflow } from './lib/workflow';
 
 // Vitest blanks CSS imports, so read the real stylesheet.
@@ -99,4 +100,73 @@ it('stacks a confirmation above the dialog that asked for it', () => {
   expect(Number(getComputedStyle(confirm).zIndex)).toBeGreaterThan(
     Number(getComputedStyle(dialog).zIndex),
   );
+});
+
+/** The declarations of the first top-level rule for exactly this selector. */
+function rule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\n)${escaped} \\{([^}]*)\\}`).exec(css);
+  if (match?.[1] === undefined) throw new Error(`No rule for ${selector}`);
+  return match[1];
+}
+
+it('fills the sidebar theme switch with three equal options', () => {
+  render(<ThemeToggle theme="dark" setTheme={() => {}} />);
+  const group = screen.getByRole('radiogroup', { name: 'Theme' });
+  expect(group).toHaveClass('segmented-fill');
+  expect(getComputedStyle(group).width).toBe('100%');
+  const options = screen.getAllByRole('radio');
+  expect(options).toHaveLength(3);
+  for (const option of options) {
+    expect(getComputedStyle(option).flexGrow).toBe('1');
+    // A zero basis is what makes them equal: "auto" sizes each by its label.
+    expect(['0', '0px', '0%']).toContain(getComputedStyle(option).flexBasis);
+  }
+});
+
+it('starts every view at the same left edge and keeps section actions by their text', () => {
+  // v0.3.1 centred Playbooks in a narrower column and pushed Environment's MCP
+  // buttons to the far right of the window.
+  const { container } = render(
+    <div className="view playbooks-view">
+      <p className="section-hint">Why</p>
+      <div className="section-actions" />
+      <div className="section-panel" />
+      <div className="empty-state" />
+    </div>,
+  );
+  const view = container.firstElementChild as HTMLElement;
+  expect(getComputedStyle(view).paddingLeft).toBe('20px');
+  expect(getComputedStyle(view).paddingRight).toBe('20px');
+  // No view centres itself with inline padding (jsdom does not map logical
+  // padding onto left and right, so read the rules themselves).
+  expect(css).not.toMatch(/\.[a-z-]*view[^{]*\{[^}]*padding-inline/);
+  const actions = view.querySelector('.section-actions') as HTMLElement;
+  expect(['normal', 'flex-start', 'start', '']).toContain(
+    getComputedStyle(actions).justifyContent,
+  );
+  expect(rule('.section-actions')).not.toMatch(/margin-left|margin-inline|auto/);
+  const empty = view.querySelector('.empty-state') as HTMLElement;
+  expect(getComputedStyle(empty).marginLeft).toBe('0px');
+  // Prose, single panels and empty states share one reading width.
+  const widths = ['.section-hint', '.section-panel', '.empty-state'].map(
+    (selector) => getComputedStyle(view.querySelector(selector) as HTMLElement).maxWidth,
+  );
+  expect(new Set(widths)).toEqual(new Set(['var(--measure)']));
+});
+
+it('styles section headings in one place instead of per view', () => {
+  for (const file of readdirSync('src/components')) {
+    if (!file.endsWith('.tsx') || file.includes('.test.')) continue;
+    const source = readFileSync(`src/components/${file}`, 'utf8');
+    expect(source, file).not.toMatch(/<h2[^>]*style=\{\{[^}]*fontSize: 14/);
+    expect(source, file).not.toMatch(/className="section-row"/);
+  }
+});
+
+it('draws skipped steps as finished work, never as the empty track', () => {
+  // v0.3.1 painted skipped steps the grey of the empty bar, so a finished run
+  // read "100%" over a bar that looked a third empty.
+  expect(rule('.seg-skipped')).toContain('var(--success)');
+  expect(rule('.run-progress-bar')).toContain('background: var(--bg-3)');
 });

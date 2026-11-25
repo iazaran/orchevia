@@ -94,18 +94,35 @@ export function isBookkeeping(row: StoredNodeResult): boolean {
   return row.nodeId.startsWith('__') || row.status === 'checked';
 }
 
-/** How many recorded steps ended in each outcome, for the run header. */
-export function stepCounts(results: StoredNodeResult[]): {
+/**
+ * How many recorded rows ended in each outcome. The run header uses
+ * `runProgress` instead whenever the run's workflow is known, so it counts the
+ * same steps as the progress bar; this is the fallback without one.
+ */
+export function stepCounts(
+  results: StoredNodeResult[],
+  /** Node ids to leave out, such as Start and End. */
+  exclude: ReadonlySet<string> = new Set(),
+): {
   total: number;
   skipped: number;
   failed: number;
   rejected: number;
+  cancelled: number;
 } {
+  // Each step once, by its latest row: a loop or a retry is not a new step.
+  const latest = new Map<string, string>();
+  for (const row of results)
+    if (!isBookkeeping(row) && !exclude.has(row.nodeId))
+      latest.set(row.nodeId, row.status);
+  const count = (status: string): number =>
+    [...latest.values()].filter((value) => value === status).length;
   return {
-    total: results.filter((row) => !isBookkeeping(row)).length,
-    skipped: results.filter((row) => row.status === 'skipped').length,
-    failed: results.filter((row) => row.status === 'failed').length,
-    rejected: results.filter((row) => row.status === 'rejected').length,
+    total: latest.size,
+    skipped: count('skipped'),
+    failed: count('failed'),
+    rejected: count('rejected'),
+    cancelled: count('cancelled'),
   };
 }
 
@@ -147,6 +164,10 @@ export interface RunProgress {
   total: number;
   done: number;
   failed: number;
+  /** Turned down at an approval. */
+  rejected: number;
+  /** Stopped by a cancel while running. */
+  cancelled: number;
   skipped: number;
   /** Labels of the steps running now; more than one means parallel work. */
   running: string[];
@@ -182,9 +203,15 @@ export function runProgress(
             ? (data as { feedbackRound?: { roots?: unknown; affected?: unknown } })
                 .feedbackRound
             : undefined;
+        // A skipped step stays skipped unless its route changes, and then the
+        // engine records it again (feedback_engine_tests: "stays skipped").
+        // Until that new row arrives it counts as finished: the marker does
+        // not say which skips the round will reopen.
         for (const ids of [round?.roots, round?.affected])
           if (Array.isArray(ids))
-            for (const id of ids) if (typeof id === 'string') latest.delete(id);
+            for (const id of ids)
+              if (typeof id === 'string' && latest.get(id) !== 'skipped')
+                latest.delete(id);
       } catch {
         // A malformed marker changes nothing.
       }
@@ -202,18 +229,29 @@ export function runProgress(
     .filter(([, status]) => status === 'paused')
     .map(([id]) => work.get(id) ?? id);
   const done = count(['succeeded', 'approved']);
-  const failed = count(['failed', 'rejected', 'cancelled']);
+  const failed = count(['failed']);
+  const rejected = count(['rejected']);
+  const cancelled = count(['cancelled']);
   const skipped = count(['skipped']);
   return {
     total: work.size,
     done,
     failed,
+    rejected,
+    cancelled,
     skipped,
     running,
     waiting,
     toGo: Math.max(
       0,
-      work.size - done - failed - skipped - running.length - waiting.length,
+      work.size -
+        done -
+        failed -
+        rejected -
+        cancelled -
+        skipped -
+        running.length -
+        waiting.length,
     ),
   };
 }

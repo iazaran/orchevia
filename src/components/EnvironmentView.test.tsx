@@ -100,3 +100,53 @@ it('checks an MCP server only when asked and shows what to do next', async () =>
   ).toBeInTheDocument();
   expect(within(list).getAllByText('Skipped')).toHaveLength(3);
 });
+
+it('puts every section action in a row under its explanation', () => {
+  // v0.3.1 pushed + New MCP server and the setup guide to the far right of the
+  // window, and ran Manage profiles into the sentence before it.
+  __setMockBackendForTests();
+  useAppStore.setState({
+    mcpServers: [],
+    tools: [],
+    adapters: [
+      {
+        id: 'claude',
+        displayName: 'Claude Code',
+        defaultExecutable: 'claude',
+        supportsModelFlag: true,
+        supportsSessionResume: true,
+        notes: '',
+      },
+    ],
+    profiles: [],
+  });
+  render(<EnvironmentView />);
+  for (const name of [
+    '+ New MCP server',
+    'MCP setup guide',
+    'Agents',
+    'Export diagnostics bundle',
+  ]) {
+    const row = screen.getByRole('button', { name }).parentElement as HTMLElement;
+    expect(row, name).toHaveClass('section-actions');
+    expect(row.previousElementSibling, name).toHaveClass('section-hint');
+  }
+  // The arrow is decoration: the button is announced as "Agents".
+  expect(screen.getByRole('button', { name: 'Agents' })).toHaveTextContent('Agents →');
+});
+
+it('names the server when listing its tools fails', async () => {
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'mcpListTools').mockRejectedValue(new Error('spawn uvx ENOENT'));
+  useAppStore.setState({
+    mcpServers: [{ id: 'jira', name: 'Jira', command: 'uvx', args: [], enabled: true }],
+    tools: [],
+    adapters: [],
+    profiles: [],
+  });
+  render(<EnvironmentView />);
+  fireEvent.click(screen.getByRole('button', { name: 'List tools' }));
+  expect(
+    await screen.findByText(/Listing tools for Jira failed: .*spawn uvx ENOENT/),
+  ).toBeInTheDocument();
+});

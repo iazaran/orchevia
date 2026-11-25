@@ -392,14 +392,14 @@ export function TemplatesView(): React.JSX.Element {
             </ul>
           </Notice>
         )}
-        <h2 style={{ fontSize: 14 }}>Built-in ({builtinTemplates.length})</h2>
+        <h2 className="section-title">Built-in ({builtinTemplates.length})</h2>
         <div className="tool-grid">
           {starter !== undefined && renderCard(starter, true)}
           {builtinTemplates
             .filter((t) => t.id !== STARTER_TEMPLATE)
             .map((t) => renderCard(t, true))}
         </div>
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>Mine ({userTemplates.length})</h2>
+        <h2 className="section-title">Mine ({userTemplates.length})</h2>
         {userTemplates.length === 0 && (
           <p className="field-hint">
             Save any workflow as a template from the Workflows tab, or import JSON below.

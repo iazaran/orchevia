@@ -1040,8 +1040,16 @@ it('reports the final summary step and numbers every step in its own card', asyn
   expect(fields).toHaveTextContent('DEV-6195');
   expect(fields).toHaveTextContent('https://example.test/pull/3081');
   expect(report).toHaveTextContent('All done.');
+  // The header counts the same working steps as the progress bar: no Start or
+  // End (v0.3.1 said "5 · 1 skipped" above a bar of 3 steps).
   const facts = screen.getByText('Steps').closest('div');
-  expect(facts).toHaveTextContent('5 · 1 skipped');
+  expect(facts).toHaveTextContent('3 · 1 skipped');
+  expect(screen.getByText('2 of 3 steps done · 1 skipped')).toBeInTheDocument();
+  expect(screen.getByText('100%')).toBeInTheDocument();
+  const bar = screen.getByRole('progressbar', { name: 'Steps finished' });
+  expect(bar).toHaveAttribute('aria-valuenow', '3');
+  expect(bar).toHaveAttribute('aria-valuemax', '3');
+  expect(bar.querySelector('.seg-skipped')).not.toBeNull();
   expect(screen.getByText('Took').closest('div')).toHaveTextContent('46m 28s');
   const steps = within(screen.getByRole('list', { name: 'Steps' })).getAllByRole(
     'listitem',
@@ -1157,6 +1165,154 @@ it('names a rejected approval as the step a run stopped at', async () => {
     expect(report).toHaveTextContent('Stopped at step 1 · Approve the plan (rejected)'),
   );
   expect(screen.getByText('Steps').closest('div')).toHaveTextContent('1 · 1 rejected');
+  // Rejected is its own outcome on the progress line too, not "1 failed".
+  expect(screen.getByText('0 of 1 steps done · 1 rejected')).toBeInTheDocument();
+});
+
+async function renderRunWith(
+  status: RunStatus,
+  rows: { nodeId: string; status: string }[],
+  nodes: Workflow['nodes'],
+): Promise<void> {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'counted-run',
+    workflowId: 'wf',
+    status,
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:05:00.000Z',
+  };
+  const results: StoredNodeResult[] = rows.map((r, index) => ({
+    id: index + 1,
+    runId: run.id,
+    nodeId: r.nodeId,
+    status: r.status,
+    stdout: '',
+    stderr: '',
+    startedAt: run.startedAt,
+  }));
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes,
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await waitFor(() =>
+    expect(screen.getByText('Steps').closest('div')).not.toHaveTextContent('…'),
+  );
+}
+
+function node(
+  id: string,
+  type: Workflow['nodes'][number]['type'],
+): Workflow['nodes'][number] {
+  return { id, type, label: id, position: { x: 0, y: 0 }, config: {} };
+}
+
+it('calls a step stopped by a cancel cancelled, not failed', async () => {
+  await renderRunWith(
+    'cancelled',
+    [
+      { nodeId: 'build', status: 'succeeded' },
+      { nodeId: 'tests', status: 'cancelled' },
+    ],
+    [node('build', 'command'), node('tests', 'command')],
+  );
+  const facts = screen.getByText('Steps').closest('div');
+  expect(facts).toHaveTextContent('2 · 1 cancelled');
+  expect(facts).not.toHaveTextContent('failed');
+  expect(screen.getByText('1 of 2 steps done · 1 cancelled')).toBeInTheDocument();
+});
+
+it('counts recorded steps when the saved workflow cannot be read', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'unreadable-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:01:00.000Z',
+  };
+  const results: StoredNodeResult[] = ['start', 'check', 'end'].map((nodeId, index) => ({
+    id: index + 1,
+    runId: run.id,
+    nodeId,
+    status: 'succeeded',
+    stdout: nodeId === 'check' ? 'true' : '',
+    stderr: '',
+    startedAt: run.startedAt,
+  }));
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockRejectedValue(new Error('bad definition'));
+  const definition: Workflow = {
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: [node('start', 'start'), node('check', 'condition'), node('end', 'end')],
+  };
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [
+      {
+        id: 'wf',
+        name: 'W',
+        definition,
+        createdAt: run.startedAt,
+        updatedAt: run.startedAt,
+      },
+    ],
+    profiles: [],
+  });
+  render(<RunsView />);
+  // Start and End are told apart through today's workflow; the header stops
+  // waiting, and a branch decision is never shown as the run's report.
+  await waitFor(() =>
+    expect(screen.getByText('Steps').closest('div')).toHaveTextContent(/Steps\s*1$/),
+  );
+  expect(screen.queryByRole('region', { name: 'Run report' })).toBeNull();
+});
+
+it('counts no steps for a run of Start and End only', async () => {
+  await renderRunWith(
+    'succeeded',
+    [
+      { nodeId: 'start', status: 'succeeded' },
+      { nodeId: 'end', status: 'succeeded' },
+    ],
+    [node('start', 'start'), node('end', 'end')],
+  );
+  expect(screen.getByText('Steps').closest('div')).toHaveTextContent(/Steps\s*0$/);
+});
+
+it('counts a run its workflow no longer describes by its recorded steps', async () => {
+  // A run from before snapshots falls back to today's workflow, which lost a step.
+  await renderRunWith(
+    'failed',
+    [
+      { nodeId: 'build', status: 'succeeded' },
+      { nodeId: 'removed', status: 'failed' },
+    ],
+    [node('build', 'command')],
+  );
+  expect(screen.getByText('Steps').closest('div')).toHaveTextContent('2 · 1 failed');
+  expect(screen.queryByRole('progressbar', { name: 'Steps finished' })).toBeNull();
 });
 
 it("works out a run's plan cost again when another run that day changes", async () => {

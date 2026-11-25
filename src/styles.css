@@ -420,15 +420,6 @@ textarea {
   border-color: transparent;
 }
 
-/* Selected tab or segment: distinct fill, accent edge and (dark) underline. */
-.btn.active-tab,
-.btn.active-tab:hover {
-  background: var(--tab-selected-bg);
-  border-color: var(--tab-selected-border);
-  color: var(--tab-selected-text);
-  box-shadow: var(--tab-selected-shadow);
-}
-
 .input,
 .select,
 .textarea {
@@ -491,11 +482,22 @@ textarea {
 /* Views. Positioned so absolutely positioned children (.sr-only labels,
    corner buttons) stay inside the view's scroll area instead of stretching
    the window below the app. */
+/*
+ * One layout for every view: content starts at the same left edge. Prose and
+ * single panels share one readable width (--measure); card grids, tables and
+ * forms use the full width.
+ */
+:root {
+  --measure: 760px;
+}
 .view {
   position: relative;
   flex: 1;
   overflow: auto;
   padding: 20px;
+}
+.section-panel {
+  max-width: var(--measure);
 }
 
 .workflows-layout {
@@ -905,6 +907,13 @@ button.setup-issue:focus-visible {
   font-weight: 650;
   letter-spacing: -0.005em;
 }
+/* A card's own title, whatever its heading level, matches every card title. */
+.tool-card .card-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
 
 .tool-version {
   font-family: var(--font-mono);
@@ -918,10 +927,15 @@ button.setup-issue:focus-visible {
 .empty-state {
   border: 1px dashed var(--border);
   border-radius: var(--radius-l);
-  padding: 48px 24px;
+  padding: 32px 24px;
   text-align: center;
   color: var(--text-1);
-  max-width: 560px;
+  max-width: var(--measure);
+  margin: 12px 0;
+}
+
+/* On the canvas the placeholder stands in for the drawing, so it stays centred. */
+.canvas-wrap > .empty-state {
   margin: 40px auto;
 }
 
@@ -2076,8 +2090,13 @@ details[open] > .gen-summary::after {
 .seg-failed {
   background: var(--danger);
 }
+/* Finished without running: hatched and muted, never the empty track's grey. */
 .seg-skipped {
-  background: color-mix(in srgb, var(--text-2) 55%, var(--bg-3));
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--success) 45%, var(--bg-3)) 0 5px,
+    color-mix(in srgb, var(--success) 22%, var(--bg-3)) 5px 10px
+  );
 }
 .seg-active {
   background: repeating-linear-gradient(
@@ -2371,7 +2390,26 @@ details[open] > .gen-summary::after {
   margin: 10px 0 0;
   display: grid;
   gap: 6px;
-  max-width: 720px;
+  max-width: var(--measure);
+}
+.setup-check-profiles:empty {
+  display: none;
+}
+/* A field label with a small action beside it ("Detect current"): the action
+   keeps its one line and moves under the label when the column is narrow. */
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 6px;
+  flex-wrap: wrap;
+}
+.field-label-row > .btn {
+  min-height: 0;
+  padding: 2px 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .setup-check-profiles summary {
   cursor: pointer;
@@ -2664,6 +2702,24 @@ details[open] > .gen-summary::after {
   }
 }
 
+/* The same message again: a brief flash on its text. */
+.notice-repeated {
+  animation: notice-repeat 0.6s ease-out;
+}
+@keyframes notice-repeat {
+  from {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-repeated {
+    animation: none;
+  }
+}
+
 @keyframes notice-exit {
   from {
     transform: translateX(0);
@@ -2862,10 +2918,6 @@ details[open] > .gen-summary::after {
   }
 }
 
-.playbooks-view {
-  /* Centered reading width; the scroll bar stays at the window edge. */
-  padding-inline: max(20px, calc((100% - 1080px) / 2));
-}
 .playbook-intro {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
@@ -3090,7 +3142,7 @@ details[open] > .gen-summary::after {
 }
 .usage-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 12px;
 }
 .usage-card {
@@ -3134,9 +3186,6 @@ details[open] > .gen-summary::after {
   white-space: nowrap;
 }
 .usage-tabs {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 /* Daily activity chart: fixed panel height (~240px) regardless of date span. */
@@ -3145,7 +3194,7 @@ details[open] > .gen-summary::after {
   border-radius: var(--radius-m);
   background: var(--bg-1);
   padding: 12px 12px 4px;
-  max-width: 800px;
+  max-width: var(--measure);
 }
 .usage-chart {
   display: block;
@@ -3556,6 +3605,17 @@ details[open] > .gen-summary::after {
   padding: 3px 10px;
   font-size: 12px;
 }
+/* Fills its container with equal options, like the sidebar's theme switch. */
+.segmented.segmented-fill {
+  display: flex;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+.segmented-fill > .segmented-option {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+}
 [data-theme='light'] .segmented-option.is-selected {
   box-shadow:
     0 1px 2px rgba(20, 30, 50, 0.12),
@@ -3925,6 +3985,7 @@ details[open] > .gen-summary::after {
 
 /* Section headings inside views. */
 .view > h2,
+.usage-view section > h2,
 .section-title {
   font-size: 13px;
   font-weight: 700;
@@ -4084,24 +4145,17 @@ details[open] > .gen-summary::after {
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
+/* A section's explanation, then its actions on their own row under it. */
 .section-hint {
   margin: -4px 0 12px;
-  max-width: 760px;
-}
-
-/* Environment: MCP setup picker and guide. */
-.section-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+  max-width: var(--measure);
 }
 .section-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  margin: 0 0 12px;
 }
 .empty-inline {
   padding: 14px 16px;

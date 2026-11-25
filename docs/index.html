@@ -65,7 +65,7 @@
         "url": "https://iazaran.github.io/orchevia/",
         "downloadUrl": "https://github.com/iazaran/orchevia/releases/latest",
         "image": "https://iazaran.github.io/orchevia/images/social-preview.jpg",
-        "softwareVersion": "0.3.1",
+        "softwareVersion": "0.3.2",
         "description": "Local-first desktop app for visual workflows with coding agents, MCP tools, Git, testing, approvals, review history and n8n import and export."
       }
     </script>
@@ -559,12 +559,12 @@
       }
       .grid-3 {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 16px;
       }
       .grid-2 {
         display: grid;
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px;
       }
       @media (max-width: 900px) {
@@ -703,6 +703,11 @@
         background: var(--card);
         padding: 18px;
         min-width: 0;
+      }
+      /* The log takes the height of the workflow beside it, whatever its size. */
+      .demo-output {
+        display: flex;
+        flex-direction: column;
       }
       .demo-toolbar {
         display: flex;
@@ -850,7 +855,8 @@
       }
       .demo-log {
         margin: 0;
-        height: 470px;
+        flex: 1 1 0;
+        min-height: 360px;
         overflow: auto;
         font-size: 13px;
         line-height: 1.65;
@@ -860,6 +866,13 @@
         border: 1px solid var(--line);
         border-radius: 12px;
         padding: 14px;
+      }
+      /* Stacked under the graph there is no height to match. */
+      @media (max-width: 960px) {
+        .demo-log {
+          flex: 0 0 auto;
+          height: 420px;
+        }
       }
       .demo-log .t {
         color: var(--faint);
@@ -1124,6 +1137,7 @@
       .install-code {
         margin: 0;
         overflow: auto;
+        max-width: 100%;
         padding: 18px;
         border-radius: 14px;
         border: 1px solid var(--line);
@@ -1131,6 +1145,14 @@
         font-size: 13.5px;
         line-height: 1.65;
         color: #cdd6e4;
+      }
+      /* Long commands wrap inside their card on narrow screens. */
+      .install-code {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .install-notes {
+        margin-top: 16px;
       }
       .k {
         color: #7cc4ff;
@@ -1416,7 +1438,7 @@
       <div class="wrap" id="top">
         <div class="hero">
           <a class="pill" href="#new"
-            ><b>0.3.1</b> n8n import &amp; export · 22 MCP setups · a refreshed app</a
+            ><b>0.3.2</b> n8n import &amp; export · 22 MCP setups · one calm layout</a
           >
           <h1>
             Your coding agents,
@@ -1562,7 +1584,7 @@
                 </p>
               </div>
             </div>
-            <div class="demo-panel">
+            <div class="demo-panel demo-output">
               <pre
                 class="demo-log"
                 data-demo-log
@@ -1580,11 +1602,11 @@ Press ▶ Run demo to start.</pre>
         </section>
 
         <section class="block" id="new" aria-labelledby="new-h">
-          <p class="eyebrow">New in 0.3.1</p>
+          <p class="eyebrow">New in 0.3</p>
           <h2 id="new-h">Bring the tools you use. Take your workflows anywhere.</h2>
           <p class="section-intro">
-            This release connects Orchevia to far more of your stack, moves workflows to
-            and from n8n, and makes every screen calmer and clearer.
+            The 0.3 releases connect Orchevia to far more of your stack, move workflows to
+            and from n8n, and give every screen the same calm, clear layout.
           </p>
           <div class="bento">
             <article class="card wide reveal">
@@ -2524,29 +2546,30 @@ Press ▶ Run demo to start.</pre>
               <span class="file">Orchevia-linux-x86_64.deb</span>
             </a>
           </div>
-          <div class="grid-2">
-            <div class="card">
-              <h3>Debian and Ubuntu: signed apt repository</h3>
-              <p style="margin-bottom: 12px">
-                Add it once, and <code>sudo apt upgrade</code> keeps Orchevia up to date.
-              </p>
-              <pre
-                class="install-code"
-                id="apt-code"
-              ><code>curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg &gt; /dev/null
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg] https://iazaran.github.io/orchevia/apt stable main" | sudo tee /etc/apt/sources.list.d/orchevia.list
+          <div class="card install-apt">
+            <h3>Debian and Ubuntu: signed apt repository</h3>
+            <p style="margin-bottom: 12px">
+              Add it once, and <code>sudo apt upgrade</code> keeps Orchevia up to date.
+            </p>
+            <pre
+              class="install-code"
+              id="apt-code"
+            ><code>curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg &gt; /dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg]" \
+  "https://iazaran.github.io/orchevia/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/orchevia.list
 sudo apt update &amp;&amp; sudo apt install orchevia</code></pre>
-              <p style="margin-top: 10px">
-                <button class="btn small" type="button" data-copy="#apt-code">
-                  Copy
-                </button>
-              </p>
-              <p style="margin-top: 12px">
-                <strong style="color: var(--text)">Other Linux:</strong>
-                <code>sudo apt install ./Orchevia-linux-x86_64.deb</code>, or
-                <code>chmod +x</code> the AppImage and run it.
-              </p>
-            </div>
+            <p style="margin-top: 10px">
+              <button class="btn small" type="button" data-copy="#apt-code">Copy</button>
+            </p>
+            <p style="margin-top: 12px">
+              <strong style="color: var(--text)">Other Linux:</strong>
+              <code>sudo apt install ./Orchevia-linux-x86_64.deb</code>, or
+              <code>chmod +x</code> the AppImage and run it.
+            </p>
+          </div>
+          <div class="grid-2 install-notes">
             <div class="card">
               <h3>macOS first launch</h3>
               <p style="margin-bottom: 12px">
@@ -2558,7 +2581,9 @@ sudo apt update &amp;&amp; sudo apt install orchevia</code></pre>
               <pre
                 class="install-code"
               ><code>xattr -dr com.apple.quarantine /Applications/Orchevia.app</code></pre>
-              <h3 style="margin-top: 20px">Verify your download</h3>
+            </div>
+            <div class="card">
+              <h3>Verify your download</h3>
               <p style="margin-bottom: 12px">
                 Save
                 <a

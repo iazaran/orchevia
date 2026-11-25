@@ -6,12 +6,47 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-25
+
+### Changed
+
+- **One layout on every screen.** Every view starts at the same left edge
+  (Playbooks no longer sits in a centred column), section headings share one
+  style, and a section's actions sit on their own row under its explanation:
+  Environment's **+ New MCP server** and **MCP setup guide** no longer float at
+  the far right of the window. Prose, single panels and empty states share one
+  reading width, and empty states are left-aligned.
+- **Toolbars read the same everywhere:** actions first, then links to other
+  views (**Runs →**, **Usage & costs →**, **Templates →**, **Agents →**), then
+  **Refresh**.
+- **Usage & costs** uses the same section titles and segmented switch as the
+  rest of the app and fits its seven totals on one row.
+- The sidebar's **Auto / Dark / Light** switch shares its width evenly.
+
 ### Fixed
 
+- **Run progress agrees with itself.** The run header counted every recorded
+  row, Start and End included ("13 · 4 skipped"), while the progress bar counted
+  working steps ("7 of 10 steps done · 3 skipped"). Both now count the same
+  steps, and rejected approvals and cancelled steps are listed apart from
+  failures. A skip that a correction round leaves in place stays counted, and a
+  run from before workflow snapshots is counted by its recorded steps.
+- **A finished run's bar is full.** Skipped steps were drawn in the grey of the
+  empty track, so "100%" sat over a bar that looked a third empty. They are now
+  a muted, hatched green.
+- **"Detect current"** keeps one line beside the branch field in the inspector.
+- **The same message no longer stacks.** Choosing a saved repository and then
+  **Load playbook** showed "No saved project knowledge…" twice; a repeated
+  message now updates the visible one in place, flashes once, is announced
+  again and starts its time again, while a focused **Dismiss** keeps its focus.
+  MCP server errors name their server.
 - **apt upgrades reach new releases again.** The Pages deploy that rebuilds the
   apt repository after a release looked up its upload too early and failed
   (GitHub lists a fresh artifact seconds late), so `apt upgrade` stayed on
   0.3.0. The deploy now waits and retries, and re-running it works.
+- **Project site:** the live demo's run log matches the height of the workflow
+  beside it, and the apt commands wrap inside their card instead of running off
+  the page.
 
 ## [0.3.1] - 2026-11-25
 

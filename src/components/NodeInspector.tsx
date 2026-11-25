@@ -1056,7 +1056,6 @@ export function NodeInspector(): React.JSX.Element | null {
             action={
               <button
                 className="btn btn-ghost"
-                style={{ padding: '2px 8px', fontSize: 12 }}
                 disabled={
                   detectingBranch || (workflow.defaults?.repoDir ?? '').trim() === ''
                 }

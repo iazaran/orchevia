@@ -173,8 +173,8 @@ export function EnvironmentView(): React.JSX.Element {
             <span>{message}</span>{' '}
           </Notice>
         )}
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>Local CLIs</h2>
-        <p className="field-hint">
+        <h2 className="section-title">Local CLIs</h2>
+        <p className="field-hint section-hint">
           Install and sign in to the tools you use, then re-detect to refresh what
           Orchevia can find.
         </p>
@@ -217,17 +217,19 @@ export function EnvironmentView(): React.JSX.Element {
 
         {adapters.length > 0 && (
           <>
-            <h2 style={{ fontSize: 14, marginTop: 20 }}>Agent connections</h2>
-            <p className="field-hint">
+            <h2 className="section-title">Agent connections</h2>
+            <p className="field-hint section-hint">
               {profiles.length} profiles configured. Use the setup check to verify a
-              profile’s sign-in and file access.{' '}
+              profile’s sign-in and file access.
+            </p>
+            <div className="section-actions">
               <button
                 className="btn btn-ghost"
                 onClick={() => {
                   setView('agents');
                 }}
               >
-                Manage profiles
+                Agents <span aria-hidden="true">→</span>
               </button>
               <button
                 className="btn btn-ghost"
@@ -235,39 +237,39 @@ export function EnvironmentView(): React.JSX.Element {
               >
                 Agent setup guide
               </button>
-            </p>
+            </div>
           </>
         )}
 
-        <h2 id="setup-check" style={{ fontSize: 14, marginTop: 20 }}>
+        <h2 id="setup-check" className="section-title">
           Agent setup check
         </h2>
         <SetupCheckPanel profiles={profiles} />
 
-        <h2 id="agent-permissions" style={{ fontSize: 14, marginTop: 20 }}>
+        <h2 id="agent-permissions" className="section-title">
           Agent permissions
         </h2>
-        <p className="field-hint" style={{ maxWidth: 720 }}>
+        <p className="field-hint section-hint">
           Headless Claude Code and Codex cannot ask for permission while a workflow step
           runs. Configure the app default for Claude Code and Codex here, or set an
           override per profile in Agents. Other agents use their own CLI settings.
         </p>
-        <div style={{ maxWidth: 720 }}>
+        <div className="section-panel">
           <AgentPermissionsSettings />
         </div>
 
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>Git</h2>
-        <p className="field-hint" style={{ maxWidth: 720 }}>
+        <h2 className="section-title">Git</h2>
+        <p className="field-hint section-hint">
           Git runs inside workflows through Git nodes (status, commit, branches,
           worktrees) — pick the working directory on the node itself in the Workflows
           view. Use the Samples dialog there for a ready-made Commit + PR flow.
         </p>
 
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>GitHub via gh</h2>
+        <h2 className="section-title">GitHub via gh</h2>
         {githubState === null ? (
           <p className="field-hint">Detecting…</p>
         ) : (
-          <div className="tool-card" style={{ maxWidth: 640 }}>
+          <div className="tool-card section-panel">
             <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
               <span
                 className={`status-pill ${githubState.installed ? 'status-succeeded' : 'status-cancelled'}`}
@@ -299,36 +301,33 @@ export function EnvironmentView(): React.JSX.Element {
           </div>
         )}
 
-        <h2 id="mcp-connections" style={{ fontSize: 14, marginTop: 20 }}>
+        <h2 id="mcp-connections" className="section-title">
           MCP connections
         </h2>
-        <div className="section-row">
-          <p className="field-hint" style={{ margin: 0, maxWidth: 760 }}>
-            MCP servers give MCP Tool and Ticket steps access to your tools. Start from{' '}
-            {String(MCP_PRESETS.length)} ready-made setups such as Google Workspace,
-            GitHub, Slack, Jira, Notion and Microsoft 365. Credentials stay in your shell,
-            never in Orchevia. Use Check server after saving to verify startup and list
-            its tools.
-          </p>
-          <div className="section-actions">
-            <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
-              MCP setup guide
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setEditing({
-                  id: newMcpId(),
-                  name: '',
-                  command: '',
-                  args: [],
-                  enabled: true,
-                });
-              }}
-            >
-              + New MCP server
-            </button>
-          </div>
+        <p className="field-hint section-hint">
+          MCP servers give MCP Tool and Ticket steps access to your tools. Start from{' '}
+          {String(MCP_PRESETS.length)} ready-made setups such as Google Workspace, GitHub,
+          Slack, Jira, Notion and Microsoft 365. Credentials stay in your shell, never in
+          Orchevia. Use Check server after saving to verify startup and list its tools.
+        </p>
+        <div className="section-actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              setEditing({
+                id: newMcpId(),
+                name: '',
+                command: '',
+                args: [],
+                enabled: true,
+              });
+            }}
+          >
+            + New MCP server
+          </button>
+          <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
+            MCP setup guide
+          </button>
         </div>
         <h3 className="section-title">Saved servers ({mcpServers.length})</h3>
         {mcpServers.length === 0 && (
@@ -426,7 +425,7 @@ export function EnvironmentView(): React.JSX.Element {
                       if (check?.state === 'error')
                         return (
                           <Notice variant="error" style={{ marginBottom: 0 }}>
-                            Check failed: {check.message}
+                            Checking {s.name} failed: {check.message}
                           </Notice>
                         );
                       return null;
@@ -451,7 +450,7 @@ export function EnvironmentView(): React.JSX.Element {
                     )}
                     {tools.state === 'error' && (
                       <Notice variant="error" style={{ marginBottom: 0 }}>
-                        Failed: {tools.message}
+                        Listing tools for {s.name} failed: {tools.message}
                       </Notice>
                     )}
                   </div>
@@ -484,32 +483,34 @@ export function EnvironmentView(): React.JSX.Element {
           </Modal>
         )}
 
-        <h2 id="updates" style={{ fontSize: 14, marginTop: 20 }}>
+        <h2 id="updates" className="section-title">
           Updates
         </h2>
         <UpdatesSection />
 
-        <h2 style={{ fontSize: 14, marginTop: 20 }}>Diagnostics</h2>
-        <p className="field-hint" style={{ maxWidth: 720 }}>
+        <h2 className="section-title">Diagnostics</h2>
+        <p className="field-hint section-hint">
           Local-only support bundle: versions, counts, tool availability, recent error
           titles. No prompts, files, or credentials. Review it before sharing.
         </p>
-        <button
-          className="btn"
-          onClick={() => {
-            void getBackend()
-              .diagnosticsBundle()
-              .then((json) => {
-                setDiagnostics(json);
-                setMessage(null);
-              })
-              .catch((err: unknown) => {
-                setMessage(errorMessage(err), 'error');
-              });
-          }}
-        >
-          Export diagnostics bundle
-        </button>
+        <div className="section-actions">
+          <button
+            className="btn"
+            onClick={() => {
+              void getBackend()
+                .diagnosticsBundle()
+                .then((json) => {
+                  setDiagnostics(json);
+                  setMessage(null);
+                })
+                .catch((err: unknown) => {
+                  setMessage(errorMessage(err), 'error');
+                });
+            }}
+          >
+            Export diagnostics bundle
+          </button>
+        </div>
         {diagnostics !== null && (
           <DiagnosticsModal
             bundle={diagnostics}

@@ -141,6 +141,9 @@ repository (its `PWD` matches the step's folder).
 - A release built without the signing secret has no `latest.json`: **Install and
   restart** is not offered, and the download steps show instead.
 - `.deb`: `sudo apt update && sudo apt upgrade` from the signed apt repository.
+  First check that the release's Pages run passed and that
+  `https://iazaran.github.io/orchevia/apt/dists/stable/main/binary-amd64/Packages`
+  lists the new version: a failed Pages run leaves apt on the previous one.
 
 Workflows, runs and settings are all still there afterwards.
 
