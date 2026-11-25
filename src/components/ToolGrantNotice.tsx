@@ -4,6 +4,7 @@ import { errorMessage } from '../lib/errors';
 import {
   allowedToolsBlocker,
   dormantAllowedTools,
+  inheritedAbilities,
   missingToolGrants,
   profilesLimitingFullAccess,
   withAllowedTools,
@@ -84,8 +85,13 @@ export function ToolGrantNotice({
   const add = (): void => {
     const changes = addable.map((grant) => {
       const dormant = dormantAllowedTools(grant.profile);
+      const inherited = inheritedAbilities(grant.profile, abilities);
       return `${grant.profile.name}: ${grant.rules.join(', ')}${
         dormant.length > 0 ? ` (its saved list ${dormant.join(', ')} applies too)` : ''
+      }${
+        inherited.length > 0
+          ? ` (keeps what Environment allows for workflow steps: ${inherited.join(', ')})`
+          : ''
       }`;
     });
     void confirmDialog({

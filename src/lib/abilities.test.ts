@@ -42,6 +42,9 @@ describe('the app-wide abilities setting (mirror of abilities.rs)', () => {
       'Agent abilities must be a JSON object.',
     );
     expect(() => parseAbilitiesSetting('{"browser":"yes"}')).toThrow();
+    // serde refuses null for a bool or a list, even with a default.
+    expect(() => parseAbilitiesSetting('{"browser":null}')).toThrow();
+    expect(() => parseAbilitiesSetting('{"allowedTools":null}')).toThrow();
     expect(storedAbilities('{oops')).toEqual(NO_ABILITIES);
     expect(storedAbilities(null)).toEqual(NO_ABILITIES);
     expect(serializeAbilities(NO_ABILITIES)).toBe('{"browser":false}');
@@ -76,14 +79,20 @@ describe('profiles as runs use them (mirror of AgentProfile::for_run)', () => {
 
   it('lets a profile choice and its own flags win', () => {
     const on = { browser: true };
-    expect(
-      resolveForRun({ ...following, browser: false }, 'cliSettings', on).browser,
-    ).toBe(false);
+    const off = resolveForRun({ ...following, browser: false }, 'cliSettings', on);
+    expect(off.browser).toBe(false);
+    // Off is passed on, so a Claude Code default cannot turn it on.
+    expect(browserArgs(off)).toEqual(['--no-chrome']);
+    // Following an app that leaves the browser off adds no flag.
+    const quiet = resolveForRun(following, 'cliSettings', NO_ABILITIES);
+    expect(quiet.browser).toBeUndefined();
+    expect(browserArgs(quiet)).toEqual([]);
     expect(
       usesBrowser(resolveForRun({ ...following, browser: true }, null, NO_ABILITIES)),
     ).toBe(true);
     const flagged = resolveForRun({ ...following, extraArgs: ['--no-chrome'] }, null, on);
-    expect(flagged.browser).toBe(false);
+    expect(flagged.browser).toBeUndefined();
+    expect(validateProfile(flagged)).toEqual([]);
     expect(browserArgs(flagged)).toEqual([]);
     expect(
       usesBrowser(
@@ -142,6 +151,12 @@ describe('profiles as runs use them (mirror of AgentProfile::for_run)', () => {
       ),
     ).toBe(true);
     expect(validateProfile({ ...claude, browser: false })).toEqual([]);
+    // "Off" with --chrome among the extra arguments would still use the browser.
+    expect(
+      validateProfile({ ...claude, browser: false, extraArgs: ['--chrome'] }).some((e) =>
+        e.includes("'--chrome'"),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -210,6 +225,8 @@ describe('what a step may use', () => {
             nodes: [agent(['mcp__claude-in-chrome', 'mcp__claude_ai_Slack'])],
           },
           { name: 'Old', nodes: [agent(['mcp__retired_server'])] },
+          // A shared claude_ai_ prefix is no reason to suggest Slack for Jira.
+          { name: 'Jira', nodes: [agent(['mcp__claude_ai_Jira'])] },
           {
             name: 'Cmd',
             nodes: [{ type: 'command', config: { requiredTools: ['mcp__x'] } }],
@@ -223,6 +240,7 @@ describe('what a step may use', () => {
         workflows: ['RFC', 'Ticket to PR'],
         suggestion: 'claude_ai_Atlassian_Rovo',
       },
+      { server: 'claude_ai_Jira', workflows: ['Jira'] },
       { server: 'retired_server', workflows: ['Old'] },
     ]);
   });

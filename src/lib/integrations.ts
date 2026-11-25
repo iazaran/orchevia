@@ -108,18 +108,6 @@ export const MCP_PRESETS: McpPreset[] = [
       { name: 'get_events', args: 'user_google_email' },
     ],
     source: 'https://github.com/taylorwilsdon/google_workspace_mcp',
-    legacy: [
-      {
-        name: 'Google Docs',
-        command: 'gws-mcp-server',
-        args: ['--read-only', '--services', 'docs,drive'],
-      },
-      {
-        name: 'Gmail',
-        command: 'gws-mcp-server',
-        args: ['--read-only', '--services', 'gmail'],
-      },
-    ],
   },
   {
     id: 'microsoft-365',

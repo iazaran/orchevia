@@ -106,8 +106,7 @@ describe('MCP presets', () => {
   });
 
   it('recognizes servers saved from the setups earlier versions offered', () => {
-    // v0.3.0 called the Jira setup "Jira", ran Slack's binary directly and had
-    // separate Google Docs and Gmail setups.
+    // v0.3.0 called the Jira setup "Jira" and ran Slack's binary directly.
     expect(
       matchMcpPreset({
         command: 'slack-mcp-server',
@@ -119,15 +118,14 @@ describe('MCP presets', () => {
         ],
       })?.id,
     ).toBe('slack');
+    // The v0.3.0 Gmail and Google Docs setups ran another server (gws) with
+    // fewer services: Google Workspace is not their update, so they stay the
+    // user's own servers.
     expect(
       matchMcpPreset({
         command: 'gws-mcp-server',
         args: ['--read-only', '--services', 'gmail'],
-      })?.id,
-    ).toBe('google-workspace');
-    // A changed old setup is the user's own server.
-    expect(
-      matchMcpPreset({ command: 'gws-mcp-server', args: ['--services', 'gmail'] }),
+      }),
     ).toBeUndefined();
     const used = presetsInUse([
       { id: 'a', name: 'Jira', command: 'uvx', args: ['mcp-atlassian'], enabled: true },

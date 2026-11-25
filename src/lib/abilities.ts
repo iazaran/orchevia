@@ -8,7 +8,7 @@
  */
 
 import { ruleCovers, validateToolRules } from './permissions';
-import type { AppPermissionDefault } from './agents';
+import type { AgentProfile, AppPermissionDefault } from './agents';
 
 /** Settings key of the app-wide abilities (Rust `ABILITIES_SETTING`). */
 export const ABILITIES_SETTING = 'agents.abilities';
@@ -41,8 +41,9 @@ export function parseAbilitiesSetting(value: string): AppAbilities {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
     throw new Error('Agent abilities must be a JSON object.');
   const record = parsed as Record<string, unknown>;
-  const browser = record.browser ?? false;
-  const tools = record.allowedTools ?? [];
+  // Like serde: a missing field takes its default, an explicit null does not.
+  const browser = record.browser === undefined ? false : record.browser;
+  const tools = record.allowedTools === undefined ? [] : record.allowedTools;
   if (
     typeof browser !== 'boolean' ||
     !Array.isArray(tools) ||
@@ -96,6 +97,8 @@ export interface HostAbilities {
   adapter: 'claude' | 'codex';
   installed: boolean;
   connectors: HostConnector[];
+  /** The CLI listed its servers; `false` when the listing failed. */
+  connectorsListed: boolean;
   connectorsNote?: string;
   browser: HostBrowser;
   skills: string[];
@@ -141,6 +144,55 @@ export function withAllowedRules(
     : { browser: abilities.browser };
 }
 
+/**
+ * Allowed rules no switch on screen shows: connectors that were not listed
+ * (not detected yet, renamed or removed in Claude Code) or a partial web
+ * pair. They stay granted until removed, so the panel lists them.
+ */
+export function unlistedAllowedRules(abilities: AppAbilities, shown: string[]): string[] {
+  return (abilities.allowedTools ?? []).filter((rule) => !shown.includes(rule));
+}
+
+/**
+ * Enabled schedules and watchers whose workflow has a Claude Code Agent step
+ * with a profile that follows the app's browser choice (Browser at App
+ * default, no `--chrome`/`--no-chrome` of its own): turning the browser on
+ * makes them use it unattended. A step naming only a role counts every
+ * profile with that role, as the trust check does.
+ */
+export function automationsFollowingAppBrowser(
+  automations: { name: string; workflowId: string; enabled: boolean }[],
+  workflows: {
+    id: string;
+    definition: {
+      nodes: { type: string; config: { agentProfileId?: string; agentRole?: string } }[];
+    };
+  }[],
+  profiles: AgentProfile[],
+): string[] {
+  const follows = (profile: AgentProfile): boolean =>
+    profile.adapter === 'claude' &&
+    profile.browser === undefined &&
+    !profile.extraArgs.some((arg) => arg === BROWSER_FLAG || arg === NO_BROWSER_FLAG);
+  return automations
+    .filter((automation) => automation.enabled)
+    .filter((automation) => {
+      const workflow = workflows.find((w) => w.id === automation.workflowId);
+      return (workflow?.definition.nodes ?? []).some((node) => {
+        if (node.type !== 'agent') return false;
+        const id = (node.config.agentProfileId ?? '').trim();
+        return profiles
+          .filter((p) =>
+            id !== ''
+              ? p.id === id
+              : node.config.agentRole !== undefined && p.role === node.config.agentRole,
+          )
+          .some(follows);
+      });
+    })
+    .map((automation) => automation.name);
+}
+
 /** The server part of an MCP rule: `mcp__a__tool` → `a`. */
 function mcpServer(rule: string): string | null {
   if (!rule.startsWith('mcp__')) return null;
@@ -160,14 +212,9 @@ export interface MissingConnector {
   suggestion?: string;
 }
 
-function similarity(a: string, b: string): number {
-  const strip = (s: string): string => s.replace(/_?\d+$/, '').toLowerCase();
-  if (strip(a) === strip(b)) return 3;
-  const x = a.toLowerCase();
-  const y = b.toLowerCase();
-  let common = 0;
-  while (common < x.length && common < y.length && x[common] === y[common]) common++;
-  return common >= 8 ? 2 : 0;
+/** The name without a trailing copy number: `claude_ai_Atlassian_Rovo_2` → `claude_ai_atlassian_rovo`. */
+function baseName(server: string): string {
+  return server.replace(/_?\d+$/, '').toLowerCase();
 }
 
 /**
@@ -200,14 +247,16 @@ export function missingConnectors(
   return [...found.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([server, names]) => {
-      const best = [...known]
-        .map((candidate) => ({ candidate, score: similarity(server, candidate) }))
-        .filter((match) => match.score > 0)
-        .sort((a, b) => b.score - a.score || a.candidate.localeCompare(b.candidate))[0];
+      // Only the same name with or without a copy number, and only when one
+      // server matches: a shared prefix such as claude_ai_ says nothing.
+      const matches = [...known].filter(
+        (candidate) => baseName(candidate) === baseName(server),
+      );
+      const suggestion = matches.length === 1 ? matches[0] : undefined;
       return {
         server,
         workflows: [...names].sort(),
-        ...(best === undefined ? {} : { suggestion: best.candidate }),
+        ...(suggestion === undefined ? {} : { suggestion }),
       };
     });
 }
@@ -225,30 +274,31 @@ export function mockHostAbilities(adapter: 'claude' | 'codex'): HostAbilities {
           rule: 'mcp__claude_ai_Atlassian_Rovo',
           status: 'connected',
           scope: 'account',
-          target: 'https://mcp.atlassian.com/v1/mcp',
+          target: 'https://mcp.atlassian.com',
         },
         {
           name: 'claude.ai Gmail',
           rule: 'mcp__claude_ai_Gmail',
           status: 'connected',
           scope: 'account',
-          target: 'https://gmailmcp.googleapis.com/mcp/v1',
+          target: 'https://gmailmcp.googleapis.com',
         },
         {
           name: 'claude.ai Sentry',
           rule: 'mcp__claude_ai_Sentry',
           status: 'needsAuth',
           scope: 'account',
-          target: 'https://mcp.sentry.dev/mcp',
+          target: 'https://mcp.sentry.dev',
         },
         {
           name: 'aws-mcp',
           rule: 'mcp__aws-mcp',
           status: 'connected',
           scope: 'local',
-          target: 'uvx mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp',
+          target: 'uvx · https://aws-mcp.us-east-1.api.aws',
         },
       ],
+      connectorsListed: true,
       connectorsNote: 'Demo data: the browser preview cannot run claude mcp list.',
       browser: {
         available: true,
@@ -269,9 +319,10 @@ export function mockHostAbilities(adapter: 'claude' | 'codex'): HostAbilities {
         name: 'aws-mcp',
         status: 'enabled',
         scope: 'local',
-        target: 'uvx mcp-proxy-for-aws@latest https://aws-mcp.us-east-1.api.aws/mcp',
+        target: 'uvx · https://aws-mcp.us-east-1.api.aws',
       },
     ],
+    connectorsListed: true,
     connectorsNote: 'Demo data: the browser preview cannot run codex mcp list.',
     browser: {
       available: true,

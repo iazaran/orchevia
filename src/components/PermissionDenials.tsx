@@ -4,6 +4,7 @@ import { errorMessage } from '../lib/errors';
 import {
   allowedToolsBlocker,
   dormantAllowedTools,
+  inheritedAbilities,
   profileGrants,
   profilesLimitingFullAccess,
   withAllowedTools,
@@ -72,6 +73,7 @@ export function PermissionDenials({
     const next = withAllowedTools(profile, pending, appDefault, abilities);
     if (next === null) return;
     const dormant = dormantAllowedTools(profile);
+    const inherited = inheritedAbilities(profile, abilities);
     const switching = (profile.permissionLevel ?? 'appDefault') !== 'allowedTools';
     void confirmDialog({
       title: `Allow ${String(pending.length)} tool rule${pending.length === 1 ? '' : 's'} for '${profile.name}'?`,
@@ -82,6 +84,10 @@ export function PermissionDenials({
       }${
         dormant.length > 0
           ? ` Its saved list (${dormant.join(', ')}) applies again too.`
+          : ''
+      }${
+        inherited.length > 0
+          ? ` It keeps what Environment allows for workflow steps (${inherited.join(', ')}) in its own list.`
           : ''
       } Every workflow that uses this profile gets these permissions.`,
       confirmLabel: 'Add to allowed tools',

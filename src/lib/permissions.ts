@@ -278,12 +278,24 @@ export function withAllowedTools(
     (rule) => !profileGrants(profile, rule, appDefault, abilities),
   );
   if (missing.length === 0) return null;
-  const existing = profile.allowedTools ?? [];
-  return {
-    ...profile,
-    permissionLevel: 'allowedTools',
-    allowedTools: [...existing, ...missing.filter((rule) => !existing.includes(rule))],
-  };
+  const allowedTools = [...(profile.allowedTools ?? [])];
+  for (const rule of [...inheritedAbilities(profile, abilities), ...missing])
+    if (!allowedTools.includes(rule)) allowedTools.push(rule);
+  return { ...profile, permissionLevel: 'allowedTools', allowedTools };
+}
+
+/**
+ * The abilities allowed in Environment that a profile following the app
+ * default would lose by getting its own Allowed tools list (they reach only
+ * profiles at the app default), so `withAllowedTools` copies them in.
+ */
+export function inheritedAbilities(
+  profile: AgentProfile,
+  abilities: AppAbilities,
+): string[] {
+  if ((profile.permissionLevel ?? 'appDefault') !== 'appDefault') return [];
+  const own = profile.allowedTools ?? [];
+  return (abilities.allowedTools ?? []).filter((rule) => !own.includes(rule));
 }
 
 /** Declared tools one profile does not grant, and the nodes that need them. */

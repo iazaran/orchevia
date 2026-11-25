@@ -254,7 +254,7 @@ export interface Backend {
   checkAgentSetup(profileId: string): Promise<SetupCheckReport>;
   /**
    * What Claude Code or Codex brings from the user's own setup. Runs the
-   * CLI's listing commands only (no prompt); up to a minute.
+   * CLI's listing commands only (no prompt), each bounded at a minute.
    */
   detectAgentAbilities(adapter: 'claude' | 'codex'): Promise<HostAbilities>;
   listKnownFolders(limit?: number): Promise<string[]>;

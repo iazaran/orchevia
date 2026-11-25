@@ -320,8 +320,9 @@ export function browserArgument(profile: AgentProfile): string | null {
 
 /**
  * Mirror of Rust `AgentProfile::for_run`: the app-wide permission level
- * (`withAppDefault`), then the abilities. A Claude Code profile gets
- * `browser: true|false`; below full access, the browser's tools and (for a
+ * (`withAppDefault`), then the abilities. A Claude Code profile's `browser`
+ * becomes the flag its run passes (true: `--chrome`, false: `--no-chrome`,
+ * absent: none); below full access, the browser's tools and (for a
  * profile following the app default) the abilities allowed in Environment
  * become `--allowedTools` rules, on top of what the profile's own Allowed
  * tools level lists. Other CLIs get neither.
@@ -337,14 +338,24 @@ export function resolveForRun(
     const { browser: _dropped, ...rest } = resolved;
     return rest;
   }
+  // Its own --chrome / --no-chrome decides, and so does an explicit Off
+  // (passed as --no-chrome). Following an app that leaves the browser off adds
+  // nothing: the Claude Code settings decide.
+  const { browser: own, ...rest } = resolved;
   const browser =
-    (resolved.browser ?? abilities.browser) && browserArgument(resolved) === null;
-  const withBrowser: AgentProfile = { ...resolved, browser };
+    browserArgument(resolved) !== null
+      ? undefined
+      : own !== undefined
+        ? own
+        : abilities.browser
+          ? true
+          : undefined;
+  const withBrowser: AgentProfile = browser === undefined ? rest : { ...rest, browser };
   if (hasFullAccess(withBrowser) || permissionArgument(withBrowser) !== null)
     return withBrowser;
   const grants = [
     ...(followsApp ? (abilities.allowedTools ?? []) : []),
-    ...(browser ? [BROWSER_TOOL_RULE] : []),
+    ...(browser === true ? [BROWSER_TOOL_RULE] : []),
   ];
   if (grants.length === 0) return withBrowser;
   const level = withBrowser.permissionLevel ?? 'appDefault';
@@ -354,9 +365,13 @@ export function resolveForRun(
   return { ...withBrowser, permissionLevel: 'allowedTools', allowedTools: rules };
 }
 
-/** Mirror of Rust `push_browser`: `--chrome` for a resolved profile that uses the browser. */
+/**
+ * Mirror of Rust `push_browser`: `--chrome` or `--no-chrome` for a profile
+ * resolved with `resolveForRun`, nothing when its browser is unset.
+ */
 export function browserArgs(profile: AgentProfile): string[] {
-  return profile.adapter === 'claude' && profile.browser === true ? [BROWSER_FLAG] : [];
+  if (profile.adapter !== 'claude' || profile.browser === undefined) return [];
+  return [profile.browser ? BROWSER_FLAG : NO_BROWSER_FLAG];
 }
 
 /** Mirror of Rust `AgentProfile::uses_browser`. Pass a profile resolved with `resolveForRun`. */
@@ -788,11 +803,11 @@ export function validateProfile(profile: AgentProfile): string[] {
   if (profile.adapter !== 'claude' && allowedTools.length > 0)
     errors.push('Allowed tools apply only to Claude Code profiles.');
   errors.push(...validateToolRules(allowedTools, 'Allowed tools'));
-  if (profile.browser === true) {
+  if (profile.browser === true && profile.adapter !== 'claude')
+    errors.push('Browser use applies only to Claude Code profiles.');
+  if (profile.browser !== undefined) {
     const conflict = browserArgument(profile);
-    if (profile.adapter !== 'claude')
-      errors.push('Browser use applies only to Claude Code profiles.');
-    else if (conflict !== null)
+    if (conflict !== null)
       errors.push(
         `Extra argument '${conflict}' conflicts with the profile's browser setting. Remove it or follow the app default.`,
       );

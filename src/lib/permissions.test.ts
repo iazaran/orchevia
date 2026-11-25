@@ -281,4 +281,43 @@ describe('grants with the abilities allowed in Environment', () => {
     );
     expect(profileGrants(own, 'mcp__claude-in-chrome', null, abilities)).toBe(true);
   });
+
+  it('keeps the abilities a profile had from the app when it gets its own list', () => {
+    const profile: AgentProfile = {
+      id: 'p',
+      name: 'Follows',
+      adapter: 'claude',
+      extraArgs: [],
+      workingDirMode: 'node',
+      defaultTimeoutSecs: 60,
+    };
+    const abilities = { browser: false, allowedTools: ['mcp__claude_ai_Slack'] };
+    // Refused Edit: the new own list would otherwise drop Slack, which only
+    // reaches profiles at the app default.
+    const next = withAllowedTools(
+      profile,
+      ['Edit', 'mcp__claude_ai_Slack'],
+      null,
+      abilities,
+    );
+    expect(next).toMatchObject({
+      permissionLevel: 'allowedTools',
+      allowedTools: ['mcp__claude_ai_Slack', 'Edit'],
+    });
+    expect(
+      next === null
+        ? false
+        : profileGrants(next, 'mcp__claude_ai_Slack', null, abilities),
+    ).toBe(true);
+    // A profile that already has its own level keeps exactly its own list.
+    const own = {
+      ...profile,
+      permissionLevel: 'allowedTools' as const,
+      allowedTools: ['Read'],
+    };
+    expect(withAllowedTools(own, ['Edit'], null, abilities)?.allowedTools).toEqual([
+      'Read',
+      'Edit',
+    ]);
+  });
 });
