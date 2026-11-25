@@ -38,7 +38,9 @@ run's progress read as finished, and fix apt upgrades and two site details.
   regressions they describe; a test that failed lint. Second round: a repeat
   after a remount cleared its owner's message; "Steps" stayed "…" when the run's
   workflow could not be read; an in-place repeat was silent to screen readers;
-  the fallback count counted rows and Start/End instead of steps.
+  the fallback count counted rows and Start/End instead of steps. Third round:
+  Start and End are told apart through today's workflow when the run's own cannot
+  be read, and the report stays hidden then (a branch decision is not a report).
 
 ## Notes for the next release
 

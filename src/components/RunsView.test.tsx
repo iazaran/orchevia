@@ -1245,30 +1245,48 @@ it('counts recorded steps when the saved workflow cannot be read', async () => {
     startedAt: '2026-10-23T10:00:00.000Z',
     finishedAt: '2026-10-23T10:01:00.000Z',
   };
-  const result: StoredNodeResult = {
-    id: 1,
+  const results: StoredNodeResult[] = ['start', 'check', 'end'].map((nodeId, index) => ({
+    id: index + 1,
     runId: run.id,
-    nodeId: 'build',
+    nodeId,
     status: 'succeeded',
-    stdout: '',
+    stdout: nodeId === 'check' ? 'true' : '',
     stderr: '',
     startedAt: run.startedAt,
-  };
+  }));
   vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
-  vi.spyOn(backend, 'getRunResults').mockResolvedValue([result]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
   vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
   vi.spyOn(backend, 'getRunWorkflow').mockRejectedValue(new Error('bad definition'));
+  const definition: Workflow = {
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes: [node('start', 'start'), node('check', 'condition'), node('end', 'end')],
+  };
   useAppStore.setState({
     runs: [run],
     activeRunId: run.id,
-    runResults: { [run.id]: [result] },
-    workflows: [],
+    runResults: { [run.id]: results },
+    workflows: [
+      {
+        id: 'wf',
+        name: 'W',
+        definition,
+        createdAt: run.startedAt,
+        updatedAt: run.startedAt,
+      },
+    ],
     profiles: [],
   });
   render(<RunsView />);
+  // Start and End are told apart through today's workflow; the header stops
+  // waiting, and a branch decision is never shown as the run's report.
   await waitFor(() =>
     expect(screen.getByText('Steps').closest('div')).toHaveTextContent(/Steps\s*1$/),
   );
+  expect(screen.queryByRole('region', { name: 'Run report' })).toBeNull();
 });
 
 it('counts no steps for a run of Start and End only', async () => {

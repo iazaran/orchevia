@@ -143,6 +143,7 @@ function RunFacts({
   now: number;
 }): React.JSX.Element {
   const setView = useAppStore((s) => s.setView);
+  const saved = useAppStore((s) => s.workflows).find((w) => w.id === run.workflowId);
   const dry = run.execution?.options.dryRun === true;
   const live = run.status === 'running' || run.status === 'paused';
   const limit = run.execution?.resolvedLimits?.maxAgentAttempts;
@@ -166,7 +167,9 @@ function RunFacts({
       : stepCounts(
           results,
           new Set(
-            (workflow?.nodes ?? [])
+            // Today's workflow still tells Start and End apart when the run's
+            // own definition could not be read.
+            (workflow ?? saved?.definition)?.nodes
               .filter((n) => n.type === 'start' || n.type === 'end')
               .map((n) => n.id),
           ),
@@ -626,6 +629,8 @@ export function RunsView(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<{
     runId: string;
     workflow: Workflow | null;
+    /** The request failed: counts fall back to rows, the report stays hidden. */
+    failed?: boolean;
   } | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [recoveryId, setRecoveryId] = useState<string | null>(null);
@@ -695,7 +700,7 @@ export function RunsView(): React.JSX.Element {
       .catch((error: unknown) => {
         if (cancelled) return;
         // Counted by its recorded rows instead of waiting forever.
-        setSnapshot({ runId: activeRunId, workflow: null });
+        setSnapshot({ runId: activeRunId, workflow: null, failed: true });
         setActionError(errorMessage(error));
       });
     return () => {
@@ -1377,6 +1382,7 @@ export function RunsView(): React.JSX.Element {
                   if (
                     !finished ||
                     snapshot?.runId !== activeRunId ||
+                    snapshot.failed === true ||
                     (report === undefined && failedRow === undefined)
                   )
                     return null;
