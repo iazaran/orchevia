@@ -36,6 +36,7 @@ export function ToolGrantNotice({
 }): React.JSX.Element | null {
   const profiles = useAppStore((s) => s.profiles);
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
+  const abilities = useAppStore((s) => s.agentAbilities);
   const setDefault = useAppStore((s) => s.setAgentPermissionDefault);
   const refreshProfiles = useAppStore((s) => s.refreshProfiles);
   const [busy, setBusy] = useState(false);
@@ -50,7 +51,7 @@ export function ToolGrantNotice({
         {...(onDismiss === undefined ? {} : { onDismiss })}
       />
     );
-  const grants = missingToolGrants(workflow, profiles, roleMap, appDefault);
+  const grants = missingToolGrants(workflow, profiles, roleMap, appDefault, abilities);
   if (grants.length === 0) return null;
   // Profiles whose own extra arguments set permissions must be edited by hand.
   const addable = grants.filter((grant) => allowedToolsBlocker(grant.profile) === null);
@@ -97,7 +98,12 @@ export function ToolGrantNotice({
       setError(null);
       try {
         for (const grant of addable) {
-          const next = withAllowedTools(grant.profile, grant.rules, appDefault);
+          const next = withAllowedTools(
+            grant.profile,
+            grant.rules,
+            appDefault,
+            abilities,
+          );
           if (next !== null) await getBackend().saveAgentProfile(next);
         }
         await refreshProfiles();

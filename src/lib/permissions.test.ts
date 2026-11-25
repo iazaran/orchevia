@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDefaultProfile } from './agents';
+import { createDefaultProfile, type AgentProfile } from './agents';
 import { createEmptyWorkflow, type NodeConfig, type WorkflowNode } from './workflow';
 import {
   allowedToolsBlocker,
@@ -248,5 +248,37 @@ describe('tool permissions', () => {
       workflowAgentProfiles(workflow, all, { review: 'c' }).map((p) => p.name),
     ).toEqual(['Follows', 'Codex']);
     expect(workflowAgentProfiles(createEmptyWorkflow('None'), all)).toEqual([]);
+  });
+});
+
+describe('grants with the abilities allowed in Environment', () => {
+  it('counts connectors and the browser allowed for steps as granted', () => {
+    const profile: AgentProfile = {
+      id: 'p',
+      name: 'Follows',
+      adapter: 'claude',
+      extraArgs: [],
+      workingDirMode: 'node',
+      defaultTimeoutSecs: 60,
+    };
+    const abilities = { browser: true, allowedTools: ['mcp__claude_ai_Atlassian_Rovo'] };
+    expect(
+      profileGrants(profile, 'mcp__claude_ai_Atlassian_Rovo__getJiraIssue', null),
+    ).toBe(false);
+    expect(
+      profileGrants(
+        profile,
+        'mcp__claude_ai_Atlassian_Rovo__getJiraIssue',
+        null,
+        abilities,
+      ),
+    ).toBe(true);
+    expect(profileGrants(profile, 'mcp__claude-in-chrome', null, abilities)).toBe(true);
+    // A profile at the Claude Code settings level gets the browser, not the connectors.
+    const own = { ...profile, permissionLevel: 'cliSettings' as const };
+    expect(profileGrants(own, 'mcp__claude_ai_Atlassian_Rovo', null, abilities)).toBe(
+      false,
+    );
+    expect(profileGrants(own, 'mcp__claude-in-chrome', null, abilities)).toBe(true);
   });
 });

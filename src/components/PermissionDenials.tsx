@@ -28,6 +28,7 @@ export function PermissionDenials({
 }): React.JSX.Element {
   const profiles = useAppStore((s) => s.profiles);
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
+  const abilities = useAppStore((s) => s.agentAbilities);
   const setDefault = useAppStore((s) => s.setAgentPermissionDefault);
   const refreshProfiles = useAppStore((s) => s.refreshProfiles);
   const [busy, setBusy] = useState(false);
@@ -37,7 +38,9 @@ export function PermissionDenials({
   const pending =
     profile === undefined
       ? denied.rules
-      : denied.rules.filter((rule) => !profileGrants(profile, rule, appDefault));
+      : denied.rules.filter(
+          (rule) => !profileGrants(profile, rule, appDefault, abilities),
+        );
   const blocker = profile === undefined ? null : allowedToolsBlocker(profile);
 
   const giveFullAccess = (): void => {
@@ -66,7 +69,7 @@ export function PermissionDenials({
 
   const add = (): void => {
     if (profile === undefined) return;
-    const next = withAllowedTools(profile, pending, appDefault);
+    const next = withAllowedTools(profile, pending, appDefault, abilities);
     if (next === null) return;
     const dormant = dormantAllowedTools(profile);
     const switching = (profile.permissionLevel ?? 'appDefault') !== 'allowedTools';
