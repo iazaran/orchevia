@@ -28,14 +28,17 @@ All notable changes are recorded here, following
 - **Run progress agrees with itself.** The run header counted every recorded
   row, Start and End included ("13 · 4 skipped"), while the progress bar counted
   working steps ("7 of 10 steps done · 3 skipped"). Both now count the same
-  steps, and rejected approvals are listed apart from failures.
+  steps, and rejected approvals and cancelled steps are listed apart from
+  failures. A skip that a correction round leaves in place stays counted, and a
+  run from before workflow snapshots is counted by its recorded steps.
 - **A finished run's bar is full.** Skipped steps were drawn in the grey of the
   empty track, so "100%" sat over a bar that looked a third empty. They are now
   a muted, hatched green.
 - **"Detect current"** keeps one line beside the branch field in the inspector.
 - **The same message no longer stacks.** Choosing a saved repository and then
   **Load playbook** showed "No saved project knowledge…" twice; a repeated
-  message now replaces the visible one and starts its time again.
+  message now updates the visible one in place and starts its time again, so a
+  focused **Dismiss** keeps its focus. MCP server errors name their server.
 - **apt upgrades reach new releases again.** The Pages deploy that rebuilds the
   apt repository after a release looked up its upload too early and failed
   (GitHub lists a fresh artifact seconds late), so `apt upgrade` stayed on

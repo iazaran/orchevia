@@ -22,7 +22,17 @@ run's progress read as finished, and fix apt upgrades and two site details.
 - [x] Pages deploy retries (PR #58): a short wait and up to three attempts, and
   one artifact name per run attempt so re-runs work. Site: demo log height
   follows the graph, apt commands wrap in a full-width card.
+- [x] Notices: a repeat of a visible message (same text and variant, from
+  `<Notice>` or a plain-string `pushUiNotice`) updates it in place with a new
+  `revision`, which restarts its lifetime without remounting the element.
 - [x] Dependencies refreshed within their ranges.
+- [x] Review (two independent reviewers). Fixed: cancelled steps counted as
+  failed in the header; a correction round dropped a skip the engine keeps;
+  replaced notices unmounted a focused Dismiss button; plain-string notices still
+  stacked; Start → End runs showed "Steps 2"; pre-snapshot runs were counted
+  against today's workflow; the seven Usage totals wrapped at 1280 px; "→" was
+  read as part of button names; layout and apt tests that would pass on the
+  regressions they describe; a test that failed lint.
 
 ## Notes for the next release
 
@@ -30,3 +40,6 @@ run's progress read as finished, and fix apt upgrades and two site details.
   after each release: a failed Pages run leaves apt on the previous version.
 - The run list and run detail are not covered by the shared `--measure`: the
   detail column is meant to use the full width for logs and timelines.
+- Live progress during a loop still credits a gate from the previous pass until
+  the gate runs again (since 0.2.0): the scheduler resets loop nodes but writes
+  no row for that, so `runProgress` cannot see it. Exposing the reset would fix it.
