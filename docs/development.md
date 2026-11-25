@@ -332,6 +332,12 @@ new version reaches `apt upgrade` within minutes. To rebuild by hand:
 gh workflow run pages.yml --ref main
 ```
 
+GitHub sometimes lists a freshly uploaded Pages artifact seconds late, so the deploy
+step waits briefly and tries up to three times; each run attempt uploads under its own
+name, so **Re-run jobs** works as well. If a release's Pages run still fails, apt keeps
+serving the previous version until a later run succeeds, so check
+`dists/stable/main/binary-amd64/Packages` after each release.
+
 Pull requests run the same script with a throwaway key and check the signature
 with `gpgv`. If the key ever changes, users must download the new
 `orchevia-archive-keyring.gpg`; keep a backup of the secret key outside GitHub.

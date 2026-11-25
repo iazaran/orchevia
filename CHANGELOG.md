@@ -6,6 +6,13 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Fixed
+
+- **apt upgrades reach new releases again.** The Pages deploy that rebuilds the
+  apt repository after a release looked up its upload too early and failed
+  (GitHub lists a fresh artifact seconds late), so `apt upgrade` stayed on
+  0.3.0. The deploy now waits and retries, and re-running it works.
+
 ## [0.3.1] - 2026-11-25
 
 ### Added
