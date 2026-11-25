@@ -24,7 +24,10 @@ run's progress read as finished, and fix apt upgrades and two site details.
   follows the graph, apt commands wrap in a full-width card.
 - [x] Notices: a repeat of a visible message (same text and variant, from
   `<Notice>` or a plain-string `pushUiNotice`) updates it in place with a new
-  `revision`, which restarts its lifetime without remounting the element.
+  `revision`, which restarts its lifetime without remounting the element. Only
+  the text span is re-keyed, so screen readers announce the repeat and it flashes
+  once. The previous copy's `onDismiss` is not called: after a remount it belongs
+  to an unmounted `<Notice>` whose owner has just set the same message again.
 - [x] Dependencies refreshed within their ranges.
 - [x] Review (two independent reviewers). Fixed: cancelled steps counted as
   failed in the header; a correction round dropped a skip the engine keeps;
@@ -32,7 +35,10 @@ run's progress read as finished, and fix apt upgrades and two site details.
   stacked; Start → End runs showed "Steps 2"; pre-snapshot runs were counted
   against today's workflow; the seven Usage totals wrapped at 1280 px; "→" was
   read as part of button names; layout and apt tests that would pass on the
-  regressions they describe; a test that failed lint.
+  regressions they describe; a test that failed lint. Second round: a repeat
+  after a remount cleared its owner's message; "Steps" stayed "…" when the run's
+  workflow could not be read; an in-place repeat was silent to screen readers;
+  the fallback count counted rows and Start/End instead of steps.
 
 ## Notes for the next release
 
@@ -40,6 +46,10 @@ run's progress read as finished, and fix apt upgrades and two site details.
   after each release: a failed Pages run leaves apt on the previous version.
 - The run list and run detail are not covered by the shared `--measure`: the
   detail column is meant to use the full width for logs and timelines.
+- A run from before workflow snapshots whose workflow later gained a step is
+  still counted against today's workflow (the bar shows it unfinished). Telling
+  snapshot from fallback needs the backend to say which one `get_run_workflow`
+  returned.
 - Live progress during a loop still credits a gate from the previous pass until
   the gate runs again (since 0.2.0): the scheduler resets loop nodes but writes
   no row for that, so `runProgress` cannot see it. Exposing the reset would fix it.

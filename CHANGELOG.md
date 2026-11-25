@@ -37,8 +37,9 @@ All notable changes are recorded here, following
 - **"Detect current"** keeps one line beside the branch field in the inspector.
 - **The same message no longer stacks.** Choosing a saved repository and then
   **Load playbook** showed "No saved project knowledge…" twice; a repeated
-  message now updates the visible one in place and starts its time again, so a
-  focused **Dismiss** keeps its focus. MCP server errors name their server.
+  message now updates the visible one in place, flashes once, is announced
+  again and starts its time again, while a focused **Dismiss** keeps its focus.
+  MCP server errors name their server.
 - **apt upgrades reach new releases again.** The Pages deploy that rebuilds the
   apt repository after a release looked up its upload too early and failed
   (GitHub lists a fresh artifact seconds late), so `apt upgrade` stayed on
