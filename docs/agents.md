@@ -204,6 +204,47 @@ While a profile uses the Allowed tools or Full access level, extra arguments tha
 set permissions themselves (`--permission-mode`, `--allowedTools`,
 `--dangerously-skip-permissions`; Codex `--sandbox`, `--full-auto`) are rejected.
 
+## Abilities from your own setup
+
+A workflow step runs your own Claude Code or Codex, so it already loads what you set
+up for them: Claude Code its MCP servers, claude.ai connectors, skills, plugins and
+`~/.claude/CLAUDE.md`; Codex its MCP servers, plugins and `~/.codex/AGENTS.md`. Two
+things do not carry over to a headless run on their own, and **Environment → Agents
+→ Abilities from your own setup** (also the setup wizard's **Abilities** step)
+decides them once:
+
+- **Your browser (Claude in Chrome).** `claude -p` starts without Claude in Chrome.
+  With the switch on, Claude Code steps run with `--chrome`, so they can open pages
+  and act in the browser you are signed in to. Below full access the browser's
+  tools (`mcp__claude-in-chrome`) are allowed for those runs. A profile can choose
+  for itself in Agents (**Browser**: app default, on or off); `--chrome` or
+  `--no-chrome` among a profile's extra arguments wins. Turning it on asks first,
+  and a workflow whose steps use the browser lists **Use your browser and its
+  signed-in sites** among its automation risks, so its schedules need the trusted
+  opt-in.
+- **What steps may use without asking.** Under full access, everything. Otherwise a
+  connector, MCP server or web tool works in a step only when your Claude Code
+  settings allow it, or when you allow it here: each connector has a switch, and
+  **Allow all** covers the rest. Allowed rules reach profiles that follow the app
+  default as `--allowedTools` on top of your settings (a profile at **Use Claude
+  Code settings** gets none; a profile at **Allowed tools** keeps its own list).
+  Codex has no allow-list, so its approval settings or full access decide.
+
+**Find what my agents can use** runs only `claude mcp list`, `codex mcp list --json`
+and `codex plugin list` (which start your MCP servers to check them) and reads
+`~/.claude/settings.json`, the browser extension's native messaging host and your
+skill folders. It sends no prompt and changes no CLI settings. Servers you added for
+one project appear when a step runs in that project, not in this list.
+
+After **Find**, Orchevia also compares the MCP servers your Agent steps require
+(`requiredTools`) with what Claude Code lists, and names any it no longer has
+together with the connector it most likely became: reconnecting a claude.ai
+connector can rename it, for example from `claude_ai_Atlassian_Rovo_2` to
+`claude_ai_Atlassian_Rovo`. Update those steps' required tools and prompts.
+
+The choice is stored as the `agents.abilities` setting:
+`{"browser": true, "allowedTools": ["mcp__claude_ai_Slack", "WebFetch"]}`.
+
 ## Refused tool calls
 
 Headless `claude -p` never asks for permission. A tool that the Claude Code
