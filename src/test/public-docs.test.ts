@@ -43,6 +43,58 @@ describe('public documentation', () => {
     }
   });
 
+  it('gives the same apt commands on the page and in the README, short enough to read', () => {
+    const pageApt = required(page.querySelector('#apt-code'), '#apt-code').textContent;
+    const readmeApt = required(
+      /```bash\n(curl -fsSL https:\/\/iazaran\.github\.io\/orchevia\/apt[\s\S]*?)\n```/.exec(
+        readme,
+      )?.[1],
+      'README apt block',
+    );
+    expect(pageApt).toBe(readmeApt);
+    // Continuation lines keep every line readable without sideways scrolling.
+    for (const line of pageApt.split('\n'))
+      expect(line.length, line).toBeLessThanOrEqual(90);
+    const commands = pageApt.replace(/ \\\n\s*/g, ' ').split('\n');
+    expect(commands).toEqual([
+      'curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg > /dev/null',
+      expect.stringMatching(
+        /^echo ".*" ".*" \| sudo tee \/etc\/apt\/sources\.list\.d\/orchevia\.list$/,
+      ),
+      'sudo apt update && sudo apt install orchevia',
+    ]);
+    // echo joins its two arguments with one space: the same one-line source entry.
+    const echoed = Array.from(
+      required(commands[1], 'echo').matchAll(/"([^"]*)"/g),
+      (m) => m[1],
+    );
+    expect(echoed.join(' ')).toBe(
+      'deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg] https://iazaran.github.io/orchevia/apt stable main',
+    );
+  });
+
+  it('sizes the demo log to the workflow beside it and wraps install commands', () => {
+    // Every top-level block for the selector, so later rules count too.
+    const rule = (selector: string): string => {
+      const pattern = new RegExp(
+        `\n {6}${selector.replace(/[.]/g, '\\.')} \\{([^}]*)\\}`,
+        'g',
+      );
+      const body = Array.from(html.matchAll(pattern), (match) => match[1]).join('\n');
+      expect(body, selector).not.toBe('');
+      return body;
+    };
+    // The first scenario's graph is far taller than the others; a fixed log
+    // height left an empty strip under the log beside it.
+    expect(rule('.demo-log')).not.toMatch(/(^|\s)height:/);
+    expect(rule('.demo-log')).toMatch(/flex: 1 1 0;/);
+    expect(rule('.demo-output')).toMatch(/display: flex;/);
+    expect(rule('.demo-output')).toMatch(/flex-direction: column;/);
+    expect(page.querySelector('.demo-output [data-demo-log]')).not.toBeNull();
+    expect(rule('.install-code')).toMatch(/white-space: pre-wrap;/);
+    expect(rule('.grid-2')).toMatch(/minmax\(0, 1fr\)/);
+  });
+
   it('no longer describes the repository or downloads as private', () => {
     for (const text of [page.body.textContent, readme]) {
       expect(text).not.toMatch(/private for now|public soon|repository access/i);

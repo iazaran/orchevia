@@ -57,8 +57,11 @@ Pick the installer for your machine from the **[latest release](https://github.c
 `sudo apt upgrade` keeps Orchevia up to date:
 
 ```bash
-curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg > /dev/null
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg] https://iazaran.github.io/orchevia/apt stable main" | sudo tee /etc/apt/sources.list.d/orchevia.list
+curl -fsSL https://iazaran.github.io/orchevia/apt/orchevia-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/orchevia-archive-keyring.gpg > /dev/null
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/orchevia-archive-keyring.gpg]" \
+  "https://iazaran.github.io/orchevia/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/orchevia.list
 sudo apt update && sudo apt install orchevia
 ```
 
