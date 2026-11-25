@@ -1236,6 +1236,41 @@ it('calls a step stopped by a cancel cancelled, not failed', async () => {
   expect(screen.getByText('1 of 2 steps done · 1 cancelled')).toBeInTheDocument();
 });
 
+it('counts recorded steps when the saved workflow cannot be read', async () => {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'unreadable-run',
+    workflowId: 'wf',
+    status: 'succeeded',
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:01:00.000Z',
+  };
+  const result: StoredNodeResult = {
+    id: 1,
+    runId: run.id,
+    nodeId: 'build',
+    status: 'succeeded',
+    stdout: '',
+    stderr: '',
+    startedAt: run.startedAt,
+  };
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue([result]);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockRejectedValue(new Error('bad definition'));
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: [result] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await waitFor(() =>
+    expect(screen.getByText('Steps').closest('div')).toHaveTextContent(/Steps\s*1$/),
+  );
+});
+
 it('counts no steps for a run of Start and End only', async () => {
   await renderRunWith(
     'succeeded',

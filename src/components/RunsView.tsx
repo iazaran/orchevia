@@ -163,7 +163,14 @@ function RunFacts({
           rejected: progress.rejected,
           cancelled: progress.cancelled,
         }
-      : stepCounts(results);
+      : stepCounts(
+          results,
+          new Set(
+            (workflow?.nodes ?? [])
+              .filter((n) => n.type === 'start' || n.type === 'end')
+              .map((n) => n.id),
+          ),
+        );
   const elapsed = runElapsed(run, now);
   const costUsd = planCost?.plansEntered === true ? planCost.cost.totalUsd : null;
   return (
@@ -686,7 +693,10 @@ export function RunsView(): React.JSX.Element {
         if (!cancelled) setSnapshot({ runId: activeRunId, workflow });
       })
       .catch((error: unknown) => {
-        if (!cancelled) setActionError(errorMessage(error));
+        if (cancelled) return;
+        // Counted by its recorded rows instead of waiting forever.
+        setSnapshot({ runId: activeRunId, workflow: null });
+        setActionError(errorMessage(error));
       });
     return () => {
       cancelled = true;

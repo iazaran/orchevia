@@ -128,6 +128,19 @@ describe('run report', () => {
     expect(reportFields('## Heading\nA: b\nC: d').fields).toEqual([]);
   });
 
+  it('counts each recorded step once, without the ones left out', () => {
+    const counts = stepCounts(
+      [
+        row(1, 'start', ''),
+        row(2, 'tests', '', 'failed'),
+        row(3, 'tests', ''),
+        row(4, 'end', ''),
+      ],
+      new Set(['start', 'end']),
+    );
+    expect(counts).toMatchObject({ total: 1, failed: 0 });
+  });
+
   it('counts skipped and failed steps', () => {
     expect(
       stepCounts([

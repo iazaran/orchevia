@@ -99,19 +99,30 @@ export function isBookkeeping(row: StoredNodeResult): boolean {
  * `runProgress` instead whenever the run's workflow is known, so it counts the
  * same steps as the progress bar; this is the fallback without one.
  */
-export function stepCounts(results: StoredNodeResult[]): {
+export function stepCounts(
+  results: StoredNodeResult[],
+  /** Node ids to leave out, such as Start and End. */
+  exclude: ReadonlySet<string> = new Set(),
+): {
   total: number;
   skipped: number;
   failed: number;
   rejected: number;
   cancelled: number;
 } {
+  // Each step once, by its latest row: a loop or a retry is not a new step.
+  const latest = new Map<string, string>();
+  for (const row of results)
+    if (!isBookkeeping(row) && !exclude.has(row.nodeId))
+      latest.set(row.nodeId, row.status);
+  const count = (status: string): number =>
+    [...latest.values()].filter((value) => value === status).length;
   return {
-    total: results.filter((row) => !isBookkeeping(row)).length,
-    skipped: results.filter((row) => row.status === 'skipped').length,
-    failed: results.filter((row) => row.status === 'failed').length,
-    rejected: results.filter((row) => row.status === 'rejected').length,
-    cancelled: results.filter((row) => row.status === 'cancelled').length,
+    total: latest.size,
+    skipped: count('skipped'),
+    failed: count('failed'),
+    rejected: count('rejected'),
+    cancelled: count('cancelled'),
   };
 }
 
@@ -194,6 +205,8 @@ export function runProgress(
             : undefined;
         // A skipped step stays skipped unless its route changes, and then the
         // engine records it again (feedback_engine_tests: "stays skipped").
+        // Until that new row arrives it counts as finished: the marker does
+        // not say which skips the round will reopen.
         for (const ids of [round?.roots, round?.affected])
           if (Array.isArray(ids))
             for (const id of ids)

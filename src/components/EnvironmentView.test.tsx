@@ -134,3 +134,19 @@ it('puts every section action in a row under its explanation', () => {
   // The arrow is decoration: the button is announced as "Agents".
   expect(screen.getByRole('button', { name: 'Agents' })).toHaveTextContent('Agents →');
 });
+
+it('names the server when listing its tools fails', async () => {
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'mcpListTools').mockRejectedValue(new Error('spawn uvx ENOENT'));
+  useAppStore.setState({
+    mcpServers: [{ id: 'jira', name: 'Jira', command: 'uvx', args: [], enabled: true }],
+    tools: [],
+    adapters: [],
+    profiles: [],
+  });
+  render(<EnvironmentView />);
+  fireEvent.click(screen.getByRole('button', { name: 'List tools' }));
+  expect(
+    await screen.findByText(/Listing tools for Jira failed: .*spawn uvx ENOENT/),
+  ).toBeInTheDocument();
+});
