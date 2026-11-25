@@ -65,6 +65,7 @@ export function ThemeToggle({
       <Segmented
         labelledBy="theme-label"
         size="small"
+        className="segmented-fill"
         value={theme}
         onChange={setTheme}
         options={[
