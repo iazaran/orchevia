@@ -1169,6 +1169,99 @@ it('names a rejected approval as the step a run stopped at', async () => {
   expect(screen.getByText('0 of 1 steps done · 1 rejected')).toBeInTheDocument();
 });
 
+async function renderRunWith(
+  status: RunStatus,
+  rows: { nodeId: string; status: string }[],
+  nodes: Workflow['nodes'],
+): Promise<void> {
+  const backend = __setMockBackendForTests();
+  const run: StoredRun = {
+    id: 'counted-run',
+    workflowId: 'wf',
+    status,
+    startedAt: '2026-10-23T10:00:00.000Z',
+    finishedAt: '2026-10-23T10:05:00.000Z',
+  };
+  const results: StoredNodeResult[] = rows.map((r, index) => ({
+    id: index + 1,
+    runId: run.id,
+    nodeId: r.nodeId,
+    status: r.status,
+    stdout: '',
+    stderr: '',
+    startedAt: run.startedAt,
+  }));
+  vi.spyOn(backend, 'listRuns').mockResolvedValue([run]);
+  vi.spyOn(backend, 'getRunResults').mockResolvedValue(results);
+  vi.spyOn(backend, 'getRunFindings').mockResolvedValue([]);
+  vi.spyOn(backend, 'getRunWorkflow').mockResolvedValue({
+    schemaVersion: 6,
+    id: 'wf',
+    name: 'W',
+    edges: [],
+    nodes,
+  });
+  useAppStore.setState({
+    runs: [run],
+    activeRunId: run.id,
+    runResults: { [run.id]: results },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  await waitFor(() =>
+    expect(screen.getByText('Steps').closest('div')).not.toHaveTextContent('…'),
+  );
+}
+
+function node(
+  id: string,
+  type: Workflow['nodes'][number]['type'],
+): Workflow['nodes'][number] {
+  return { id, type, label: id, position: { x: 0, y: 0 }, config: {} };
+}
+
+it('calls a step stopped by a cancel cancelled, not failed', async () => {
+  await renderRunWith(
+    'cancelled',
+    [
+      { nodeId: 'build', status: 'succeeded' },
+      { nodeId: 'tests', status: 'cancelled' },
+    ],
+    [node('build', 'command'), node('tests', 'command')],
+  );
+  const facts = screen.getByText('Steps').closest('div');
+  expect(facts).toHaveTextContent('2 · 1 cancelled');
+  expect(facts).not.toHaveTextContent('failed');
+  expect(screen.getByText('1 of 2 steps done · 1 cancelled')).toBeInTheDocument();
+});
+
+it('counts no steps for a run of Start and End only', async () => {
+  await renderRunWith(
+    'succeeded',
+    [
+      { nodeId: 'start', status: 'succeeded' },
+      { nodeId: 'end', status: 'succeeded' },
+    ],
+    [node('start', 'start'), node('end', 'end')],
+  );
+  expect(screen.getByText('Steps').closest('div')).toHaveTextContent(/Steps\s*0$/);
+});
+
+it('counts a run its workflow no longer describes by its recorded steps', async () => {
+  // A run from before snapshots falls back to today's workflow, which lost a step.
+  await renderRunWith(
+    'failed',
+    [
+      { nodeId: 'build', status: 'succeeded' },
+      { nodeId: 'removed', status: 'failed' },
+    ],
+    [node('build', 'command')],
+  );
+  expect(screen.getByText('Steps').closest('div')).toHaveTextContent('2 · 1 failed');
+  expect(screen.queryByRole('progressbar', { name: 'Steps finished' })).toBeNull();
+});
+
 it("works out a run's plan cost again when another run that day changes", async () => {
   const backend = __setMockBackendForTests();
   await backend.setSetting(

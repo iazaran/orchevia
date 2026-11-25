@@ -136,7 +136,7 @@ describe('run report', () => {
         row(3, 'c', '', 'failed'),
         row(4, 'd', '', 'rejected'),
       ]),
-    ).toEqual({ total: 4, skipped: 1, failed: 1, rejected: 1 });
+    ).toEqual({ total: 4, skipped: 1, failed: 1, rejected: 1, cancelled: 0 });
   });
 });
 
@@ -195,6 +195,7 @@ describe('feedback rows and run progress', () => {
       done: 1,
       failed: 0,
       rejected: 0,
+      cancelled: 0,
       skipped: 0,
       running: ['coderabbit', 'summary'],
       waiting: ['Approve'],
@@ -214,6 +215,33 @@ describe('feedback rows and run progress', () => {
     expect(progress.done + progress.failed + progress.rejected + progress.skipped).toBe(
       progress.total,
     );
+  });
+
+  it('counts a step stopped by a cancel as cancelled, not failed', () => {
+    const progress = runProgress(ticketWorkflow(), [
+      row(1, 'review', 'x'),
+      row(2, 'coderabbit', '', 'cancelled'),
+    ]);
+    expect(progress).toMatchObject({ done: 1, failed: 0, cancelled: 1, toGo: 1 });
+  });
+
+  it('keeps a skip that a correction round leaves on its route', () => {
+    // The engine keeps a skipped step skipped when the corrected work does not
+    // change its route, and writes no new row for it.
+    const workflow = ticketWorkflow();
+    const marker = row(4, '__feedback', 'Correction round 1', 'correcting');
+    marker.structuredJson = JSON.stringify({
+      feedbackRound: { roots: ['review'], affected: ['coderabbit', 'summary'] },
+    });
+    const progress = runProgress(workflow, [
+      row(1, 'review', 'x'),
+      row(2, 'coderabbit', 'x'),
+      row(3, 'summary', '', 'skipped'),
+      marker,
+      row(5, 'review', 'y'),
+      row(6, 'coderabbit', 'y'),
+    ]);
+    expect(progress).toMatchObject({ done: 2, skipped: 1, toGo: 0 });
   });
 
   it('counts steps a correction round reruns as still to run', () => {

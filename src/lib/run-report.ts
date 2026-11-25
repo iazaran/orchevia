@@ -104,12 +104,14 @@ export function stepCounts(results: StoredNodeResult[]): {
   skipped: number;
   failed: number;
   rejected: number;
+  cancelled: number;
 } {
   return {
     total: results.filter((row) => !isBookkeeping(row)).length,
     skipped: results.filter((row) => row.status === 'skipped').length,
     failed: results.filter((row) => row.status === 'failed').length,
     rejected: results.filter((row) => row.status === 'rejected').length,
+    cancelled: results.filter((row) => row.status === 'cancelled').length,
   };
 }
 
@@ -150,10 +152,11 @@ export interface RunProgress {
   /** Working steps in the workflow (every step but Start and End). */
   total: number;
   done: number;
-  /** Failed or cancelled. */
   failed: number;
   /** Turned down at an approval. */
   rejected: number;
+  /** Stopped by a cancel while running. */
+  cancelled: number;
   skipped: number;
   /** Labels of the steps running now; more than one means parallel work. */
   running: string[];
@@ -189,9 +192,13 @@ export function runProgress(
             ? (data as { feedbackRound?: { roots?: unknown; affected?: unknown } })
                 .feedbackRound
             : undefined;
+        // A skipped step stays skipped unless its route changes, and then the
+        // engine records it again (feedback_engine_tests: "stays skipped").
         for (const ids of [round?.roots, round?.affected])
           if (Array.isArray(ids))
-            for (const id of ids) if (typeof id === 'string') latest.delete(id);
+            for (const id of ids)
+              if (typeof id === 'string' && latest.get(id) !== 'skipped')
+                latest.delete(id);
       } catch {
         // A malformed marker changes nothing.
       }
@@ -209,20 +216,29 @@ export function runProgress(
     .filter(([, status]) => status === 'paused')
     .map(([id]) => work.get(id) ?? id);
   const done = count(['succeeded', 'approved']);
-  const failed = count(['failed', 'cancelled']);
+  const failed = count(['failed']);
   const rejected = count(['rejected']);
+  const cancelled = count(['cancelled']);
   const skipped = count(['skipped']);
   return {
     total: work.size,
     done,
     failed,
     rejected,
+    cancelled,
     skipped,
     running,
     waiting,
     toGo: Math.max(
       0,
-      work.size - done - failed - rejected - skipped - running.length - waiting.length,
+      work.size -
+        done -
+        failed -
+        rejected -
+        cancelled -
+        skipped -
+        running.length -
+        waiting.length,
     ),
   };
 }
