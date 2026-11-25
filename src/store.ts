@@ -33,6 +33,8 @@ export interface UiNotice {
   dismissLabel?: string;
   onDismiss?: () => void;
   group?: string;
+  /** Plain text of the message; a new notice with the same text and variant replaces it. */
+  text?: string;
 }
 
 export type View =
@@ -198,7 +200,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
   pushUiNotice: (notice) => {
     set((current) => ({
       uiNotices: [
-        ...current.uiNotices.filter((n) => !notice.group || n.group !== notice.group),
+        ...current.uiNotices.filter(
+          (n) =>
+            (!notice.group || n.group !== notice.group) &&
+            // The same message again (Load after choosing a repository already
+            // loaded it) shows once, with a fresh lifetime, instead of stacking.
+            (notice.text === undefined ||
+              notice.text === '' ||
+              n.text !== notice.text ||
+              n.variant !== notice.variant),
+        ),
         { ...notice, id: newId('notice') },
       ],
     }));

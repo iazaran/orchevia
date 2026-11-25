@@ -100,9 +100,45 @@ it('publishes repeated action errors after dismissal and while a prior one is vi
   await act(() => vi.advanceTimersByTime(200));
   expect(screen.queryByText('Pick a repository')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-  expect(screen.getByText('Pick a repository')).toBeInTheDocument();
+  const first = screen.getByText('Pick a repository');
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-  expect(screen.getAllByText('Pick a repository')).toHaveLength(2);
+  // The repeat is published as a fresh message that replaces the visible one,
+  // so the same text never stacks (v0.3.2).
+  const repeated = screen.getAllByText('Pick a repository');
+  expect(repeated).toHaveLength(1);
+  expect(repeated[0]).not.toBe(first);
+});
+
+it('keeps different messages stacked while replacing an identical one', async () => {
+  const source = render(
+    <>
+      <Notice variant="warn" eventId={1}>
+        No saved project knowledge yet.
+      </Notice>
+      <Notice variant="error">Failed to save</Notice>
+    </>,
+  );
+  source.rerender(
+    <>
+      <Notice variant="warn" eventId={2}>
+        No saved project knowledge yet.
+      </Notice>
+      <Notice variant="error">Failed to save</Notice>
+    </>,
+  );
+  const stack = screen.getByRole('region', { name: 'Messages' });
+  expect(within(stack).getAllByText('No saved project knowledge yet.')).toHaveLength(1);
+  expect(within(stack).getByText('Failed to save')).toBeInTheDocument();
+  // The same text as a different severity is a different message.
+  source.rerender(
+    <>
+      <Notice variant="error" eventId={3}>
+        No saved project knowledge yet.
+      </Notice>
+      <Notice variant="error">Failed to save</Notice>
+    </>,
+  );
+  expect(within(stack).getAllByText('No saved project knowledge yet.')).toHaveLength(2);
 });
 
 it('removes an exiting notice when its slide finishes and dismisses only once', async () => {

@@ -82,8 +82,10 @@ export function Notice(props: NoticeProps): React.JSX.Element | null {
     ]);
     if (published.current === identity) return;
     published.current = identity;
+    const text = contentText(props.children).trim();
     push({
       content: props.children,
+      ...(text === '' ? {} : { text }),
       ...(props.variant === undefined ? {} : { variant: props.variant }),
       ...(props.role === undefined ? {} : { role: props.role }),
       ...(props.dismissLabel === undefined ? {} : { dismissLabel: props.dismissLabel }),
