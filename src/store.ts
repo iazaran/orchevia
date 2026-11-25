@@ -33,8 +33,10 @@ export interface UiNotice {
   dismissLabel?: string;
   onDismiss?: () => void;
   group?: string;
-  /** Plain text of the message; a new notice with the same text and variant replaces it. */
+  /** Plain text of the message; the same text and variant again updates this notice. */
   text?: string;
+  /** Bumped when the same message is published again, to restart its lifetime. */
+  revision?: number;
 }
 
 export type View =
@@ -198,21 +200,37 @@ export const useAppStore = create<AppState>()((set, get) => ({
   error: null,
   uiNotices: [],
   pushUiNotice: (notice) => {
-    set((current) => ({
-      uiNotices: [
-        ...current.uiNotices.filter(
-          (n) =>
-            (!notice.group || n.group !== notice.group) &&
-            // The same message again (Load after choosing a repository already
-            // loaded it) shows once, with a fresh lifetime, instead of stacking.
-            (notice.text === undefined ||
-              notice.text === '' ||
-              n.text !== notice.text ||
-              n.variant !== notice.variant),
-        ),
-        { ...notice, id: newId('notice') },
-      ],
-    }));
+    const text =
+      notice.text ?? (typeof notice.content === 'string' ? notice.content.trim() : '');
+    // The same message again (Load after choosing a repository already loaded
+    // it, a save that fails twice, a poll that keeps failing) updates the
+    // visible one in place and restarts its lifetime: no stacked copies, and a
+    // focused Dismiss button keeps its focus.
+    const repeats = (n: UiNotice): boolean =>
+      text !== '' && n.text === text && n.variant === notice.variant;
+    const previous = get().uiNotices.find(repeats);
+    const next: UiNotice = {
+      ...notice,
+      ...(text === '' ? {} : { text }),
+      id: previous?.id ?? newId('notice'),
+      ...(previous === undefined ? {} : { revision: (previous.revision ?? 0) + 1 }),
+    };
+    set((current) => {
+      const kept = current.uiNotices.filter(
+        (n) => n.id === next.id || !notice.group || n.group !== notice.group,
+      );
+      return {
+        uiNotices:
+          previous === undefined
+            ? [...kept, next]
+            : kept
+                .filter((n) => n.id === next.id || !repeats(n))
+                .map((n) => (n.id === next.id ? next : n)),
+      };
+    });
+    // Its owner learns the older copy is gone, as if it had been dismissed.
+    if (previous?.onDismiss !== undefined && previous.onDismiss !== next.onDismiss)
+      previous.onDismiss();
   },
   removeUiNotice: (id) => {
     set((current) => ({ uiNotices: current.uiNotices.filter((n) => n.id !== id) }));

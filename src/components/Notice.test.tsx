@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { Notice, useNoticeMessage } from './Notice';
 import { Modal } from './Modal';
+import { useAppStore } from '../store';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -100,16 +101,30 @@ it('publishes repeated action errors after dismissal and while a prior one is vi
   await act(() => vi.advanceTimersByTime(200));
   expect(screen.queryByText('Pick a repository')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-  const first = screen.getByText('Pick a repository');
+  const dismiss = screen.getByRole('button', { name: 'Dismiss message' });
+  dismiss.focus();
   fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-  // The repeat is published as a fresh message that replaces the visible one,
-  // so the same text never stacks (v0.3.2).
-  const repeated = screen.getAllByText('Pick a repository');
-  expect(repeated).toHaveLength(1);
-  expect(repeated[0]).not.toBe(first);
+  // The repeat updates the visible message in place (v0.3.2): one copy, and a
+  // focused Dismiss button keeps its focus while a failing action repeats.
+  expect(screen.getAllByText('Pick a repository')).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'Dismiss message' })).toBe(dismiss);
+  expect(dismiss).toHaveFocus();
 });
 
-it('keeps different messages stacked while replacing an identical one', async () => {
+it('restarts the lifetime of a repeated message pushed as plain text', async () => {
+  // Direct publishers (a failed save, an agent preview error) pass a string.
+  act(() => useAppStore.getState().pushUiNotice({ content: 'Saved' }));
+  await act(() => vi.advanceTimersByTime(4000));
+  act(() => useAppStore.getState().pushUiNotice({ content: 'Saved' }));
+  await act(() => vi.advanceTimersByTime(4000));
+  expect(screen.getAllByText('Saved')).toHaveLength(1);
+  // Five seconds after the repeat it leaves, then slides out.
+  await act(() => vi.advanceTimersByTime(1000));
+  await act(() => vi.advanceTimersByTime(250));
+  expect(screen.queryByText('Saved')).toBeNull();
+});
+
+it('keeps different messages stacked while replacing an identical one', () => {
   const source = render(
     <>
       <Notice variant="warn" eventId={1}>

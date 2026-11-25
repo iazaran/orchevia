@@ -134,7 +134,12 @@ function NoticeBody({
 
 function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
   const remove = useAppStore((s) => s.removeUiNotice);
-  const [exiting, setExiting] = useState(false);
+  const revision = notice.revision ?? 0;
+  // The revision whose exit started: publishing the same message again bumps
+  // the revision, which cancels the exit and starts the lifetime over.
+  const [exitingRevision, setExitingRevision] = useState<number | null>(null);
+  const exiting = exitingRevision === revision;
+  const setExiting = useCallback((): void => setExitingRevision(revision), [revision]);
   const dismissed = useRef(false);
   const finishExit = useCallback((): void => {
     if (dismissed.current) return;
@@ -143,10 +148,13 @@ function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
     notice.onDismiss?.();
   }, [notice, remove]);
   useEffect(() => {
+    dismissed.current = false;
+  }, [revision]);
+  useEffect(() => {
     if (notice.variant === 'warn' || notice.variant === 'error') return;
-    const timer = setTimeout(() => setExiting(true), 5000);
+    const timer = setTimeout(setExiting, 5000);
     return () => clearTimeout(timer);
-  }, [notice.id, notice.variant]);
+  }, [notice.id, notice.variant, setExiting]);
   useEffect(() => {
     if (!exiting) return;
     // Fallback for reduced motion or a missing animation event.
@@ -173,7 +181,7 @@ function FloatingNotice({ notice }: { notice: UiNotice }): React.JSX.Element {
       notice.variant === 'error' ||
       notice.onDismiss !== undefined
         ? {
-            onDismiss: () => setExiting(true),
+            onDismiss: setExiting,
           }
         : {})}
     >
