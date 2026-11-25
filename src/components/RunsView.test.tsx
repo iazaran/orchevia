@@ -1040,8 +1040,16 @@ it('reports the final summary step and numbers every step in its own card', asyn
   expect(fields).toHaveTextContent('DEV-6195');
   expect(fields).toHaveTextContent('https://example.test/pull/3081');
   expect(report).toHaveTextContent('All done.');
+  // The header counts the same working steps as the progress bar: no Start or
+  // End (v0.3.1 said "5 · 1 skipped" above a bar of 3 steps).
   const facts = screen.getByText('Steps').closest('div');
-  expect(facts).toHaveTextContent('5 · 1 skipped');
+  expect(facts).toHaveTextContent('3 · 1 skipped');
+  expect(screen.getByText('2 of 3 steps done · 1 skipped')).toBeInTheDocument();
+  expect(screen.getByText('100%')).toBeInTheDocument();
+  const bar = screen.getByRole('progressbar', { name: 'Steps finished' });
+  expect(bar).toHaveAttribute('aria-valuenow', '3');
+  expect(bar).toHaveAttribute('aria-valuemax', '3');
+  expect(bar.querySelector('.seg-skipped')).not.toBeNull();
   expect(screen.getByText('Took').closest('div')).toHaveTextContent('46m 28s');
   const steps = within(screen.getByRole('list', { name: 'Steps' })).getAllByRole(
     'listitem',
@@ -1157,6 +1165,8 @@ it('names a rejected approval as the step a run stopped at', async () => {
     expect(report).toHaveTextContent('Stopped at step 1 · Approve the plan (rejected)'),
   );
   expect(screen.getByText('Steps').closest('div')).toHaveTextContent('1 · 1 rejected');
+  // Rejected is its own outcome on the progress line too, not "1 failed".
+  expect(screen.getByText('0 of 1 steps done · 1 rejected')).toBeInTheDocument();
 });
 
 it("works out a run's plan cost again when another run that day changes", async () => {

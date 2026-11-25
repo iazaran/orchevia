@@ -2076,8 +2076,13 @@ details[open] > .gen-summary::after {
 .seg-failed {
   background: var(--danger);
 }
+/* Finished without running: hatched and muted, never the empty track's grey. */
 .seg-skipped {
-  background: color-mix(in srgb, var(--text-2) 55%, var(--bg-3));
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--success) 45%, var(--bg-3)) 0 5px,
+    color-mix(in srgb, var(--success) 22%, var(--bg-3)) 5px 10px
+  );
 }
 .seg-active {
   background: repeating-linear-gradient(

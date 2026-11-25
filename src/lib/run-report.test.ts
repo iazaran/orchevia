@@ -194,12 +194,26 @@ describe('feedback rows and run progress', () => {
       total: 4,
       done: 1,
       failed: 0,
+      rejected: 0,
       skipped: 0,
       running: ['coderabbit', 'summary'],
       waiting: ['Approve'],
       toGo: 0,
     });
     expect(runProgress(workflow, []).toGo).toBe(4);
+  });
+
+  it('keeps rejected apart from failed and finishes every step', () => {
+    const workflow = ticketWorkflow();
+    const progress = runProgress(workflow, [
+      row(1, 'review', 'x', 'failed'),
+      row(2, 'coderabbit', '', 'rejected'),
+      row(3, 'summary', '', 'skipped'),
+    ]);
+    expect(progress).toMatchObject({ failed: 1, rejected: 1, skipped: 1, toGo: 0 });
+    expect(progress.done + progress.failed + progress.rejected + progress.skipped).toBe(
+      progress.total,
+    );
   });
 
   it('counts steps a correction round reruns as still to run', () => {

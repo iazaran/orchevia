@@ -145,7 +145,18 @@ function RunFacts({
     (workflow ? countAgentAttempts(workflow, results) : 0);
   const spend = workflow ? reportedSpend(workflow, results, dry) : null;
   const planCost = useRunPlanCost(run);
-  const counts = stepCounts(results);
+  // The same steps the progress bar counts (no Start or End, each step by its
+  // latest result), so the header and the bar never disagree.
+  const progress = workflow ? runProgress(workflow, results) : null;
+  const counts =
+    progress !== null && progress.total > 0
+      ? {
+          total: progress.total,
+          skipped: progress.skipped,
+          failed: progress.failed,
+          rejected: progress.rejected,
+        }
+      : stepCounts(results);
   const elapsed = runElapsed(run, now);
   const costUsd = planCost?.plansEntered === true ? planCost.cost.totalUsd : null;
   return (
@@ -255,10 +266,12 @@ function RunProgressLine({
   const parts = [
     `${String(progress.done)} of ${String(progress.total)} steps done`,
     progress.failed > 0 ? `${String(progress.failed)} failed` : '',
+    progress.rejected > 0 ? `${String(progress.rejected)} rejected` : '',
     progress.skipped > 0 ? `${String(progress.skipped)} skipped` : '',
     live && progress.toGo > 0 ? `${String(progress.toGo)} still to run` : '',
   ].filter((part) => part !== '');
-  const finished = progress.done + progress.failed + progress.skipped;
+  const stopped = progress.failed + progress.rejected;
+  const finished = progress.done + stopped + progress.skipped;
   const percent = Math.round((finished / progress.total) * 100);
   const share = (count: number): string => `${String((count / progress.total) * 100)}%`;
   const active = live ? progress.running.length + progress.waiting.length : 0;
@@ -280,8 +293,8 @@ function RunProgressLine({
         {progress.done > 0 && (
           <span className="seg seg-done" style={{ width: share(progress.done) }} />
         )}
-        {progress.failed > 0 && (
-          <span className="seg seg-failed" style={{ width: share(progress.failed) }} />
+        {stopped > 0 && (
+          <span className="seg seg-failed" style={{ width: share(stopped) }} />
         )}
         {progress.skipped > 0 && (
           <span className="seg seg-skipped" style={{ width: share(progress.skipped) }} />

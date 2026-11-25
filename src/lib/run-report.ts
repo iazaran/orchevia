@@ -94,7 +94,11 @@ export function isBookkeeping(row: StoredNodeResult): boolean {
   return row.nodeId.startsWith('__') || row.status === 'checked';
 }
 
-/** How many recorded steps ended in each outcome, for the run header. */
+/**
+ * How many recorded rows ended in each outcome. The run header uses
+ * `runProgress` instead whenever the run's workflow is known, so it counts the
+ * same steps as the progress bar; this is the fallback without one.
+ */
 export function stepCounts(results: StoredNodeResult[]): {
   total: number;
   skipped: number;
@@ -146,7 +150,10 @@ export interface RunProgress {
   /** Working steps in the workflow (every step but Start and End). */
   total: number;
   done: number;
+  /** Failed or cancelled. */
   failed: number;
+  /** Turned down at an approval. */
+  rejected: number;
   skipped: number;
   /** Labels of the steps running now; more than one means parallel work. */
   running: string[];
@@ -202,18 +209,20 @@ export function runProgress(
     .filter(([, status]) => status === 'paused')
     .map(([id]) => work.get(id) ?? id);
   const done = count(['succeeded', 'approved']);
-  const failed = count(['failed', 'rejected', 'cancelled']);
+  const failed = count(['failed', 'cancelled']);
+  const rejected = count(['rejected']);
   const skipped = count(['skipped']);
   return {
     total: work.size,
     done,
     failed,
+    rejected,
     skipped,
     running,
     waiting,
     toGo: Math.max(
       0,
-      work.size - done - failed - skipped - running.length - waiting.length,
+      work.size - done - failed - rejected - skipped - running.length - waiting.length,
     ),
   };
 }
