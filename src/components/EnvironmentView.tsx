@@ -1,13 +1,17 @@
 import { useState } from 'react';
 import { getBackend } from '../lib/backend';
+import type { ToolStatus } from '../lib/workflow';
 import {
   MCP_CATEGORIES,
   MCP_PRESETS,
   MCP_SETUP_GUIDE,
   matchMcpPreset,
   mcpEnvSnippet,
+  mcpSetupUpdate,
   newMcpId,
+  presetsInUse,
   validateMcpServer,
+  type GitHubState,
   type McpCategory,
   type McpPreset,
   type McpServerConfig,
@@ -20,6 +24,8 @@ import {
   AGENT_SIGN_IN,
   BUILTIN_ADAPTERS,
 } from '../lib/agents';
+import { readLocal, writeLocal } from '../lib/storage';
+import { AgentAbilitiesPanel } from './AgentAbilities';
 import { AgentPermissionsSettings } from './AgentPermissions';
 import { confirmDialog } from './ConfirmDialog';
 import { useAppStore } from '../store';
@@ -46,25 +52,8 @@ export function EnvironmentView(): React.JSX.Element {
   const setView = useAppStore((s) => s.setView);
 
   const [editing, setEditing] = useState<McpServerConfig | null>(null);
-  const [serverTools, setServerTools] = useState<
-    Record<
-      string,
-      | { state: 'loading' }
-      | { state: 'ready'; tools: McpToolInfo[] }
-      | { state: 'error'; message: string }
-    >
-  >({});
   const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
   const [diagnostics, setDiagnostics] = useState<string | null>(null);
-  // MCP server checks, run only when asked, per server.
-  const [serverChecks, setServerChecks] = useState<
-    Record<
-      string,
-      | { state: 'checking' }
-      | { state: 'done'; report: McpCheckReport }
-      | { state: 'error'; message: string }
-    >
-  >({});
 
   const refreshAll = (): void => {
     void Promise.all([refreshTools(), refreshProfiles(), refreshIntegrations()]);
@@ -74,6 +63,10 @@ export function EnvironmentView(): React.JSX.Element {
     void getBackend()
       .openExternalUrl(url)
       .catch((error: unknown) => setMessage(errorMessage(error), 'error'));
+  };
+
+  const newServer = (): void => {
+    setEditing({ id: newMcpId(), name: '', command: '', args: [], enabled: true });
   };
 
   const saveServer = (server: McpServerConfig): void => {
@@ -111,56 +104,41 @@ export function EnvironmentView(): React.JSX.Element {
     });
   };
 
-  const checkServer = (id: string): void => {
-    setServerChecks((prev) => ({ ...prev, [id]: { state: 'checking' } }));
-    void getBackend()
-      .mcpCheckServer(id)
-      .then((report) => {
-        setServerChecks((prev) => ({ ...prev, [id]: { state: 'done', report } }));
-      })
-      .catch((err: unknown) => {
-        setServerChecks((prev) => ({
-          ...prev,
-          [id]: { state: 'error', message: errorMessage(err) },
-        }));
-      });
+  // Scroll to the section and move keyboard focus there, as a fragment link
+  // would; no smooth scrolling for people who ask for reduced motion.
+  const jump = (id: string): void => {
+    const target = document.getElementById(id);
+    if (target === null) return;
+    let reduced = false;
+    try {
+      reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      // No media queries (tests): scroll smoothly.
+    }
+    target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    target.focus({ preventScroll: true });
   };
 
-  const listTools = (id: string): void => {
-    setServerTools((prev) => ({ ...prev, [id]: { state: 'loading' } }));
-    void getBackend()
-      .mcpListTools(id)
-      .then((tools) => {
-        setServerTools((prev) => ({
-          ...prev,
-          [id]: { state: 'ready', tools: [...tools] },
-        }));
-      })
-      .catch((err: unknown) => {
-        setServerTools((prev) => ({
-          ...prev,
-          [id]: {
-            state: 'error',
-            message: errorMessage(err),
-          },
-        }));
-      });
-  };
+  const developerTools = tools.filter((tool) => tool.id === 'git' || tool.id === 'gh');
+  const agentTools = tools.filter((tool) => tool.id !== 'git' && tool.id !== 'gh');
 
   return (
     <>
       <div className="topbar">
         <h1>Environment</h1>
         <span className="topbar-sub">
-          Optional local tools — the app works with or without them.
+          What your agents may use, the MCP servers you connect, and your local tools.
         </span>
         <div className="topbar-actions">
+          <button className="btn btn-primary" onClick={newServer}>
+            + New MCP server
+          </button>
           <button className="btn" onClick={refreshAll}>
             Re-detect
           </button>
         </div>
       </div>
-      <div className="view">
+      <div className="view environment-view">
         {message !== null && (
           <Notice
             variant={messageVariant}
@@ -173,292 +151,142 @@ export function EnvironmentView(): React.JSX.Element {
             <span>{message}</span>{' '}
           </Notice>
         )}
-        <h2 className="section-title">Local CLIs</h2>
-        <p className="field-hint section-hint">
-          Install and sign in to the tools you use, then re-detect to refresh what
-          Orchevia can find.
-        </p>
-        <div className="tool-grid">
-          {tools.map((tool) => {
-            const agent = BUILTIN_ADAPTERS.find((id) => id === tool.id);
-            return (
-              <div key={tool.id} className="tool-card">
-                <h3>{tool.displayName}</h3>
-                <div style={{ margin: '6px 0' }}>
-                  <span
-                    className={`status-pill ${tool.installed ? 'status-succeeded' : 'status-cancelled'}`}
-                  >
-                    {tool.installed ? 'Installed' : 'Not found'}
-                  </span>
-                </div>
-                {tool.version !== undefined && (
-                  <div className="tool-version">{tool.version}</div>
-                )}
-                {tool.path !== undefined && (
-                  <div className="tool-version" title={tool.path}>
-                    {tool.path}
-                  </div>
-                )}
-                {agent !== undefined && (
-                  <p className="field-hint" style={{ marginBottom: 0 }}>
-                    {!tool.installed && (
-                      <>
-                        Install <code>{ADAPTERS[agent].executable}</code>.{' '}
-                      </>
-                    )}
-                    {AGENT_SIGN_IN[agent].replaceAll('`', '')}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {tools.length === 0 && <p className="field-hint">Detecting tools…</p>}
-
-        {adapters.length > 0 && (
-          <>
-            <h2 className="section-title">Agent connections</h2>
-            <p className="field-hint section-hint">
-              {profiles.length} profiles configured. Use the setup check to verify a
-              profile’s sign-in and file access.
-            </p>
-            <div className="section-actions">
-              <button
-                className="btn btn-ghost"
-                onClick={() => {
-                  setView('agents');
-                }}
-              >
-                Agents <span aria-hidden="true">→</span>
-              </button>
-              <button
-                className="btn btn-ghost"
-                onClick={() => openGuide(AGENT_SETUP_GUIDE)}
-              >
-                Agent setup guide
-              </button>
-            </div>
-          </>
-        )}
-
-        <h2 id="setup-check" className="section-title">
-          Agent setup check
-        </h2>
-        <SetupCheckPanel profiles={profiles} />
-
-        <h2 id="agent-permissions" className="section-title">
-          Agent permissions
-        </h2>
-        <p className="field-hint section-hint">
-          Headless Claude Code and Codex cannot ask for permission while a workflow step
-          runs. Configure the app default for Claude Code and Codex here, or set an
-          override per profile in Agents. Other agents use their own CLI settings.
-        </p>
-        <div className="section-panel">
-          <AgentPermissionsSettings />
-        </div>
-
-        <h2 className="section-title">Git</h2>
-        <p className="field-hint section-hint">
-          Git runs inside workflows through Git nodes (status, commit, branches,
-          worktrees) — pick the working directory on the node itself in the Workflows
-          view. Use the Samples dialog there for a ready-made Commit + PR flow.
-        </p>
-
-        <h2 className="section-title">GitHub via gh</h2>
-        {githubState === null ? (
-          <p className="field-hint">Detecting…</p>
-        ) : (
-          <div className="tool-card section-panel">
-            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-              <span
-                className={`status-pill ${githubState.installed ? 'status-succeeded' : 'status-cancelled'}`}
-              >
-                {githubState.installed ? 'gh installed' : 'gh not found'}
-              </span>
-              {githubState.installed && (
-                <span
-                  className={`status-pill ${githubState.authenticated ? 'status-succeeded' : 'status-paused'}`}
-                >
-                  {githubState.authenticated
-                    ? `authenticated${githubState.user !== undefined ? ` as ${githubState.user}` : ''}`
-                    : 'not authenticated'}
-                </span>
+        <nav className="page-jump" aria-label="Environment sections">
+          {ENVIRONMENT_SECTIONS.map((section) => (
+            <a
+              key={section.id}
+              href={`#${section.id}`}
+              className="page-jump-link"
+              onClick={(event) => {
+                event.preventDefault();
+                jump(section.id);
+              }}
+            >
+              {section.label}
+              {section.id === 'env-mcp' && mcpServers.length > 0 && (
+                <span className="page-jump-count">{mcpServers.length}</span>
               )}
-            </div>
-            {!githubState.installed && (
-              <p className="field-hint">
-                Install <code>gh</code> and run <code>gh auth login</code> yourself to
-                enable GitHub nodes. No tokens ever enter Orchevia.
-              </p>
-            )}
-            {githubState.installed && !githubState.authenticated && (
-              <p className="field-hint">
-                Run <code>gh auth login</code> in a terminal. GitHub nodes fail with a
-                clear message until then.
-              </p>
-            )}
-          </div>
-        )}
+            </a>
+          ))}
+        </nav>
 
-        <h2 id="mcp-connections" className="section-title">
-          MCP connections
-        </h2>
-        <p className="field-hint section-hint">
-          MCP servers give MCP Tool and Ticket steps access to your tools. Start from{' '}
-          {String(MCP_PRESETS.length)} ready-made setups such as Google Workspace, GitHub,
-          Slack, Jira, Notion and Microsoft 365. Credentials stay in your shell, never in
-          Orchevia. Use Check server after saving to verify startup and list its tools.
-        </p>
-        <div className="section-actions">
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              setEditing({
-                id: newMcpId(),
-                name: '',
-                command: '',
-                args: [],
-                enabled: true,
-              });
-            }}
-          >
-            + New MCP server
-          </button>
-          <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
-            MCP setup guide
-          </button>
-        </div>
-        <h3 className="section-title">Saved servers ({mcpServers.length})</h3>
-        {mcpServers.length === 0 && (
-          <div className="empty-inline">
-            No MCP servers yet. Choose <strong>+ New MCP server</strong> to pick a setup.
+        <section id="env-agents" aria-labelledby="env-agents-title" tabIndex={-1}>
+          <h2 id="env-agents-title" className="section-title">
+            Agents
+          </h2>
+          <p className="field-hint section-hint">
+            {profiles.length === 1
+              ? '1 profile configured.'
+              : `${String(profiles.length)} profiles configured.`}{' '}
+            Choose once what Claude Code and Codex may do in a workflow step and what they
+            bring from your own setup. Fine-tune any profile in Agents.
+          </p>
+          <div className="section-actions">
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setView('agents');
+              }}
+            >
+              Agents <span aria-hidden="true">→</span>
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => openGuide(AGENT_SETUP_GUIDE)}
+            >
+              Agent setup guide
+            </button>
           </div>
-        )}
-        <div className="tool-grid">
-          {mcpServers.map((s) => {
-            const tools = serverTools[s.id];
-            return (
-              <div key={s.id} className="tool-card" style={{ position: 'relative' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                    paddingRight: 36,
+
+          <h3 id="agent-permissions" className="subsection-title">
+            Permissions
+          </h3>
+          <p className="field-hint section-hint">
+            Headless Claude Code and Codex cannot ask for permission while a step runs.
+            Other agents use their own CLI settings.
+          </p>
+          <div className="section-panel">
+            <AgentPermissionsSettings />
+          </div>
+
+          <h3 id="agent-abilities" className="subsection-title">
+            Abilities from your own setup
+          </h3>
+          <AgentAbilitiesPanel />
+
+          <h3 id="setup-check" className="subsection-title">
+            Setup check
+          </h3>
+          <SetupCheckPanel profiles={profiles} />
+        </section>
+
+        <section id="env-mcp" aria-labelledby="env-mcp-title" tabIndex={-1}>
+          <h2 id="env-mcp-title" className="section-title">
+            MCP servers ({mcpServers.length})
+          </h2>
+          <p className="field-hint section-hint">
+            Orchevia’s own servers for MCP Tool and Ticket steps. Start from{' '}
+            {String(MCP_PRESETS.length)} ready-made setups such as Google Workspace,
+            GitHub, Slack, Jira, Notion and Microsoft 365; credentials stay in your shell.
+            Agent steps also reach the connectors set up in Claude Code or Codex, listed
+            under Agents.
+          </p>
+          <div className="section-actions">
+            <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
+              MCP setup guide
+            </button>
+          </div>
+          {mcpServers.length === 0 ? (
+            <div className="empty-inline">
+              No MCP servers yet. Choose <strong>+ New MCP server</strong> at the top to
+              pick a setup.
+            </div>
+          ) : (
+            <div className="tool-grid">
+              {mcpServers.map((server) => (
+                <McpServerCard
+                  // A new command starts a new card: listed tools and checks
+                  // belong to the command they ran.
+                  key={[server.id, server.command, ...server.args].join('\n')}
+                  server={server}
+                  onEdit={(next) => {
+                    setEditing({ ...next, args: [...next.args] });
                   }}
-                >
-                  <h3 style={{ margin: 0 }}>{s.name}</h3>
-                  <span
-                    className={`status-pill ${s.enabled ? 'status-succeeded' : 'status-paused'}`}
-                    style={{ marginLeft: 'auto' }}
-                  >
-                    {s.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-                <CloseButton
-                  variant="card"
-                  label={`Delete MCP server '${s.name}'`}
-                  title={`Delete MCP server '${s.name}'`}
-                  onClose={() => {
-                    removeServer(s.id, s.name);
+                  onDelete={() => {
+                    removeServer(server.id, server.name);
                   }}
                 />
-                <div className="tool-version" style={{ marginTop: 6 }}>
-                  {s.command} {s.args.join(' ')}
-                </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => {
-                      listTools(s.id);
-                    }}
-                  >
-                    {tools === undefined ? 'List tools' : 'Refresh tools'}
-                  </button>
-                  {serverChecks[s.id]?.state === 'checking' ? (
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        void getBackend().cancelMcpCheck(s.id);
-                      }}
-                    >
-                      Cancel check
-                    </button>
-                  ) : (
-                    <button
-                      className="btn btn-ghost"
-                      title="Starts the server, lists its tools and compares them with your workflows. Never calls a tool."
-                      onClick={() => {
-                        checkServer(s.id);
-                      }}
-                    >
-                      Check server
-                    </button>
-                  )}
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setEditing({ ...s, args: [...s.args] });
-                    }}
-                  >
-                    Edit
-                  </button>
-                </div>
-                {serverChecks[s.id] !== undefined && (
-                  <div style={{ marginTop: 8 }} aria-live="polite">
-                    {serverChecks[s.id]?.state === 'checking' && (
-                      <p className="field-hint">
-                        Checking: starting the server and listing its tools (up to 45 s)…
-                      </p>
-                    )}
-                    {(() => {
-                      const check = serverChecks[s.id];
-                      if (check?.state === 'done')
-                        return (
-                          <CheckList
-                            label={`Server check for ${check.report.serverName}`}
-                            items={check.report.items}
-                          />
-                        );
-                      if (check?.state === 'error')
-                        return (
-                          <Notice variant="error" style={{ marginBottom: 0 }}>
-                            Checking {s.name} failed: {check.message}
-                          </Notice>
-                        );
-                      return null;
-                    })()}
-                  </div>
-                )}
-                {tools !== undefined && (
-                  <div style={{ marginTop: 8 }}>
-                    {tools.state === 'loading' && (
-                      <p className="field-hint" aria-live="polite">
-                        Listing tools…
-                      </p>
-                    )}
-                    {tools.state === 'ready' && tools.tools.length === 0 && (
-                      <p className="field-hint">
-                        No tools exposed — the server started but listed none. Check it
-                        implements MCP tools/list and that its env vars are set.
-                      </p>
-                    )}
-                    {tools.state === 'ready' && tools.tools.length > 0 && (
-                      <McpToolsList tools={tools.tools} />
-                    )}
-                    {tools.state === 'error' && (
-                      <Notice variant="error" style={{ marginBottom: 0 }}>
-                        Listing tools for {s.name} failed: {tools.message}
-                      </Notice>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section id="env-tools" aria-labelledby="env-tools-title" tabIndex={-1}>
+          <h2 id="env-tools-title" className="section-title">
+            Local tools
+          </h2>
+          <p className="field-hint section-hint">
+            Optional: the app works with or without them. Install and sign in to the tools
+            you use, then choose Re-detect.
+          </p>
+          {tools.length === 0 ? (
+            <p className="field-hint">Detecting tools…</p>
+          ) : (
+            <div className="tool-grid">
+              {[...developerTools, ...agentTools].map((tool) => (
+                <LocalToolCard
+                  key={tool.id}
+                  tool={tool}
+                  githubState={tool.id === 'gh' ? githubState : null}
+                />
+              ))}
+            </div>
+          )}
+          {adapters.length > 0 && agentTools.length === 0 && tools.length > 0 && (
+            <p className="field-hint">No AI CLI found yet.</p>
+          )}
+        </section>
+
         {editing !== null && (
           <Modal
             label="MCP server editor"
@@ -474,6 +302,7 @@ export function EnvironmentView(): React.JSX.Element {
             <div>
               <McpEditor
                 initial={editing}
+                servers={mcpServers}
                 onCancel={() => {
                   setEditing(null);
                 }}
@@ -483,34 +312,43 @@ export function EnvironmentView(): React.JSX.Element {
           </Modal>
         )}
 
-        <h2 id="updates" className="section-title">
-          Updates
-        </h2>
-        <UpdatesSection />
-
-        <h2 className="section-title">Diagnostics</h2>
-        <p className="field-hint section-hint">
-          Local-only support bundle: versions, counts, tool availability, recent error
-          titles. No prompts, files, or credentials. Review it before sharing.
-        </p>
-        <div className="section-actions">
-          <button
-            className="btn"
-            onClick={() => {
-              void getBackend()
-                .diagnosticsBundle()
-                .then((json) => {
-                  setDiagnostics(json);
-                  setMessage(null);
-                })
-                .catch((err: unknown) => {
-                  setMessage(errorMessage(err), 'error');
-                });
-            }}
-          >
-            Export diagnostics bundle
-          </button>
+        {/* UpdatesSection is its own "Updates" region. */}
+        <div id="env-updates" tabIndex={-1}>
+          <h2 className="section-title">Updates</h2>
+          <UpdatesSection />
         </div>
+
+        <section
+          id="env-diagnostics"
+          aria-labelledby="env-diagnostics-title"
+          tabIndex={-1}
+        >
+          <h2 id="env-diagnostics-title" className="section-title">
+            Diagnostics
+          </h2>
+          <p className="field-hint section-hint">
+            Local-only support bundle: versions, counts, tool availability, recent error
+            titles. No prompts, files, or credentials. Review it before sharing.
+          </p>
+          <div className="section-actions">
+            <button
+              className="btn"
+              onClick={() => {
+                void getBackend()
+                  .diagnosticsBundle()
+                  .then((json) => {
+                    setDiagnostics(json);
+                    setMessage(null);
+                  })
+                  .catch((err: unknown) => {
+                    setMessage(errorMessage(err), 'error');
+                  });
+              }}
+            >
+              Export diagnostics bundle
+            </button>
+          </div>
+        </section>
         {diagnostics !== null && (
           <DiagnosticsModal
             bundle={diagnostics}
@@ -524,13 +362,347 @@ export function EnvironmentView(): React.JSX.Element {
   );
 }
 
+const ENVIRONMENT_SECTIONS = [
+  { id: 'env-agents', label: 'Agents' },
+  { id: 'env-mcp', label: 'MCP servers' },
+  { id: 'env-tools', label: 'Local tools' },
+  { id: 'env-updates', label: 'Updates' },
+  { id: 'env-diagnostics', label: 'Diagnostics' },
+] as const;
+
+/** One detected CLI. The GitHub CLI card also shows whether gh is signed in. */
+function LocalToolCard({
+  tool,
+  githubState,
+}: {
+  tool: ToolStatus;
+  githubState: GitHubState | null;
+}): React.JSX.Element {
+  const agent = BUILTIN_ADAPTERS.find((id) => id === tool.id);
+  return (
+    <div className="tool-card">
+      <div className="tool-card-head">
+        <h3>{tool.displayName}</h3>
+        <span
+          className={`status-pill ${tool.installed ? 'status-succeeded' : 'status-cancelled'}`}
+        >
+          {tool.installed ? 'Installed' : 'Not found'}
+        </span>
+      </div>
+      {tool.version !== undefined && <div className="tool-version">{tool.version}</div>}
+      {tool.path !== undefined && (
+        <div className="tool-version" title={tool.path}>
+          {tool.path}
+        </div>
+      )}
+      {tool.id === 'git' && (
+        <p className="field-hint" style={{ marginBottom: 0 }}>
+          Git steps run status, commits, branches and worktrees in the folder each step
+          names. Templates include a ready Commit + PR flow.
+        </p>
+      )}
+      {tool.id === 'gh' && githubState !== null && tool.installed && (
+        <div style={{ marginTop: 6 }}>
+          <span
+            className={`status-pill ${githubState.authenticated ? 'status-succeeded' : 'status-paused'}`}
+          >
+            {githubState.authenticated
+              ? `Signed in${githubState.user !== undefined ? ` as ${githubState.user}` : ''}`
+              : 'Not signed in'}
+          </span>
+        </div>
+      )}
+      {tool.id === 'gh' && (
+        <p className="field-hint" style={{ marginBottom: 0 }}>
+          {!tool.installed
+            ? 'Install gh and run gh auth login yourself to enable GitHub steps. No tokens ever enter Orchevia.'
+            : githubState !== null && !githubState.authenticated
+              ? 'Run gh auth login in a terminal. GitHub steps fail with a clear message until then.'
+              : 'GitHub steps open pull requests, read checks and post comments.'}
+        </p>
+      )}
+      {agent !== undefined && (
+        <p className="field-hint" style={{ marginBottom: 0 }}>
+          {!tool.installed && (
+            <>
+              Install <code>{ADAPTERS[agent].executable}</code>.{' '}
+            </>
+          )}
+          {AGENT_SIGN_IN[agent].replaceAll('`', '')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+type ToolsState =
+  | { state: 'loading' }
+  | { state: 'ready'; tools: McpToolInfo[] }
+  | { state: 'error'; message: string };
+
+type CheckState =
+  | { state: 'checking' }
+  | { state: 'done'; report: McpCheckReport }
+  | { state: 'error'; message: string };
+
+const DISMISSED_UPDATES_KEY = 'orchevia.mcp-setup-updates-dismissed.v1';
+
+function dismissedUpdates(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(readLocal(DISMISSED_UPDATES_KEY) ?? '[]');
+    return Array.isArray(parsed)
+      ? parsed.filter((v): v is string => typeof v === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A saved MCP server: which setup it came from, an offer to update one made
+ * from an older setup, and its tool list and check, each shown on request and
+ * hidden again with the same button.
+ */
+function McpServerCard({
+  server,
+  onEdit,
+  onDelete,
+}: {
+  server: McpServerConfig;
+  onEdit: (server: McpServerConfig) => void;
+  onDelete: () => void;
+}): React.JSX.Element {
+  const [tools, setTools] = useState<ToolsState | null>(null);
+  const [check, setCheck] = useState<CheckState | null>(null);
+  const preset = matchMcpPreset(server);
+  const update = mcpSetupUpdate(server);
+  // One key per offer: what it changes, so a different offer shows again.
+  const updateKey = `${server.id}:${JSON.stringify(update?.changes ?? [])}`;
+  // Dismissals are per offer: a different offer for the same server shows.
+  const [dismissedKeys, setDismissedKeys] = useState(dismissedUpdates);
+  const dismissed = dismissedKeys.includes(updateKey);
+
+  const listTools = (): void => {
+    setTools({ state: 'loading' });
+    void getBackend()
+      .mcpListTools(server.id)
+      .then((listed) => {
+        setTools({ state: 'ready', tools: [...listed] });
+      })
+      .catch((err: unknown) => {
+        setTools({ state: 'error', message: errorMessage(err) });
+      });
+  };
+
+  const runCheck = (): void => {
+    setCheck({ state: 'checking' });
+    void getBackend()
+      .mcpCheckServer(server.id)
+      .then((report) => {
+        setCheck({ state: 'done', report });
+      })
+      .catch((err: unknown) => {
+        setCheck({ state: 'error', message: errorMessage(err) });
+      });
+  };
+
+  return (
+    <div className="tool-card mcp-server-card">
+      <div className="mcp-server-head">
+        {preset !== undefined && (
+          <span
+            className="mcp-tile-icon"
+            aria-hidden="true"
+            style={{ background: presetTone(preset.id) }}
+          >
+            {presetMark(preset)}
+          </span>
+        )}
+        <div className="mcp-server-title">
+          <h3>{server.name}</h3>
+          {preset !== undefined && preset.name !== server.name && (
+            <span className="field-hint">From the {preset.name} setup</span>
+          )}
+        </div>
+        <span
+          className={`status-pill ${server.enabled ? 'status-succeeded' : 'status-paused'}`}
+        >
+          {server.enabled ? 'Enabled' : 'Disabled'}
+        </span>
+      </div>
+      <CloseButton
+        variant="card"
+        label={`Delete MCP server '${server.name}'`}
+        title={`Delete MCP server '${server.name}'`}
+        onClose={onDelete}
+      />
+      <div
+        className="tool-version"
+        style={{ marginTop: 6 }}
+        title={[server.command, ...server.args].join(' ')}
+      >
+        {server.command} {server.args.join(' ')}
+      </div>
+      {update !== null && !dismissed && (
+        <Notice
+          inline
+          variant="info"
+          style={{ marginTop: 10, marginBottom: 0 }}
+          dismissLabel={`Keep '${server.name}' as it is`}
+          onDismiss={() => {
+            const next = [...dismissedUpdates(), updateKey];
+            setDismissedKeys(next);
+            writeLocal(DISMISSED_UPDATES_KEY, JSON.stringify(next));
+          }}
+        >
+          <strong>Saved from an older {update.preset.name} setup.</strong>
+          <ul className="mcp-update-changes" aria-label={`Changes to ${server.name}`}>
+            {update.changes.map((change) =>
+              change.what === 'name' ? (
+                <li key="name">
+                  Name: “{change.from}” <span aria-hidden="true">→</span>{' '}
+                  <span className="sr-only">becomes</span> “{change.to}”
+                </li>
+              ) : (
+                <li key="command">
+                  Command: <code>{change.from}</code> <span aria-hidden="true">→</span>{' '}
+                  <span className="sr-only">becomes</span> <code>{change.to}</code>
+                </li>
+              ),
+            )}
+          </ul>
+          <p className="field-hint" style={{ margin: '0 0 8px' }}>
+            Workflows keep using this server. After saving, choose Check server to see
+            that the tools they call are still there.
+          </p>
+          <button
+            className="btn btn-inline"
+            onClick={() => {
+              onEdit(update.updated);
+            }}
+          >
+            Review the update
+          </button>
+        </Notice>
+      )}
+      <div className="card-actions mcp-server-actions">
+        <button
+          className="btn btn-ghost"
+          aria-expanded={tools !== null}
+          disabled={tools?.state === 'loading'}
+          onClick={() => {
+            if (tools === null) listTools();
+            else setTools(null);
+          }}
+        >
+          {tools === null
+            ? 'List tools'
+            : tools.state === 'loading'
+              ? 'Listing…'
+              : 'Hide tools'}
+        </button>
+        {check?.state === 'checking' ? (
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              void getBackend().cancelMcpCheck(server.id);
+            }}
+          >
+            Cancel check
+          </button>
+        ) : check !== null ? (
+          <button
+            className="btn btn-ghost"
+            aria-expanded
+            onClick={() => {
+              setCheck(null);
+            }}
+          >
+            Hide check
+          </button>
+        ) : (
+          <button
+            className="btn btn-ghost"
+            title="Starts the server, lists its tools and compares them with your workflows. Never calls a tool."
+            onClick={runCheck}
+          >
+            Check server
+          </button>
+        )}
+        <button
+          className="btn"
+          onClick={() => {
+            onEdit(server);
+          }}
+        >
+          Edit
+        </button>
+      </div>
+      {check !== null && (
+        <div style={{ marginTop: 8 }} aria-live="polite">
+          {check.state === 'checking' && (
+            <p className="field-hint">
+              Checking: starting the server and listing its tools (up to 45 s)…
+            </p>
+          )}
+          {check.state === 'done' && (
+            <>
+              <CheckList
+                label={`Server check for ${check.report.serverName}`}
+                items={check.report.items}
+              />
+              <button className="btn btn-ghost btn-inline" onClick={runCheck}>
+                Check again
+              </button>
+            </>
+          )}
+          {check.state === 'error' && (
+            <Notice variant="error" style={{ marginBottom: 0 }}>
+              Checking {server.name} failed: {check.message}
+            </Notice>
+          )}
+        </div>
+      )}
+      {tools !== null && (
+        <div style={{ marginTop: 8 }}>
+          {tools.state === 'loading' && (
+            <p className="field-hint" aria-live="polite">
+              Listing tools…
+            </p>
+          )}
+          {tools.state === 'ready' && tools.tools.length === 0 && (
+            <p className="field-hint">
+              No tools exposed — the server started but listed none. Check it implements
+              MCP tools/list and that its env vars are set.
+            </p>
+          )}
+          {tools.state === 'ready' && tools.tools.length > 0 && (
+            <McpToolsList tools={tools.tools} onRefresh={listTools} />
+          )}
+          {tools.state === 'error' && (
+            <Notice variant="error" style={{ marginBottom: 0 }}>
+              Listing tools for {server.name} failed: {tools.message}
+            </Notice>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Compact MCP tool browser. Servers like the Jira one expose 60+ tools with
  * multi-paragraph descriptions — rendering them inline would stretch the card
  * for pages. So: one row per tool (name + first line), a filter box, a
  * capped scroll region, and the full text one click away in <details>.
  */
-function McpToolsList({ tools }: { tools: McpToolInfo[] }): React.JSX.Element {
+function McpToolsList({
+  tools,
+  onRefresh,
+}: {
+  tools: McpToolInfo[];
+  onRefresh: () => void;
+}): React.JSX.Element {
   const [filter, setFilter] = useState('');
   const query = filter.trim().toLowerCase();
   const visible =
@@ -543,10 +715,13 @@ function McpToolsList({ tools }: { tools: McpToolInfo[] }): React.JSX.Element {
         );
   return (
     <div>
-      <p className="field-hint" style={{ margin: '0 0 6px' }}>
+      <p className="field-hint mcp-tools-count">
         {tools.length} tool{tools.length === 1 ? '' : 's'}
         {query !== '' &&
           ` · ${String(visible.length)} match${visible.length === 1 ? '' : 'es'}`}
+        <button className="btn btn-ghost btn-inline" onClick={onRefresh}>
+          Refresh
+        </button>
       </p>
       {tools.length > 5 && (
         <input
@@ -637,23 +812,29 @@ const AUTH_LABEL: Record<McpPreset['auth'], string> = {
 };
 
 function McpPresetPicker({
+  servers,
   onPick,
   onCancel,
 }: {
+  servers: McpServerConfig[];
   onPick: (preset: McpPreset | null) => void;
   onCancel: () => void;
 }): React.JSX.Element {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'all' | McpCategory>('all');
+  const [showUsed, setShowUsed] = useState(false);
+  const used = presetsInUse(servers);
   const needle = query.trim().toLowerCase();
   const list = MCP_PRESETS.filter(
     (preset) =>
+      (showUsed || !used.has(preset.id)) &&
       (category === 'all' || preset.category === category) &&
       (needle === '' ||
         `${preset.name} ${preset.summary} ${preset.category}`
           .toLowerCase()
           .includes(needle)),
   );
+  const usedPresets = MCP_PRESETS.filter((preset) => used.has(preset.id));
   return (
     <div className="mcp-picker">
       <h3 style={{ marginTop: 0 }}>Add an MCP server</h3>
@@ -702,6 +883,7 @@ function McpPresetPicker({
               <strong>{preset.name}</strong>
               <span id={`mcp-preset-${preset.id}`}>{preset.summary}</span>
               <span className="mcp-tile-tags">
+                {used.has(preset.id) && <span className="tag tag-green">Set up</span>}
                 <span className="tag">{AUTH_LABEL[preset.auth]}</span>
                 {preset.readOnly && <span className="tag tag-green">Read-only</span>}
                 {preset.ticket === true && (
@@ -727,7 +909,34 @@ function McpPresetPicker({
       </div>
       {list.length === 0 && (
         <p className="field-hint">
-          No setup matches “{query}”. Start from a blank server.
+          {needle === ''
+            ? 'You already set up every setup here. Start from a blank server, or choose Add another one below.'
+            : `No setup matches “${query}”. Start from a blank server.`}
+        </p>
+      )}
+      {usedPresets.length > 0 && (
+        <p className="field-hint mcp-picker-used">
+          {showUsed ? 'Marked Set up: ' : 'Hidden because you already set them up: '}
+          {usedPresets.map((preset, i) => {
+            const names = (used.get(preset.id) ?? []).filter((n) => n !== preset.name);
+            return (
+              <span key={preset.id}>
+                {i > 0 && ', '}
+                <strong>{preset.name}</strong>
+                {names.length > 0 && ` (as “${names.join('”, “')}”)`}
+              </span>
+            );
+          })}
+          .{' '}
+          <button
+            type="button"
+            className="btn btn-ghost btn-inline"
+            onClick={() => {
+              setShowUsed((on) => !on);
+            }}
+          >
+            {showUsed ? 'Hide them' : 'Add another one'}
+          </button>
         </p>
       )}
       <div className="modal-actions">
@@ -795,10 +1004,13 @@ function McpPresetGuide({ preset }: { preset: McpPreset }): React.JSX.Element {
 
 function McpEditor({
   initial,
+  servers,
   onCancel,
   onSave,
 }: {
   initial: McpServerConfig;
+  /** Saved servers, so the setup list can leave out what is already set up. */
+  servers: McpServerConfig[];
   onCancel: () => void;
   onSave: (s: McpServerConfig) => void;
 }): React.JSX.Element {
@@ -822,6 +1034,7 @@ function McpEditor({
   if (picking)
     return (
       <McpPresetPicker
+        servers={servers}
         onCancel={onCancel}
         onPick={(chosen) => {
           setPresetId(chosen?.id ?? null);

@@ -59,6 +59,19 @@ export interface McpPreset {
   /** Works with Ticket steps (`jira_get_issue`). */
   ticket?: boolean;
   source: string;
+  /**
+   * How earlier Orchevia versions saved this server (name, command and
+   * arguments), so servers made from an older setup are still recognized
+   * and can be updated to the current one.
+   */
+  legacy?: LegacyMcpSetup[];
+}
+
+/** A setup as an earlier Orchevia version saved it. */
+export interface LegacyMcpSetup {
+  name: string;
+  command: string;
+  args: string[];
 }
 
 export const MCP_PRESETS: McpPreset[] = [
@@ -149,6 +162,18 @@ export const MCP_PRESETS: McpPreset[] = [
       { name: 'channels_list', args: 'channel_types' },
     ],
     source: 'https://github.com/korotovsky/slack-mcp-server',
+    legacy: [
+      {
+        name: 'Slack',
+        command: 'slack-mcp-server',
+        args: [
+          '--transport',
+          'stdio',
+          '--enabled-tools',
+          'channels_list,conversations_history,conversations_replies',
+        ],
+      },
+    ],
   },
   {
     id: 'notion',
@@ -201,6 +226,8 @@ export const MCP_PRESETS: McpPreset[] = [
     ],
     ticket: true,
     source: 'https://github.com/sooperset/mcp-atlassian',
+    // Up to v0.3.0 this setup was called "Jira" and had no --read-only.
+    legacy: [{ name: 'Jira', command: 'uvx', args: ['mcp-atlassian'] }],
   },
   {
     id: 'github',
@@ -591,18 +618,96 @@ function presetSignature(preset: McpPreset): string | undefined {
   );
 }
 
-/** The preset a saved server came from: same command and the same package, image or URL. */
+function sameArgs(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((arg, i) => arg.trim() === b[i]?.trim());
+}
+
+/** The older setup of `preset` this server still runs unchanged, if any. */
+function legacySetup(
+  preset: McpPreset,
+  server: Pick<McpServerConfig, 'command' | 'args'>,
+): LegacyMcpSetup | undefined {
+  return preset.legacy?.find(
+    (old) => old.command === server.command.trim() && sameArgs(old.args, server.args),
+  );
+}
+
+/**
+ * The preset a saved server came from: the same command and the same package,
+ * image or URL, or exactly a setup an earlier Orchevia version saved.
+ */
 export function matchMcpPreset(
   server: Pick<McpServerConfig, 'command' | 'args'>,
 ): McpPreset | undefined {
   return MCP_PRESETS.find((preset) => {
     const signature = presetSignature(preset);
     return (
-      preset.command === server.command.trim() &&
-      signature !== undefined &&
-      server.args.some((arg) => withoutVersion(arg) === withoutVersion(signature))
+      (preset.command === server.command.trim() &&
+        signature !== undefined &&
+        server.args.some((arg) => withoutVersion(arg) === withoutVersion(signature))) ||
+      legacySetup(preset, server) !== undefined
     );
   });
+}
+
+/** Each preset already set up, with the names of the saved servers made from it. */
+export function presetsInUse(servers: McpServerConfig[]): Map<string, string[]> {
+  const used = new Map<string, string[]>();
+  for (const server of servers) {
+    const preset = matchMcpPreset(server);
+    if (preset === undefined) continue;
+    used.set(preset.id, [...(used.get(preset.id) ?? []), server.name]);
+  }
+  return used;
+}
+
+/** One change an update makes: the name, or the command with its arguments. */
+export interface McpSetupChange {
+  what: 'name' | 'command';
+  from: string;
+  to: string;
+}
+
+/** What updating a server made from an older setup changes. */
+export interface McpSetupUpdate {
+  preset: McpPreset;
+  /** The server with the current setup's name and arguments. */
+  updated: McpServerConfig;
+  changes: McpSetupChange[];
+}
+
+/**
+ * The update for a server saved from an earlier version of a setup: the
+ * current name when it still has the old one, and the current command and
+ * arguments when it still runs the old ones unchanged. Servers the user
+ * renamed or changed keep their own name and arguments. `null` when there is
+ * nothing to update.
+ */
+export function mcpSetupUpdate(server: McpServerConfig): McpSetupUpdate | null {
+  const preset = matchMcpPreset(server);
+  if (preset === undefined) return null;
+  const name = server.name.trim();
+  const oldName =
+    name !== preset.name && (preset.legacy ?? []).some((old) => old.name === name);
+  const oldSetup = legacySetup(preset, server) !== undefined;
+  const changes: McpSetupChange[] = [];
+  if (oldName) changes.push({ what: 'name', from: name, to: preset.name });
+  if (oldSetup) {
+    const before = [server.command.trim(), ...server.args].join(' ');
+    const after = [preset.command, ...preset.args].join(' ');
+    if (before !== after) changes.push({ what: 'command', from: before, to: after });
+  }
+  if (changes.length === 0) return null;
+  return {
+    preset,
+    updated: {
+      ...server,
+      name: oldName ? preset.name : server.name,
+      command: oldSetup ? preset.command : server.command,
+      args: oldSetup ? [...preset.args] : [...server.args],
+    },
+    changes,
+  };
 }
 
 /** `export NAME="…"` lines for a preset's variables, for the user's shell profile. */

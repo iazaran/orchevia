@@ -6,10 +6,12 @@
 import {
   hasFullAccess,
   permissionArgument,
+  resolveForRun,
   withAppDefault,
   type AgentProfile,
   type AppPermissionDefault,
 } from './agents';
+import { NO_ABILITIES, type AppAbilities } from './abilities';
 import type { Workflow, WorkflowNode } from './workflow';
 
 /** At most this many allow rules per profile or node declaration. */
@@ -162,8 +164,11 @@ export function profileGrants(
   profile: AgentProfile,
   rule: string,
   appDefault: AppPermissionDefault | null = null,
+  abilities: AppAbilities = NO_ABILITIES,
 ): boolean {
-  const resolved = withAppDefault(profile, appDefault);
+  // As a run resolves it: the app-wide level, then the abilities allowed in
+  // Environment (the browser's tools and the allowed connectors).
+  const resolved = resolveForRun(profile, appDefault, abilities);
   if (hasFullAccess(resolved)) return true;
   if (resolved.permissionLevel !== 'allowedTools') return false;
   return (resolved.allowedTools ?? []).some((granted) => ruleCovers(granted, rule));
@@ -266,18 +271,31 @@ export function withAllowedTools(
   profile: AgentProfile,
   rules: string[],
   appDefault: AppPermissionDefault | null = null,
+  abilities: AppAbilities = NO_ABILITIES,
 ): AgentProfile | null {
   if (allowedToolsBlocker(profile) !== null) return null;
   const missing = [...new Set(rules)].filter(
-    (rule) => !profileGrants(profile, rule, appDefault),
+    (rule) => !profileGrants(profile, rule, appDefault, abilities),
   );
   if (missing.length === 0) return null;
-  const existing = profile.allowedTools ?? [];
-  return {
-    ...profile,
-    permissionLevel: 'allowedTools',
-    allowedTools: [...existing, ...missing.filter((rule) => !existing.includes(rule))],
-  };
+  const allowedTools = [...(profile.allowedTools ?? [])];
+  for (const rule of [...inheritedAbilities(profile, abilities), ...missing])
+    if (!allowedTools.includes(rule)) allowedTools.push(rule);
+  return { ...profile, permissionLevel: 'allowedTools', allowedTools };
+}
+
+/**
+ * The abilities allowed in Environment that a profile following the app
+ * default would lose by getting its own Allowed tools list (they reach only
+ * profiles at the app default), so `withAllowedTools` copies them in.
+ */
+export function inheritedAbilities(
+  profile: AgentProfile,
+  abilities: AppAbilities,
+): string[] {
+  if ((profile.permissionLevel ?? 'appDefault') !== 'appDefault') return [];
+  const own = profile.allowedTools ?? [];
+  return (abilities.allowedTools ?? []).filter((rule) => !own.includes(rule));
 }
 
 /** Declared tools one profile does not grant, and the nodes that need them. */
@@ -301,6 +319,7 @@ export function missingToolGrants(
   profiles: AgentProfile[],
   roleMap: Record<string, string> = {},
   appDefault: AppPermissionDefault | null = null,
+  abilities: AppAbilities = NO_ABILITIES,
 ): MissingToolGrant[] {
   const grants = new Map<string, MissingToolGrant>();
   for (const node of workflow.nodes) {
@@ -308,7 +327,9 @@ export function missingToolGrants(
     if (node.type !== 'agent' || required.length === 0) continue;
     const profile = nodeAgentProfile(node, profiles, roleMap);
     if (profile?.adapter !== 'claude') continue;
-    const missing = required.filter((rule) => !profileGrants(profile, rule, appDefault));
+    const missing = required.filter(
+      (rule) => !profileGrants(profile, rule, appDefault, abilities),
+    );
     if (missing.length === 0) continue;
     const grant = grants.get(profile.id) ?? { profile, rules: [], nodes: [] };
     for (const rule of missing) if (!grant.rules.includes(rule)) grant.rules.push(rule);

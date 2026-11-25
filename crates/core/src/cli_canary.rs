@@ -155,6 +155,7 @@ fn profile(
         } else {
             Vec::new()
         },
+        browser: None,
     }
 }
 

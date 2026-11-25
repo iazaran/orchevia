@@ -1030,6 +1030,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "onboarding.completed",
     "workflow.assistanceProfileId",
     orchevia_core::agents::PERMISSION_DEFAULT_SETTING,
+    orchevia_core::abilities::ABILITIES_SETTING,
     "usage.plans",
     "usage.planShare",
 ];
@@ -1121,12 +1122,20 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     }
     // The plans document is JSON; it stays bounded but needs more room than
     // scalar preferences.
-    let max_len = if key.starts_with("usage.") { 8000 } else { 200 };
+    let max_len = if key.starts_with("usage.") || key == orchevia_core::abilities::ABILITIES_SETTING
+    {
+        8000
+    } else {
+        200
+    };
     if value.len() > max_len {
         return Err("Setting value too long.".to_string());
     }
     if key == orchevia_core::agents::PERMISSION_DEFAULT_SETTING {
         orchevia_core::agents::parse_permission_default(value)?;
+    }
+    if key == orchevia_core::abilities::ABILITIES_SETTING {
+        orchevia_core::abilities::parse_abilities_setting(value)?;
     }
     orchevia_core::usage::validate_usage_setting(key, value)?;
     db.set_setting(key, value).map_err(|e| e.to_string())
@@ -1305,6 +1314,36 @@ pub async fn check_agent_setup(
     })
     .await
     .map_err(|e| format!("Setup check failed to join: {e}"))
+}
+
+/// What Claude Code or Codex brings from the user's own setup: the MCP servers
+/// and connectors it loads itself, the browser extension, skills, personal
+/// instructions and the rules its settings already allow. Runs only the CLI's
+/// listing commands, never a prompt. The CLI comes from the first profile of
+/// that adapter with its own executable, else its default name.
+#[tauri::command]
+pub async fn detect_agent_abilities(
+    state: State<'_, AppState>,
+    adapter: String,
+) -> Result<orchevia_core::abilities::HostAbilities, String> {
+    let kind = orchevia_core::agents::AdapterKind::parse(adapter.trim())
+        .ok_or_else(|| format!("Unknown agent '{adapter}'."))?;
+    let executable = state
+        .db
+        .list_agent_profiles()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|profile| profile.adapter == kind)
+        .find_map(|profile| profile.executable.filter(|e| !e.trim().is_empty()));
+    tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::abilities::detect_abilities(
+            kind,
+            executable.as_deref(),
+            orchevia_core::abilities::DETECT_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|e| format!("Detecting abilities failed to join: {e}"))?
 }
 
 // -- Generation, templates, memory (Milestone 6) -------------------------------
@@ -2105,6 +2144,33 @@ mod tests {
         assert!(super::get_setting_for_db(&db, "private.setting").is_err());
         assert!(super::set_setting_for_db(&db, "private.setting", "value").is_err());
         assert_eq!(db.get_setting("private.setting").unwrap(), None);
+    }
+
+    #[test]
+    fn agent_abilities_are_validated_before_they_are_saved() {
+        let db = orchevia_core::db::SqliteDb::open_in_memory().expect("db");
+        let key = orchevia_core::abilities::ABILITIES_SETTING;
+        super::set_setting_for_db(
+            &db,
+            key,
+            r#"{"browser":true,"allowedTools":["mcp__claude_ai_Atlassian_Rovo","WebFetch"]}"#,
+        )
+        .unwrap();
+        for invalid in ["[]", "{", r#"{"allowedTools":["Bash(rm -rf /"]}"#] {
+            assert!(
+                super::set_setting_for_db(&db, key, invalid).is_err(),
+                "{invalid}"
+            );
+        }
+        // A long allow-list fits; the scalar 200-character limit does not apply.
+        let many: Vec<String> = (0..40).map(|i| format!("mcp__server_{i}")).collect();
+        let value = serde_json::json!({ "browser": false, "allowedTools": many }).to_string();
+        assert!(value.len() > 200);
+        super::set_setting_for_db(&db, key, &value).unwrap();
+        assert_eq!(
+            super::get_setting_for_db(&db, key).unwrap().as_deref(),
+            Some(value.as_str())
+        );
     }
 
     #[test]

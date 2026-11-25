@@ -1908,23 +1908,36 @@ impl SqliteDb {
             .unwrap_or(PermissionLevel::CliSettings))
     }
 
-    /// A profile as runs use it, with the app-wide permission level applied
-    /// ([`AgentProfile::with_app_default`]). Use this wherever the profile
-    /// decides what a CLI may do: building commands and judging trust.
+    /// The app-wide choices profiles follow when they run: the permission
+    /// level and the abilities chosen in Environment. Unreadable abilities
+    /// grant nothing.
+    pub fn agent_app_settings(&self) -> DbResult<crate::agents::AppAgentSettings> {
+        Ok(crate::agents::AppAgentSettings {
+            permission: self.agent_permission_default()?,
+            abilities: crate::abilities::stored_abilities(
+                self.get_setting(crate::abilities::ABILITIES_SETTING)?
+                    .as_deref(),
+            ),
+        })
+    }
+
+    /// A profile as runs use it, with the app-wide permission level and
+    /// abilities applied ([`AgentProfile::for_run`]). Use this wherever the
+    /// profile decides what a CLI may do: building commands and judging trust.
     pub fn get_effective_agent_profile(&self, id: &str) -> DbResult<Option<AgentProfile>> {
-        let default = self.agent_permission_default()?;
+        let app = self.agent_app_settings()?;
         Ok(self
             .get_agent_profile(id)?
-            .map(|profile| profile.with_app_default(default)))
+            .map(|profile| profile.for_run(&app)))
     }
 
     /// Every profile as runs use it; see [`Self::get_effective_agent_profile`].
     pub fn list_effective_agent_profiles(&self) -> DbResult<Vec<AgentProfile>> {
-        let default = self.agent_permission_default()?;
+        let app = self.agent_app_settings()?;
         Ok(self
             .list_agent_profiles()?
             .into_iter()
-            .map(|profile| profile.with_app_default(default))
+            .map(|profile| profile.for_run(&app))
             .collect())
     }
 
@@ -3070,6 +3083,7 @@ mod tests {
             role: Some("implementation".to_string()),
             permission_level: crate::agents::PermissionLevel::AllowedTools,
             allowed_tools: vec!["mcp__jira".to_string(), "Bash(git status *)".to_string()],
+            browser: None,
         };
         db.upsert_agent_profile(&profile).expect("upsert");
         let fetched = db
@@ -3103,6 +3117,7 @@ mod tests {
             role: None,
             permission_level,
             allowed_tools: vec!["Edit".to_string()],
+            browser: None,
         };
         db.upsert_agent_profile(&profile("follows", PermissionLevel::AppDefault))
             .expect("upsert");
@@ -3148,6 +3163,53 @@ mod tests {
     }
 
     #[test]
+    fn runs_use_the_abilities_chosen_in_environment() {
+        use crate::agents::{AdapterKind, AgentProfile, PermissionLevel, WorkingDirMode};
+        let db = SqliteDb::open_in_memory().expect("open");
+        db.upsert_agent_profile(&AgentProfile {
+            id: "c".into(),
+            name: "C".into(),
+            adapter: AdapterKind::Claude,
+            executable: None,
+            model: None,
+            effort: None,
+            extra_args: vec![],
+            skills: vec![],
+            working_dir_mode: WorkingDirMode::Inherit,
+            working_dir: None,
+            default_timeout_secs: 600,
+            role: None,
+            permission_level: PermissionLevel::AppDefault,
+            allowed_tools: vec![],
+            browser: None,
+        })
+        .expect("upsert");
+        let resolved = |db: &SqliteDb| {
+            db.get_effective_agent_profile("c")
+                .expect("get")
+                .expect("some")
+        };
+        assert_eq!(resolved(&db).browser, None);
+        db.set_setting(
+            crate::abilities::ABILITIES_SETTING,
+            r#"{"browser":true,"allowedTools":["mcp__claude_ai_Slack"]}"#,
+        )
+        .expect("set");
+        let profile = resolved(&db);
+        assert_eq!(profile.browser, Some(true));
+        assert_eq!(
+            profile.allowed_tools,
+            ["mcp__claude_ai_Slack", "mcp__claude-in-chrome"]
+        );
+        assert!(db.list_effective_agent_profiles().expect("list")[0].uses_browser());
+        // A broken value grants nothing.
+        db.set_setting(crate::abilities::ABILITIES_SETTING, "{")
+            .expect("set");
+        assert_eq!(resolved(&db).browser, None);
+        assert_eq!(resolved(&db).permission_level, PermissionLevel::CliSettings);
+    }
+
+    #[test]
     fn invalid_profile_rejected_on_upsert() {
         use crate::agents::{AdapterKind, AgentProfile, WorkingDirMode};
         let db = SqliteDb::open_in_memory().expect("open");
@@ -3166,6 +3228,7 @@ mod tests {
             role: None,
             permission_level: Default::default(),
             allowed_tools: vec![],
+            browser: None,
         };
         assert!(db.upsert_agent_profile(&profile).is_err());
     }

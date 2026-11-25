@@ -102,6 +102,20 @@ running app can see (names only, never values), and lists tools you can call.
 Save the server, choose **Check server**, then select the server and one of its
 tools in an **MCP Tool** step. Jira also works in a **Ticket** step.
 
+The list leaves out setups you already saved (they are named under it, with
+**Add another one** for a second copy), and each saved server says which setup it
+came from. A server saved from an earlier version of a setup, such as the v0.3.0
+**Jira** setup (`uvx mcp-atlassian`, now **Jira & Confluence** with `--read-only`),
+offers **Review the update**: the form opens with the current name and arguments,
+and nothing changes until you save. Servers saved from the earlier Gmail and Google
+Docs setups run a different server (`gws-mcp-server`) with fewer services, so they
+are not offered Google Workspace as an update. **List tools** and **Check server** can be
+hidden again with the same button.
+
+These servers are Orchevia's own, for MCP Tool and Ticket steps. Agent steps also
+reach the connectors and MCP servers set up in Claude Code or Codex; see
+[Abilities from your own setup](agents.md#abilities-from-your-own-setup).
+
 Credentials never enter Orchevia: servers read them from the environment the app
 was started from. Remote services run through
 [`mcp-remote`](https://github.com/geelen/mcp-remote), which signs in through your

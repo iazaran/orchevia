@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDefaultProfile } from './agents';
+import { createDefaultProfile, type AgentProfile } from './agents';
 import { createEmptyWorkflow, type NodeConfig, type WorkflowNode } from './workflow';
 import {
   allowedToolsBlocker,
@@ -248,5 +248,76 @@ describe('tool permissions', () => {
       workflowAgentProfiles(workflow, all, { review: 'c' }).map((p) => p.name),
     ).toEqual(['Follows', 'Codex']);
     expect(workflowAgentProfiles(createEmptyWorkflow('None'), all)).toEqual([]);
+  });
+});
+
+describe('grants with the abilities allowed in Environment', () => {
+  it('counts connectors and the browser allowed for steps as granted', () => {
+    const profile: AgentProfile = {
+      id: 'p',
+      name: 'Follows',
+      adapter: 'claude',
+      extraArgs: [],
+      workingDirMode: 'node',
+      defaultTimeoutSecs: 60,
+    };
+    const abilities = { browser: true, allowedTools: ['mcp__claude_ai_Atlassian_Rovo'] };
+    expect(
+      profileGrants(profile, 'mcp__claude_ai_Atlassian_Rovo__getJiraIssue', null),
+    ).toBe(false);
+    expect(
+      profileGrants(
+        profile,
+        'mcp__claude_ai_Atlassian_Rovo__getJiraIssue',
+        null,
+        abilities,
+      ),
+    ).toBe(true);
+    expect(profileGrants(profile, 'mcp__claude-in-chrome', null, abilities)).toBe(true);
+    // A profile at the Claude Code settings level gets the browser, not the connectors.
+    const own = { ...profile, permissionLevel: 'cliSettings' as const };
+    expect(profileGrants(own, 'mcp__claude_ai_Atlassian_Rovo', null, abilities)).toBe(
+      false,
+    );
+    expect(profileGrants(own, 'mcp__claude-in-chrome', null, abilities)).toBe(true);
+  });
+
+  it('keeps the abilities a profile had from the app when it gets its own list', () => {
+    const profile: AgentProfile = {
+      id: 'p',
+      name: 'Follows',
+      adapter: 'claude',
+      extraArgs: [],
+      workingDirMode: 'node',
+      defaultTimeoutSecs: 60,
+    };
+    const abilities = { browser: false, allowedTools: ['mcp__claude_ai_Slack'] };
+    // Refused Edit: the new own list would otherwise drop Slack, which only
+    // reaches profiles at the app default.
+    const next = withAllowedTools(
+      profile,
+      ['Edit', 'mcp__claude_ai_Slack'],
+      null,
+      abilities,
+    );
+    expect(next).toMatchObject({
+      permissionLevel: 'allowedTools',
+      allowedTools: ['mcp__claude_ai_Slack', 'Edit'],
+    });
+    expect(
+      next === null
+        ? false
+        : profileGrants(next, 'mcp__claude_ai_Slack', null, abilities),
+    ).toBe(true);
+    // A profile that already has its own level keeps exactly its own list.
+    const own = {
+      ...profile,
+      permissionLevel: 'allowedTools' as const,
+      allowedTools: ['Read'],
+    };
+    expect(withAllowedTools(own, ['Edit'], null, abilities)?.allowedTools).toEqual([
+      'Read',
+      'Edit',
+    ]);
   });
 });

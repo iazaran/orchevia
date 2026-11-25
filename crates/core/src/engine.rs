@@ -6892,6 +6892,7 @@ mod tests {
             role: None,
             permission_level: Default::default(),
             allowed_tools: vec![],
+            browser: None,
         }
     }
 

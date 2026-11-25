@@ -4,6 +4,7 @@
 //! business logic can be unit-tested on any machine without system webview
 //! libraries installed.
 
+pub mod abilities;
 mod agent_output;
 pub mod agents;
 pub mod conditions;

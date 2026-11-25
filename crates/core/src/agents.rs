@@ -334,6 +334,25 @@ pub fn parse_permission_default(value: &str) -> Result<PermissionLevel, String> 
     }
 }
 
+/// The app-wide choices a profile follows when it runs: the permission level
+/// ([`PERMISSION_DEFAULT_SETTING`]) and the abilities
+/// ([`crate::abilities::ABILITIES_SETTING`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppAgentSettings {
+    pub permission: PermissionLevel,
+    pub abilities: crate::abilities::AppAbilities,
+}
+
+impl Default for AppAgentSettings {
+    /// Nothing chosen yet: each CLI's own settings, and no abilities.
+    fn default() -> Self {
+        Self {
+            permission: PermissionLevel::CliSettings,
+            abilities: crate::abilities::AppAbilities::default(),
+        }
+    }
+}
+
 /// Extra arguments that set permissions themselves and so conflict with a
 /// profile-level permission setting (or bypass checks on their own).
 fn permission_flags(adapter: AdapterKind) -> &'static [&'static str] {
@@ -397,6 +416,11 @@ pub struct AgentProfile {
     /// kept, unused, at the other levels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Claude Code only: run with Claude in Chrome (`--chrome`) so steps can
+    /// use the user's own browser. `None` follows the app-wide choice
+    /// ([`crate::abilities::AppAbilities::browser`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<bool>,
 }
 
 fn default_timeout() -> u64 {
@@ -407,6 +431,17 @@ impl AgentProfile {
     /// Validate configuration without touching the filesystem/network.
     /// Returns human-readable error strings.
     pub fn validate(&self) -> Vec<String> {
+        self.validate_with_limit(true)
+    }
+
+    /// [`Self::validate`] for a profile resolved with [`Self::for_run`]: its
+    /// rule list may hold the saved list plus the rules the run adds, so the
+    /// per-list limit (which applies when a list is saved) is not checked.
+    fn validate_for_run(&self) -> Vec<String> {
+        self.validate_with_limit(false)
+    }
+
+    fn validate_with_limit(&self, limit_rules: bool) -> Vec<String> {
         let mut errors = Vec::new();
         if self.name.trim().is_empty() {
             errors.push("Profile name must not be empty.".to_string());
@@ -462,9 +497,10 @@ impl AgentProfile {
         if self.adapter != AdapterKind::Claude && !self.allowed_tools.is_empty() {
             errors.push("Allowed tools apply only to Claude Code profiles.".to_string());
         }
-        errors.extend(crate::permissions::validate_tool_rules(
+        errors.extend(crate::permissions::validate_tool_rule_list(
             &self.allowed_tools,
             "Allowed tools",
+            limit_rules,
         ));
         match (self.adapter, self.permission_level) {
             (_, PermissionLevel::AppDefault | PermissionLevel::CliSettings) => {}
@@ -480,6 +516,16 @@ impl AgentProfile {
                 errors.push("Allowed tools needs at least one tool.".to_string())
             }
             _ => {}
+        }
+        if self.browser == Some(true) && self.adapter != AdapterKind::Claude {
+            errors.push("Browser use applies only to Claude Code profiles.".to_string());
+        }
+        if self.browser.is_some() {
+            if let Some(arg) = self.browser_argument() {
+                errors.push(format!(
+                    "Extra argument '{arg}' conflicts with the profile's browser setting. Remove it or follow the app default."
+                ));
+            }
         }
         if matches!(
             self.permission_level,
@@ -533,6 +579,92 @@ impl AgentProfile {
             };
         }
         self
+    }
+
+    /// An extra argument that turns Claude in Chrome on or off itself.
+    fn browser_argument(&self) -> Option<&String> {
+        (self.adapter == AdapterKind::Claude)
+            .then(|| {
+                self.extra_args.iter().find(|arg| {
+                    *arg == crate::abilities::BROWSER_FLAG
+                        || *arg == crate::abilities::NO_BROWSER_FLAG
+                })
+            })
+            .flatten()
+    }
+
+    /// The profile as a run uses it: the app-wide permission level
+    /// ([`Self::with_app_default`]) and the abilities the user chose once
+    /// ([`crate::abilities::AppAbilities`]).
+    ///
+    /// For Claude Code, `browser` becomes the flag the run passes: `Some(true)`
+    /// (`--chrome`) when the profile or, following it, the app turns the
+    /// browser on; `Some(false)` (`--no-chrome`) when the profile turns it
+    /// off; `None` (no flag) when it follows an app that leaves it off, or
+    /// when its extra arguments pass `--chrome` or `--no-chrome` themselves. Below full access, the browser's tools and,
+    /// for a profile that follows the app default, the abilities allowed in
+    /// Environment are added as allow rules: a CLI settings level becomes
+    /// Allowed tools with just those rules, and Allowed tools keeps its own
+    /// rules plus them. A profile whose extra arguments set permissions keeps
+    /// them. Other CLIs get no browser and no rules.
+    pub fn for_run(self, app: &AppAgentSettings) -> Self {
+        let follows_app = self.permission_level == PermissionLevel::AppDefault;
+        let mut profile = self.with_app_default(app.permission);
+        if profile.adapter != AdapterKind::Claude {
+            profile.browser = None;
+            return profile;
+        }
+        // Its own `--chrome` / `--no-chrome` decides, and so does an explicit
+        // Off (passed as `--no-chrome`, so a Claude Code default cannot turn
+        // the browser on). Following an app that leaves the browser off adds
+        // nothing: the Claude Code settings decide, as before v0.3.3.
+        profile.browser = if profile.browser_argument().is_some() {
+            None
+        } else {
+            match profile.browser {
+                Some(own) => Some(own),
+                None => app.abilities.browser.then_some(true),
+            }
+        };
+        let browser = profile.browser == Some(true);
+        if profile.has_full_access() || profile.permission_argument().is_some() {
+            return profile;
+        }
+        let mut grants: Vec<String> = Vec::new();
+        if follows_app {
+            grants.extend(app.abilities.allowed_tools.iter().cloned());
+        }
+        if browser {
+            grants.push(crate::abilities::BROWSER_TOOL_RULE.to_string());
+        }
+        if grants.is_empty() {
+            return profile;
+        }
+        let mut rules = match profile.permission_level {
+            PermissionLevel::AllowedTools => std::mem::take(&mut profile.allowed_tools),
+            PermissionLevel::CliSettings => Vec::new(),
+            _ => return profile,
+        };
+        for rule in grants {
+            if !rules.contains(&rule) {
+                rules.push(rule);
+            }
+        }
+        profile.permission_level = PermissionLevel::AllowedTools;
+        profile.allowed_tools = rules;
+        profile
+    }
+
+    /// Whether runs with this profile use the user's browser: Claude in Chrome
+    /// turned on for it, or `--chrome` among its extra arguments. Call it on a
+    /// profile resolved with [`Self::for_run`].
+    pub fn uses_browser(&self) -> bool {
+        self.adapter == AdapterKind::Claude
+            && (self.browser == Some(true)
+                || self
+                    .extra_args
+                    .iter()
+                    .any(|arg| arg == crate::abilities::BROWSER_FLAG))
     }
 
     /// Whether runs with this profile bypass every permission check, through
@@ -690,7 +822,7 @@ fn prepare(
     rendered_prompt: &str,
     node_working_dir: Option<&str>,
 ) -> Result<Prepared, String> {
-    let config_errors = profile.validate();
+    let config_errors = profile.validate_for_run();
     if !config_errors.is_empty() {
         return Err(config_errors.join("; "));
     }
@@ -781,6 +913,19 @@ fn push_permissions(args: &mut Vec<String>, profile: &AgentProfile) {
     }
 }
 
+/// `--chrome` or `--no-chrome` for a Claude Code profile resolved with
+/// [`AgentProfile::for_run`]; nothing when its browser choice is `None`.
+fn push_browser(args: &mut Vec<String>, profile: &AgentProfile) {
+    if profile.adapter != AdapterKind::Claude {
+        return;
+    }
+    match profile.browser {
+        Some(true) => args.push(crate::abilities::BROWSER_FLAG.into()),
+        Some(false) => args.push(crate::abilities::NO_BROWSER_FLAG.into()),
+        None => {}
+    }
+}
+
 /// Build the command an ordinary Agent node runs for a profile + rendered
 /// prompt: structured output when [`structured_output`] allows it, the text
 /// invocation otherwise.
@@ -831,6 +976,7 @@ pub fn build_text_agent_command(
             args.push("text".to_string());
             push_model_and_effort(&mut args, profile, effort.as_deref());
             push_permissions(&mut args, profile);
+            push_browser(&mut args, profile);
             args.extend(profile.extra_args.iter().cloned());
             None
         }
@@ -840,6 +986,7 @@ pub fn build_text_agent_command(
             args.push("text".to_string());
             push_model_and_effort(&mut args, profile, effort.as_deref());
             push_permissions(&mut args, profile);
+            push_browser(&mut args, profile);
             args.extend(profile.extra_args.iter().cloned());
             Some(prompt)
         }
@@ -920,6 +1067,7 @@ fn build_structured_command(
     };
     push_model_and_effort(&mut args, profile, effort.as_deref());
     push_permissions(&mut args, profile);
+    push_browser(&mut args, profile);
     args.extend(profile.extra_args.iter().cloned());
     if let Some(id) = resume_id {
         args.extend([
@@ -1119,6 +1267,7 @@ mod tests {
             role: Some("implementation".to_string()),
             permission_level: PermissionLevel::CliSettings,
             allowed_tools: vec![],
+            browser: None,
         }
     }
 
@@ -1722,5 +1871,236 @@ mod tests {
         let mut p = claude_profile();
         p.effort = Some("ultra".to_string());
         assert!(!p.validate().is_empty());
+    }
+
+    fn app(permission: PermissionLevel, browser: bool, allowed: &[&str]) -> AppAgentSettings {
+        AppAgentSettings {
+            permission,
+            abilities: crate::abilities::AppAbilities {
+                browser,
+                allowed_tools: allowed.iter().map(|r| r.to_string()).collect(),
+            },
+        }
+    }
+
+    fn following() -> AgentProfile {
+        AgentProfile {
+            permission_level: PermissionLevel::AppDefault,
+            ..claude_profile()
+        }
+    }
+
+    #[test]
+    fn the_browser_ability_adds_chrome_and_allows_its_tools_below_full_access() {
+        let profile = following().for_run(&app(PermissionLevel::CliSettings, true, &[]));
+        assert_eq!(profile.browser, Some(true));
+        assert_eq!(profile.permission_level, PermissionLevel::AllowedTools);
+        assert_eq!(profile.allowed_tools, ["mcp__claude-in-chrome"]);
+        let spec = build_agent_command(&profile, "hello", None).expect("build");
+        let chrome = spec
+            .args
+            .iter()
+            .position(|a| a == "--chrome")
+            .expect("--chrome");
+        let allowed = spec
+            .args
+            .windows(2)
+            .position(|w| w == ["--allowedTools", "mcp__claude-in-chrome"])
+            .expect("allowed");
+        assert!(allowed < chrome, "{:?}", spec.args);
+        // Text and session invocations carry it too.
+        let text = build_text_agent_command(&profile, "hello", None).expect("text");
+        assert!(text.args.iter().any(|a| a == "--chrome"));
+
+        let full = following().for_run(&app(PermissionLevel::FullAccess, true, &["WebFetch"]));
+        assert_eq!(full.permission_level, PermissionLevel::FullAccess);
+        assert!(full.allowed_tools.is_empty());
+        let spec = build_agent_command(&full, "hello", None).expect("build");
+        assert!(spec.args.iter().any(|a| a == "--chrome"));
+        assert!(!spec.args.iter().any(|a| a == "--allowedTools"));
+    }
+
+    #[test]
+    fn a_profile_choice_overrides_the_app_browser_and_its_own_flags_win() {
+        let on = app(PermissionLevel::CliSettings, true, &[]);
+        let off = AgentProfile {
+            browser: Some(false),
+            ..following()
+        }
+        .for_run(&on);
+        assert_eq!(off.browser, Some(false));
+        assert_eq!(off.permission_level, PermissionLevel::CliSettings);
+        let spec = build_agent_command(&off, "hello", None).expect("build");
+        // Off is passed on, so a Claude Code default cannot turn it on.
+        assert!(
+            spec.args.iter().any(|a| a == "--no-chrome"),
+            "{:?}",
+            spec.args
+        );
+        assert!(!spec.args.iter().any(|a| a == "--chrome"));
+        // Following an app that leaves the browser off adds no flag at all.
+        let quiet = following().for_run(&AppAgentSettings::default());
+        assert_eq!(quiet.browser, None);
+        let spec = build_agent_command(&quiet, "hello", None).expect("build");
+        assert!(
+            !spec.args.iter().any(|a| a.contains("chrome")),
+            "{:?}",
+            spec.args
+        );
+
+        let own = AgentProfile {
+            browser: Some(true),
+            ..following()
+        }
+        .for_run(&AppAgentSettings::default());
+        assert_eq!(own.browser, Some(true));
+        assert!(own.uses_browser());
+
+        let flagged = AgentProfile {
+            extra_args: vec!["--no-chrome".into()],
+            ..following()
+        }
+        .for_run(&on);
+        assert_eq!(flagged.browser, None);
+        assert!(!flagged.uses_browser());
+        let spec = build_agent_command(&flagged, "hello", None).expect("build");
+        assert_eq!(spec.args.iter().filter(|a| a.contains("chrome")).count(), 1);
+
+        let user_flag = AgentProfile {
+            extra_args: vec!["--chrome".into()],
+            ..claude_profile()
+        }
+        .for_run(&AppAgentSettings::default());
+        assert!(
+            user_flag.uses_browser(),
+            "its own --chrome still uses the browser"
+        );
+    }
+
+    #[test]
+    fn allowed_abilities_reach_only_profiles_that_follow_the_app_default() {
+        let settings = app(
+            PermissionLevel::CliSettings,
+            false,
+            &["mcp__claude_ai_Atlassian_Rovo", "WebFetch"],
+        );
+        let follows = following().for_run(&settings);
+        assert_eq!(follows.permission_level, PermissionLevel::AllowedTools);
+        assert_eq!(
+            follows.allowed_tools,
+            ["mcp__claude_ai_Atlassian_Rovo", "WebFetch"]
+        );
+
+        // An explicit CLI settings level keeps the CLI's settings alone.
+        let own = claude_profile().for_run(&settings);
+        assert_eq!(own.permission_level, PermissionLevel::CliSettings);
+        assert!(own.allowed_tools.is_empty());
+
+        // Its own Allowed tools level keeps its rules and adds only the browser's.
+        let listed = AgentProfile {
+            permission_level: PermissionLevel::AllowedTools,
+            allowed_tools: vec!["Edit".into()],
+            ..claude_profile()
+        };
+        assert_eq!(listed.clone().for_run(&settings).allowed_tools, ["Edit"]);
+        let with_browser = listed.for_run(&app(PermissionLevel::CliSettings, true, &["WebFetch"]));
+        assert_eq!(
+            with_browser.allowed_tools,
+            ["Edit", "mcp__claude-in-chrome"]
+        );
+
+        // A profile whose extra arguments set permissions keeps them.
+        let flags = AgentProfile {
+            extra_args: vec!["--permission-mode".into(), "acceptEdits".into()],
+            ..following()
+        }
+        .for_run(&settings);
+        assert_eq!(flags.permission_level, PermissionLevel::CliSettings);
+        assert!(flags.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn a_full_saved_list_still_runs_with_the_rules_a_run_adds() {
+        let full = AgentProfile {
+            permission_level: PermissionLevel::AllowedTools,
+            allowed_tools: (0..crate::permissions::MAX_TOOL_RULES)
+                .map(|i| format!("mcp__server_{i}"))
+                .collect(),
+            ..claude_profile()
+        };
+        assert!(full.validate().is_empty());
+        let run = full.for_run(&app(PermissionLevel::CliSettings, true, &[]));
+        assert_eq!(
+            run.allowed_tools.len(),
+            crate::permissions::MAX_TOOL_RULES + 1
+        );
+        // Saving such a list is refused; running with it is not.
+        assert!(!run.validate().is_empty());
+        let spec = build_agent_command(&run, "hello", None).expect("build");
+        assert!(spec.args.iter().any(|a| a == "--chrome"));
+    }
+
+    #[test]
+    fn other_clis_get_no_browser_and_no_rules() {
+        let codex = AgentProfile {
+            adapter: AdapterKind::Codex,
+            model: None,
+            browser: None,
+            ..following()
+        }
+        .for_run(&app(PermissionLevel::CliSettings, true, &["WebFetch"]));
+        assert_eq!(codex.browser, None);
+        assert_eq!(codex.permission_level, PermissionLevel::CliSettings);
+        assert!(codex.allowed_tools.is_empty());
+        let spec = build_agent_command(&codex, "hello", None).expect("build");
+        assert!(!spec.args.iter().any(|a| a.contains("chrome")));
+        assert!(!codex.uses_browser());
+    }
+
+    #[test]
+    fn browser_settings_are_validated() {
+        let codex = AgentProfile {
+            adapter: AdapterKind::Codex,
+            browser: Some(true),
+            ..claude_profile()
+        };
+        assert!(codex
+            .validate()
+            .contains(&"Browser use applies only to Claude Code profiles.".to_string()));
+        let conflict = AgentProfile {
+            browser: Some(true),
+            extra_args: vec!["--no-chrome".into()],
+            ..claude_profile()
+        };
+        assert!(conflict
+            .validate()
+            .iter()
+            .any(|e| e.contains("'--no-chrome'")));
+        let fine = AgentProfile {
+            browser: Some(false),
+            ..claude_profile()
+        };
+        assert!(fine.validate().is_empty());
+        // "Off" with --chrome among the extra arguments would still use the browser.
+        let off_but_flagged = AgentProfile {
+            browser: Some(false),
+            extra_args: vec!["--chrome".into()],
+            ..claude_profile()
+        };
+        assert!(off_but_flagged
+            .validate()
+            .iter()
+            .any(|e| e.contains("'--chrome'")));
+        // Saved without the field, it reads as following the app.
+        let stored: AgentProfile = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "P", "adapter": "claude", "extraArgs": [],
+            "workingDirMode": "node", "defaultTimeoutSecs": 60
+        }))
+        .expect("profile");
+        assert_eq!(stored.browser, None);
+        assert!(serde_json::to_value(&stored)
+            .expect("json")
+            .get("browser")
+            .is_none());
     }
 }

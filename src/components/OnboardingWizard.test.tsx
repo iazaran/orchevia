@@ -138,7 +138,7 @@ it('asks once in setup whether agents work without asking', async () => {
   const user = userEvent.setup();
   for (let i = 0; i < 4; i++)
     await user.click(screen.getByRole('button', { name: 'Next' }));
-  expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('5/7: Permissions');
+  expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('5/8: Permissions');
   expect(screen.getByText(/Not chosen yet/)).toBeInTheDocument();
   await user.click(
     screen.getByRole('radio', { name: /Let agents work without asking \(full access\)/ }),
@@ -158,4 +158,34 @@ it('asks once in setup whether agents work without asking', async () => {
     expect((await backend.listAgentProfiles())[0]?.permissionLevel).toBe('appDefault'),
   );
   useAppStore.setState({ agentPermissionDefault: null });
+});
+
+it('asks after permissions what agents may use from the user’s own setup', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const detect = vi.spyOn(backend, 'detectAgentAbilities');
+  useAppStore.setState({
+    profiles: [],
+    tools: [{ id: 'claude', displayName: 'Claude Code', installed: true }],
+    githubState: null,
+    agentPermissionDefault: 'cliSettings',
+    agentAbilities: { browser: false },
+    hostAbilities: {},
+  });
+  vi.spyOn(useAppStore.getState(), 'refreshAll').mockResolvedValue(undefined);
+  render(<OnboardingWizard onClose={() => {}} />);
+  const user = userEvent.setup();
+  for (let i = 0; i < 5; i++)
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+  expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('6/8: Abilities');
+  // Nothing runs until the user asks.
+  expect(detect).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Find what my agents can use' }));
+  expect(detect).toHaveBeenCalledWith('claude');
+  expect(
+    await screen.findByRole('list', { name: 'Claude Code connectors' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('switch', { name: 'Let workflow steps use my browser' }),
+  ).toHaveAttribute('aria-checked', 'false');
 });

@@ -22,6 +22,9 @@ pub enum RiskCategory {
     /// access level, or extra arguments that do the same). High risk: the
     /// CLI may run any tool, unattended.
     FullAccessAgent,
+    /// An Agent node's profile runs Claude Code with Claude in Chrome: it can
+    /// act in the browser the user is signed in to.
+    BrowserAgent,
 }
 
 impl RiskCategory {
@@ -35,6 +38,7 @@ impl RiskCategory {
             RiskCategory::FullAccessAgent => {
                 "Run AI CLI with full access (permission checks bypassed)"
             }
+            RiskCategory::BrowserAgent => "Use your browser and its signed-in sites",
         }
     }
 }
@@ -103,28 +107,34 @@ pub fn workflow_risks_with_profiles(
     profiles: &[AgentProfile],
 ) -> BTreeSet<RiskCategory> {
     let mut risks = workflow_risks(workflow);
-    let full_access = workflow
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Agent)
-        .any(|node| {
-            let id = node
-                .config
-                .agent_profile_id
-                .as_deref()
-                .filter(|id| !id.trim().is_empty());
-            profiles
-                .iter()
-                .filter(|profile| match id {
-                    Some(id) => profile.id == id,
-                    None => {
-                        node.config.agent_role.is_some() && profile.role == node.config.agent_role
-                    }
-                })
-                .any(AgentProfile::has_full_access)
-        });
-    if full_access {
+    let any_profile = |test: fn(&AgentProfile) -> bool| {
+        workflow
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Agent)
+            .any(|node| {
+                let id = node
+                    .config
+                    .agent_profile_id
+                    .as_deref()
+                    .filter(|id| !id.trim().is_empty());
+                profiles
+                    .iter()
+                    .filter(|profile| match id {
+                        Some(id) => profile.id == id,
+                        None => {
+                            node.config.agent_role.is_some()
+                                && profile.role == node.config.agent_role
+                        }
+                    })
+                    .any(test)
+            })
+    };
+    if any_profile(AgentProfile::has_full_access) {
         risks.insert(RiskCategory::FullAccessAgent);
+    }
+    if any_profile(AgentProfile::uses_browser) {
+        risks.insert(RiskCategory::BrowserAgent);
     }
     risks
 }
@@ -284,6 +294,25 @@ mod tests {
         extra.role = Some("planning".into());
         assert!(
             !workflow_risks_with_profiles(&wf, &[extra]).contains(&RiskCategory::FullAccessAgent)
+        );
+    }
+
+    #[test]
+    fn a_profile_that_uses_the_browser_is_its_own_risk() {
+        let mut agent = node("a", NodeKind::Agent);
+        agent.config.agent_profile_id = Some("p".into());
+        let wf = workflow_with(vec![agent]);
+        let profile: AgentProfile = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "P", "adapter": "claude", "extraArgs": [],
+            "workingDirMode": "node", "defaultTimeoutSecs": 60, "browser": true
+        }))
+        .expect("profile");
+        let risks = workflow_risks_with_profiles(&wf, std::slice::from_ref(&profile));
+        assert!(risks.contains(&RiskCategory::BrowserAgent));
+        let err = may_enable_schedule(&wf, &[profile], false).unwrap_err();
+        assert!(
+            err.contains("Use your browser and its signed-in sites"),
+            "{err}"
         );
     }
 }
