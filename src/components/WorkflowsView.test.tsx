@@ -212,7 +212,7 @@ it('opens simple JSON and preserves the definition through advanced conversion',
   const editor = screen.getByLabelText<HTMLTextAreaElement>('Workflow JSON');
   await waitFor(() => expect(editor.value).toContain('"version": 1'));
   expect(editor.value).not.toContain('position');
-  await user.click(screen.getByRole('button', { name: 'Advanced JSON' }));
+  await user.click(screen.getByRole('radio', { name: 'Advanced JSON' }));
   await waitFor(() => expect(editor.value).toContain('"position"'));
   await user.click(screen.getByRole('button', { name: 'Save JSON' }));
   await waitFor(() =>

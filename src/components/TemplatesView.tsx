@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ADAPTER_LABELS } from '../lib/agents';
 import { getBackend } from '../lib/backend';
 import type { WorkflowTemplate } from '../lib/generation';
@@ -11,8 +11,57 @@ import { ToolGrantNotice } from './ToolGrantNotice';
 import { errorMessage } from '../lib/errors';
 import { setWorkflowDefaults, validateWorkflowLocal } from '../lib/workflow';
 import { DirPicker } from './DirPicker';
+import { CopyButton } from './CopyButton';
+import { JsonEditor, JsonView } from './JsonEditor';
+import { Segmented } from './Segmented';
+import { prepareImportText, toN8n } from '../lib/n8n';
+import { MCP_PRESETS } from '../lib/integrations';
 
 const STARTER_TEMPLATE = 'first-workflow';
+
+/** Steps that run in a repository: commands, Git, GitHub or agents that edit files. */
+function templateNeedsRepository(template: WorkflowTemplate): boolean {
+  return template.workflow.nodes.some(
+    (n) =>
+      n.type === 'command' ||
+      n.type === 'git' ||
+      n.type === 'github' ||
+      (n.type === 'agent' && (n.config.requiredTools?.length ?? 0) > 0),
+  );
+}
+
+/** The MCP setups whose tools a template's MCP and Ticket steps call. */
+function expectedMcpSetups(template: WorkflowTemplate): string[] {
+  const tools = template.workflow.nodes.flatMap((n) =>
+    n.type === 'ticket'
+      ? ['jira_get_issue']
+      : n.type === 'mcp'
+        ? [n.config.mcpTool ?? '']
+        : [],
+  );
+  return MCP_PRESETS.filter((preset) =>
+    preset.tools.some((tool) => tools.includes(tool.name)),
+  ).map((preset) => preset.name);
+}
+
+function categoryTone(category: string): string {
+  switch (category) {
+    case 'research':
+      return 'cyan';
+    case 'getting-started':
+      return 'green';
+    case 'review':
+      return 'violet';
+    case 'bugfix':
+      return 'red';
+    case 'feature':
+      return 'blue';
+    case 'integration':
+      return 'pink';
+    default:
+      return 'amber';
+  }
+}
 
 export function TemplatesView(): React.JSX.Element {
   const builtinTemplates = useAppStore((s) => s.builtinTemplates);
@@ -38,9 +87,18 @@ export function TemplatesView(): React.JSX.Element {
   const mcpServers = useAppStore((s) => s.mcpServers);
   const [importText, setImportText] = useState('');
   const [ioModal, setIoModal] = useState<
-    { mode: 'import' } | { mode: 'export'; name: string; json: string } | null
+    | { mode: 'import' }
+    | {
+        mode: 'export';
+        name: string;
+        json: string;
+        workflow: WorkflowTemplate['workflow'];
+      }
+    | null
   >(null);
-  const [copied, setCopied] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'orchevia' | 'n8n'>('orchevia');
+  const profiles = useAppStore((s) => s.profiles);
+  const importPrepared = useMemo(() => prepareImportText(importText), [importText]);
   // The last imported template, checked against the profiles its roles map to.
   const [imported, setImported] = useState<{
     template: WorkflowTemplate;
@@ -52,7 +110,15 @@ export function TemplatesView(): React.JSX.Element {
   };
   const needsRepository =
     useTarget !== null &&
-    (!useTarget.builtin || useTarget.template.id !== STARTER_TEMPLATE);
+    !(useTarget.builtin && useTarget.template.id === STARTER_TEMPLATE) &&
+    templateNeedsRepository(useTarget.template);
+  // Agent steps can work in a folder even when nothing requires one.
+  const optionalRepository =
+    useTarget !== null &&
+    !needsRepository &&
+    !(useTarget.builtin && useTarget.template.id === STARTER_TEMPLATE) &&
+    useTarget.template.workflow.nodes.some((n) => n.type === 'agent');
+  const expectedSetups = useTarget === null ? [] : expectedMcpSetups(useTarget.template);
 
   const openUse = (template: WorkflowTemplate, builtin: boolean): void => {
     const servers = useAppStore.getState().mcpServers.filter((s) => s.enabled);
@@ -60,8 +126,9 @@ export function TemplatesView(): React.JSX.Element {
       template,
       builtin,
       repoDir:
-        builtin && template.id === STARTER_TEMPLATE
-          ? ''
+        (builtin && template.id === STARTER_TEMPLATE) ||
+        !templateNeedsRepository(template)
+          ? (template.workflow.defaults?.repoDir ?? '')
           : (template.workflow.defaults?.repoDir ??
             useAppStore.getState().knownFolders[0] ??
             ''),
@@ -149,8 +216,13 @@ export function TemplatesView(): React.JSX.Element {
     void getBackend()
       .exportTemplate(template.id, builtin)
       .then((json) => {
-        setCopied(false);
-        setIoModal({ mode: 'export', name: template.name, json });
+        setExportFormat('orchevia');
+        setIoModal({
+          mode: 'export',
+          name: template.name,
+          json,
+          workflow: template.workflow,
+        });
       })
       .catch((err: unknown) => {
         setMessage(errorMessage(err), 'error');
@@ -162,12 +234,18 @@ export function TemplatesView(): React.JSX.Element {
       setMessage('Paste workflow or template JSON first, then Import.', 'warn');
       return;
     }
+    const prepared = importPrepared;
     void getBackend()
-      .importTemplate(importText)
+      .importTemplate(prepared.json)
       .then(async (t) => {
         setImportText('');
         setIoModal(null);
-        setMessage(`Imported template '${t.name}'.`);
+        setMessage(
+          prepared.source === 'n8n'
+            ? `Imported n8n workflow as template '${t.name}'. ${String(prepared.notes.length)} conversion note${prepared.notes.length === 1 ? '' : 's'}: ${prepared.notes.join(' ')}`
+            : `Imported template '${t.name}'.`,
+          prepared.source === 'n8n' && prepared.notes.length > 0 ? 'warn' : 'info',
+        );
         reload();
         const roleMap = await getBackend()
           .roleMapDefault()
@@ -200,7 +278,7 @@ export function TemplatesView(): React.JSX.Element {
     template: WorkflowTemplate,
     builtin: boolean,
   ): React.JSX.Element => (
-    <div key={template.id} className="tool-card" style={{ position: 'relative' }}>
+    <div key={template.id} className="tool-card template-card">
       {!builtin && (
         <CloseButton
           variant="card"
@@ -209,23 +287,38 @@ export function TemplatesView(): React.JSX.Element {
           onClose={() => removeUser(template.id, template.name)}
         />
       )}
-      <h3 style={{ paddingRight: builtin ? 0 : 40 }}>{template.name}</h3>
-      <div style={{ margin: '6px 0', display: 'flex', gap: 6 }}>
-        <span className="status-pill status-running">{template.category}</span>
-        <span className="status-pill status-paused">v{template.version}</span>
+      <div className="template-card-head" style={{ paddingRight: builtin ? 0 : 36 }}>
+        <h3>{template.name}</h3>
+        <div className="template-tags">
+          <span className={`tag tag-${categoryTone(template.category)}`}>
+            {template.category}
+          </span>
+          {template.workflow.nodes.some(
+            (n) => n.type === 'mcp' || n.type === 'ticket',
+          ) && (
+            <span className="tag tag-mcp" title="Needs an MCP server from Environment">
+              MCP
+            </span>
+          )}
+          <span className="tag">
+            {String(template.workflow.nodes.length)} steps · v{template.version}
+          </span>
+        </div>
       </div>
-      <p className="field-hint">{template.description}</p>
-      <div className="tool-version">{template.workflow.nodes.length} nodes</div>
+      <p className="template-desc">{template.description}</p>
       {(template.workflow.inputs?.length ?? 0) > 0 && (
-        <p className="field-hint">
-          Asks when run:{' '}
-          {template.workflow.inputs?.map((i) => i.label ?? i.name).join(' · ')}
+        <p className="template-inputs">
+          <span>Asks for</span>{' '}
+          {template.workflow.inputs?.map((i) => (
+            <code key={i.name} title={i.label ?? i.name}>
+              {i.name}
+            </code>
+          ))}
         </p>
       )}
-      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'nowrap' }}>
+      <div className="template-actions">
         <button
           className="btn btn-primary"
-          style={{ whiteSpace: 'nowrap' }}
           onClick={() => {
             openUse(template, builtin);
           }}
@@ -234,8 +327,7 @@ export function TemplatesView(): React.JSX.Element {
         </button>
         <button
           className="btn btn-ghost"
-          style={{ whiteSpace: 'nowrap' }}
-          title="Show this template as portable JSON (validated, secrets refused)"
+          title="Copy this template as Orchevia or n8n JSON (validated, secrets refused)"
           onClick={() => doExport(template, builtin)}
         >
           Export JSON
@@ -352,12 +444,29 @@ export function TemplatesView(): React.JSX.Element {
                 </p>
               </>
             )}
+            {optionalRepository && (
+              <>
+                <DirPicker
+                  id="tpl-repo"
+                  label="Folder for AI steps (optional)"
+                  value={useTarget.repoDir}
+                  placeholder="/path/to/your/project"
+                  onChange={(repoDir) => {
+                    setUseTarget({ ...useTarget, repoDir });
+                  }}
+                />
+                <p className="field-hint">
+                  AI steps read files here when the prompt needs them. Leave it empty when
+                  the steps only work with what earlier steps return.
+                </p>
+              </>
+            )}
             {useTarget.template.workflow.nodes.some(
               (n) => n.type === 'ticket' || n.type === 'mcp',
             ) && (
               <div className="field">
                 <label className="field-label" htmlFor="tpl-mcp">
-                  Jira / MCP server
+                  MCP server
                 </label>
                 {mcpServers.some((s) => s.enabled) ? (
                   <select
@@ -379,8 +488,14 @@ export function TemplatesView(): React.JSX.Element {
                   </select>
                 ) : (
                   <p className="field-hint">
-                    No MCP server yet: add your Jira server under Environment → MCP
-                    connections, then pick it on the ticket step.
+                    No MCP server yet: add one under Environment → + New MCP server, then
+                    pick it on the step.
+                  </p>
+                )}
+                {expectedSetups.length > 0 && (
+                  <p className="field-hint">
+                    Expects the <strong>{expectedSetups.join(' or ')}</strong> setup from
+                    Environment → + New MCP server.
                   </p>
                 )}
               </div>
@@ -448,25 +563,44 @@ export function TemplatesView(): React.JSX.Element {
               <>
                 <h3 style={{ marginTop: 0 }}>Import template JSON</h3>
                 <p className="field-hint">
-                  Paste Simple JSON, Advanced workflow JSON, or an exported template. A
-                  new template is created directly; configuration and role references are
-                  preserved. Invalid JSON and secrets are refused.
+                  Paste Simple JSON, Advanced workflow JSON, an exported template, or an{' '}
+                  <strong>n8n workflow</strong>. A new template is created directly;
+                  configuration and role references are preserved. Invalid JSON and
+                  secrets are refused.
                 </p>
                 <div className="field">
-                  <label className="field-label" htmlFor="tpl-import">
-                    Workflow or template JSON
-                  </label>
-                  <textarea
+                  <div className="field-row">
+                    <label className="field-label" htmlFor="tpl-import">
+                      Workflow or template JSON
+                    </label>
+                    {importText.trim() !== '' && (
+                      <span
+                        className={`format-badge ${importPrepared.source === 'n8n' ? 'is-n8n' : ''}`}
+                      >
+                        {importPrepared.source === 'n8n'
+                          ? 'n8n workflow'
+                          : 'Orchevia JSON'}
+                      </span>
+                    )}
+                  </div>
+                  <JsonEditor
                     id="tpl-import"
-                    className="textarea"
-                    rows={8}
+                    rows={10}
+                    allowEmpty
                     value={importText}
-                    onChange={(e) => {
-                      setImportText(e.target.value);
-                    }}
-                    placeholder='{"version": 1, "name": "My template", "nodes": [...], "edges": [...]}'
+                    onChange={setImportText}
                   />
                 </div>
+                {importPrepared.source === 'n8n' && importPrepared.notes.length > 0 && (
+                  <div className="transfer-notes" style={{ marginBottom: 12 }}>
+                    <span className="field-label">Conversion notes</span>
+                    <ul>
+                      {importPrepared.notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button className="btn btn-primary" onClick={doImport}>
                     Import into my library
@@ -485,32 +619,53 @@ export function TemplatesView(): React.JSX.Element {
               <>
                 <h3 style={{ marginTop: 0 }}>Export: {ioModal.name}</h3>
                 <p className="field-hint">
-                  Portable JSON — no secrets inside by construction. Copy and share it, or
-                  import it on another machine.
+                  {exportFormat === 'n8n'
+                    ? 'n8n workflow JSON: paste it onto an n8n canvas (Ctrl+V or ⌘V) or import it from a file.'
+                    : 'Portable JSON — no secrets inside by construction. Copy and share it, or import it on another machine.'}
                 </p>
-                <textarea
-                  className="textarea"
-                  rows={10}
-                  readOnly
-                  value={ioModal.json}
-                  aria-label="Exported template JSON"
+                <Segmented
+                  label="Export format"
+                  className="transfer-switches"
+                  value={exportFormat}
+                  onChange={setExportFormat}
+                  options={[
+                    { value: 'orchevia', label: 'Orchevia template' },
+                    { value: 'n8n', label: 'n8n workflow' },
+                  ]}
                 />
+                <JsonView
+                  className="transfer-output"
+                  value={
+                    exportFormat === 'n8n'
+                      ? toN8n(ioModal.workflow, profiles).workflow
+                      : ioModal.json
+                  }
+                />
+                {exportFormat === 'n8n' &&
+                  toN8n(ioModal.workflow, profiles).notes.length > 0 && (
+                    <div className="transfer-notes">
+                      <span className="field-label">What changes in n8n</span>
+                      <ul>
+                        {toN8n(ioModal.workflow, profiles).notes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <button
+                  <CopyButton
                     className="btn btn-primary"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(ioModal.json)
-                        .then(() => {
-                          setCopied(true);
-                        })
-                        .catch(() => {
-                          setCopied(false);
-                        });
-                    }}
-                  >
-                    {copied ? 'Copied ✓' : 'Copy'}
-                  </button>
+                    label={exportFormat === 'n8n' ? 'Copy n8n JSON' : 'Copy'}
+                    text={
+                      exportFormat === 'n8n'
+                        ? JSON.stringify(
+                            toN8n(ioModal.workflow, profiles).workflow,
+                            null,
+                            2,
+                          )
+                        : ioModal.json
+                    }
+                  />
                   <button
                     className="btn"
                     onClick={() => {

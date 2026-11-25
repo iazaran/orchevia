@@ -5,17 +5,19 @@ integrations. The 0.2 line adds a run you can read and steer while it works: ste
 cards that say what each step is doing and achieved, and feedback on a step that is
 checked, applied and rerun before anything is published. Source, installers and the
 project page are public. The 0.3 release adds review comparisons, a repository-first
-Playbooks page and setup for more agents and MCP servers.
+Playbooks page and setup for more agents and MCP servers; 0.3.1 connects Orchevia to
+more of a team's stack (22 MCP setups, seven more coding CLIs), moves workflows to and
+from n8n, and refreshes the interface.
 
 ## Implemented
 
 | Area            | Current capabilities                                                                                                                                                                         |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps, publishing-step marker                                      |
-| Agent profiles  | Claude Code, Codex, Muse Code, Google Antigravity CLI, Gemini CLI, OpenCode and custom profiles, command previews and real setup checks                                                      |
+| Agent profiles  | Claude Code, Codex, Muse Code, Google Antigravity CLI, Gemini CLI, OpenCode and custom profiles (one-click Copilot, Cursor, Qwen Code, Amp, Aider, Goose, Kiro), setup checks                |
 | Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard, feedback on steps during a run with correction rounds     |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, generic MCP tools with connection recipes for Slack, AWS Knowledge, Google Docs and Gmail, on-request server checks              |
-| Reuse           | Built-in/user templates, direct workflow JSON import, project playbooks, reviewed suggestions, generation history                                                                            |
+| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, 22 MCP setups (Google Workspace, Microsoft 365, Slack, Notion, GitHub, Linear, Sentry…), server checks, n8n import and export    |
+| Reuse           | Built-in/user templates (three with MCP), JSON and n8n import, project playbooks with command detection, reviewed suggestions, generation history                                            |
 | Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode                                                                          |
 | Onboarding      | Tool detection, setup wizard, install/auth guidance, setup check for every profile, system/light/dark themes                                                                                 |
 | Delivery        | Gated validation, tag-driven Linux/macOS installers launched before release, checksums, signed in-place updates (AppImage, macOS), apt repository, weekly CLI canary, project page with demo |
@@ -31,6 +33,11 @@ These priorities improve existing capabilities. New features should follow a
 concrete use case, fit the existing architecture, and include tests and documentation.
 
 ## Next improvements to validate with real use
+
+- n8n round trips with real workflows: which nodes people need converted next, and
+  whether MCP steps should become an n8n AI Agent with the MCP Client tool.
+- MCP setups against real accounts: sign-in friction per service, and whether an MCP
+  Tool step should offer the tools a selected setup lists.
 
 - Feedback during real runs: whether checks decide well, how often a correction is
   needed, and whether the correction-round limit fits; a way to send feedback from

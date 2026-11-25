@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { act, render, screen, waitFor, cleanup, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MemoryView } from './MemoryView';
@@ -28,11 +28,13 @@ it('loads disabled knowledge and makes re-enabling it explicit', async () => {
   render(<MemoryView />);
   const user = userEvent.setup();
   await user.selectOptions(screen.getByLabelText('Saved repositories'), '/project');
-  const save = await screen.findByRole('button', {
-    name: 'Save and enable Test command',
-  });
-  expect(screen.getByLabelText('Test command')).toHaveValue('make test');
-  await user.click(save);
+  expect(await screen.findByLabelText('Test command')).toHaveValue('make test');
+  // Loading a disabled value is not a change; enabling it is explicit.
+  await waitFor(() =>
+    expect(screen.getByLabelText('Test command')).toHaveValue('make test'),
+  );
+  expect(screen.getByRole('button', { name: 'Save playbook' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Enable again' }));
   await waitFor(async () =>
     expect((await backend.listPreferences())[0]?.enabled).toBe(true),
   );
@@ -83,14 +85,14 @@ it('edits a project command with evidence and a reusable template reference', as
   await user.type(screen.getByLabelText('Playbook repository'), '/project');
   await user.type(screen.getByLabelText('Test command'), 'make test');
   await user.type(screen.getByLabelText('Evidence note'), 'Team instructions');
-  await user.click(screen.getByRole('button', { name: 'Save Test command' }));
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
   await waitFor(() => expect(screen.getByText(/Saved Test command/)).toBeInTheDocument());
   expect((await backend.getProjectMemoryContext('/project')).text).toContain(
     'Team instructions',
   );
   await user.clear(screen.getByLabelText('Test command'));
   await user.type(screen.getByLabelText('Test command'), 'make check');
-  await user.click(screen.getByRole('button', { name: 'Save Test command' }));
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
   await waitFor(async () =>
     expect((await backend.getProjectMemoryContext('/project')).text).toContain(
       'make check',
@@ -108,9 +110,7 @@ it('edits a project command with evidence and a reusable template reference', as
     screen.getByLabelText('Reusable workflow template'),
     'pattern',
   );
-  await user.click(
-    screen.getByRole('button', { name: 'Save Reusable workflow template' }),
-  );
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
   await waitFor(async () =>
     expect((await backend.getProjectMemoryContext('/project')).text).toContain('pattern'),
   );
@@ -232,4 +232,145 @@ it('ignores a playbook load that completes after the repository changes', async 
     await Promise.resolve();
   });
   expect(screen.getByLabelText('Test command')).toHaveValue('');
+});
+
+it('fills empty fields from detected commands and saves them with their source', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'detectProjectCommands').mockResolvedValue([
+    {
+      field: 'testCommand',
+      value: 'pnpm test',
+      source: 'package.json script "test" (pnpm)',
+    },
+    {
+      field: 'lintCommand',
+      value: 'pnpm run lint',
+      source: 'package.json script "lint" (pnpm)',
+    },
+  ]);
+  useAppStore.setState({
+    workflows: [],
+    preferences: [],
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  render(<MemoryView />);
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText('Playbook repository'), '/project');
+  await user.type(screen.getByLabelText('Lint command'), 'make lint');
+  await user.click(screen.getByRole('button', { name: '✦ Detect commands' }));
+  await screen.findByText(/Found 2 suggestions in package.json/);
+  // Empty fields are filled; a typed value stays, with the suggestion offered.
+  expect(screen.getByLabelText('Test command')).toHaveValue('pnpm test');
+  expect(screen.getByLabelText('Lint command')).toHaveValue('make lint');
+  expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Use it' }));
+  expect(screen.getByLabelText('Lint command')).toHaveValue('pnpm run lint');
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
+  await waitFor(async () =>
+    expect((await backend.getProjectMemoryContext('/project')).text).toContain(
+      'testCommand = "pnpm test" (evidence: Detected from package.json script "test" (pnpm); reviewed in Playbooks.)',
+    ),
+  );
+  expect(screen.queryByText('Unsaved changes')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Save playbook' })).toBeDisabled();
+});
+
+it('clears a saved command when its field is emptied', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference('/project', 'buildCommand', 'make', 'Verified');
+  useAppStore.setState({
+    workflows: [],
+    preferences: await backend.listPreferences(),
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  const { ConfirmHost } = await import('./ConfirmDialog');
+  render(
+    <>
+      <MemoryView />
+      <ConfirmHost />
+    </>,
+  );
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Saved repositories'), '/project');
+  await waitFor(() => expect(screen.getByLabelText('Build command')).toHaveValue('make'));
+  await user.clear(screen.getByLabelText('Build command'));
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
+  const dialog = await screen.findByRole('alertdialog');
+  expect(dialog).toHaveTextContent('Clear 1 saved value?');
+  await user.click(within(dialog).getByRole('button', { name: 'Clear and save' }));
+  await screen.findByText('Cleared Build command.');
+  expect(await backend.listPreferences()).toEqual([]);
+});
+
+it('mock detection refuses relative paths and suggests nothing in the browser', async () => {
+  const backend = __setMockBackendForTests();
+  await expect(backend.detectProjectCommands('repo')).rejects.toThrow(/full path/);
+  await expect(backend.detectProjectCommands('/repo')).resolves.toEqual([]);
+});
+
+it('loads the saved playbook before detecting, so detection never overwrites it', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference('/project', 'testCommand', 'pnpm test:ci', 'Team');
+  vi.spyOn(backend, 'detectProjectCommands').mockResolvedValue([
+    {
+      field: 'testCommand',
+      value: 'pnpm test',
+      source: 'package.json script "test" (pnpm)',
+    },
+    {
+      field: 'buildCommand',
+      value: 'pnpm run build',
+      source: 'package.json script "build" (pnpm)',
+    },
+  ]);
+  useAppStore.setState({
+    workflows: [],
+    preferences: await backend.listPreferences(),
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  render(<MemoryView />);
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText('Playbook repository'), '/project');
+  await user.click(screen.getByRole('button', { name: '✦ Detect commands' }));
+  await screen.findByText(/Found 2 suggestions/);
+  expect(screen.getByLabelText('Test command')).toHaveValue('pnpm test:ci');
+  expect(screen.getByLabelText('Build command')).toHaveValue('pnpm run build');
+  expect(screen.getByRole('button', { name: 'Use it' })).toBeInTheDocument();
+});
+
+it('keeps a disabled value disabled when another field is saved', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  await backend.saveProjectPreference('/project', 'testCommand', 'make test', 'Team');
+  const preference = (await backend.listPreferences())[0];
+  if (!preference) throw new Error('fixture');
+  await backend.savePreference({ ...preference, enabled: false });
+  useAppStore.setState({
+    workflows: [],
+    preferences: await backend.listPreferences(),
+    generations: [],
+    userTemplates: [],
+    profiles: [],
+  });
+  render(<MemoryView />);
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText('Saved repositories'), '/project');
+  await screen.findByRole('button', { name: 'Enable again' });
+  await user.type(screen.getByLabelText('Lint command'), 'make lint');
+  await user.click(screen.getByRole('button', { name: 'Save playbook' }));
+  await screen.findByText('Saved Lint command.');
+  expect(screen.getByRole('button', { name: 'Enable again' })).toBeInTheDocument();
+  const test = (await backend.listPreferences()).find((p) =>
+    p.key.endsWith('testCommand'),
+  );
+  expect(test?.enabled).toBe(false);
 });

@@ -19,6 +19,9 @@ moves from manual to automated, or when an installer is added.
 | MCP server check                    | Manual              | Manual                | Manual                          | Manual              |
 | In-place updates                    | Manual (apt)        | Manual (updater)      | Manual (updater)                | Manual (updater)    |
 | Agent CLIs accept Orchevia's flags  | Weekly              | Weekly                | Weekly (Linux CLIs)             | Weekly (Linux CLIs) |
+| MCP setups and templates (v0.3.1)   | Manual              | Manual                | Manual                          | Manual              |
+| n8n import and export (v0.3.1)      | Manual              | Manual                | Manual                          | Manual              |
+| Playbook detection (v0.3.1)         | Manual              | Manual                | Manual                          | Manual              |
 
 - **CI**: [`ci.yml`](../.github/workflows/ci.yml) on pull requests and `main`.
   _CI (core)_ is the **Rust** job's `cargo test -p orchevia-core` on Linux, which
@@ -106,6 +109,26 @@ run was in progress"; a run paused at an approval is still waiting.
 example through `npx`) and cancel it; then let a node time out; then quit the app
 during a run. Each time, `ps ax | grep -E 'claude|codex|npx|node'` shows nothing
 left from that run.
+
+**MCP setups and templates (v0.3.1).** In **Environment → + New MCP server**, set up
+Fetch web pages (no account), save it and choose **Check server**: it starts and
+lists `fetch`. Run **Templates → Summarize a Web Page** with a public changelog URL
+and a planning profile; the brief cites the page. With your own accounts, repeat the
+check for Google Workspace (the first tool call opens Google sign-in) and Slack, then
+run **Slack Channel Digest** on a channel the token can read.
+
+**n8n import and export (v0.3.1).** Export **Ticket to Draft PR** as n8n JSON, paste it
+onto an empty canvas in a local n8n, and check that the nodes, the If branches and the
+error output of **Run tests** are connected. Export a small n8n workflow (Manual
+Trigger → Execute Command → If) and import it through **Import / Export**: it opens as
+Start → Command → Condition with the conversion notes, and a dry run succeeds.
+
+**Playbook detection (v0.3.1).** In **Playbooks**, choose a Node project with a lock
+file and **Detect commands**: test, lint and build use its package manager. Repeat in
+a Rust or Go repository and in a folder with a Makefile. **Save playbook**, then
+generate a workflow there and check that **Included project memory** lists the
+commands. Run an OpenCode step in a repository and check that it edits that
+repository (its `PWD` matches the step's folder).
 
 **In-place updates.** Install the previous release, open it, and update:
 

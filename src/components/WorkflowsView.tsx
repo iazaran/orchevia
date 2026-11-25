@@ -45,6 +45,10 @@ import { ToolGrantNotice } from './ToolGrantNotice';
 import { Modal } from './Modal';
 import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
+import { Segmented } from './Segmented';
+import { JsonEditor, JsonView } from './JsonEditor';
+import { WorkflowTransfer } from './WorkflowTransfer';
+import { Icon } from './Icon';
 
 function explainGenerationError(raw: string): string {
   if (raw.includes('Ticket nodes need a ticketKey')) {
@@ -389,6 +393,30 @@ export function WorkflowsView(): React.JSX.Element {
         setJsonError(errorMessage(err));
       }
     })();
+  };
+
+  const importTransferred = async (
+    wf: StoredWorkflow['definition'],
+    notes: string[],
+  ): Promise<void> => {
+    const backend = getBackend();
+    const stored = await backend.saveWorkflow(wf);
+    await refreshWorkflows();
+    selectWorkflow(stored.id);
+    const issues = await backend.validateWorkflow(stored.definition).catch(() => []);
+    setValidation(issues);
+    setTransferOpen(false);
+    const errors = issues.filter((issue) => issue.severity === 'error').length;
+    const parts = [
+      `Imported '${stored.name}' with ${String(wf.nodes.length)} steps.`,
+      notes.length > 0
+        ? `${String(notes.length)} conversion note${notes.length === 1 ? '' : 's'}: ${notes[0] ?? ''}`
+        : '',
+      errors > 0
+        ? `${String(errors)} validation error${errors === 1 ? '' : 's'} to fix before it runs; select a step to see them.`
+        : '',
+    ].filter((part) => part !== '');
+    setRunMessage(parts.join(' '), errors > 0 || notes.length > 0 ? 'warn' : 'info');
   };
 
   const updateActiveWorkflowAfterCreate = (wf: StoredWorkflow['definition']): void => {
@@ -787,6 +815,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [jsonIds, setJsonIds] = useState<Record<string, string>>({});
   const [jsonBusy, setJsonBusy] = useState(false);
   const [jsonModal, setJsonModal] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError, , jsonErrorEvent] = useNoticeMessage('error');
   const [templateName, setTemplateName] = useState('');
@@ -877,107 +906,132 @@ export function WorkflowsView(): React.JSX.Element {
           style={{ border: 0, margin: 0, marginLeft: 'auto', padding: 0, minWidth: 0 }}
           disabled={overlayRunId !== null}
         >
-          <button className="btn" onClick={createWorkflow}>
-            + New
-          </button>
+          <div className="btn-group" role="group" aria-label="Create">
+            <button className="btn" onClick={createWorkflow}>
+              + New
+            </button>
+            <button
+              className="btn"
+              title="Ready-made sample workflows to explore and adapt"
+              onClick={() => {
+                setShowSamples(true);
+              }}
+            >
+              Samples…
+            </button>
+            {active !== null &&
+              overlayRunId === null &&
+              activeSaveState?.status === 'error' && (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    void retryWorkflowSave(active.id).catch((err: unknown) =>
+                      setRunMessage(errorMessage(err), 'error'),
+                    );
+                  }}
+                >
+                  Retry save
+                </button>
+              )}
+            <button
+              className="btn"
+              title="Draft a workflow from a goal using your own local AI CLI"
+              onClick={() => {
+                setAssistanceBase(null);
+                setPreview(null);
+                setShowGenerator(true);
+              }}
+            >
+              ✦ Generate
+            </button>
+          </div>
+          <div className="btn-group" role="group" aria-label="Edit">
+            <button
+              className="btn"
+              disabled={active === null}
+              title="Arrange or improve this workflow using a configured local CLI; review before applying"
+              onClick={() => {
+                if (active === null) return;
+                setAssistanceBase(structuredClone(active.definition));
+                setAssistanceMode('optimize');
+                setGenRepoDir(assistanceRepoDir(active.definition));
+                setGenBranch(active.definition.defaults?.branch ?? '');
+                setGoal('');
+                setPreview(null);
+                setGenError(null);
+                setLastGenError(null);
+                setShowAdvancedProfile(true);
+                setAdvancedProfileId('');
+                setShowGenerator(true);
+              }}
+            >
+              ✦ Assist
+            </button>
+            <button
+              className="btn"
+              onClick={openSaveAsTemplate}
+              disabled={active === null}
+            >
+              Save as template
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={openJsonEditor}
+              disabled={active === null}
+              title="View and edit this workflow as raw JSON"
+            >
+              JSON
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setTransferOpen(true)}
+              title="Export to n8n or Orchevia JSON, or import a workflow from either"
+            >
+              Import / Export
+            </button>
+          </div>
+          <div className="btn-group" role="group" aria-label="Run">
+            <button
+              className="btn"
+              disabled={active === null || starting}
+              onClick={() => openStartForm('dry')}
+            >
+              Dry run
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={active === null || starting}
+              title="Edit this workflow's saved usage limits"
+              onClick={() => setLimitsOpen(true)}
+            >
+              Usage limits
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => openStartForm('live')}
+              disabled={active === null || starting}
+            >
+              {starting ? 'Starting…' : '▶ Run'}
+            </button>
+          </div>
           <button
-            className="btn"
-            title="Ready-made sample workflows to explore and adapt"
-            onClick={() => {
-              setShowSamples(true);
-            }}
-          >
-            Samples…
-          </button>
-          {active !== null &&
-            overlayRunId === null &&
-            activeSaveState?.status === 'error' && (
-              <button
-                className="btn"
-                onClick={() => {
-                  void retryWorkflowSave(active.id).catch((err: unknown) =>
-                    setRunMessage(errorMessage(err), 'error'),
-                  );
-                }}
-              >
-                Retry save
-              </button>
-            )}
-          <button
-            className="btn"
-            title="Draft a workflow from a goal using your own local AI CLI"
-            onClick={() => {
-              setAssistanceBase(null);
-              setPreview(null);
-              setShowGenerator(true);
-            }}
-          >
-            ✦ Generate
-          </button>
-          <button
-            className="btn"
-            disabled={active === null}
-            title="Arrange or improve this workflow using a configured local CLI; review before applying"
-            onClick={() => {
-              if (active === null) return;
-              setAssistanceBase(structuredClone(active.definition));
-              setAssistanceMode('optimize');
-              setGenRepoDir(assistanceRepoDir(active.definition));
-              setGenBranch(active.definition.defaults?.branch ?? '');
-              setGoal('');
-              setPreview(null);
-              setGenError(null);
-              setLastGenError(null);
-              setShowAdvancedProfile(true);
-              setAdvancedProfileId('');
-              setShowGenerator(true);
-            }}
-          >
-            ✦ Assist
-          </button>
-          <button className="btn" onClick={openSaveAsTemplate} disabled={active === null}>
-            Save as template
-          </button>
-          <button
-            className="btn btn-ghost"
-            onClick={openJsonEditor}
-            disabled={active === null}
-            title="View and edit this workflow as raw JSON"
-          >
-            JSON
-          </button>
-          <button
-            className="btn"
-            disabled={active === null || starting}
-            onClick={() => openStartForm('dry')}
-          >
-            Dry run
-          </button>
-          <button
-            className="btn btn-ghost"
-            disabled={active === null || starting}
-            title="Edit this workflow's saved usage limits"
-            onClick={() => setLimitsOpen(true)}
-          >
-            Usage limits
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => openStartForm('live')}
-            disabled={active === null || starting}
-          >
-            {starting ? 'Starting…' : '▶ Run'}
-          </button>
-          <button
-            className="btn btn-ghost"
+            className="btn btn-ghost danger-hover btn-icon"
             onClick={deleteActive}
             disabled={active === null}
+            aria-label="Delete"
             title="Delete this workflow (asks first)"
           >
-            Delete
+            <Icon name="trash" size={17} />
           </button>
         </fieldset>
       </div>
+      {transferOpen && (
+        <WorkflowTransfer
+          workflow={active?.definition ?? null}
+          onClose={() => setTransferOpen(false)}
+          onImport={importTransferred}
+        />
+      )}
       {startMode !== null && active !== null && (
         <StartRunDialog
           key={`${active.id}-${startMode}`}
@@ -1720,13 +1774,12 @@ export function WorkflowsView(): React.JSX.Element {
                 </h3>
                 <details>
                   <summary>Configuration</summary>
-                  <pre className="log-block" style={{ maxHeight: 240, overflow: 'auto' }}>
-                    {JSON.stringify(
-                      overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)?.config,
-                      null,
-                      2,
-                    )}
-                  </pre>
+                  <JsonView
+                    value={
+                      overlayWorkflow.nodes.find((n) => n.id === selectedNodeId)
+                        ?.config ?? {}
+                    }
+                  />
                 </details>
                 {overlayResults
                   .filter((r) => r.nodeId === selectedNodeId)
@@ -1771,36 +1824,38 @@ export function WorkflowsView(): React.JSX.Element {
               Shape-checked on save; semantic validation runs too — errors ask before
               saving.
             </p>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <button
-                className="btn"
-                disabled={jsonBusy || jsonMode === 'simple'}
-                onClick={() => switchJsonMode('simple')}
-              >
-                Simple JSON
-              </button>
-              <button
-                className="btn"
-                disabled={jsonBusy || jsonMode === 'raw'}
-                onClick={() => switchJsonMode('raw')}
-              >
-                Advanced JSON
-              </button>
+            <div className="json-modal-mode">
+              <Segmented
+                label="JSON format"
+                value={jsonMode}
+                disabled={jsonBusy}
+                options={[
+                  {
+                    value: 'simple',
+                    label: 'Simple JSON',
+                    title: 'Readable keys, configuration and connections',
+                  },
+                  {
+                    value: 'raw',
+                    label: 'Advanced JSON',
+                    title: 'The full runtime definition with IDs and positions',
+                  },
+                ]}
+                onChange={switchJsonMode}
+              />
             </div>
             <div className="field">
               <label className="field-label" htmlFor="wf-json">
                 Workflow JSON
               </label>
-              <textarea
+              <JsonEditor
                 id="wf-json"
-                className="textarea"
                 rows={18}
                 value={jsonText}
-                onChange={(e) => {
-                  setJsonText(e.target.value);
+                onChange={(next) => {
+                  setJsonText(next);
                   setJsonError(null);
                 }}
-                spellCheck={false}
               />
             </div>
             {jsonError !== null && (

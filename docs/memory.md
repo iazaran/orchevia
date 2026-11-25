@@ -42,9 +42,10 @@ Use output handoffs to pass context between these steps.
 
 ## Templates
 
-Ten built-ins: First Workflow, Implement a Task, Review Pull Request, Investigate Bug,
+Thirteen built-ins: First Workflow, Implement a Task, Review Pull Request, Investigate Bug,
 Refactor, Dependency Upgrade, Run Multi-Agent Review, Create Draft PR, Address
-Review Feedback, and Ticket to Draft PR. Versioned (`v1` schema) and cloneable:
+Review Feedback, Ticket to Draft PR, and three MCP templates (Summarize a Web Page,
+Answer from AWS Docs and Slack Channel Digest). Versioned (`v1` schema) and cloneable:
 
 - **Use** asks for the repository folder for development starters (and the Jira/MCP server for ticket
   steps), lists the inputs each run asks for and any tool permissions the mapped
@@ -58,7 +59,8 @@ Review Feedback, and Ticket to Draft PR. Versioned (`v1` schema) and cloneable:
 - Built-in starters use ordinary handoffs for steps whose selected CLI cannot
   resume a managed session. Orchevia lists those steps when it opens the workflow.
 - **Import/export** accepts a supported plain Simple/Advanced workflow document
-  directly as a new template, or an existing template envelope. No selected
+  directly as a new template, an existing template envelope, or an n8n workflow
+  (converted first, with notes). Export offers Orchevia or n8n JSON. No selected
   workflow is needed. Structural/semantic errors leave the source available for
   correction. Machine-only profile IDs need a configured profile or portable role.
   JSON is validated; credential-like content is refused on
@@ -83,13 +85,22 @@ No vectors, no hidden profile, no telemetry: open **Playbooks** to inspect the s
 `generations`, `user_templates`); export from **Playbooks → Import, export and reset**; profile references stay
 local (re-map by name after moving machines).
 
-The Templates library includes ten starters, including **First Workflow** for commands and approval without setup. Test steps require your project's `testCommand`; blank values
+The Templates library includes thirteen starters, including **First Workflow** for commands and approval without setup. Test steps require your project's `testCommand`; blank values
 cannot run. Clone a starter and edit it with Simple JSON, or save a configured
 workflow as a user template. Portable export retains explicit reviewer names.
 
 ## Project playbooks
 
 Open **Playbooks** and select a repository to load it. Browse for a folder or enter a path and choose **Load playbook** for a new repository.
+**Detect commands** reads the repository's own files and fills empty fields:
+Makefile and justfile targets first, then package.json scripts (with the package
+manager its lock file names), composer.json, deno.json, Cargo.toml, go.mod,
+pyproject.toml (uv or Poetry when locked), Gradle, Maven and mix.exs. AGENTS.md
+and CLAUDE.md become a conventions suggestion. Nothing runs, each file is capped
+at 512 KiB, and a field you already typed keeps its value with the suggestion
+offered beside it. One **Save playbook** button saves every changed field; a
+detected value records where it came from as its evidence, and emptying a saved
+field clears it.
 Save test/lint/build commands, repository conventions, exact reviewer names,
 or a user-template reference with an evidence note. Existing preference controls
 let you edit, disable, delete, export, import, or reset records. Select the global

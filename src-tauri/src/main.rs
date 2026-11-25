@@ -287,6 +287,7 @@ fn main() {
             commands::list_generations,
             commands::get_project_memory_context,
             commands::save_project_preference,
+            commands::detect_project_commands,
             commands::list_preferences,
             commands::save_preference,
             commands::delete_preference,

@@ -1,10 +1,15 @@
 import { useState } from 'react';
 import { getBackend } from '../lib/backend';
 import {
+  MCP_CATEGORIES,
   MCP_PRESETS,
   MCP_SETUP_GUIDE,
+  matchMcpPreset,
+  mcpEnvSnippet,
   newMcpId,
   validateMcpServer,
+  type McpCategory,
+  type McpPreset,
   type McpServerConfig,
   type McpToolInfo,
   type McpCheckReport,
@@ -26,6 +31,8 @@ import { errorMessage } from '../lib/errors';
 import { UpdatesSection } from './Updates';
 import { LinesTextarea } from './DraftText';
 import { CheckList, SetupCheckPanel } from './SetupCheck';
+import { CopyButton } from './CopyButton';
+import { Segmented } from './Segmented';
 
 export function EnvironmentView(): React.JSX.Element {
   const tools = useAppStore((s) => s.tools);
@@ -295,42 +302,40 @@ export function EnvironmentView(): React.JSX.Element {
         <h2 id="mcp-connections" style={{ fontSize: 14, marginTop: 20 }}>
           MCP connections
         </h2>
-        <p className="field-hint">
-          Choose a recipe to prefill an editable local server for an MCP Tool or Jira
-          Ticket step.
-        </p>
-        <div className="tool-grid connection-recipes">
-          {MCP_PRESETS.map((preset) => (
-            <div className="tool-card" key={preset.name}>
-              <h3>{preset.name}</h3>
-              <p className="field-hint">{preset.setup}</p>
-              <button
-                className="btn"
-                onClick={() =>
-                  setEditing({
-                    id: newMcpId(),
-                    name: preset.name,
-                    command: preset.command,
-                    args: [...preset.args],
-                    enabled: true,
-                  })
-                }
-              >
-                Set up {preset.name}
-              </button>
-            </div>
-          ))}
+        <div className="section-row">
+          <p className="field-hint" style={{ margin: 0, maxWidth: 760 }}>
+            MCP servers give MCP Tool and Ticket steps access to your tools. Start from{' '}
+            {String(MCP_PRESETS.length)} ready-made setups such as Google Workspace,
+            GitHub, Slack, Jira, Notion and Microsoft 365. Credentials stay in your shell,
+            never in Orchevia. Use Check server after saving to verify startup and list
+            its tools.
+          </p>
+          <div className="section-actions">
+            <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
+              MCP setup guide
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setEditing({
+                  id: newMcpId(),
+                  name: '',
+                  command: '',
+                  args: [],
+                  enabled: true,
+                });
+              }}
+            >
+              + New MCP server
+            </button>
+          </div>
         </div>
-        <button className="btn btn-ghost" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
-          MCP setup guide
-        </button>
-        <h3 style={{ fontSize: 14, marginTop: 20 }}>
-          Saved servers ({mcpServers.length})
-        </h3>
-        <p className="field-hint" style={{ maxWidth: 720 }}>
-          Credentials stay in the server or your launch environment. Use Check server
-          after saving to verify startup and list its tools.
-        </p>
+        <h3 className="section-title">Saved servers ({mcpServers.length})</h3>
+        {mcpServers.length === 0 && (
+          <div className="empty-inline">
+            No MCP servers yet. Choose <strong>+ New MCP server</strong> to pick a setup.
+          </div>
+        )}
         <div className="tool-grid">
           {mcpServers.map((s) => {
             const tools = serverTools[s.id];
@@ -348,6 +353,7 @@ export function EnvironmentView(): React.JSX.Element {
                   <h3 style={{ margin: 0 }}>{s.name}</h3>
                   <span
                     className={`status-pill ${s.enabled ? 'status-succeeded' : 'status-paused'}`}
+                    style={{ marginLeft: 'auto' }}
                   >
                     {s.enabled ? 'Enabled' : 'Disabled'}
                   </span>
@@ -454,22 +460,6 @@ export function EnvironmentView(): React.JSX.Element {
             );
           })}
         </div>
-        <button
-          className="btn"
-          style={{ marginTop: 10 }}
-          onClick={() => {
-            setEditing({
-              id: newMcpId(),
-              name: '',
-              command: '',
-              args: [],
-              enabled: true,
-            });
-          }}
-        >
-          + New MCP server
-        </button>
-
         {editing !== null && (
           <Modal
             label="MCP server editor"
@@ -480,6 +470,7 @@ export function EnvironmentView(): React.JSX.Element {
             onBackdrop={() => {
               setEditing(null);
             }}
+            maxWidth={880}
           >
             <div>
               <McpEditor
@@ -599,6 +590,208 @@ function firstLine(text: string): string {
   return line.length > 140 ? `${line.slice(0, 140)}…` : line;
 }
 
+const PRESET_TONES = [
+  '#4f86ff',
+  '#a78bfa',
+  '#34d399',
+  '#f59e0b',
+  '#f472b6',
+  '#22d3ee',
+  '#fb7185',
+];
+
+const PRESET_MARKS: Record<string, string> = {
+  'microsoft-365': 'M365',
+  'aws-knowledge': 'AWS',
+  'google-workspace': 'GW',
+  jira: 'JC',
+  postgres: 'PG',
+  context7: 'C7',
+  'cloudflare-docs': 'CF',
+  playwright: 'PW',
+  'brave-search': 'BS',
+};
+
+/** A short mark for a setup tile: GitHub → GH, Slack → S. */
+function presetMark(preset: McpPreset): string {
+  const fixed = PRESET_MARKS[preset.id];
+  if (fixed !== undefined) return fixed;
+  const capitals = preset.name.match(/[A-Z]/g) ?? [];
+  return (
+    capitals.length >= 2 ? capitals.slice(0, 2).join('') : preset.name.charAt(0)
+  ).toUpperCase();
+}
+
+function presetTone(id: string): string {
+  let hash = 0;
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return PRESET_TONES[hash % PRESET_TONES.length] ?? '#4f86ff';
+}
+
+const AUTH_LABEL: Record<McpPreset['auth'], string> = {
+  none: 'No sign-in',
+  env: 'Token in your shell',
+  oauth: 'Browser sign-in',
+  login: 'One-time login',
+};
+
+function McpPresetPicker({
+  onPick,
+  onCancel,
+}: {
+  onPick: (preset: McpPreset | null) => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<'all' | McpCategory>('all');
+  const needle = query.trim().toLowerCase();
+  const list = MCP_PRESETS.filter(
+    (preset) =>
+      (category === 'all' || preset.category === category) &&
+      (needle === '' ||
+        `${preset.name} ${preset.summary} ${preset.category}`
+          .toLowerCase()
+          .includes(needle)),
+  );
+  return (
+    <div className="mcp-picker">
+      <h3 style={{ marginTop: 0 }}>Add an MCP server</h3>
+      <p className="field-hint">
+        Pick a ready-made setup to prefill the command and see how to sign in, or start
+        blank. Nothing runs until you save and choose Check server.
+      </p>
+      <div className="mcp-picker-bar">
+        <input
+          className="input"
+          type="search"
+          aria-label="Search MCP setups"
+          placeholder="Search Google, GitHub, Slack, docs…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <Segmented
+          label="MCP setup category"
+          size="small"
+          value={category}
+          onChange={setCategory}
+          options={[
+            { value: 'all', label: 'All' },
+            ...MCP_CATEGORIES.map((c) => ({ value: c, label: c })),
+          ]}
+        />
+      </div>
+      <div className="mcp-preset-grid">
+        {list.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            className="mcp-preset-tile"
+            aria-label={`Set up ${preset.name}`}
+            aria-describedby={`mcp-preset-${preset.id}`}
+            onClick={() => onPick(preset)}
+          >
+            <span
+              className="mcp-tile-icon"
+              aria-hidden="true"
+              style={{ background: presetTone(preset.id) }}
+            >
+              {presetMark(preset)}
+            </span>
+            <span className="mcp-tile-text">
+              <strong>{preset.name}</strong>
+              <span id={`mcp-preset-${preset.id}`}>{preset.summary}</span>
+              <span className="mcp-tile-tags">
+                <span className="tag">{AUTH_LABEL[preset.auth]}</span>
+                {preset.readOnly && <span className="tag tag-green">Read-only</span>}
+                {preset.ticket === true && (
+                  <span className="tag tag-blue">Ticket steps</span>
+                )}
+              </span>
+            </span>
+          </button>
+        ))}
+        <button
+          type="button"
+          className="mcp-preset-tile is-blank"
+          onClick={() => onPick(null)}
+        >
+          <span className="mcp-tile-icon" aria-hidden="true">
+            +
+          </span>
+          <span className="mcp-tile-text">
+            <strong>Blank server</strong>
+            <span>Any stdio MCP server: a command and its arguments.</span>
+          </span>
+        </button>
+      </div>
+      {list.length === 0 && (
+        <p className="field-hint">
+          No setup matches “{query}”. Start from a blank server.
+        </p>
+      )}
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function McpPresetGuide({ preset }: { preset: McpPreset }): React.JSX.Element {
+  const snippet = mcpEnvSnippet(preset);
+  const names = [...preset.env, ...(preset.envOptional ?? [])];
+  return (
+    <div className="mcp-guide">
+      <div className="mcp-guide-tags">
+        <span className="tag">{preset.category}</span>
+        <span className="tag">{AUTH_LABEL[preset.auth]}</span>
+        {preset.readOnly && <span className="tag tag-green">Read-only</span>}
+        {preset.ticket === true && (
+          <span className="tag tag-blue">Works with Ticket steps</span>
+        )}
+        <span className="tag">Needs {preset.needs}</span>
+      </div>
+      <p className="mcp-guide-summary">{preset.summary}</p>
+      <ol className="mcp-guide-steps">
+        {preset.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      {snippet !== '' && (
+        <div className="mcp-guide-env">
+          <div className="log-block">{snippet}</div>
+          <McpEnvironmentCheck
+            names={names}
+            actions={<CopyButton text={snippet} label="Copy exports" />}
+          />
+        </div>
+      )}
+      <details className="mcp-guide-tools">
+        <summary>Tools to call from an MCP Tool step</summary>
+        <ul>
+          {preset.tools.map((tool) => (
+            <li key={tool.name}>
+              <code>{tool.name}</code> <span className="field-hint">{tool.args}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="field-hint">
+          Press List tools after saving to see every tool with its description.
+        </p>
+      </details>
+      <p className="field-hint mcp-guide-source">
+        Source: <code>{preset.source}</code>{' '}
+        <CopyButton
+          className="btn btn-ghost btn-inline"
+          text={preset.source}
+          label="Copy link"
+        />
+      </p>
+    </div>
+  );
+}
+
 function McpEditor({
   initial,
   onCancel,
@@ -609,56 +802,62 @@ function McpEditor({
   onSave: (s: McpServerConfig) => void;
 }): React.JSX.Element {
   const [form, setForm] = useState<McpServerConfig>(initial);
-  const preset = MCP_PRESETS.find(
-    (option) => option.name === initial.name && option.command === initial.command,
+  const isNew = initial.name.trim() === '' && initial.command.trim() === '';
+  const [picking, setPicking] = useState(isNew);
+  const [presetId, setPresetId] = useState<string | null>(
+    () => matchMcpPreset(initial)?.id ?? null,
   );
-  const validation = useSubmitValidation(validateMcpServer(form));
+  const preset = MCP_PRESETS.find((p) => p.id === presetId);
+  const placeholder = preset?.placeholder;
+  const validation = useSubmitValidation([
+    ...validateMcpServer(form),
+    ...(placeholder !== undefined && form.args.some((arg) => arg.includes(placeholder))
+      ? [`Replace ${placeholder} in the arguments with your own value.`]
+      : []),
+  ]);
   const set = (patch: Partial<McpServerConfig>): void => {
     setForm((f) => ({ ...f, ...patch }));
   };
-  const fillJiraExample = (): void => {
-    setForm((f) => ({
-      ...f,
-      name: f.name.trim() === '' ? 'Jira' : f.name,
-      command: 'uvx',
-      args: ['mcp-atlassian'],
-    }));
-  };
+  if (picking)
+    return (
+      <McpPresetPicker
+        onCancel={onCancel}
+        onPick={(chosen) => {
+          setPresetId(chosen?.id ?? null);
+          setForm((f) =>
+            chosen === null
+              ? { ...f, name: '', command: '', args: [] }
+              : {
+                  ...f,
+                  name: chosen.name,
+                  command: chosen.command,
+                  args: [...chosen.args],
+                },
+          );
+          setPicking(false);
+        }}
+      />
+    );
   return (
     <>
-      <h3 style={{ marginTop: 0 }}>MCP server</h3>
-      {preset && <p className="field-hint">{preset.setup}</p>}
-      {preset?.name === 'Slack' && (
-        <McpEnvironmentCheck names={['SLACK_MCP_XOXB_TOKEN']} />
-      )}
-      {(preset === undefined || preset.name === 'Jira') && (
-        <details className="guide-box">
-          <summary>Setting up Jira? Step-by-step guide</summary>
-          <ol style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-            <li>
-              Install <code>uv</code> (provides <code>uvx</code>) if missing:{' '}
-              <code>curl -LsSf astral.sh/uv/install.sh | sh</code>
-            </li>
-            <li>
-              Press <strong>Fill Jira example</strong> below, then Save. It uses the{' '}
-              <code>mcp-atlassian</code> package — edit the command if your setup differs.
-            </li>
-            <li>
-              Give the server its credentials <em>outside</em> Orchevia (it inherits your
-              shell environment; never paste secrets here) — snippet and checker below.
-            </li>
-            <li>
-              Back in the list, press <strong>List tools</strong> — you should see{' '}
-              <code>jira_get_issue</code>. Ticket nodes call it by default: reference the
-              server from a Ticket node with a key like <code>{'{{input.ticket}}'}</code>;
-              fields become <code>ticket.key</code>, <code>ticket.title</code>,{' '}
-              <code>ticket.description</code>, <code>ticket.acceptanceCriteria</code>.
-              Ticket text is untrusted input — passed to agents as data, never executed.
-            </li>
-          </ol>
-          <JiraCredentialsBody />
-        </details>
-      )}
+      <div className="mcp-editor-head">
+        {preset !== undefined && (
+          <span
+            className="mcp-tile-icon"
+            aria-hidden="true"
+            style={{ background: presetTone(preset.id) }}
+          >
+            {presetMark(preset)}
+          </span>
+        )}
+        <h3 style={{ margin: 0 }}>{preset?.name ?? 'MCP server'}</h3>
+        {isNew && (
+          <button className="btn btn-ghost btn-inline" onClick={() => setPicking(true)}>
+            Choose another setup
+          </button>
+        )}
+      </div>
+      {preset !== undefined && <McpPresetGuide preset={preset} />}
       <div className="field">
         <label className="field-label" htmlFor="mcp-name">
           Name
@@ -667,7 +866,7 @@ function McpEditor({
           id="mcp-name"
           className="input"
           value={form.name}
-          placeholder="Jira"
+          placeholder="My server"
           onChange={(e) => {
             set({ name: e.target.value });
           }}
@@ -680,9 +879,9 @@ function McpEditor({
           </label>
           <input
             id="mcp-cmd"
-            className="input"
+            className="input input-mono"
             value={form.command}
-            placeholder="npx / uvx / /path/to/server"
+            placeholder="npx / uvx / docker / /path/to/server"
             onChange={(e) => {
               set({ command: e.target.value });
             }}
@@ -711,7 +910,7 @@ function McpEditor({
         </label>
         <LinesTextarea
           id="mcp-args"
-          rows={2}
+          rows={Math.min(8, Math.max(2, form.args.length))}
           value={form.args}
           onChange={(args) => {
             set({ args });
@@ -726,11 +925,6 @@ function McpEditor({
         >
           Save server
         </button>
-        {(preset === undefined || preset.name === 'Jira') && (
-          <button className="btn" onClick={fillJiraExample}>
-            Fill Jira example
-          </button>
-        )}
         <button className="btn btn-ghost" onClick={onCancel}>
           Cancel
         </button>
@@ -794,76 +988,14 @@ function DiagnosticsModal({
   );
 }
 
-const JIRA_ENV_SNIPPET = `# Where do Jira credentials go? NOT in Orchevia — put them in your shell
-# profile (~/.profile, ~/.bashrc or ~/.zshenv), then restart Orchevia so the
-# MCP server child inherits them. Jira Cloud example:
-export JIRA_URL="https://your-site.atlassian.net"
-export JIRA_USERNAME="you@example.com"
-export JIRA_API_TOKEN="paste-a-jira-api-token"`;
-
-const JIRA_ENV_VARS = [
-  'JIRA_URL',
-  'JIRA_USERNAME',
-  'JIRA_API_TOKEN',
-  'JIRA_PERSONAL_TOKEN',
-];
-
-/**
- * Jira credential guide: snippet + names-only env visibility check. Rendered
- * inside the MCP server editor's Jira guide — not as a permanent page
- * section — so it shows where it is acted on.
- */
-function JiraCredentialsBody(): React.JSX.Element {
-  const [copied, setCopied] = useState(false);
-  return (
-    <>
-      <p className="field-hint">
-        Orchevia stores no secrets by design. Add these exports to <code>~/.profile</code>
-        , <code>~/.bashrc</code> or <code>~/.zshenv</code>, reload your shell, then
-        restart Orchevia. For Jira Cloud: <code>JIRA_URL</code>,{' '}
-        <code>JIRA_USERNAME</code>, <code>JIRA_API_TOKEN</code>; for Server/DC check the{' '}
-        <code>mcp-atlassian</code> README for the token variable. <code>~/.profile</code>{' '}
-        needs a full log out + back in; <code>~/.bashrc</code>/<code>~/.zshrc</code> needs
-        Orchevia launched from a terminal. Restarting the app alone is not enough.
-      </p>
-      <p className="field-hint">
-        For the suggested <code>uvx mcp-atlassian</code> server, use the names above.{' '}
-        <code>JIRA_BASE_URL</code> and <code>JIRA_EMAIL</code> are names a custom shell
-        script might use; this MCP server does not read them. If “List tools” shows Jira
-        tools, its connection is ready for Ticket and MCP nodes.
-      </p>
-      <div className="log-block">{JIRA_ENV_SNIPPET}</div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-        <button
-          className="btn"
-          onClick={() => {
-            try {
-              void navigator.clipboard
-                .writeText(JIRA_ENV_SNIPPET)
-                .then(() => {
-                  setCopied(true);
-                })
-                .catch(() => {
-                  setCopied(false);
-                });
-            } catch {
-              setCopied(false);
-            }
-          }}
-        >
-          {copied ? 'Copied ✓' : 'Copy snippet'}
-        </button>
-      </div>
-      <McpEnvironmentCheck names={JIRA_ENV_VARS} />
-      <p className="field-hint">
-        Jira Cloud uses the URL, username and API token together. Jira Server or Data
-        Center can use a personal token.
-      </p>
-    </>
-  );
-}
-
-function McpEnvironmentCheck({ names }: { names: string[] }): React.JSX.Element {
+function McpEnvironmentCheck({
+  names,
+  actions,
+}: {
+  names: string[];
+  /** More buttons shown beside the check. */
+  actions?: React.ReactNode;
+}): React.JSX.Element {
   const [envState, setEnvState] = useState<{ name: string; present: boolean }[] | null>(
     null,
   );
@@ -882,9 +1014,12 @@ function McpEnvironmentCheck({ names }: { names: string[] }): React.JSX.Element 
   };
   return (
     <div style={{ marginTop: 8 }}>
-      <button className="btn" disabled={checking} onClick={checkEnv}>
-        {checking ? 'Checking…' : 'Check what Orchevia sees'}
-      </button>
+      <div className="modal-actions" style={{ marginTop: 0 }}>
+        {actions}
+        <button className="btn" disabled={checking} onClick={checkEnv}>
+          {checking ? 'Checking…' : 'Check what Orchevia sees'}
+        </button>
+      </div>
       {envState !== null && (
         <div style={{ marginTop: 8 }}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

@@ -85,9 +85,110 @@ export const AGENT_SIGN_IN: Record<Exclude<AdapterKind, 'custom'>, string> = {
   muse: 'Open `muse` and complete Meta sign-in.',
   antigravity: 'Open `agy` and complete Google sign-in for Gemini.',
   gemini:
-    'Use a supported enterprise or API-key setup. For individual Google sign-in, use Antigravity CLI.',
+    'Use a supported enterprise or API-key setup, and trust the repository folder in gemini once (headless runs stop in untrusted folders). For individual Google sign-in, use Antigravity CLI.',
   opencode: 'Open `opencode` and use `/connect` to configure a model provider.',
 };
+/** How to install each built-in CLI (checked against vendor docs, Nov 2026). */
+export const AGENT_INSTALL: Record<Exclude<AdapterKind, 'custom'>, string> = {
+  claude: 'curl -fsSL https://claude.ai/install.sh | bash',
+  codex: 'npm install -g @openai/codex',
+  muse: 'curl -fsSL https://dev.meta.ai/install.sh | bash',
+  antigravity: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+  gemini: 'npm install -g @google/gemini-cli',
+  opencode: 'npm install -g opencode-ai',
+};
+
+/**
+ * More coding CLIs that run through the Custom CLI contract (extra arguments,
+ * then the prompt as the last argument). Each one prefills a Custom profile
+ * the user reviews before saving.
+ */
+export interface CustomCliPreset {
+  id: string;
+  name: string;
+  executable: string;
+  extraArgs: string[];
+  install: string;
+  /** What the preset does and anything to know before the first run. */
+  notes: string;
+}
+
+export const CUSTOM_CLI_PRESETS: CustomCliPreset[] = [
+  {
+    id: 'copilot',
+    name: 'GitHub Copilot CLI',
+    executable: 'copilot',
+    extraArgs: ['-s', '-p'],
+    install: 'npm install -g @github/copilot',
+    notes:
+      'Runs copilot -p and prints only the answer. Sign in with copilot first. Add --allow-all-tools to let it edit and run commands without asking.',
+  },
+  {
+    id: 'cursor',
+    name: 'Cursor CLI',
+    executable: 'agent',
+    extraArgs: ['-p', '--output-format', 'text'],
+    install: 'curl https://cursor.com/install -fsS | bash',
+    notes:
+      'Runs the Cursor agent in print mode, which can edit files. Sign in with agent login first. Older installs name the program cursor-agent.',
+  },
+  {
+    id: 'qwen',
+    name: 'Qwen Code',
+    executable: 'qwen',
+    extraArgs: ['-p'],
+    install: 'npm install -g @qwen-code/qwen-code',
+    notes:
+      'Runs qwen -p headlessly. Sign in or set a provider key in Qwen Code first. Add --approval-mode yolo to let it act without asking.',
+  },
+  {
+    id: 'amp',
+    name: 'Amp',
+    executable: 'amp',
+    extraArgs: ['-x'],
+    install: 'curl -fsSL https://ampcode.com/install.sh | bash',
+    notes: 'Runs amp in execute mode. Sign in with amp login first.',
+  },
+  {
+    id: 'aider',
+    name: 'Aider',
+    executable: 'aider',
+    extraArgs: ['--no-auto-commits', '--yes-always', '--message'],
+    install: 'python -m pip install aider-chat',
+    notes:
+      'Runs one aider message and leaves commits to the workflow. It answers yes to its own questions, so use it in repositories you trust.',
+  },
+  {
+    id: 'goose',
+    name: 'Goose',
+    executable: 'goose',
+    extraArgs: ['run', '--no-session', '-t'],
+    install:
+      'curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash',
+    notes:
+      'Runs goose run with your configured provider. Leave Model empty and choose it with goose configure: the model flag would come before run.',
+  },
+  {
+    id: 'kiro',
+    name: 'Kiro CLI',
+    executable: 'kiro-cli',
+    extraArgs: ['chat', '--no-interactive'],
+    install: 'curl -fsSL https://cli.kiro.dev/install | bash',
+    notes:
+      'Runs kiro-cli chat without prompts; tools it would ask about are refused unless you add --trust-all-tools. Leave Model empty: the model flag would come before chat.',
+  },
+];
+
+/** A Custom CLI profile prefilled from a preset, for the user to review. */
+export function profileFromPreset(preset: CustomCliPreset): AgentProfile {
+  return {
+    ...createDefaultProfile('custom'),
+    name: preset.name,
+    executable: preset.executable,
+    extraArgs: [...preset.extraArgs],
+  };
+}
+
 export type WorkingDirMode = 'node' | 'profile' | 'inherit';
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh';

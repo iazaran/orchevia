@@ -31,6 +31,7 @@ import { readLocal, writeLocal } from '../lib/storage';
 import { errorMessage } from '../lib/errors';
 import type { DesktopInfo } from '../lib/updates';
 import { Switch } from './Switch';
+import { Segmented } from './Segmented';
 
 function emptySchedule(workflowId: string): Schedule {
   return {
@@ -900,19 +901,22 @@ function KindEditor({
   };
   return (
     <div className="field">
-      <span className="field-label">Cadence</span>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-        {(['oneTime', 'interval', 'daily', 'weekly', 'cron'] as const).map((t) => (
-          <button
-            key={t}
-            className={`tool-chip${tab === t ? ' selected' : ''}`}
-            aria-pressed={tab === t}
-            onClick={() => switchTab(t)}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      <span className="field-label" id="schedule-cadence-label">
+        Cadence
+      </span>
+      <Segmented
+        labelledBy="schedule-cadence-label"
+        className="cadence-switch"
+        value={tab}
+        onChange={switchTab}
+        options={[
+          { value: 'oneTime', label: 'Once' },
+          { value: 'interval', label: 'Every…' },
+          { value: 'daily', label: 'Daily' },
+          { value: 'weekly', label: 'Weekly' },
+          { value: 'cron', label: 'Cron' },
+        ]}
+      />
       {kind.kind === 'oneTime' && (
         <input
           className="input"

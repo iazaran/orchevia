@@ -1853,6 +1853,15 @@ pub fn get_project_memory_context(
     ))
 }
 
+/// Suggested test/lint/build commands and conventions for a repository,
+/// read from its manifest files. Never runs anything.
+#[tauri::command(async)]
+pub fn detect_project_commands(
+    repo_dir: String,
+) -> Result<Vec<orchevia_core::project_detect::DetectedCommand>, String> {
+    orchevia_core::project_detect::detect_project_commands(std::path::Path::new(repo_dir.trim()))
+}
+
 #[tauri::command]
 pub fn save_project_preference(
     state: State<AppState>,

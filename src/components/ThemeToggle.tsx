@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getBackend } from '../lib/backend';
+import { Segmented } from './Segmented';
 import {
   applyTheme,
   loadThemeLocal,
@@ -57,24 +58,21 @@ export function ThemeToggle({
   setTheme: (t: ThemeChoice) => void;
 }): React.JSX.Element {
   return (
-    <label
-      className="field-hint"
-      style={{ display: 'flex', gap: 6, alignItems: 'center' }}
-    >
-      Theme
-      <select
-        className="input"
-        aria-label="Theme"
+    <div className="theme-toggle">
+      <span className="field-hint" id="theme-label">
+        Theme
+      </span>
+      <Segmented
+        labelledBy="theme-label"
+        size="small"
         value={theme}
-        style={{ width: 'auto' }}
-        onChange={(e) => {
-          setTheme(e.target.value as ThemeChoice);
-        }}
-      >
-        <option value="system">System</option>
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-      </select>
-    </label>
+        onChange={setTheme}
+        options={[
+          { value: 'system', label: 'Auto', title: 'Follow the system theme' },
+          { value: 'dark', label: 'Dark' },
+          { value: 'light', label: 'Light' },
+        ]}
+      />
+    </div>
   );
 }

@@ -23,6 +23,7 @@ import { KeyValueTextarea, LinesTextarea } from './DraftText';
 import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
+import { Segmented } from './Segmented';
 
 /** Kinds of step that can publish (the rest only route or wait). */
 const WORKING_KINDS = new Set(['command', 'agent', 'git', 'github', 'ticket', 'mcp']);
@@ -1261,33 +1262,26 @@ export function NodeInspector(): React.JSX.Element | null {
             <span className="field-label" id="node-run-mode-label">
               Runs
             </span>
-            <div
-              role="radiogroup"
-              aria-labelledby="node-run-mode-label"
-              className="command-mode"
-            >
-              {[
-                { script: false, id: 'command', title: 'Command' },
-                { script: true, id: 'script', title: 'Script file' },
-              ].map((mode) => (
-                <label
-                  key={mode.id}
-                  htmlFor={`node-run-mode-${mode.id}`}
-                  className={`access-option${scriptMode === mode.script ? ' selected' : ''}`}
-                >
-                  <input
-                    id={`node-run-mode-${mode.id}`}
-                    type="radio"
-                    name="node-run-mode"
-                    checked={scriptMode === mode.script}
-                    onChange={() => {
-                      switchCommandMode(mode.script);
-                    }}
-                  />
-                  <span>{mode.title}</span>
-                </label>
-              ))}
-            </div>
+            <Segmented
+              labelledBy="node-run-mode-label"
+              className="command-mode-switch"
+              value={scriptMode ? 'script' : 'command'}
+              onChange={(next) => {
+                switchCommandMode(next === 'script');
+              }}
+              options={[
+                {
+                  value: 'command',
+                  label: 'Command',
+                  title: 'Run a program with arguments',
+                },
+                {
+                  value: 'script',
+                  label: 'Script file',
+                  title: 'Run a script file from disk',
+                },
+              ]}
+            />
             {modeNote?.nodeId === node.id && (
               <p className="field-hint" role="status">
                 {modeNote.text}

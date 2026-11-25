@@ -19,6 +19,7 @@ pub mod memory;
 pub mod notify;
 pub mod permissions;
 pub mod process;
+pub mod project_detect;
 pub mod prompt;
 pub mod review;
 pub mod run_controls;

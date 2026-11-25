@@ -1425,9 +1425,9 @@ it('reads a paused run as still going and its approval prompt as a prompt', asyn
     profiles: [],
   });
   render(<RunsView />);
-  const rowsInList = screen.getAllByRole('button', {
-    name: /^(PAUSED|SUCCEEDED|paused|succeeded)/,
-  });
+  const rowsInList = [
+    ...within(screen.getByRole('region', { name: 'Run history' })).getAllByRole('button'),
+  ].filter((button) => button.classList.contains('run-row'));
   expect(rowsInList[0]).toHaveTextContent('so far');
   expect(rowsInList[0]).not.toHaveTextContent('took');
   expect(rowsInList[1]).toHaveTextContent('took 5m');

@@ -255,7 +255,11 @@ tabs and download recommendation.
 The images in `docs/images/` are real screens of the browser build (`pnpm dev`)
 seeded with demo data, captured at 2× scale as WebP. Retake them when the screens
 they show change noticeably; keep the file names so the README and the page do not
-change. `social-preview.jpg` (1280×640) is the link-preview image; upload it under
+change. For 0.3.1 the mock backend's `localStorage` key (`orchevia.mock-backend.v1`)
+was filled with profiles, MCP servers, a ticket-to-PR run with a review fix round
+and 30 days of runs with CLI usage, then headless Chrome captured each view at
+1440 × 1000 through the DevTools protocol (`Page.captureScreenshot` writes WebP
+directly), in the dark theme. `social-preview.jpg` (1280×640) is the link-preview image; upload it under
 **Settings → Social preview** too.
 
 ## Dependency updates

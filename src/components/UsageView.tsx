@@ -27,6 +27,7 @@ import {
   validateUsageSetting,
 } from '../lib/usage';
 import { useAppStore } from '../store';
+import { Segmented } from './Segmented';
 
 const PLANS_KEY = 'usage.plans';
 const SHARE_KEY = 'usage.planShare';
@@ -583,19 +584,25 @@ export function UsageView(): React.JSX.Element {
         </details>
         <section aria-label="Filters" className="usage-filters-section">
           <div className="usage-filter-actions">
-            {[7, 30].map((days) => {
-              const selected = from === isoDay(days - 1) && to === isoDay(0);
-              return (
-                <button
-                  key={days}
-                  className={`btn btn-ghost${selected ? ' active-tab' : ''}`}
-                  aria-pressed={selected}
-                  onClick={() => applyPreset(days)}
-                >
-                  Last {days} days
-                </button>
-              );
-            })}
+            <Segmented
+              label="Date range"
+              value={
+                from === isoDay(6) && to === isoDay(0)
+                  ? '7'
+                  : from === isoDay(29) && to === isoDay(0)
+                    ? '30'
+                    : 'custom'
+              }
+              onChange={(next) => {
+                if (next === 'custom') document.getElementById('usage-from')?.focus();
+                else applyPreset(Number(next));
+              }}
+              options={[
+                { value: '7', label: 'Last 7 days' },
+                { value: '30', label: 'Last 30 days' },
+                { value: 'custom', label: 'Custom', title: 'Pick dates below' },
+              ]}
+            />
             <button
               className="btn btn-ghost"
               onClick={resetFilters}
