@@ -456,8 +456,14 @@ pub fn validate_tool_rule(rule: &str) -> Result<(), String> {
 
 /// Validate a list of allow rules: each rule, the count and duplicates.
 pub fn validate_tool_rules(rules: &[String], what: &str) -> Vec<String> {
+    validate_tool_rule_list(rules, what, true)
+}
+
+/// [`validate_tool_rules`], with the per-list limit only when `limit` is set:
+/// a run's resolved list may hold a saved list plus the rules it adds.
+pub fn validate_tool_rule_list(rules: &[String], what: &str, limit: bool) -> Vec<String> {
     let mut errors = Vec::new();
-    if rules.len() > MAX_TOOL_RULES {
+    if limit && rules.len() > MAX_TOOL_RULES {
         errors.push(format!("{what} can list at most {MAX_TOOL_RULES} tools."));
     }
     let mut seen = std::collections::HashSet::new();

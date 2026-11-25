@@ -230,7 +230,8 @@ decides them once:
   **Allow all** covers the rest. Allowed rules reach profiles that follow the app
   default as `--allowedTools` on top of your settings (a profile at **Use Claude
   Code settings** gets none; a profile at **Allowed tools** keeps its own list, and
-  **Add to allowed tools** copies them into a profile's new list). Anything allowed
+  **Add to allowed tools** copies them into a profile's new list, where they stay
+  when you later turn them off here). Anything allowed
   that the list does not show (not found yet, renamed or removed in Claude Code)
   stays listed with **Remove**. Like Claude Code's own allow rules, a rule names a
   server, not its definition; servers a project adds stay unconnected until you

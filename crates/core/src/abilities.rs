@@ -180,7 +180,20 @@ fn url_origin(token: &str) -> Option<String> {
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = authority.rsplit('@').next().unwrap_or("");
-    (!host.is_empty()).then(|| format!("{scheme}://{host}"))
+    // Show it only when it reads as a host and port. A password holding a raw
+    // "/" cuts the authority early ("user:pa" of "user:pa/ss@host"), and that
+    // must not be shown as a host.
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) if !name.ends_with(']') || name.starts_with('[') => (name, Some(port)),
+        _ => (host, None),
+    };
+    let name_ok = !name.is_empty()
+        && (name.starts_with('[') && name.ends_with(']')
+            || name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
+    let port_ok = port.is_none_or(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    (name_ok && port_ok).then(|| format!("{scheme}://{host}"))
 }
 
 /// A server's command line or URL as safe to show: the program's name and the
@@ -913,6 +926,9 @@ gmail@openai-curated-remote          installed, enabled  0.1.10  x\n";
             ),
             ("/opt/tools/my-server --token abc123", "my-server"),
             ("uvx server --api-key=xyz", "uvx"),
+            // A raw "/" in a password must not leave half of it behind.
+            ("npx pg postgresql://user:pa/ss@db.example/app", "npx"),
+            ("http://[::1]:8080/mcp", "http://[::1]:8080"),
             ("", ""),
         ] {
             assert_eq!(display_target(raw), shown, "{raw}");

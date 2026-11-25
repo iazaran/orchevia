@@ -119,10 +119,13 @@ export function AgentsView(): React.JSX.Element {
       });
     // Judged as runs resolve it, so --chrome among the extra arguments asks too.
     const browserNow = usesBrowser(resolveForRun(profile, appDefault, appAbilities));
-    const browserBefore =
-      before !== undefined &&
-      usesBrowser(resolveForRun(before, appDefault, appAbilities));
-    if (browserNow && !browserBefore) {
+    // A new profile that only follows the app's choice asks nothing: that was
+    // confirmed when the app's browser was turned on.
+    const newlyAsked =
+      before === undefined
+        ? profile.browser === true || profile.extraArgs.includes('--chrome')
+        : !usesBrowser(resolveForRun(before, appDefault, appAbilities));
+    if (browserNow && newlyAsked) {
       const affected = automationsUsingProfile(profile.id);
       confirmations.push({
         title: `Let '${profile.name}' use your browser?`,

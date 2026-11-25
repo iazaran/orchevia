@@ -271,9 +271,22 @@ function ClaudeAbilities({
   // Only a listing that ran can say a server is gone.
   const missing = listed ? missingConnectors(workflows, connectors) : [];
   const webOn = webAccess.every((a) => a === 'orchevia' || a === 'settings');
+  // Rules a switch on screen can turn off. Rows that only say "Allowed" (full
+  // access, or your Claude settings) cannot, so a rule stored for them stays
+  // in the list below with Remove.
+  const switchable = (rule: string): boolean => {
+    const a = access(rule);
+    return a === 'orchevia' || a === 'needed';
+  };
   const shown = [
-    ...(listed ? connectors.flatMap((c) => (c.rule === undefined ? [] : [c.rule])) : []),
-    ...(webOn ? WEB_TOOL_RULES : []),
+    ...(listed
+      ? connectors.flatMap((c) =>
+          c.rule !== undefined && switchable(c.rule) ? [c.rule] : [],
+        )
+      : []),
+    ...(appDefault !== 'fullAccess' && webOn && !webAccess.every((a) => a === 'settings')
+      ? WEB_TOOL_RULES
+      : []),
   ];
   const browserDetail =
     found?.browser.detail ??

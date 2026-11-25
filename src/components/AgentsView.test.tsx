@@ -349,4 +349,32 @@ describe('agent profile browser', () => {
     await user.selectOptions(screen.getByLabelText('Provider / CLI'), 'claude');
     expect(screen.getByLabelText('Browser')).toHaveValue('app');
   });
+
+  it('does not ask again for a new profile that only follows the app browser', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    useAppStore.setState({
+      profiles: [],
+      adapters: [],
+      tools: [],
+      knownFolders: [],
+      agentAbilities: { browser: true },
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AgentsView />
+        <ConfirmHost />
+      </>,
+    );
+    await user.click(screen.getByRole('button', { name: '+ New profile' }));
+    expect(
+      screen.getByRole('option', { name: 'App default (uses my browser)' }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    await waitFor(async () => {
+      expect(await backend.listAgentProfiles()).toHaveLength(1);
+    });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
 });

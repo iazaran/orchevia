@@ -497,13 +497,11 @@ impl AgentProfile {
         if self.adapter != AdapterKind::Claude && !self.allowed_tools.is_empty() {
             errors.push("Allowed tools apply only to Claude Code profiles.".to_string());
         }
-        errors.extend(
-            crate::permissions::validate_tool_rules(&self.allowed_tools, "Allowed tools")
-                .into_iter()
-                .filter(|error| {
-                    limit_rules || !error.starts_with("Allowed tools can list at most")
-                }),
-        );
+        errors.extend(crate::permissions::validate_tool_rule_list(
+            &self.allowed_tools,
+            "Allowed tools",
+            limit_rules,
+        ));
         match (self.adapter, self.permission_level) {
             (_, PermissionLevel::AppDefault | PermissionLevel::CliSettings) => {}
             (adapter, _) if !adapter.supports_profile_controls() => errors.push(

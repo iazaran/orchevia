@@ -77,7 +77,7 @@ Feedback on 0.3.2:
   current name/arguments only for what the user left unchanged; dismissals are
   remembered per server and offer in `localStorage`.
 
-- [x] Review (Fable, then Codex once). Fixed:
+- [x] Review (two independent reviewers). Fixed:
   - stored grants were invisible and unremovable without a detection (now always
     listed with Remove);
   - **Add to allowed tools** dropped the app-wide grants of a profile at the app
@@ -100,6 +100,11 @@ Feedback on 0.3.2:
   - Find skipped CLIs set up only through a profile's executable;
   - stale dismissals and tool lists after an edit; jump links did not move focus;
   - wording that promised the app browser reached only app-default profiles.
+- [x] Second review round: no new defects; fixed a raw "/" in a URL password
+  leaking into the shown address, stored rules hidden under rows without a
+  switch, a browser confirmation for new profiles that only follow the app, and
+  the run-time rule limit now a flag (`validate_tool_rule_list`) instead of a
+  message filter.
 - [x] Decided, not changed: schedule trust stays one boolean. A schedule trusted
   before the browser was turned on keeps running; the browser confirmation names
   the enabled schedules and watchers that will use it, and the docs say so.

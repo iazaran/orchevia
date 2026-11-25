@@ -299,4 +299,24 @@ describe('agent abilities', () => {
     );
     expect(confirm).not.toHaveTextContent('Paused one');
   });
+
+  it('keeps a stored grant removable when its row only says Allowed', async () => {
+    __setMockBackendForTests();
+    reset();
+    useAppStore.setState({
+      agentPermissionDefault: 'fullAccess',
+      agentAbilities: {
+        browser: false,
+        allowedTools: ['mcp__claude_ai_Gmail', 'WebFetch'],
+      },
+    });
+    const user = userEvent.setup();
+    render(<AgentAbilitiesPanel />);
+    await user.click(screen.getByRole('button', { name: 'Find what my agents can use' }));
+    await screen.findByRole('list', { name: 'Claude Code connectors' });
+    // Full access shows no switches, so the stored rules are listed to remove.
+    const stored = screen.getByRole('list', { name: 'Other allowed abilities' });
+    expect(within(stored).getByText('mcp__claude_ai_Gmail')).toBeInTheDocument();
+    expect(within(stored).getByText('WebFetch')).toBeInTheDocument();
+  });
 });
