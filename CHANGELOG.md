@@ -33,6 +33,9 @@ All notable changes are recorded here, following
   empty track, so "100%" sat over a bar that looked a third empty. They are now
   a muted, hatched green.
 - **"Detect current"** keeps one line beside the branch field in the inspector.
+- **The same message no longer stacks.** Choosing a saved repository and then
+  **Load playbook** showed "No saved project knowledge…" twice; a repeated
+  message now replaces the visible one and starts its time again.
 - **apt upgrades reach new releases again.** The Pages deploy that rebuilds the
   apt repository after a release looked up its upload too early and failed
   (GitHub lists a fresh artifact seconds late), so `apt upgrade` stayed on

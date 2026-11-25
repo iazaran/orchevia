@@ -259,7 +259,9 @@ change. For 0.3.1 the mock backend's `localStorage` key (`orchevia.mock-backend.
 was filled with profiles, MCP servers, a ticket-to-PR run with a review fix round
 and 30 days of runs with CLI usage, then headless Chrome captured each view at
 1440 × 1000 through the DevTools protocol (`Page.captureScreenshot` writes WebP
-directly), in the dark theme. `social-preview.jpg` (1280×640) is the link-preview image; upload it under
+directly), in the dark theme. For 0.3.2 the Playbooks and run timeline shots were
+retaken the same way, with the run and its results written through the mock
+backend so the header and progress bar show real counts. `social-preview.jpg` (1280×640) is the link-preview image; upload it under
 **Settings → Social preview** too.
 
 ## Dependency updates
