@@ -77,6 +77,7 @@ esac
         role: None,
         permission_level: Default::default(),
         allowed_tools: vec![],
+        browser: None,
     })
     .expect("profile");
     let engine = Arc::new(Engine::new(

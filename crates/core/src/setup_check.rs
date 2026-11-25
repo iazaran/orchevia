@@ -543,6 +543,7 @@ mod tests {
             role: None,
             permission_level: level,
             allowed_tools: Vec::new(),
+            browser: None,
         }
     }
 
