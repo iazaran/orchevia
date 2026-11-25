@@ -15,6 +15,7 @@ import {
 import { MCP_PRESETS, MCP_SETUP_GUIDE } from '../lib/integrations';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
+import { AgentAbilitiesPanel } from './AgentAbilities';
 import { AgentPermissionsSettings } from './AgentPermissions';
 import { Modal } from './Modal';
 import { Notice, useNoticeMessage } from './Notice';
@@ -73,6 +74,7 @@ const STEPS = [
   'Connect',
   'Agents',
   'Permissions',
+  'Abilities',
   'First workflow',
   'Done',
 ] as const;
@@ -219,7 +221,7 @@ export function OnboardingWizard({
   };
 
   return (
-    <Modal label="Orchevia setup wizard" maxWidth={640}>
+    <Modal label="Orchevia setup wizard" maxWidth={720}>
       <div>
         <h2 style={{ marginTop: 0 }}>
           Set up Orchevia ({step + 1}/{STEPS.length}: {STEPS[step]})
@@ -324,6 +326,11 @@ export function OnboardingWizard({
               After setup, open <strong>Environment</strong> to register a server and run
               <strong> Check server</strong>. Sign in through the tool or its launch
               environment.
+            </p>
+            <p className="field-hint">
+              Connectors you already use in Claude Code or Codex, such as claude.ai Jira
+              or Slack, work in agent steps without setting them up again: the Abilities
+              step lists them.
             </p>
             <button className="btn" onClick={() => openGuide(MCP_SETUP_GUIDE)}>
               MCP setup guide
@@ -473,6 +480,16 @@ export function OnboardingWizard({
         {step === 5 && (
           <>
             <p className="field-hint">
+              Keep what you already have. Change it anytime in Environment, or per profile
+              in Agents.
+            </p>
+            <AgentAbilitiesPanel />
+          </>
+        )}
+
+        {step === 6 && (
+          <>
+            <p className="field-hint">
               Start from a template, generate from a goal (validated preview, never
               auto-runs), or open the Plan → Approve → Implement → Review demo in{' '}
               <strong>Workflows</strong>. Schedules and PR watchers live under{' '}
@@ -481,7 +498,7 @@ export function OnboardingWizard({
           </>
         )}
 
-        {step === 6 && (
+        {step === 7 && (
           <>
             <p className="field-hint">
               You are ready. Workflows run only when you press ▶ Run; approvals pause for

@@ -266,3 +266,55 @@ describe('CLI setup help', () => {
     );
   });
 });
+
+describe('agent profile browser', () => {
+  it('follows the app default, and confirms before a profile uses the browser', async () => {
+    localStorage.clear();
+    const backend = __setMockBackendForTests();
+    useAppStore.setState({
+      profiles: [],
+      adapters: [],
+      tools: [],
+      knownFolders: [],
+      agentAbilities: { browser: false },
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AgentsView />
+        <ConfirmHost />
+      </>,
+    );
+    await user.click(screen.getByRole('button', { name: '+ New profile' }));
+    const browser = screen.getByLabelText('Browser');
+    expect(browser).toHaveValue('app');
+    expect(screen.getByRole('option', { name: 'App default (off)' })).toBeInTheDocument();
+    await user.selectOptions(browser, 'on');
+    expect(screen.getByText(/run Claude Code with --chrome/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    const confirm = await screen.findByRole('alertdialog');
+    expect(confirm).toHaveTextContent("Let 'Claude — Implementation' use your browser?");
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    expect(await backend.listAgentProfiles()).toEqual([]);
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+    await user.click(await screen.findByRole('button', { name: 'Use my browser' }));
+    await waitFor(async () => {
+      expect((await backend.listAgentProfiles())[0]?.browser).toBe(true);
+    });
+    const facts = await screen.findByText('Browser');
+    expect(facts.nextElementSibling).toHaveTextContent('On');
+  });
+
+  it('offers no browser choice for other CLIs and drops it when the CLI changes', async () => {
+    __setMockBackendForTests();
+    useAppStore.setState({ profiles: [], adapters: [], tools: [], knownFolders: [] });
+    const user = userEvent.setup();
+    render(<AgentsView />);
+    await user.click(screen.getByRole('button', { name: '+ New profile' }));
+    await user.selectOptions(screen.getByLabelText('Browser'), 'on');
+    await user.selectOptions(screen.getByLabelText('Provider / CLI'), 'codex');
+    expect(screen.queryByLabelText('Browser')).toBeNull();
+    await user.selectOptions(screen.getByLabelText('Provider / CLI'), 'claude');
+    expect(screen.getByLabelText('Browser')).toHaveValue('app');
+  });
+});

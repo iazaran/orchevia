@@ -21,6 +21,8 @@ import {
   permissionLevelLabel,
   permissionLevels,
   validateProfile,
+  resolveForRun,
+  usesBrowser,
   withAppDefault,
   type AdapterKind,
   type AgentProfile,
@@ -54,6 +56,7 @@ function emptyForm(adapter: AdapterKind): AgentProfile {
 export function AgentsView(): React.JSX.Element {
   const profiles = useAppStore((s) => s.profiles);
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
+  const appAbilities = useAppStore((s) => s.agentAbilities);
   const adapters = useAppStore((s) => s.adapters);
   const tools = useAppStore((s) => s.tools);
   const knownFolders = useAppStore((s) => s.knownFolders);
@@ -92,18 +95,25 @@ export function AgentsView(): React.JSX.Element {
       return;
     }
     const before = profiles.find((p) => p.id === profile.id);
-    if (hasFullAccess(profile) && (before === undefined || !hasFullAccess(before))) {
-      void confirmDialog({
+    const confirmations: { title: string; message: string; confirmLabel: string }[] = [];
+    if (hasFullAccess(profile) && (before === undefined || !hasFullAccess(before)))
+      confirmations.push({
         title: `Give '${profile.name}' full access?`,
         message: `${ADAPTER_LABELS[profile.adapter]} can run tools without asking under this configuration. Schedules that use it need the trusted opt-in.`,
         confirmLabel: 'Allow full access',
-        danger: true,
-      }).then((ok) => {
-        if (ok) persist(profile);
       });
-      return;
-    }
-    persist(profile);
+    if (profile.browser === true && before?.browser !== true)
+      confirmations.push({
+        title: `Let '${profile.name}' use your browser?`,
+        message:
+          'Its steps run Claude Code with Claude in Chrome: Claude can open pages and act in the browser you are signed in to, without asking. Schedules that use it need the trusted opt-in.',
+        confirmLabel: 'Use my browser',
+      });
+    void (async () => {
+      for (const confirmation of confirmations)
+        if (!(await confirmDialog({ ...confirmation, danger: true }))) return;
+      persist(profile);
+    })();
   };
 
   const persist = (profile: AgentProfile): void => {
@@ -353,6 +363,24 @@ export function AgentsView(): React.JSX.Element {
                     <dt>Timeout</dt>
                     <dd>{p.defaultTimeoutSecs}s</dd>
                   </div>
+                  {p.adapter === 'claude' && (
+                    <div>
+                      <dt>Browser</dt>
+                      <dd
+                        className={
+                          usesBrowser(resolveForRun(p, appDefault, appAbilities))
+                            ? 'profile-fact-risk'
+                            : undefined
+                        }
+                      >
+                        {p.browser === undefined
+                          ? `${appAbilities.browser ? 'On' : 'Off'} (app)`
+                          : p.browser
+                            ? 'On'
+                            : 'Off'}
+                      </dd>
+                    </div>
+                  )}
                   {supportsProfileControls(p.adapter) && (
                     <div>
                       <dt>Permissions</dt>
@@ -675,6 +703,7 @@ function ProfileEditor({
   onSave: (p: AgentProfile) => void;
 }): React.JSX.Element {
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
+  const appAbilities = useAppStore((s) => s.agentAbilities);
   const isNew = useAppStore((s) => !s.profiles.some((p) => p.id === initial.id));
   const [form, setForm] = useState<AgentProfile>(initial);
   const [skillsResult, setSkillsResult] = useState<{
@@ -780,6 +809,7 @@ function ProfileEditor({
                   ? level
                   : 'appDefault',
                 allowedTools: adapter === 'claude' ? form.allowedTools : undefined,
+                browser: adapter === 'claude' ? form.browser : undefined,
               });
             }}
           >
@@ -1015,6 +1045,15 @@ function ProfileEditor({
           }}
         />
       )}
+      {form.adapter === 'claude' && (
+        <BrowserField
+          value={form.browser}
+          appBrowser={appAbilities.browser}
+          onChange={(browser) => {
+            set({ browser });
+          }}
+        />
+      )}
       <div className="field">
         <label className="field-label" htmlFor="prof-args">
           Additional arguments (one per line, no secrets)
@@ -1095,6 +1134,46 @@ function ProfileEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Whether a Claude Code profile runs with Claude in Chrome (`--chrome`). */
+function BrowserField({
+  value,
+  appBrowser,
+  onChange,
+}: {
+  value: boolean | undefined;
+  appBrowser: boolean;
+  onChange: (value: boolean | undefined) => void;
+}): React.JSX.Element {
+  const effective = value ?? appBrowser;
+  return (
+    <div className="field">
+      <label className="field-label" htmlFor="prof-browser">
+        Browser
+      </label>
+      <select
+        id="prof-browser"
+        className="input"
+        value={value === undefined ? 'app' : value ? 'on' : 'off'}
+        onChange={(e) => {
+          const next = e.target.value;
+          onChange(next === 'app' ? undefined : next === 'on');
+        }}
+      >
+        <option value="app">
+          App default ({appBrowser ? 'uses my browser' : 'off'})
+        </option>
+        <option value="on">Use my browser (Claude in Chrome)</option>
+        <option value="off">Off</option>
+      </select>
+      <span className="field-hint">
+        {effective
+          ? 'Steps run Claude Code with --chrome: Claude can open pages and act in your signed-in browser, and may use the browser tools without asking. Schedules that use this profile need the trusted opt-in.'
+          : 'Steps run without Claude in Chrome. Turn it on here, or for every profile in Environment → Agents → Abilities.'}
+      </span>
     </div>
   );
 }
