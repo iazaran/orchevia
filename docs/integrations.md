@@ -107,7 +107,9 @@ The list leaves out setups you already saved (they are named under it, with
 came from. A server saved from an earlier version of a setup, such as the v0.3.0
 **Jira** setup (`uvx mcp-atlassian`, now **Jira & Confluence** with `--read-only`),
 offers **Review the update**: the form opens with the current name and arguments,
-and nothing changes until you save. **List tools** and **Check server** can be
+and nothing changes until you save. Servers saved from the earlier Gmail and Google
+Docs setups run a different server (`gws-mcp-server`) with fewer services, so they
+are not offered Google Workspace as an update. **List tools** and **Check server** can be
 hidden again with the same button.
 
 These servers are Orchevia's own, for MCP Tool and Ticket steps. Agent steps also

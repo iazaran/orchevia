@@ -16,24 +16,32 @@ All notable changes are recorded here, following
   Abilities from your own setup** (also a new **Abilities** step in the setup
   wizard) lists them with **Find what my agents can use**, which runs only
   `claude mcp list`, `codex mcp list` and `codex plugin list` and sends no
-  prompt. For Claude Code it shows each connector's status and whether a step
-  may use it: allowed by full access, by your own Claude Code settings, or
-  allowed here with one switch (**Allow all** for the rest). Web search and
-  fetch get the same switch. Codex shows its MCP servers, plugins and
-  `AGENTS.md`; it has no allow-list, so its own approval settings or full
-  access decide.
+  prompt; servers are shown by program and address only, never their arguments.
+  For Claude Code it shows each connector's status and whether a step may use
+  it: allowed by full access, by your own Claude Code settings, or allowed here
+  with one switch (**Allow all** for the rest). Web search and fetch get the
+  same switch, and anything allowed that the list does not show (not found yet,
+  renamed or removed) stays listed with **Remove**. Allowed connectors reach
+  profiles whose permissions follow the app default; a profile that gets its
+  own allow-list through **Add to allowed tools** keeps them in that list.
+  Codex shows its MCP servers, plugins and `AGENTS.md`; it has no allow-list,
+  so its own approval settings or full access decide.
 - **Use your browser in workflow steps.** Claude Code runs headless without
   Claude in Chrome unless asked, so steps could not use the browser you had set
   up. Turn on **Your browser (Claude in Chrome)** once in Environment or the
   wizard, or per profile in Agents (**Browser**: app default, on or off): those
   steps run with `--chrome`, and below full access the browser's tools are
-  allowed without asking. Both places confirm first, and a workflow whose
-  steps use the browser lists **Use your browser and its signed-in sites**
-  among its automation risks, so its schedules need the trusted opt-in.
-- **Renamed connectors are named.** After Find, a warning lists the MCP
-  servers your workflows' Agent steps still require (`requiredTools`) that
-  Claude Code no longer has, with the connector each most likely became
-  (reconnecting "Atlassian Rovo (2)" can make it "Atlassian Rovo").
+  allowed without asking. A profile set to **Off** runs with `--no-chrome`;
+  following an app that leaves the browser off adds no flag, so your Claude Code
+  settings decide. Turning it on confirms first and names the enabled schedules
+  and watchers that will use it unattended, and a workflow whose steps use the
+  browser lists **Use your browser and its signed-in sites** among its
+  automation risks.
+- **Renamed connectors are named.** After a successful Find, a warning lists
+  the MCP servers your workflows' Agent steps still require (`requiredTools`)
+  that Claude Code does not list, with the connector each became when only the
+  copy number changed (reconnecting "Atlassian Rovo (2)" can make it "Atlassian
+  Rovo").
 
 ### Changed
 
@@ -41,13 +49,16 @@ All notable changes are recorded here, following
   **Agents** (permissions, abilities, setup check), **MCP servers**, **Local
   tools** (the GitHub CLI card shows whether `gh` is signed in, the Git card
   what Git steps do), **Updates** and **Diagnostics**. **+ New MCP server**
-  sits at the top of the page.
+  sits at the top of the page, and the jump links move keyboard focus to their
+  section.
 - **List tools and a server check can be hidden again:** the button becomes
   **Hide tools** or **Hide check**; the tool list has its own **Refresh**, the
   check **Check again**.
 - **The new MCP server list leaves out setups you already connected**, naming
   them below the list (with the name you saved them under) and offering **Add
   another one**. Saved servers show which setup they came from.
+- Required-tool notices, refused-run suggestions and the inspector count the
+  abilities allowed in Environment as granted.
 
 ### Fixed
 
@@ -57,8 +68,8 @@ All notable changes are recorded here, following
   offered Jira again. The list now leaves it out, its card names the setup it
   came from, and **Review the update** opens the form with the current name
   and arguments; nothing changes until you save, and dismissing the offer keeps
-  the server as it is. Servers saved from the old Slack binary and the Google Docs and
-  Gmail `gws-mcp-server` setups are recognized too.
+  the server as it is. A server saved from the old Slack binary is recognized
+  too.
 - Dependencies refreshed within their ranges.
 
 ## [0.3.2] - 2026-11-25

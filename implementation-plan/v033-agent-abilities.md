@@ -48,14 +48,15 @@ Feedback on 0.3.2:
   `AgentProfile::for_run(&AppAgentSettings)` replaces `with_app_default` in
   `SqliteDb::get_effective_agent_profile` / `list_effective_agent_profiles`, so
   engine, previews, setup checks, generation and trust all see the same profile:
-  Claude gets `browser: Some(on)` (never when its extra args pass
-  `--chrome`/`--no-chrome`); below full access the browser rule and, for profiles
+  Claude's `browser` becomes the flag the run passes (`Some(true)` `--chrome`,
+  `Some(false)` `--no-chrome`, `None` nothing, also when its extra args pass a
+  browser flag); below full access the browser rule and, for profiles
   following the app default, the allowed abilities become Allowed tools
   (`CliSettings` → `AllowedTools` with just those rules; `AllowedTools` adds them).
   Profiles whose extra args set permissions keep them. `push_browser` adds
   `--chrome` after the permission flags in text, structured and session commands.
 - [x] Trust: `RiskCategory::BrowserAgent` ("Use your browser and its signed-in
-  sites") from `AgentProfile::uses_browser`, so schedules need the trusted opt-in.
+  sites") from `AgentProfile::uses_browser`, listed among a workflow's risks.
 - [x] Tauri: `detect_agent_abilities(adapter)` (blocking pool; the executable from
   the first profile of that adapter with its own path); `agents.abilities` in
   `ALLOWED_SETTINGS` with an 8000-byte limit.
@@ -76,10 +77,41 @@ Feedback on 0.3.2:
   current name/arguments only for what the user left unchanged; dismissals are
   remembered per server and offer in `localStorage`.
 
+- [x] Review (Fable, then Codex once). Fixed:
+  - stored grants were invisible and unremovable without a detection (now always
+    listed with Remove);
+  - **Add to allowed tools** dropped the app-wide grants of a profile at the app
+    default (`inheritedAbilities` copies them into its own list);
+  - an explicit Off emitted nothing, so a Claude Code default could still turn
+    Chrome on (`--no-chrome` now; following an app that leaves it off adds no flag);
+  - a full 64-rule list failed once the browser rule was added
+    (`validate_for_run` skips the per-list limit; saving still enforces it);
+  - `--chrome` in extra arguments with Browser Off (rejected for an explicit choice;
+    the card and the save confirmation follow the effective flag);
+  - detection rendered whole command lines (`display_target`: program and URL
+    origin only);
+  - a failed listing produced a "no longer listed" warning (`connectorsListed`),
+    and rename suggestions matched any shared `claude_ai_` prefix (copy-number
+    only, unique);
+  - "Disconnected" and "401" statuses read as usable;
+  - the old Gmail/Google Docs setups were offered Google Workspace, which widens
+    services (dropped);
+  - JSON `null` accepted by the mock but not by serde;
+  - Find skipped CLIs set up only through a profile's executable;
+  - stale dismissals and tool lists after an edit; jump links did not move focus;
+  - wording that promised the app browser reached only app-default profiles.
+- [x] Decided, not changed: schedule trust stays one boolean. A schedule trusted
+  before the browser was turned on keeps running; the browser confirmation names
+  the enabled schedules and watchers that will use it, and the docs say so.
+  Allow rules name a server, as Claude Code's own do; project servers stay
+  unconnected until approved in Claude Code.
+
 ## Notes for the next release
 
 - Not verified end to end: a real Claude Code step driving Claude in Chrome
   unattended (the extension's own site permissions may still ask), and several
   concurrent steps sharing one browser.
+- A per-schedule record of the risks it was trusted for would let a newly added
+  risk (such as the browser) ask again; today the confirmation names them instead.
 - Detection runs only on request and keeps its result for the session; workflow
   generation does not yet use the detected connectors.
