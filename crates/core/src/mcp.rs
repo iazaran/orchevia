@@ -156,10 +156,14 @@ pub fn call_tool(
 
 /// Call the first of `candidates` the server lists, in one session: start,
 /// list tools, pick, call. `arguments` builds the call's arguments for the
-/// tool picked. Ticket steps use it to read Jira and Shortcut servers alike.
+/// tool picked. A server that cannot list its tools (or lists none) gets the
+/// `fallback` tool called anyway, if given; one that lists tools without any
+/// candidate gets an error naming them. Ticket steps use it to read Jira and
+/// Shortcut servers alike.
 pub fn call_first_listed(
     config: &McpServerConfig,
     candidates: &[&str],
+    fallback: Option<&str>,
     arguments: impl FnOnce(&str) -> Result<serde_json::Value, String> + Send + 'static,
     timeout: Duration,
     cancel: &Arc<AtomicBool>,
@@ -174,15 +178,17 @@ pub fn call_first_listed(
         stderr_log,
     } = spawn_server(config)?;
     let wanted: Vec<String> = candidates.iter().map(|c| (*c).to_string()).collect();
+    let fallback = fallback.map(str::to_string);
     let server_name = config.name.clone();
     let result = run_bounded(&mut child, &group, pipes, timeout, cancel, move |pipes| {
         pipes.initialize()?;
-        let listed = pipes.list_tools()?;
-        let Some(tool) = wanted
+        let listed = pipes.list_tools().unwrap_or_default();
+        let picked = wanted
             .iter()
             .find(|name| listed.iter().any(|t| &t.name == *name))
             .cloned()
-        else {
+            .or_else(|| fallback.filter(|_| listed.is_empty()));
+        let Some(tool) = picked else {
             return Ok(Err(format!(
                 "Server '{server_name}' has none of these tools: {}.",
                 wanted.join(", ")
@@ -439,26 +445,45 @@ impl McpPipes {
     }
 
     fn list_tools(&mut self) -> Result<Vec<McpToolInfo>, String> {
-        let result = self.request("tools/list", serde_json::json!({}))?;
-        let tools = result
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(tools
-            .iter()
-            .filter_map(|t| {
-                Some(McpToolInfo {
-                    name: t.get("name")?.as_str()?.to_string(),
-                    description: t
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    input_schema: t.get("inputSchema").cloned(),
-                })
-            })
-            .collect())
+        // Servers may page the list (`nextCursor`); a bound keeps a server
+        // that never stops paging from holding the call.
+        const MAX_PAGES: usize = 20;
+        let mut listed = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let params = match &cursor {
+                Some(cursor) => serde_json::json!({ "cursor": cursor }),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("tools/list", params)?;
+            for t in result
+                .get("tools")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(name) = t.get("name").and_then(|v| v.as_str()) {
+                    listed.push(McpToolInfo {
+                        name: name.to_string(),
+                        description: t
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        input_schema: t.get("inputSchema").cloned(),
+                    });
+                }
+            }
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .filter(|c| !c.is_empty())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(listed)
     }
 
     fn call_tool(
@@ -711,7 +736,7 @@ pub fn check_server(
                         "required",
                         REQUIRED,
                         "passed",
-                        format!("All {} tool{} your workflows use: {}.", required.len(), if required.len() == 1 { "" } else { "s" }, required.join(", ")),
+                        format!("Every tool your workflows use is listed: {}.", required.join("; ")),
                         None,
                     )
                 } else {
@@ -902,6 +927,7 @@ done
         let result = call_first_listed(
             &config,
             &["stories-get-by-id", "jira_get_issue"],
+            None,
             |tool| Ok(serde_json::json!({ "tool": tool })),
             Duration::from_secs(10),
             &cancel_flag(),
@@ -912,6 +938,7 @@ done
         let none = call_first_listed(
             &config,
             &["stories-get-by-id"],
+            None,
             |_| Ok(serde_json::json!({})),
             Duration::from_secs(10),
             &cancel_flag(),
@@ -920,6 +947,64 @@ done
             none.expect_err("no such tool"),
             "Server 'Jira MCP' has none of these tools: stories-get-by-id."
         );
+        // Listing tools without a candidate is an error even with a
+        // fallback: the server answered, and the names say what is missing.
+        let listed = call_first_listed(
+            &config,
+            &["stories-get-by-id"],
+            Some("jira_get_issue"),
+            |_| Ok(serde_json::json!({})),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert!(listed.is_err());
+        // A server that cannot list still gets the fallback call, as Ticket
+        // steps called the Jira tool before they listed tools.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unlisted = script_config(
+            &dir,
+            "unlisted",
+            r#"while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}\n' "$n" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$n" ;;
+    *'"method":"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"called"}]}}\n' "$n" ;;
+  esac
+done"#,
+        );
+        let fallback = call_first_listed(
+            &unlisted,
+            &["stories-get-by-id"],
+            Some("jira_get_issue"),
+            |tool| Ok(serde_json::json!({ "tool": tool })),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        )
+        .expect("fallback");
+        assert_eq!(fallback.tool, "jira_get_issue");
+        assert_eq!(fallback.text, "called");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_paged_tool_list_is_read_to_the_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = script_config(
+            &dir,
+            "paged",
+            r#"while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}\n' "$n" ;;
+    *'"cursor":"p2"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"stories-get-by-id"}]}}\n' "$n" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"stories-search"}],"nextCursor":"p2"}}\n' "$n" ;;
+  esac
+done"#,
+        );
+        let tools = list_tools(&config, Duration::from_secs(10), &cancel_flag()).expect("tools");
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["stories-search", "stories-get-by-id"]);
     }
 
     #[cfg(unix)]

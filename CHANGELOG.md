@@ -67,8 +67,10 @@ files it made.
   - **waitChecks** waits until CI finishes, on a pull request or on the commit
     you just pushed (check runs and commit statuses). It counts Actions runs
     that are still queued, waits for GitHub to show a just-pushed commit on the
-    pull request, and finishes only when two looks in a row find everything
-    done; an unpushed commit is refused with "push it first". A failed check
+    pull request (and fails rather than passing on the old commit's checks),
+    and finishes only when two looks in a row find everything done; a commit
+    GitHub does not have is refused with "push it first", while one pushed
+    only with a tag counts. A failed check
     fails the step, with the end of each failed job's log as its output for a
     step that fixes it, so a workflow can push, wait, fix and push again in a
     bounded loop.
@@ -87,8 +89,9 @@ files it made.
   `jira_get_issue`). Give it the story number, `sc-123` or the story's link; the
   story fills `{{ticket.key}}` (`sc-123`), `{{ticket.title}}`,
   `{{ticket.status}}` (its workflow state), `{{ticket.url}}` and the other
-  ticket variables, its tasks become the acceptance criteria, and **Check
-  server** accepts either tool for a Ticket step. A new **Shortcut** setup
+  ticket variables, its tasks become the acceptance criteria (finished ones
+  marked done), and **Check server** accepts either tool for a Ticket step. A
+  server that cannot list its tools is read as a Jira server, as before. A new **Shortcut** setup
   connects Shortcut's hosted server with browser sign-in.
 - **Six more MCP setups (28 in all):** Shortcut under **Code & tickets**, and
   under a new **Apps & releases** group Firebase (official), Netlify (official),
@@ -97,7 +100,7 @@ files it made.
 - **Release and deploy commands count as publishing:** `gh workflow run`,
   `gh release upload`, `fastlane supply`, `fastlane pilot`, `fastlane deliver`
   and the `upload_to_*` actions, `eas submit` (or `eas-cli submit`),
-  `firebase deploy`, `netlify deploy`, `vercel deploy` and `vercel --prod`, so
+  `firebase deploy`, `netlify deploy`, `vercel deploy` and `vercel … --prod`, so
   feedback is handled before them and an unmarked one is flagged.
 - **Media and document tools.** Environment → Local tools detects FFmpeg,
   ImageMagick, Pandoc and Python under **Media and documents**, with what each

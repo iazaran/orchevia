@@ -182,6 +182,24 @@ link; a Jira-looking key on a Shortcut server fails with what a story key looks
 like. n8n export keeps Jira nodes for Ticket steps and says to use an HTTP
 Request node for Shortcut.
 
+## Second review of the CI and Shortcut additions (Fable)
+
+No high findings. Fixed: the stale-head guard compares ancestry instead of branch
+names (an open pull request whose head is an ancestor of the checkout's commit, on
+its branch, its upstream or detached), fails with "not pushed" or "still shows"
+instead of passing on the old commit's checks, and no longer waits when the pull
+request is ahead; "pushed" asks GitHub when no remote-tracking branch has the
+commit, so tag-only pushes work; a failed `gh run list` (a token without Actions
+access) is a note, not a failed wait; a deadline between the two looks returns the
+finished look; `vercel --yes --prod` and similar match (a phrase's option is looked
+for up to six words ahead, both sides); tool lists follow `nextCursor`, and a server
+that cannot list its tools is called as a Jira server; a reply without a named
+Shortcut story is an error; finished tasks are marked done; a workspace named
+"story" no longer hides the story number; `refs/tags/` is stripped for the run
+lookup; empty workflow input names or ones with `=` are refused; the mock records
+ticket links as the engine does. Kept: a dispatched run is the newest one after the
+dispatch, so two dispatches of one workflow at the same moment can swap.
+
 ## Left for later
 
 - Media MCP presets (see above) once real accounts confirm their tools.

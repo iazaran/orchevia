@@ -673,8 +673,17 @@ pub fn command_publishes(executable: &str, args: &[String]) -> bool {
 /// (`git -C dir push`, `gh -R owner/repo pr create`).
 fn phrase_at(words: &[&str], start: usize, parts: &[&str]) -> bool {
     const WITH_VALUE: [&str; 6] = ["-c", "-C", "-R", "--repo", "--git-dir", "--work-tree"];
+    // How far ahead a phrase's option (`vercel --prod`) may come, past other
+    // options and their values (`vercel --yes --token t --prod`).
+    const OPTION_REACH: usize = 6;
     let mut at = start;
     for (index, part) in parts.iter().enumerate() {
+        if index > 0 && part.starts_with('-') {
+            match (at..words.len().min(at + OPTION_REACH)).find(|&i| words.get(i) == Some(part)) {
+                Some(found) => at = found,
+                None => return false,
+            }
+        }
         // Options are skipped between words, unless the phrase names one.
         if index > 0 && !part.starts_with('-') {
             while words.get(at).is_some_and(|w| w.starts_with('-')) {

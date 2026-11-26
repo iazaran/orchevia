@@ -4657,57 +4657,127 @@ struct CiLook {
     note: String,
 }
 
+/// A look at CI, or a reason to stop waiting at once.
+enum Look {
+    Seen(CiLook),
+    Stop(String),
+}
+
+/// The checkout a wait runs in: its commit, and its branch and the branch it
+/// tracks (none when detached).
+struct Checkout {
+    head: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+}
+
+impl Checkout {
+    fn read(root: &str) -> Option<Self> {
+        let head = crate::git::head_sha(root).ok()?;
+        let branch = crate::git::current_branch(root)
+            .ok()
+            .filter(|b| b != "HEAD");
+        Some(Self {
+            head,
+            branch,
+            upstream: crate::git::upstream_branch(root),
+        })
+    }
+
+    /// The checkout holds commits the open pull request does not show yet:
+    /// it is on the pull request's branch (or detached), and the pull
+    /// request's head is an ancestor of its commit.
+    fn ahead_of(&self, root: &str, pr: &crate::github::PullRequest) -> bool {
+        let same_branch = match &self.branch {
+            None => true,
+            Some(branch) => {
+                *branch == pr.head_branch || self.upstream.as_deref() == Some(&pr.head_branch)
+            }
+        };
+        pr.state.eq_ignore_ascii_case("open")
+            && !pr.head_sha.is_empty()
+            && self.head != pr.head_sha
+            && same_branch
+            && crate::git::is_ancestor(root, &pr.head_sha, &self.head)
+    }
+}
+
+/// Whether GitHub has `sha`: on a remote-tracking branch here, or, failing
+/// that, by asking GitHub (a commit pushed only with a tag).
+fn pushed(runner: &crate::github::GhRunner, root: &str, sha: &str) -> Result<bool, String> {
+    if crate::git::on_remote_branch(root, sha).unwrap_or(false) {
+        return Ok(true);
+    }
+    crate::github::commit_on_github(runner, root, sha)
+}
+
 fn look_at_ci(
     runner: &crate::github::GhRunner,
     root: &str,
     number: u64,
     sha: &str,
-    local: Option<&(String, String)>,
+    checkout: Option<&Checkout>,
     past_grace: bool,
-) -> Result<CiLook, String> {
-    let runs_on = |sha: &str| -> Result<Vec<String>, String> {
-        Ok(crate::github::unfinished_runs(runner, root, sha)?
-            .into_iter()
-            .map(|name| format!("workflow {name}"))
-            .collect())
+) -> Result<Look, String> {
+    // Listing runs needs Actions access a token may lack; checks alone still
+    // tell the result, so a failed listing is a note, not an error.
+    let mut note = String::new();
+    let mut runs_on = |sha: &str| -> Vec<String> {
+        match crate::github::unfinished_runs(runner, root, sha) {
+            Ok(names) => names
+                .into_iter()
+                .map(|name| format!("workflow {name}"))
+                .collect(),
+            Err(e) => {
+                note = format!(
+                    "Note: could not list Actions runs ({e}); judged by the checks alone.\n"
+                );
+                Vec::new()
+            }
+        }
     };
     if number == 0 {
-        return Ok(CiLook {
-            checks: crate::github::commit_ci_checks(runner, root, sha)?,
-            waiting: runs_on(sha)?,
-            note: String::new(),
-        });
+        let checks = crate::github::commit_ci_checks(runner, root, sha)?;
+        let waiting = runs_on(sha);
+        return Ok(Look::Seen(CiLook {
+            checks,
+            waiting,
+            note,
+        }));
     }
     let pr = crate::github::pr_details(runner, root, number)?;
     let mut waiting = Vec::new();
-    let mut note = String::new();
     // Right after a push the pull request still shows the previous commit,
-    // whose checks may all be done.
-    if let Some((branch, head)) = local {
-        if *branch == pr.head_branch && *head != pr.head_sha {
-            if past_grace {
-                note = format!(
-                    "Note: pull request #{number} is on commit {}; this checkout is on {}.\n",
+    // whose checks may all be done: wait for it to show this checkout's.
+    if let Some(checkout) = checkout.filter(|c| c.ahead_of(root, &pr)) {
+        let head = short_sha(&checkout.head);
+        match pushed(runner, root, &checkout.head) {
+            Ok(true) if past_grace => {
+                return Ok(Look::Stop(format!(
+                    "Pull request #{number} still shows commit {}, not this checkout's {head}: push {head} to {}.",
                     short_sha(&pr.head_sha),
-                    short_sha(head)
-                );
-            } else {
-                waiting.push(format!(
-                    "GitHub to show commit {} on the pull request",
-                    short_sha(head)
-                ));
+                    pr.head_branch
+                )))
             }
+            Ok(true) => waiting.push(format!("GitHub to show commit {head} on the pull request")),
+            Ok(false) => {
+                return Ok(Look::Stop(format!(
+                    "Commit {head} is not pushed: push it to {} before waiting for pull request #{number}'s CI.",
+                    pr.head_branch
+                )))
+            }
+            Err(e) => return Err(e),
         }
     }
     let checks = crate::github::pr_ci_checks(runner, root, number)?;
     if !pr.head_sha.is_empty() {
-        waiting.extend(runs_on(&pr.head_sha)?);
+        waiting.extend(runs_on(&pr.head_sha));
     }
-    Ok(CiLook {
+    Ok(Look::Seen(CiLook {
         checks,
         waiting,
         note,
-    })
+    }))
 }
 
 fn wait_for_checks(
@@ -4722,21 +4792,27 @@ fn wait_for_checks(
     } else {
         let sha = crate::git::head_sha(root)?;
         // GitHub runs nothing for a commit it does not have.
-        if !crate::git::on_remote_branch(root, &sha).unwrap_or(false) {
-            return Err(format!(
-                "Commit {} is not on any remote branch: push it before waiting for its CI.",
-                short_sha(&sha)
-            ));
+        match pushed(runner, root, &sha) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(format!(
+                    "Commit {} is not on GitHub: push it before waiting for its CI.",
+                    short_sha(&sha)
+                ))
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Could not tell whether commit {} is on GitHub: {e}",
+                    short_sha(&sha)
+                ))
+            }
         }
         (format!("commit {}", short_sha(&sha)), sha)
     };
-    // The checkout's branch and commit, to tell a pull request GitHub has
-    // not updated yet from one that is current.
-    let local = if number > 0 {
-        match (crate::git::current_branch(root), crate::git::head_sha(root)) {
-            (Ok(branch), Ok(head)) if branch != "HEAD" => Some((branch, head)),
-            _ => None,
-        }
+    // The checkout, to tell a pull request GitHub has not updated yet from
+    // one that is current.
+    let checkout = if number > 0 {
+        Checkout::read(root)
     } else {
         None
     };
@@ -4747,13 +4823,17 @@ fn wait_for_checks(
     let mut errors = 0u32;
     let mut settled = 0u32;
     let mut waiting: Vec<String> = Vec::new();
+    // The last look that found everything done, for a deadline that falls
+    // between the two looks a wait needs.
+    let mut last_done: Option<CiLook>;
     loop {
         if flag.load(Ordering::SeqCst) {
             return Ok(cancelled());
         }
         let past_grace = started.elapsed() >= CI_START_GRACE;
-        match look_at_ci(runner, root, number, &sha, local.as_ref(), past_grace) {
-            Ok(look) => {
+        match look_at_ci(runner, root, number, &sha, checkout.as_ref(), past_grace) {
+            Ok(Look::Stop(message)) => return Err(message),
+            Ok(Look::Seen(look)) => {
                 errors = 0;
                 waiting = look
                     .checks
@@ -4770,17 +4850,22 @@ fn wait_for_checks(
                 if settled >= 2 || nothing {
                     return Ok(ci_checks_outcome(runner, root, &target, look, nothing));
                 }
+                last_done = done.then_some(look);
             }
             // A network blip is not a CI failure: try again a few times.
             Err(e) => {
                 errors += 1;
                 settled = 0;
+                last_done = None;
                 if errors >= 3 {
                     return Err(format!("Could not read CI for {target}: {e}"));
                 }
             }
         }
         if Instant::now() >= deadline {
+            if let Some(look) = last_done {
+                return Ok(ci_checks_outcome(runner, root, &target, look, false));
+            }
             return Err(format!(
                 "CI on {target} was still running when the step's time ran out{}.",
                 if waiting.is_empty() {
@@ -12867,14 +12952,7 @@ exit 1
                 .expect("chmod");
         }
         std::env::set_var("ORCHEVIA_GH_BIN", script.to_string_lossy().into_owned());
-        let (repo, root) = fresh_repo()?;
-        // As if pushed: a remote-tracking branch holds the commit.
-        assert!(std::process::Command::new("git")
-            .args(["update-ref", "refs/remotes/origin/main", "HEAD"])
-            .current_dir(&root)
-            .status()
-            .expect("git")
-            .success());
+        let (repo, root) = two_commit_repo(true)?;
         let (db, engine) = harness();
         let node = |id: &str, kind: NodeKind, config: NodeConfig| Node {
             id: id.into(),
@@ -12941,7 +13019,7 @@ exit 1
 case "$1 $2" in
   "pr view")
     n=$(cat $state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/n
-    if [ "$n" = 1 ]; then oid=0000000000; else oid=$(git rev-parse HEAD); fi
+    if [ "$n" = 1 ]; then oid=$(git rev-parse HEAD~1); else oid=$(git rev-parse HEAD); fi
     echo "{\"number\":12,\"headRefName\":\"main\",\"headRefOid\":\"$oid\"}" ;;
   "pr checks")
     echo '[{"name":"build","bucket":"pass","link":""},{"name":"lint","bucket":"skipping","link":""}]' ;;
@@ -13082,27 +13160,143 @@ esac
         );
     }
 
+    /// A repository with two commits on `main`; the remote-tracking
+    /// `origin/main` holds the newest one when `pushed`, else its parent.
+    fn two_commit_repo(pushed: bool) -> Option<(tempfile::TempDir, String)> {
+        let (repo, root) = fresh_repo()?;
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git")
+                .status
+                .success());
+        };
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        std::fs::write(std::path::Path::new(&root).join("b.txt"), "b\n").expect("write");
+        git(&["add", "b.txt"]);
+        git(&["commit", "-m", "second"]);
+        if pushed {
+            git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        }
+        Some((repo, root))
+    }
+
+    /// A scripted `gh` for calling the wait directly; `$state` is its folder.
+    fn scripted_gh(dir: &std::path::Path, body: &str) -> crate::github::GhRunner {
+        let script = dir.join("gh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nstate={}\n{body}", dir.display()),
+        )
+        .expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        crate::github::GhRunner {
+            executable: script.to_string_lossy().into_owned(),
+            timeout_secs: 10,
+        }
+    }
+
+    fn wait_now(
+        runner: &crate::github::GhRunner,
+        root: &str,
+        number: u64,
+    ) -> Result<CiOutcome, String> {
+        let flag = AtomicBool::new(false);
+        wait_for_checks(
+            runner,
+            root,
+            number,
+            Instant::now() + Duration::from_secs(10),
+            &flag,
+        )
+    }
+
+    fn report_of(outcome: Result<CiOutcome, String>) -> String {
+        match outcome {
+            Ok(CiOutcome::Passed { report, .. }) => report,
+            Ok(CiOutcome::Failed { error, .. }) => panic!("failed: {error}"),
+            Ok(CiOutcome::Cancelled { .. }) => panic!("cancelled"),
+            Err(e) => panic!("error: {e}"),
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn waiting_for_an_unpushed_commit_says_to_push_it() {
-        let Some((_repo, root)) = fresh_repo() else {
+        let Some((_repo, root)) = two_commit_repo(false) else {
             return;
         };
-        let runner = crate::github::GhRunner {
-            executable: "gh-never-called".into(),
-            timeout_secs: 5,
-        };
-        let flag = AtomicBool::new(false);
-        let outcome = wait_for_checks(
-            &runner,
-            &root,
-            0,
-            Instant::now() + Duration::from_secs(5),
-            &flag,
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gh = scripted_gh(
+            dir.path(),
+            r#"
+case "$1" in
+  api) echo 'gh: No commit found for SHA: abc (HTTP 422)' >&2; exit 1 ;;
+  pr)
+    echo "{\"number\":3,\"state\":\"OPEN\",\"headRefName\":\"main\",\"headRefOid\":\"$(git rev-parse HEAD~1)\"}" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#,
         );
-        let Err(message) = outcome else {
+        // Without a pull request: GitHub has no such commit.
+        let Err(message) = wait_now(&gh, &root, 0) else {
             panic!("an unpushed commit has no CI to wait for");
         };
         assert!(message.contains("push it"), "{message}");
+        // With one: the pull request's old, finished checks never pass for
+        // the commit that was not pushed.
+        let Err(message) = wait_now(&gh, &root, 3) else {
+            panic!("a pull request without this commit is not its CI");
+        };
+        assert!(
+            message.contains("is not pushed: push it to main"),
+            "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ci_reads_tag_pushes_and_newer_pull_requests_without_waiting() {
+        let Some((_repo, root)) = two_commit_repo(false) else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No remote-tracking branch holds HEAD (pushed with a tag only), but
+        // GitHub has it; and the pull request is ahead of this checkout.
+        let gh = scripted_gh(
+            dir.path(),
+            r#"
+case "$1 $2" in
+  "api repos/{owner}/{repo}/commits/"*) git rev-parse HEAD ;;
+  "api --paginate")
+    case "$3" in
+      *check-runs*) echo '{"name":"release","status":"completed","conclusion":"success","html_url":"u"}' ;;
+    esac ;;
+  "pr view")
+    n=$(cat $state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/n
+    echo '{"number":4,"state":"OPEN","headRefName":"main","headRefOid":"abcdef0123456789"}' ;;
+  "pr checks") echo '[{"name":"build","bucket":"pass","link":""}]' ;;
+  "run list") echo 'HTTP 403: Resource not accessible by personal access token' >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#,
+        );
+        let report = report_of(wait_now(&gh, &root, 0));
+        assert!(report.contains("✓ release"), "{report}");
+        // A token without Actions access still gets an answer from the checks.
+        assert!(report.contains("could not list Actions runs"), "{report}");
+        let report = report_of(wait_now(&gh, &root, 4));
+        assert!(report.contains("✓ build"), "{report}");
+        // Two looks, no waiting for GitHub to show this older commit.
+        let looks = std::fs::read_to_string(dir.path().join("n")).expect("looks");
+        assert_eq!(looks.trim(), "2");
     }
 
     #[tokio::test]

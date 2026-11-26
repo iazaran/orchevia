@@ -94,6 +94,34 @@ pub fn on_remote_branch(dir: &str, sha: &str) -> Result<bool, String> {
     git(dir, &["branch", "-r", "--contains", sha], 10).map(|out| !out.trim().is_empty())
 }
 
+/// Whether `ancestor` is an ancestor of `descendant` (false when either is
+/// unknown here, for example a commit this checkout has not fetched).
+pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
+    git(
+        dir,
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+        10,
+    )
+    .is_ok()
+}
+
+/// The branch name the current branch tracks on its remote (`feature` for
+/// `origin/feature`), if it tracks one.
+pub fn upstream_branch(dir: &str) -> Option<String> {
+    let branch = current_branch(dir).ok().filter(|b| b != "HEAD")?;
+    let out = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:lstrip=3)",
+            &format!("refs/heads/{branch}"),
+        ],
+        10,
+    )
+    .ok()?;
+    Some(out.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 pub fn discover_root(dir: &str) -> Option<String> {
     git(dir, &["rev-parse", "--show-toplevel"], 10)
         .ok()

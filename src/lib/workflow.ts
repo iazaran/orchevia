@@ -758,6 +758,8 @@ const PUBLISHING = [
   'vercel --prod',
 ];
 const WITH_VALUE = ['-c', '-r', '--repo', '--git-dir', '--work-tree'];
+/** How far ahead a phrase's option may come (mirrors Rust `OPTION_REACH`). */
+const OPTION_REACH = 6;
 
 /**
  * Commands that plainly publish, read from the program and its arguments as
@@ -774,6 +776,15 @@ export function commandPublishes(executable: string, args: string[]): boolean {
   const phraseAt = (start: number, parts: string[]): boolean => {
     let at = start;
     for (const [index, part] of parts.entries()) {
+      // A phrase's option (`vercel --prod`) may come a few words later, past
+      // other options and their values (`vercel --yes --token t --prod`).
+      if (index > 0 && part.startsWith('-')) {
+        const found = words
+          .slice(at, at + OPTION_REACH)
+          .findIndex((word) => word === part);
+        if (found === -1) return false;
+        at += found;
+      }
       // Options are skipped between words, unless the phrase names one.
       if (index > 0 && !part.startsWith('-'))
         while (words[at]?.startsWith('-') === true)

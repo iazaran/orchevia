@@ -983,6 +983,23 @@ pub fn commit_ci_checks(runner: &GhRunner, cwd: &str, sha: &str) -> Result<Vec<C
     Ok(checks)
 }
 
+/// Whether GitHub has a commit (pushed on a branch or only with a tag).
+/// `Ok(false)` when GitHub answers that it has no such commit.
+pub fn commit_on_github(runner: &GhRunner, cwd: &str, sha: &str) -> Result<bool, String> {
+    if !commit_sha_ok(sha) {
+        return Err(format!("Not a commit: {sha}"));
+    }
+    let path = format!("repos/{{owner}}/{{repo}}/commits/{sha}");
+    let result = runner.run_result(cwd, &["api", &path, "--jq", ".sha"])?;
+    if result.exit_code == Some(0) {
+        return Ok(true);
+    }
+    if result.stderr.contains("No commit found") {
+        return Ok(false);
+    }
+    OkDenied::redact(&result.stdout, result.stderr.trim())
+}
+
 /// Names of the Actions runs on a commit that have not finished. A queued
 /// run's jobs have no check runs yet, so checks alone can look done early.
 pub fn unfinished_runs(runner: &GhRunner, cwd: &str, sha: &str) -> Result<Vec<String>, String> {
@@ -1032,10 +1049,14 @@ pub fn job_id_from_url(url: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// Strip `refs/heads/` so a branch filter matches what Actions records.
+/// Strip `refs/heads/` or `refs/tags/` so a branch filter matches what
+/// Actions records as the run's branch (a tag run records the tag).
 fn branch_name(git_ref: &str) -> &str {
     let git_ref = git_ref.trim();
-    git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref)
+    git_ref
+        .strip_prefix("refs/heads/")
+        .or_else(|| git_ref.strip_prefix("refs/tags/"))
+        .unwrap_or(git_ref)
 }
 
 /// Start a `workflow_dispatch` run. Returns the run id when gh prints it.
@@ -1055,6 +1076,12 @@ pub fn dispatch_workflow(
         args.push(format!("--ref={}", git_ref.trim()));
     }
     for (key, value) in inputs {
+        let key = key.trim();
+        if key.is_empty() || key.contains(['=', '\n', '\r', '\0']) {
+            return Err(format!(
+                "Workflow input name '{key}' must not be empty or hold '=' or line breaks."
+            ));
+        }
         // A raw field keeps the value a plain string (no @file reading).
         args.push(format!("--raw-field={key}={value}"));
     }
@@ -1350,6 +1377,7 @@ mod ci_tests {
     #[test]
     fn refs_and_commits_are_checked_before_gh_sees_them() {
         assert_eq!(branch_name(" refs/heads/release/1.2 "), "release/1.2");
+        assert_eq!(branch_name("refs/tags/v1.2.0"), "v1.2.0");
         assert_eq!(branch_name("main"), "main");
         assert!(commit_sha_ok("0123abcdef"));
         assert!(!commit_sha_ok("main"));

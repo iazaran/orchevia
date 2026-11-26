@@ -1455,17 +1455,18 @@ class MockBackend implements Backend {
             run.finishedAt = new Date().toISOString();
             return;
           }
+          const ticketKey = mockTicketKey(key.rendered);
           const row = this.pushResult(
             runId,
             nodeId,
             'succeeded',
-            `Mock ticket ${key.rendered} (browser mock, no remote lookup).`,
+            `Mock ticket ${ticketKey} (browser mock, no remote lookup).`,
           );
           row.structuredJson = JSON.stringify({
             simulated: true,
             ticket: {
-              key: key.rendered,
-              title: `Mock ticket ${key.rendered}`,
+              key: ticketKey,
+              title: `Mock ticket ${ticketKey}`,
               description: 'Simulated ticket details.',
               status: 'Mock',
               url: '',
@@ -3766,6 +3767,26 @@ function mockInputDefaults(workflow: Workflow): Record<string, string> {
  * variable namespaces as the backend (workflow.*, input.*, node outputs).
  * This is a browser-dev approximation — the desktop engine is authoritative.
  */
+/**
+ * The key a Ticket step records for a link, as the engine does: `sc-N` for a
+ * Shortcut story link, the Jira key inside a Jira link, else the text as typed
+ * (mirrors Rust `ticket_key` and `shortcut_story_id` for links).
+ */
+export function mockTicketKey(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed.includes('://')) return trimmed;
+  const parts = trimmed.split(/[/?#]/);
+  for (const [index, part] of parts.entries()) {
+    const next = parts[index + 1] ?? '';
+    if (part === 'story' && /^\d{1,12}$/.test(next) && Number(next) > 0)
+      return `sc-${String(Number(next))}`;
+  }
+  const keys = trimmed
+    .split(/[/?&=#]/)
+    .filter((token) => /^[A-Z][A-Z0-9_]*-\d+$/.test(token));
+  return keys.at(-1) ?? trimmed;
+}
+
 function mockVariables(
   workflow: Workflow,
   priorResults: StoredNodeResult[],

@@ -145,9 +145,12 @@ impl JiraMcpSource {
                 }
             }
         };
+        // A server that cannot list its tools is called as a Jira server, as
+        // Ticket steps always did.
         let result = crate::mcp::call_first_listed(
             &self.server,
             &candidates,
+            Some(jira_tool.as_str()),
             arguments,
             self.timeout,
             &self.cancel,
@@ -157,7 +160,7 @@ impl JiraMcpSource {
         }
         let ticket = if result.tool == SHORTCUT_STORY_TOOL {
             // The id was checked before the call.
-            normalize_shortcut_payload(story.unwrap_or_default(), &result.text)
+            normalize_shortcut_payload(story.unwrap_or_default(), &result.text)?
         } else {
             normalize_jira_payload(&jira_key, &result.text)?
         };
@@ -177,13 +180,13 @@ pub fn shortcut_story_id(input: &str) -> Option<u64> {
             .filter(|n| *n > 0)
     };
     if trimmed.contains("://") {
-        let mut parts = trimmed.split(['/', '?', '#']);
-        while let Some(part) = parts.next() {
-            if part == "story" {
-                return parts.next().and_then(number);
-            }
-        }
-        return None;
+        // The number after a `story` segment (a workspace may be named
+        // "story" too, so keep looking).
+        let parts: Vec<&str> = trimmed.split(['/', '?', '#']).collect();
+        return parts
+            .windows(2)
+            .filter(|pair| pair[0] == "story")
+            .find_map(|pair| number(pair[1]));
     }
     let lower = trimmed.to_ascii_lowercase();
     let rest = lower
@@ -195,23 +198,27 @@ pub fn shortcut_story_id(input: &str) -> Option<u64> {
 
 /// Normalize a Shortcut story read by `stories-get-by-id`: its JSON holds
 /// `story` (name, description, `app_url`, labels, `workflow_state_id`) and
-/// `relatedEntities.workflows` with the state names.
-pub fn normalize_shortcut_payload(id: u64, text: &str) -> NormalizedTicket {
+/// `relatedEntities.workflows` with the state names. A reply without a named
+/// story (an error the server did not mark as one) is an error.
+pub fn normalize_shortcut_payload(id: u64, text: &str) -> Result<NormalizedTicket, String> {
     let key = format!("sc-{id}");
     let value = extract_json_object(text)
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
-    let Some(value) = value else {
-        return NormalizedTicket {
-            key,
-            title: snippet(text, 120),
-            description: snippet(text, 4000),
-            acceptance_criteria: Vec::new(),
-            status: String::new(),
-            url: None,
-            labels: Vec::new(),
-        };
+    let story = value
+        .as_ref()
+        .map(|v| v.get("story").unwrap_or(v))
+        .filter(|story| {
+            story
+                .get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| !n.trim().is_empty())
+        });
+    let (Some(value), Some(story)) = (value.as_ref(), story) else {
+        return Err(format!(
+            "Shortcut did not return story {key}: {}",
+            snippet(text, 300)
+        ));
     };
-    let story = value.get("story").unwrap_or(&value);
     let text_of = |names: &[&str]| {
         names
             .iter()
@@ -246,20 +253,28 @@ pub fn normalize_shortcut_payload(id: u64, text: &str) -> NormalizedTicket {
                 .collect()
         })
         .unwrap_or_default();
-    // Open tasks read as acceptance criteria: they are what "done" means.
+    // The story's tasks read as acceptance criteria: they are what "done"
+    // means. Finished ones say so.
     let acceptance_criteria = story
         .get("tasks")
         .and_then(|v| v.as_array())
         .map(|tasks| {
             tasks
                 .iter()
-                .filter_map(|t| t.get("description").and_then(|d| d.as_str()))
-                .map(str::to_string)
+                .filter_map(|t| {
+                    let text = t.get("description").and_then(|d| d.as_str())?;
+                    let done = t.get("complete").and_then(|c| c.as_bool()) == Some(true);
+                    Some(if done {
+                        format!("{text} (done)")
+                    } else {
+                        text.to_string()
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
     let url = Some(text_of(&["app_url", "url"])).filter(|u| !u.is_empty());
-    NormalizedTicket {
+    Ok(NormalizedTicket {
         key,
         title: text_of(&["name", "title"]),
         description: text_of(&["description"]),
@@ -267,7 +282,7 @@ pub fn normalize_shortcut_payload(id: u64, text: &str) -> NormalizedTicket {
         status,
         url,
         labels,
-    }
+    })
 }
 
 /// The issue key in a ticket input: a key as typed, or the key inside a Jira
@@ -471,6 +486,7 @@ mod tests {
                 Some(4567),
             ),
             ("https://app.shortcut.com/acme/epic/12", None),
+            ("https://app.shortcut.com/story/story/12/a-title", Some(12)),
             ("DEV-12", None),
             ("0", None),
             ("sc-", None),
@@ -492,7 +508,10 @@ mod tests {
     "description": "Add a toggle in settings",
     "workflow_state_id": 500000008,
     "labels": ["ui"],
-    "tasks": [{"id": 1, "description": "Toggle persists", "complete": false}]
+    "tasks": [
+      {"id": 1, "description": "Toggle persists", "complete": false},
+      {"id": 2, "description": "Design approved", "complete": true}
+    ]
   },
   "relatedEntities": {
     "workflows": {
@@ -504,7 +523,7 @@ mod tests {
   }
 }
 </json>"#;
-        let ticket = normalize_shortcut_payload(42, text);
+        let ticket = normalize_shortcut_payload(42, text).expect("story");
         assert_eq!(ticket.key, "sc-42");
         assert_eq!(ticket.title, "Dark mode");
         assert_eq!(ticket.status, "In Progress");
@@ -514,7 +533,16 @@ mod tests {
             Some("https://app.shortcut.com/acme/story/42")
         );
         assert_eq!(ticket.labels, ["ui"]);
-        assert_eq!(ticket.acceptance_criteria, ["Toggle persists"]);
+        assert_eq!(
+            ticket.acceptance_criteria,
+            ["Toggle persists", "Design approved (done)"]
+        );
+        // A reply with no story in it is an error, not a ticket named after it.
+        let missing =
+            normalize_shortcut_payload(9, "Failed to retrieve Shortcut story with public ID: 9");
+        assert!(missing
+            .expect_err("no story")
+            .contains("did not return story sc-9"));
         assert_eq!(provider_of_tool(SHORTCUT_STORY_TOOL), "shortcut-mcp");
         assert_eq!(provider_of_tool(DEFAULT_TICKET_TOOL), "jira-mcp");
     }

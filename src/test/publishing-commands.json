@@ -18,6 +18,8 @@
     ["npx", "eas", "submit", "--platform", "ios"],
     ["netlify", "deploy", "--prod"],
     ["npx", "vercel", "--prod"],
+    ["vercel", "--yes", "--prod"],
+    ["npx", "vercel", "--token", "$VERCEL_TOKEN", "--cwd", "web", "--prod"],
     ["npx", "eas-cli", "submit", "-p", "android"]
   ],
   "local": [
@@ -34,6 +36,7 @@
     ["gh", "run", "watch", "123"],
     ["firebase", "emulators:start"],
     ["vercel", "env", "pull"],
-    ["vercel", "--version"]
+    ["vercel", "--version"],
+    ["vercel", "env", "pull", "--environment", "production"]
   ]
 }

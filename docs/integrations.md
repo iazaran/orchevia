@@ -56,14 +56,21 @@ and a `prNumber` run input) it reads the PR's checks; with no number it reads th
 check runs and commit statuses (deploy previews and other services) on the
 repository folder's current commit, so it works right after a push without a PR.
 It asks every 15 seconds, waits two minutes for checks to appear, and waits up to
-the step's timeout (an hour by default). When a check fails the step fails, and
-its output lists the checks and the end of the failed jobs' logs (`gh run view
---log-failed`, up to two runs): give it a failure edge to an Agent step that reads
-`{{node.<id>.output}}`, fixes, commits and pushes, then wait again in a bounded
-loop.
+the step's timeout (an hour by default). It is done when two looks in a row find
+no check pending and no Actions run on the commit still queued or running (`gh run
+list --commit`; a token without Actions access gets a note and the checks alone).
+A commit GitHub does not have is refused with "push it first"; a commit pushed only
+with a tag counts as pushed. When the checkout holds newer commits than an open PR
+shows (on the PR's branch, or detached), the step waits for GitHub to show them
+and fails if it still has not after two minutes, instead of passing on the old
+commit's checks. When a check fails the step fails, and its output lists the checks
+and the end of each failed job's log (`gh run view --job <id> --log-failed`, up to
+two jobs; a log longer than Orchevia reads says so): give it a failure edge to an
+Agent step that reads `{{node.<id>.output}}`, fixes, commits and pushes, then wait
+again in a bounded loop.
 
 **Run a GitHub Actions workflow (`runWorkflow`):** starts a workflow with a
-`workflow_dispatch` trigger (`gh workflow run <workflow> --ref <ref> -f key=value`),
+`workflow_dispatch` trigger (`gh workflow run <workflow> --ref=<ref> --raw-field=key=value`),
 finds its run, waits for it, and with **Download artifacts to** saves its
 artifacts into a folder of the repository (`gh run download`). Use it for builds
 that need CI machines (mobile app builds, signed bundles), releases and store
