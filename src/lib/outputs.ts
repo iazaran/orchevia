@@ -113,6 +113,8 @@ export function fileKindOf(path: string): RunFileKind {
 export function canOpenFile(path: string): boolean {
   const kind = fileKindOf(path);
   if (kind === 'other') return false;
+  // SVG can carry scripts, and its default app is often a browser.
+  if (kind === 'image') return !path.toLowerCase().endsWith('.svg');
   if (kind !== 'text') return true;
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
   // Web pages and XML would open in a browser running their scripts.

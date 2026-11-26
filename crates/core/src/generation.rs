@@ -1413,12 +1413,19 @@ pub(crate) fn generator_command(
             return Err("Repository directory no longer exists.".into());
         }
         spec.working_dir = Some(dir.into());
-        if profile.adapter == crate::agents::AdapterKind::Codex
-            && !crate::git::inside_repository(std::path::Path::new(dir))
-            && spec.args.first().is_some_and(|arg| arg == "exec")
-        {
-            spec.args.insert(1, "--skip-git-repo-check".into());
-        }
+    }
+    // Drafting reads and writes nothing, so Codex needs no repository: a goal
+    // from Home has none, and the app itself may start outside one.
+    if profile.adapter == crate::agents::AdapterKind::Codex
+        && repo_dir.is_none_or(|dir| !crate::git::inside_repository(std::path::Path::new(dir)))
+        && spec.args.first().is_some_and(|arg| arg == "exec")
+        && !spec
+            .args
+            .iter()
+            .any(|arg| arg == crate::agents::CODEX_SKIP_GIT_CHECK)
+    {
+        spec.args
+            .insert(1, crate::agents::CODEX_SKIP_GIT_CHECK.into());
     }
     Ok(spec)
 }
@@ -1778,6 +1785,29 @@ mod tests {
         assert_eq!(
             profile.working_dir_mode,
             crate::agents::WorkingDirMode::Inherit
+        );
+    }
+
+    #[test]
+    fn codex_drafts_without_a_repository_and_never_repeats_the_flag() {
+        let mut profile: crate::agents::AgentProfile = serde_json::from_value(serde_json::json!({"id":"generator","name":"Generator","adapter":"codex","extraArgs":[],"workingDirMode":"inherit","defaultTimeoutSecs":60})).unwrap();
+        let count = |spec: &crate::process::CommandSpec| {
+            spec.args
+                .iter()
+                .filter(|a| *a == "--skip-git-repo-check")
+                .count()
+        };
+        // A goal from Home: no repository at all.
+        let spec = generator_command(&profile, "Draft JSON only", None).unwrap();
+        assert_eq!(spec.args[..2], ["exec", "--skip-git-repo-check"]);
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let inside = generator_command(&profile, "Draft", repo.path().to_str()).unwrap();
+        assert_eq!(count(&inside), 0);
+        profile.extra_args = vec!["--skip-git-repo-check".into()];
+        assert_eq!(
+            count(&generator_command(&profile, "Draft", None).unwrap()),
+            1
         );
     }
 

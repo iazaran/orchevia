@@ -875,13 +875,26 @@ fn prepare(
 
 /// Codex refuses a folder outside a Git repository unless told otherwise.
 /// Steps in a workspace or documents folder are deliberate, so a known
-/// folder outside any repository gets `--skip-git-repo-check`; repository
-/// folders and an unknown folder keep Codex's own check.
-fn push_codex_outside_repository(args: &mut Vec<String>, working_dir: Option<&str>) {
-    if working_dir.is_some_and(|dir| !crate::git::inside_repository(std::path::Path::new(dir))) {
-        args.push("--skip-git-repo-check".to_string());
+/// folder outside any repository gets `--skip-git-repo-check`, once: never
+/// when the profile's own arguments already pass it (Codex rejects a repeated
+/// flag). Repository folders and an unknown folder keep Codex's own check.
+fn push_codex_outside_repository(
+    args: &mut Vec<String>,
+    profile: &AgentProfile,
+    working_dir: Option<&str>,
+) {
+    if working_dir.is_some_and(|dir| !crate::git::inside_repository(std::path::Path::new(dir)))
+        && !profile
+            .extra_args
+            .iter()
+            .any(|arg| arg == CODEX_SKIP_GIT_CHECK)
+    {
+        args.push(CODEX_SKIP_GIT_CHECK.to_string());
     }
 }
+
+/// Codex's flag for working outside a Git repository.
+pub(crate) const CODEX_SKIP_GIT_CHECK: &str = "--skip-git-repo-check";
 
 fn push_model_and_effort(args: &mut Vec<String>, profile: &AgentProfile, effort: Option<&str>) {
     if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
@@ -1002,7 +1015,7 @@ pub fn build_text_agent_command(
         }
         AdapterKind::Codex => {
             args.push("exec".to_string());
-            push_codex_outside_repository(&mut args, working_dir.as_deref());
+            push_codex_outside_repository(&mut args, profile, working_dir.as_deref());
             push_model_and_effort(&mut args, profile, effort.as_deref());
             push_permissions(&mut args, profile);
             args.push("-".to_string());
@@ -1077,7 +1090,7 @@ fn build_structured_command(
         vec!["exec".into(), "--json".into()]
     };
     if profile.adapter == AdapterKind::Codex {
-        push_codex_outside_repository(&mut args, working_dir.as_deref());
+        push_codex_outside_repository(&mut args, profile, working_dir.as_deref());
     }
     push_model_and_effort(&mut args, profile, effort.as_deref());
     push_permissions(&mut args, profile);
@@ -1532,6 +1545,16 @@ mod tests {
         assert!(!flagged(
             &build_agent_command(&claude, "hi", Some(&dir(outside.path()))).unwrap()
         ));
+        // A profile that already passes the flag gets it once.
+        codex.extra_args = vec!["--skip-git-repo-check".into()];
+        let spec = build_agent_command(&codex, "hi", Some(&dir(outside.path()))).unwrap();
+        assert_eq!(
+            spec.args
+                .iter()
+                .filter(|a| *a == "--skip-git-repo-check")
+                .count(),
+            1
+        );
     }
 
     #[test]

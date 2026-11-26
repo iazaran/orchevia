@@ -42,6 +42,7 @@ describe('run files', () => {
       'x.exe',
       'page.html',
       'feed.xml',
+      'image-1.svg',
     ])
       expect(canOpenFile(name), name).toBe(false);
   });

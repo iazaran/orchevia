@@ -162,8 +162,9 @@ fn mime_of(path: &Path, kind: RunFileKind) -> &'static str {
 /// text formats. Scripts and programs never are, even when listed.
 fn safe_to_open(path: &Path) -> bool {
     match kind_of(path) {
-        RunFileKind::Image
-        | RunFileKind::Video
+        // SVG can carry scripts, and its default app is often a browser.
+        RunFileKind::Image => extension(path) != "svg",
+        RunFileKind::Video
         | RunFileKind::Audio
         | RunFileKind::Pdf
         | RunFileKind::Markdown
@@ -193,6 +194,11 @@ pub fn run_folders(db: &SqliteDb, run_id: &str) -> Result<Vec<PathBuf>, String> 
         .get_run_workflow(run_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Run not found.".to_string())?;
+    // The folder recorded when the run started wins over today's settings.
+    let recorded = db
+        .get_run(run_id)
+        .map_err(|e| e.to_string())?
+        .and_then(|run| run.execution.workspace);
     let profiles = db.list_agent_profiles().unwrap_or_default();
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut add = |dir: Option<&str>| {
@@ -227,7 +233,9 @@ pub fn run_folders(db: &SqliteDb, run_id: &str) -> Result<Vec<PathBuf>, String> 
         workspace |= crate::workspace::uses_workspace(node, workflow.defaults.as_ref());
     }
     if workspace {
-        if let Some(root) = crate::workspace::root(db) {
+        if let Some(folder) = recorded {
+            candidates.push(PathBuf::from(folder));
+        } else if let Some(root) = crate::workspace::root(db) {
             candidates.push(crate::workspace::workflow_folder(
                 &root,
                 &workflow.name,
@@ -255,27 +263,31 @@ fn system_time(at: DateTime<Utc>) -> SystemTime {
     SystemTime::from(at)
 }
 
-/// When a file last changed: its modification time, or on Unix its status
-/// change time when later. A copy that keeps the original modification time
-/// (`cp -p`, `tar`, `curl -R`) still counts as made by the run.
-fn changed_at(meta: &std::fs::Metadata) -> Option<SystemTime> {
-    let modified = meta.modified().ok()?;
+/// A file's status change time (Unix), when the system reports one.
+fn status_changed_at(meta: &std::fs::Metadata) -> Option<SystemTime> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let ctime = u64::try_from(meta.ctime())
-            .ok()
-            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
-            .and_then(|at| {
-                at.checked_add(Duration::from_nanos(
-                    u64::try_from(meta.ctime_nsec()).unwrap_or(0),
-                ))
-            });
-        if let Some(ctime) = ctime {
-            return Some(modified.max(ctime));
-        }
+        let secs = u64::try_from(meta.ctime()).ok()?;
+        let nanos = u64::try_from(meta.ctime_nsec()).unwrap_or(0);
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(secs))?
+            .checked_add(Duration::from_nanos(nanos))
     }
-    Some(modified)
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+
+/// Whether a file changed in `[since, until]`: its modification time, or its
+/// status change time, falls inside. The status time catches a copy that
+/// kept an older modification time (`cp -p`, `tar`, `curl -R`); either time
+/// alone suffices, so renaming or opening a file later never hides it.
+fn changed_within(meta: &std::fs::Metadata, since: SystemTime, until: Option<SystemTime>) -> bool {
+    let inside = |at: SystemTime| at >= since && until.is_none_or(|end| at <= end);
+    meta.modified().is_ok_and(inside) || status_changed_at(meta).is_some_and(inside)
 }
 
 /// Files under `folders` modified in `[since, until]`, newest first.
@@ -313,12 +325,12 @@ pub fn scan(folders: &[PathBuf], since: SystemTime, until: Option<SystemTime>) -
                 let Ok(meta) = entry.metadata() else {
                     continue;
                 };
-                let Some(modified) = changed_at(&meta) else {
-                    continue;
-                };
-                if modified < since || until.is_some_and(|end| modified > end) {
+                if !changed_within(&meta, since, until) {
                     continue;
                 }
+                let Ok(modified) = meta.modified() else {
+                    continue;
+                };
                 let path = entry.path();
                 let rel = path
                     .strip_prefix(folder)
@@ -385,18 +397,25 @@ pub fn list_run_files(db: &SqliteDb, run_id: &str) -> Result<RunFiles, String> {
 
 /// The canonical path of a file inside one of the run's folders, outside any
 /// hidden or skipped folder. Anything else is refused.
-fn run_file(db: &SqliteDb, run_id: &str, path: &str) -> Result<PathBuf, String> {
+fn run_file(db: &SqliteDb, run_id: &str, path: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let folders = run_folders(db, run_id)?;
     let file =
         std::fs::canonicalize(path).map_err(|_| "That file no longer exists.".to_string())?;
+    check_inside(&folders, &file)?;
+    if !file.is_file() {
+        return Err("Only files can be opened.".into());
+    }
+    Ok((file, folders))
+}
+
+/// A canonical path inside one of `folders`, outside any hidden or skipped
+/// folder, or why not.
+fn check_inside(folders: &[PathBuf], file: &Path) -> Result<(), String> {
     let folder = folders
         .iter()
         .find(|folder| file.starts_with(folder))
         .ok_or_else(|| "Only files in this run's folders can be opened.".to_string())?;
-    if !file.is_file() {
-        return Err("Only files can be opened.".into());
-    }
-    let inside = file.strip_prefix(folder).unwrap_or(&file);
+    let inside = file.strip_prefix(folder).unwrap_or(file);
     let mut parts = inside.components().peekable();
     while let Some(part) = parts.next() {
         let name = part.as_os_str();
@@ -405,14 +424,66 @@ fn run_file(db: &SqliteDb, run_id: &str, path: &str) -> Result<PathBuf, String> 
             return Err("Hidden files and dependency folders are not shown.".into());
         }
     }
-    Ok(file)
+    Ok(())
+}
+
+/// Where an open file really is, as the system reports it: a step still
+/// running could swap a folder for a link between the check and the open.
+#[cfg(target_os = "linux")]
+fn open_file_path(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn open_file_path(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize + 1];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes and a NUL into `buf`,
+    // which outlives the call; the descriptor belongs to `file`.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    if rc == -1 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn open_file_path(_file: &std::fs::File) -> Option<PathBuf> {
+    None
+}
+
+/// Open a checked file for reading and confirm the open file is still inside
+/// the run's folders. Without a way to ask the system, the file opened must
+/// be the one checked (same device and inode on Unix).
+fn open_checked(file: &Path, folders: &[PathBuf]) -> Result<std::fs::File, String> {
+    let handle = std::fs::File::open(file).map_err(|e| e.to_string())?;
+    match open_file_path(&handle) {
+        Some(real) => check_inside(folders, &real)?,
+        None => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let opened = handle.metadata().map_err(|e| e.to_string())?;
+                let checked = std::fs::symlink_metadata(file).map_err(|e| e.to_string())?;
+                if opened.dev() != checked.dev() || opened.ino() != checked.ino() {
+                    return Err("Only files in this run's folders can be opened.".into());
+                }
+            }
+        }
+    }
+    Ok(handle)
 }
 
 /// A listed file's content for preview: text (cut at 512 KiB) or base64 for
 /// images, audio, video and PDFs up to 20 MiB. Other files have no content.
 pub fn read_run_file(db: &SqliteDb, run_id: &str, path: &str) -> Result<RunFilePreview, String> {
-    let file = run_file(db, run_id, path)?;
-    let size = std::fs::metadata(&file).map_err(|e| e.to_string())?.len();
+    use std::io::Read;
+    let (file, folders) = run_file(db, run_id, path)?;
+    let handle = open_checked(&file, &folders)?;
+    let size = handle.metadata().map_err(|e| e.to_string())?.len();
     let kind = kind_of(&file);
     let mut preview = RunFilePreview {
         path: file.to_string_lossy().into_owned(),
@@ -423,25 +494,27 @@ pub fn read_run_file(db: &SqliteDb, run_id: &str, path: &str) -> Result<RunFileP
         base64: None,
         truncated: false,
     };
-    match kind {
+    let limit = match kind {
         RunFileKind::Image | RunFileKind::Video | RunFileKind::Audio | RunFileKind::Pdf => {
             if size > MAX_MEDIA_BYTES {
                 preview.truncated = true;
-            } else {
-                let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
-                preview.base64 = Some(base64(&bytes));
+                return Ok(preview);
             }
+            MAX_MEDIA_BYTES
         }
-        RunFileKind::Markdown | RunFileKind::Text => {
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            std::fs::File::open(&file)
-                .and_then(|f| f.take(MAX_TEXT_BYTES).read_to_end(&mut bytes))
-                .map_err(|e| e.to_string())?;
-            preview.truncated = size > MAX_TEXT_BYTES;
-            preview.text = Some(String::from_utf8_lossy(&bytes).into_owned());
-        }
-        RunFileKind::Document | RunFileKind::Other => {}
+        RunFileKind::Markdown | RunFileKind::Text => MAX_TEXT_BYTES,
+        RunFileKind::Document | RunFileKind::Other => return Ok(preview),
+    };
+    let mut bytes = Vec::new();
+    handle
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if limit == MAX_TEXT_BYTES {
+        preview.truncated = size > MAX_TEXT_BYTES;
+        preview.text = Some(String::from_utf8_lossy(&bytes).into_owned());
+    } else {
+        preview.base64 = Some(base64(&bytes));
     }
     Ok(preview)
 }
@@ -449,7 +522,9 @@ pub fn read_run_file(db: &SqliteDb, run_id: &str, path: &str) -> Result<RunFileP
 /// Open a listed file with its default app, or (`reveal`) show it in its
 /// folder. Scripts and programs are never opened.
 pub fn open_run_file(db: &SqliteDb, run_id: &str, path: &str, reveal: bool) -> Result<(), String> {
-    let file = run_file(db, run_id, path)?;
+    // The system opener takes a path, so a link swapped in after this check
+    // is out of reach; the check is made as late as possible.
+    let (file, _) = run_file(db, run_id, path)?;
     if reveal {
         return crate::desktop::reveal_path(&file);
     }
@@ -537,6 +612,7 @@ mod tests {
             "x.exe",
             "page.html",
             "feed.xml",
+            "image-1.svg",
         ] {
             assert!(!safe_to_open(Path::new(unsafe_name)), "{unsafe_name}");
         }
@@ -722,6 +798,25 @@ mod tests {
         assert_eq!(listed.files.len(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_file_renamed_after_the_run_still_belongs_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("insights.md");
+        std::fs::write(&file, "x").unwrap();
+        let written = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let until = written + Duration::from_secs(1);
+        std::thread::sleep(Duration::from_millis(1100));
+        // A later rename (or chmod) changes only the status time.
+        let renamed = dir.path().join("insights-final.md");
+        std::fs::rename(&file, &renamed).unwrap();
+        let since = written - Duration::from_secs(5);
+        let listed = scan(&[dir.path().to_path_buf()], since, Some(until));
+        assert_eq!(listed.files.len(), 1);
+        // The time shown is when the run wrote it.
+        assert_eq!(listed.files[0].modified_at, DateTime::<Utc>::from(written));
+    }
+
     #[test]
     fn a_paused_run_keeps_listing_edits_made_while_it_waits() {
         let db = SqliteDb::open_in_memory().unwrap();
@@ -744,9 +839,14 @@ mod tests {
             .set_modified(later)
             .unwrap();
         assert_eq!(list_run_files(&db, "run-paused").unwrap().files.len(), 1);
-        db.finish_run("run-paused", crate::db::RunStatus::Succeeded)
-            .unwrap();
-        assert!(list_run_files(&db, "run-paused").unwrap().files.is_empty());
+        // A finished run's window closes: writes after it are not the run's.
+        let before = SystemTime::now() - Duration::from_secs(120);
+        let closed = scan(
+            &[repo.path().to_path_buf()],
+            before - Duration::from_secs(60),
+            Some(before),
+        );
+        assert!(closed.files.is_empty());
     }
 
     #[test]

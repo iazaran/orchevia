@@ -609,7 +609,7 @@ async fn recovery_rejects_reuse_of_failed_and_data_dependent_outputs() {
 
 #[test]
 fn run_options_reject_absent_null_zero_negative_and_out_of_range_usage_limits() {
-    let (_, engine, wf) = setup();
+    let (db, engine, wf) = setup();
     // Zero, negative (via serde f64 for spend; u32 rejects negative at parse),
     // non-finite and out-of-range values are all rejected.
     for value in [
@@ -665,6 +665,12 @@ fn run_options_reject_absent_null_zero_negative_and_out_of_range_usage_limits() 
                 .is_ok(),
             "{value}"
         );
+        // One open run per workspace folder: close this one before the next.
+        db.finish_run(
+            &format!("valid-usage-{index}"),
+            crate::db::RunStatus::Cancelled,
+        )
+        .unwrap();
     }
 }
 

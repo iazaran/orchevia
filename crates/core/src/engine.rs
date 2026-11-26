@@ -633,6 +633,9 @@ impl Engine {
             .cloned()
             .collect();
         let execution = RunExecution {
+            // The recovery works in the failed run's folder, where the files
+            // of the steps it reuses already are.
+            workspace: source.execution.workspace.clone(),
             options: source.execution.options.clone(),
             recovered_from: Some(source_id.into()),
             recovery_choices: choices.clone(),
@@ -1027,6 +1030,26 @@ impl Engine {
                 .collect();
             return Err(EngineError::Validation(msgs.join("; ")));
         }
+        // Steps without a folder share the workflow's workspace folder: two
+        // open runs there would overwrite each other's files (a second run
+        // replacing prompts the first is waiting to have approved).
+        let workspace = if options.dry_run {
+            None
+        } else {
+            run_workspace(&self.db, workflow)
+        };
+        if workspace.is_some()
+            && self
+                .db
+                .list_active_runs()?
+                .iter()
+                .any(|r| r.workflow_id == workflow.id && !r.execution.options.dry_run)
+        {
+            return Err(EngineError::Validation(format!(
+                "'{}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.",
+                workflow.name
+            )));
+        }
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
         self.db.create_run_with_execution(
@@ -1039,6 +1062,7 @@ impl Engine {
                 // per-run overrides for manual, scheduled and watcher runs
                 // alike; UI-only resolution would leave those paths raw.
                 resolved_limits: run_controls::resolve_limits(workflow.limits.as_ref(), options),
+                workspace,
                 ..RunExecution::default()
             },
         )?;
@@ -1632,8 +1656,7 @@ impl Engine {
                     }
                     let db = Arc::clone(&self.db);
                     let task_flag = Arc::clone(flag);
-                    let workspace_dir =
-                        task_workspace(&self.db, workflow, &node, run.execution.options.dry_run);
+                    let workspace_dir = task_workspace(&self.db, workflow, &node, &run.execution);
                     let owned = TaskInput {
                         session_locks: Arc::clone(&session_locks),
                         node,
@@ -2764,7 +2787,7 @@ impl Engine {
         };
         let task = TaskInput {
             session_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            workspace_dir: task_workspace(&self.db, workflow, &node, run.execution.options.dry_run),
+            workspace_dir: task_workspace(&self.db, workflow, &node, &run.execution),
             node: node.clone(),
             workflow_id: workflow.id.clone(),
             workflow_name: workflow.name.clone(),
@@ -3946,28 +3969,49 @@ fn command_working_dir(task: &TaskInput) -> Option<&str> {
     }
 }
 
+/// The workspace folder of a new run: set when a Command or Agent step has
+/// no folder of its own and the workflow has no project folder.
+fn run_workspace(db: &SqliteDb, workflow: &Workflow) -> Option<String> {
+    if !workflow
+        .nodes
+        .iter()
+        .any(|n| crate::workspace::uses_workspace(n, workflow.defaults.as_ref()))
+    {
+        return None;
+    }
+    let root = crate::workspace::root(db)?;
+    Some(
+        crate::workspace::workflow_folder(&root, &workflow.name, &workflow.id)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
 /// The workspace folder for a step that has no folder of its own, created
-/// before it runs. Dry runs execute nothing and create nothing. A folder that
-/// cannot be created is still the step's folder, so the step fails with
-/// "Working directory does not exist" instead of running somewhere else.
+/// before it runs: the folder recorded when the run started (a run from
+/// before 0.4.0 has none and gets today's). Dry runs execute nothing and
+/// create nothing. A folder that cannot be created is still the step's
+/// folder, so the step fails with "Working directory does not exist"
+/// instead of running somewhere else.
 fn task_workspace(
     db: &SqliteDb,
     workflow: &Workflow,
     node: &Node,
-    dry_run: bool,
+    execution: &RunExecution,
 ) -> Option<String> {
-    if dry_run || !crate::workspace::uses_workspace(node, workflow.defaults.as_ref()) {
+    if execution.options.dry_run
+        || !crate::workspace::uses_workspace(node, workflow.defaults.as_ref())
+    {
         return None;
     }
-    let root = crate::workspace::root(db)?;
-    let folder = crate::workspace::workflow_folder(&root, &workflow.name, &workflow.id);
-    match crate::workspace::prepare(&folder) {
-        Ok(path) => Some(path),
-        Err(error) => {
-            eprintln!("orchevia: {error}");
-            Some(folder.to_string_lossy().into_owned())
-        }
+    let folder = match execution.workspace.clone() {
+        Some(folder) => folder,
+        None => run_workspace(db, workflow)?,
+    };
+    if let Err(error) = crate::workspace::prepare(std::path::Path::new(&folder)) {
+        eprintln!("orchevia: {error}");
     }
+    Some(folder)
 }
 
 /// The folder a step names itself or inherits from the project folder,
@@ -7072,6 +7116,65 @@ mod tests {
             "{:?}",
             agent.error
         );
+    }
+
+    #[test]
+    fn a_workspace_folder_takes_one_open_run_and_keeps_its_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root.path().to_string_lossy(),
+        )
+        .unwrap();
+        let profile = echo_profile("one-open");
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run(&wf, "first", &empty_inputs())
+            .expect("first starts");
+        let recorded = db.get_run("first").unwrap().unwrap().execution.workspace;
+        assert_eq!(
+            recorded.as_deref(),
+            Some(
+                root.path()
+                    .join("Agent slice (fagent)")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        let err = engine
+            .start_run(&wf, "second", &empty_inputs())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("already has a run open in its workspace folder"),
+            "{err}"
+        );
+        // A dry run touches no folder, so it may run alongside.
+        let dry = RunOptions {
+            dry_run: true,
+            ..RunOptions::default()
+        };
+        engine
+            .start_run_with_options(&wf, "dry", &empty_inputs(), &dry)
+            .expect("dry runs are not blocked");
+        assert_eq!(
+            db.get_run("dry").unwrap().unwrap().execution.workspace,
+            None
+        );
+        // Moving the root later never moves the open run.
+        db.set_setting(crate::workspace::WORKSPACE_ROOT_SETTING, "/elsewhere")
+            .unwrap();
+        let run = db.get_run("first").unwrap().unwrap();
+        let node = wf.nodes.iter().find(|n| n.id == "agent1").unwrap();
+        assert_eq!(task_workspace(&db, &wf, node, &run.execution), recorded);
+        db.finish_run("first", crate::db::RunStatus::Succeeded)
+            .unwrap();
+        engine
+            .start_run(&wf, "third", &empty_inputs())
+            .expect("starts once the first is done");
     }
 
     #[tokio::test]
