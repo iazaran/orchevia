@@ -32,6 +32,7 @@ import type {
 } from './lib/workflow';
 import { errorMessage } from './lib/errors';
 import type { UpdateCheck } from './lib/updates';
+import type { TemplateDomain } from './lib/template-domains';
 
 /** One CLI's detection: running, its result, or why it failed. */
 export type HostAbilitiesState =
@@ -100,6 +101,12 @@ interface AppState {
   knownFolders: string[];
   /** Where folderless steps run (`<root>/<Workflow name>`); null until known. */
   workspaceRoot: string | null;
+  /** The Templates filter, so Home's use-case tiles can open a domain. */
+  templateDomain: TemplateDomain | 'all';
+  setTemplateDomain: (domain: TemplateDomain | 'all') => void;
+  /** A goal typed on Home, picked up once by the Workflows generator. */
+  pendingGoal: string | null;
+  setPendingGoal: (goal: string | null) => void;
   mcpServers: McpServerConfig[];
   githubState: GitHubState | null;
   schedules: Schedule[];
@@ -211,6 +218,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
   hostAbilities: {},
   knownFolders: [],
   workspaceRoot: null,
+  templateDomain: 'all',
+  setTemplateDomain: (templateDomain) => {
+    set({ templateDomain });
+  },
+  pendingGoal: null,
+  setPendingGoal: (pendingGoal) => {
+    set({ pendingGoal });
+  },
   mcpServers: [],
   githubState: null,
   schedules: [],

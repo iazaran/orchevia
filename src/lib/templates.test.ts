@@ -20,9 +20,9 @@ it('creates independent workflow clones on repeated template use', () => {
   expect(first.nodes.map((n) => n.id)).not.toEqual(second.nodes.map((n) => n.id));
 });
 
-it('mirrors thirteen portable templates, required commands and role setup', () => {
+it('mirrors twenty-one portable templates, required commands and role setup', () => {
   const templates = builtinTemplates();
-  expect(templates).toHaveLength(13);
+  expect(templates).toHaveLength(21);
   for (const template of templates) {
     const roles = Object.fromEntries(
       template.workflow.nodes.flatMap((n) =>
@@ -215,11 +215,14 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
       (n) => n.config.contextRefs?.length,
     ))
       // Reviewers fed a whole PR or branch diff get a larger handoff, and
-      // research steps read a whole page or search result.
+      // steps reading an MCP result get a whole page or search result.
       expect(node.config.contextMaxChars).toBe(
         node.config.contextRefs?.includes('diff') === true
           ? 48000
-          : template.category === 'research' || template.category === 'integration'
+          : (node.config.contextRefs ?? []).some(
+                (ref) =>
+                  template.workflow.nodes.find((n) => n.id === ref)?.type === 'mcp',
+              )
             ? 20000
             : 12000,
       );

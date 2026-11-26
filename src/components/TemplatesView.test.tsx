@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { __setMockBackendForTests } from '../lib/backend';
 import { useAppStore } from '../store';
@@ -274,7 +274,7 @@ it('creates an MCP research workflow without asking for a repository', async () 
   });
   expect(within(dialog).queryByLabelText(/Repository folder/)).toBeNull();
   // Agent steps may still use a folder: offered, not required.
-  expect(within(dialog).getByLabelText('Folder for AI steps (optional)')).toHaveValue('');
+  expect(within(dialog).getByLabelText('Project folder (optional)')).toHaveValue('');
   expect(dialog).toHaveTextContent('Expects the Fetch web pages setup');
   await user.click(within(dialog).getByRole('button', { name: 'Create workflow' }));
   await waitFor(async () => {
@@ -286,4 +286,50 @@ it('creates an MCP research workflow without asking for a repository', async () 
     ).toBe('fetch');
     expect(created?.definition.defaults?.repoDir).toBeUndefined();
   });
+});
+
+it('filters templates by kind and search, and content needs no repository', async () => {
+  __setMockBackendForTests();
+  const { builtinTemplates } = await import('../lib/templates');
+  useAppStore.setState({
+    builtinTemplates: builtinTemplates(),
+    userTemplates: [],
+    templateDomain: 'all',
+    workspaceRoot: '/home/me/Documents/Orchevia',
+    knownFolders: ['/home/me/code/app'],
+    tools: [{ id: 'ffmpeg', displayName: 'FFmpeg', installed: false }],
+  });
+  render(<TemplatesView />);
+  // Grouped by kind with nothing filtered.
+  expect(
+    screen.getByRole('heading', { level: 3, name: 'Content & marketing' }),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /^Media & design/ }));
+  expect(useAppStore.getState().templateDomain).toBe('media');
+  expect(screen.getByRole('heading', { name: 'Social Video Cuts' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Implement a Task' })).toBeNull();
+  // FFmpeg is missing on this machine.
+  expect(screen.getByTitle(/FFmpeg was not found/)).toHaveTextContent('✕ FFmpeg');
+  fireEvent.click(screen.getByRole('button', { name: /^All/ }));
+  fireEvent.change(screen.getByLabelText('Search templates'), {
+    target: { value: 'launch email' },
+  });
+  expect(screen.getByRole('heading', { name: 'Product Launch Kit' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Blog Post from a Brief' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Search templates'), {
+    target: { value: 'nothing-matches-this' },
+  });
+  expect(screen.getByText('No templates match.')).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Search templates'), {
+    target: { value: 'blog' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Use template' }));
+  const dialog = screen.getByRole('dialog', { name: /Use template Blog Post/ });
+  // A content template never borrows a code repository.
+  const folder = within(dialog).getByLabelText('Project folder (optional)');
+  expect(folder).toHaveValue('');
+  expect(folder).toHaveAttribute(
+    'placeholder',
+    '/home/me/Documents/Orchevia/Blog Post from a Brief',
+  );
 });
