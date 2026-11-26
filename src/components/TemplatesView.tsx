@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ADAPTER_LABELS } from '../lib/agents';
 import { getBackend } from '../lib/backend';
 import type { WorkflowTemplate } from '../lib/generation';
@@ -23,7 +23,6 @@ import {
   templateDomain,
   templateNeeds,
 } from '../lib/template-domains';
-import { workspaceFolder } from '../lib/outputs';
 
 const STARTER_TEMPLATE = 'first-workflow';
 
@@ -91,6 +90,13 @@ export function TemplatesView(): React.JSX.Element {
   const workspaceRoot = useAppStore((s) => s.workspaceRoot);
   const query = useAppStore((s) => s.templateQuery);
   const setQuery = useAppStore((s) => s.setTemplateQuery);
+  // A search the palette filled in is for this visit only.
+  useEffect(
+    () => () => {
+      useAppStore.getState().setTemplateQuery('');
+    },
+    [],
+  );
   const userTemplates = useAppStore((s) => s.userTemplates);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
   const refreshWorkflows = useAppStore((s) => s.refreshWorkflows);
@@ -581,12 +587,8 @@ export function TemplatesView(): React.JSX.Element {
                   value={useTarget.repoDir}
                   placeholder={
                     workspaceRoot === null
-                      ? '/path/to/your/project'
-                      : workspaceFolder(
-                          workspaceRoot,
-                          useTarget.template.name,
-                          useTarget.template.id,
-                        )
+                      ? 'Blank: a new folder for this workflow'
+                      : `Blank: a new folder in ${workspaceRoot}`
                   }
                   onChange={(repoDir) => {
                     setUseTarget({ ...useTarget, repoDir });

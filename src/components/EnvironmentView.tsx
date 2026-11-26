@@ -51,7 +51,7 @@ function isMediaTool(id: string): boolean {
 }
 
 /**
- * Where steps without a folder of their own run: `<root>/<Workflow name>`,
+ * Where steps without a folder of their own run: `<root>/<Workflow name> (<id>)`,
  * `~/Documents/Orchevia` unless a folder is chosen here.
  */
 function WorkspaceSection(): React.JSX.Element {
@@ -105,9 +105,9 @@ function WorkspaceSection(): React.JSX.Element {
       </h2>
       <p className="field-hint section-hint">
         Commands and agents in a workflow without a project folder run in{' '}
-        <code>{workspaceRoot ?? '…'}/&lt;Workflow name&gt;</code>, created on the first
-        run. Each run in Runs lists the files its steps made. Workflows with a project
-        folder keep using it.
+        <code>{workspaceRoot ?? '…'}/&lt;Workflow name&gt; (&lt;id&gt;)</code>, created on
+        the first run. Each run in Runs lists the files its steps made. Workflows with a
+        project folder keep using it.
       </p>
       {message !== null && (
         <Notice

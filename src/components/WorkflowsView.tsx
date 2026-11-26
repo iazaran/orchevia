@@ -1,5 +1,5 @@
 import { StartRunDialog, UsageLimitsDialog } from './RunControls';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ADAPTER_LABELS,
   BUILTIN_ADAPTERS,
@@ -34,7 +34,7 @@ import {
   type Workflow,
   type StoredWorkflow,
 } from '../lib/workflow';
-import { selectActiveWorkflow, useAppStore } from '../store';
+import { selectActiveWorkflow, useAppStore, type WorkflowIntent } from '../store';
 import { confirmDialog } from './ConfirmDialog';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
@@ -440,7 +440,12 @@ export function WorkflowsView(): React.JSX.Element {
       });
   };
 
+  // The request Home or the palette made before this view opened is read by
+  // the state above; it is cleared here once (StrictMode runs effects twice).
+  const openedIntentDone = useRef(false);
   useEffect(() => {
+    if (openedIntentDone.current) return;
+    openedIntentDone.current = true;
     if (useAppStore.getState().pendingIntent !== null)
       useAppStore.getState().setPendingIntent(null);
     if (intent?.kind === 'new') createWorkflow();
@@ -464,6 +469,36 @@ export function WorkflowsView(): React.JSX.Element {
     setRunMessage(null);
     setStartMode(mode);
   };
+
+  // A request made while this view is already open (the palette on
+  // Workflows) is handled as it arrives.
+  const handleIntent = (next: WorkflowIntent): void => {
+    useAppStore.getState().setPendingIntent(null);
+    if (next.kind === 'new') {
+      createWorkflow();
+    } else if (next.kind === 'run') {
+      openStartForm('live');
+    } else {
+      setAssistanceBase(null);
+      setPreview(null);
+      setGoal(next.goal);
+      setGenRepoDir('');
+      setShowGenerator(true);
+    }
+  };
+  const handleIntentRef = useRef(handleIntent);
+  useEffect(() => {
+    handleIntentRef.current = handleIntent;
+  });
+  useEffect(
+    () =>
+      useAppStore.subscribe((state, previous) => {
+        const next = state.pendingIntent;
+        if (next !== null && next !== previous.pendingIntent)
+          handleIntentRef.current(next);
+      }),
+    [],
+  );
 
   const startFromDialog = async (
     inputs: Record<string, string>,

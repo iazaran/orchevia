@@ -78,6 +78,10 @@
       "reason": "Checked when a run starts, against the values the run was given; a saved workflow has no run inputs yet."
     },
     {
+      "code": "input-choice-invalid",
+      "reason": "Checked when a run starts, against the value the run was given for an input with choices."
+    },
+    {
       "code": "agent-role-unresolved",
       "reason": "Checked when a run starts: roles are fine in templates and drafts and only block a real run."
     },

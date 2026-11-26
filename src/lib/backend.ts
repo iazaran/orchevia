@@ -2731,14 +2731,9 @@ class MockBackend implements Backend {
   ): void {
     const names = [...new Set(text.match(MOCK_FILE_PATTERN) ?? [])].slice(0, 12);
     if (names.length === 0) return;
-    const folder =
-      (node.config.workingDir ?? '').trim() ||
-      (workflow.defaults?.repoDir ?? '').trim() ||
-      workspaceFolder(
-        (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
-        workflow.name,
-        workflow.id,
-      );
+    const folder = this.mockStepFolder(workflow, node);
+    // A profile that runs in the app's own folder writes nowhere a run lists.
+    if (folder === null) return;
     const files = (this.runFiles.get(runId) ?? []).filter(
       (f) => !names.includes(f.relPath),
     );
@@ -2767,13 +2762,74 @@ class MockBackend implements Backend {
     this.runFiles.set(runId, files);
   }
 
+  /** Where a step runs, as the engine resolves it; null for the app's folder. */
+  private mockStepFolder(workflow: Workflow, node: WorkflowNode): string | null {
+    const own = (node.config.workingDir ?? '').trim();
+    const project = (workflow.defaults?.repoDir ?? '').trim();
+    if (node.type === 'agent') {
+      const profile = this.profiles.get(node.config.agentProfileId ?? '');
+      if (profile?.workingDirMode === 'profile')
+        return (profile.workingDir ?? '').trim() || null;
+      if (profile?.workingDirMode === 'inherit') return null;
+    }
+    return (
+      own ||
+      project ||
+      workspaceFolder(
+        (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
+        workflow.name,
+        workflow.id,
+      )
+    );
+  }
+
+  /** The run's folders, as `outputs::run_folders` lists them (all assumed to exist). */
+  private mockRunFolders(runId: string): string[] {
+    const workflow = this.runWorkflows.get(runId);
+    if (workflow === undefined) return [];
+    const folders = new Set<string>();
+    const add = (dir: string | undefined): void => {
+      const trimmed = (dir ?? '').trim();
+      if (trimmed.startsWith('/')) folders.add(trimmed);
+    };
+    const project = (workflow.defaults?.repoDir ?? '').trim();
+    add(project);
+    let workspace = false;
+    for (const node of workflow.nodes) {
+      if (node.type !== 'command' && node.type !== 'agent') continue;
+      add(node.config.workingDir);
+      const profile =
+        node.type === 'agent'
+          ? this.profiles.get(node.config.agentProfileId ?? '')
+          : undefined;
+      if (profile?.workingDirMode === 'profile') add(profile.workingDir);
+      if ((node.config.workingDir ?? '').trim() === '' && project === '')
+        workspace = true;
+    }
+    if (workspace)
+      folders.add(
+        workspaceFolder(
+          (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
+          workflow.name,
+          workflow.id,
+        ),
+      );
+    const sorted = [...folders].sort();
+    return sorted.filter(
+      (folder) =>
+        !sorted.some((other) => other !== folder && folder.startsWith(`${other}/`)),
+    );
+  }
+
   async listRunFiles(runId: string): Promise<RunFiles> {
     if (!this.runs.some((r) => r.id === runId)) throw new Error('Run not found.');
     const files = [...(this.runFiles.get(runId) ?? [])].sort(
       (a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path),
     );
     return {
-      folders: [...new Set(files.map((f) => f.folder))].sort(),
+      folders: [
+        ...new Set([...this.mockRunFolders(runId), ...files.map((f) => f.folder)]),
+      ].sort(),
       files: files.map(
         ({ text: _text, base64: _base64, mime: _mime, ...file }): RunFile => file,
       ),

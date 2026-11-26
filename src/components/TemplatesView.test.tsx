@@ -330,6 +330,6 @@ it('filters templates by kind and search, and content needs no repository', asyn
   expect(folder).toHaveValue('');
   expect(folder).toHaveAttribute(
     'placeholder',
-    '/home/me/Documents/Orchevia/Blog Post from a Brief',
+    'Blank: a new folder in /home/me/Documents/Orchevia',
   );
 });

@@ -29,7 +29,7 @@ Content, research, media and data templates need no repository. Open
 **Templates**, filter by kind, and use one such as **Blog Post from a Brief**,
 **Research Report with Sources**, **Images from a Brief** or **Social Video
 Cuts**. Leave **Project folder** empty: the workflow then works in its own
-folder, `~/Documents/Orchevia/<Workflow name>` (change the root in Environment →
+folder, `~/Documents/Orchevia/<Workflow name> (<id>)` (change the root in Environment →
 **Workspace**). Each run lists what it made under **Files**, with previews, and
 **Open** hands a document, image or video to its usual app.
 

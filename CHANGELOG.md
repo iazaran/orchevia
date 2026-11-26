@@ -28,14 +28,16 @@ files it made.
 - **Files on every run.** Runs lists what a run's steps created or changed in
   the folders they ran in, newest first, with thumbnails for images. A preview
   shows Markdown, text, images, audio, video and PDFs; **Open** hands documents
-  and media to their default app (never scripts or programs), **Show in
+  and media to their default app (never scripts, programs or web pages), **Show in
   folder** reveals the file and **Copy path** copies it. Hidden files and
   dependency, build and cache folders are never listed, and nothing outside the
   run's folders can be read.
 - **Workspace folders.** A Command or Agent step with no folder of its own, in
   a workflow without a project folder, now runs in that workflow's own folder,
-  `~/Documents/Orchevia/<Workflow name>` (created on the first run; dry runs
-  create nothing), instead of wherever the app happened to start. Environment →
+  `~/Documents/Orchevia/<Workflow name> (<id>)` (created on the first run; dry
+  runs create nothing), instead of wherever the app happened to start. The short
+  id keeps two workflows with the same name apart, and a folder that cannot be
+  created fails the step with its path. Environment →
   **Workspace** chooses another root. The workflow panel and the step folder
   fields show the folder in use.
 - **Eight templates beyond code**, each replayed end to end in the engine:

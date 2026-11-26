@@ -382,7 +382,12 @@ it('runs a content template in the browser preview to the files it writes', asyn
     'post.md',
     'social-posts.md',
   ]);
-  expect(files.folders).toEqual(['~/Documents/Orchevia/Blog Post from a Brief']);
+  expect(files.folders).toEqual([
+    `~/Documents/Orchevia/Blog Post from a Brief (${workflow.id
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(-6)
+      .toLowerCase()})`,
+  ]);
   const revise = workflow.nodes.find((n) => n.label === 'Revise the draft')!;
   const rows = await backend.getRunResults(runId);
   expect(rows.filter((r) => r.nodeId === revise.id).map((r) => r.status)).toEqual([

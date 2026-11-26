@@ -46,21 +46,25 @@ schema bump + migration. Full integration guide: [integrations.md](./integration
 
 A Command or Agent step runs in its own `workingDir` when set, else in the
 workflow's `defaults.repoDir` (the project folder). With neither, it runs in the
-workflow's **workspace folder**, `<workspace root>/<Workflow name>`, created on
+workflow's **workspace folder**, `<workspace root>/<Workflow name> (<id>)`, created on
 the first run (never by a dry run). The workspace root is `~/Documents/Orchevia`
 (or `~/Orchevia` without a Documents folder) unless Environment → Workspace saves
 another absolute path (`workspace.root`). The folder name keeps letters, digits,
 spaces and `-_.()+`, turns anything else into `-`, drops leading dots and is cut
-at 80 characters. Before 0.4.0 such steps ran in the app's own folder. Codex
+at 80 characters; `(<id>)` is the last six letters or digits of the workflow id,
+so two workflows with the same name (two uses of one template) never share a
+folder. Before 0.4.0 such steps ran in the app's own folder. Codex
 steps whose folder is outside any Git repository get `--skip-git-repo-check`.
 Git and GitHub steps always need a repository.
 
 Runs → **Files** lists what a run's steps created or changed in these folders
-(between its start and end, newest first, at most 300, skipping hidden entries
-and `node_modules`, `target`, `dist`, `build`, `vendor`, virtual environments and
-caches). Previews show text and Markdown up to 512 KB and images, audio, video and
-PDFs up to 20 MB; **Open** hands documents and media to the default app (never
-scripts or programs), and **Show in folder** reveals the file.
+(modified, or on Unix copied in, between its start and end, newest first, at most
+300, skipping hidden entries and `node_modules`, `target`, `dist`, `build`,
+`vendor`, virtual environments and caches). A run waiting for an approval keeps
+listing edits made while it waits. Previews show text and Markdown up to 512 KB
+and images, audio, video and PDFs up to 20 MB; **Open** hands documents and media
+to the default app (never scripts, programs, web pages or XML), and **Show in
+folder** reveals the file.
 
 ### Script files
 

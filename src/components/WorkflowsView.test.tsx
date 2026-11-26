@@ -583,3 +583,38 @@ it('starts the selected workflow when Home asks to run it', async () => {
   expect(await screen.findByRole('dialog', { name: 'Start run' })).toBeInTheDocument();
   expect(useAppStore.getState().pendingIntent).toBeNull();
 });
+
+it('handles a palette request while Workflows is already open', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Open'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    pendingIntent: null,
+  });
+  render(<WorkflowsView />);
+  act(() => {
+    useAppStore
+      .getState()
+      .setPendingIntent({ kind: 'generate', goal: 'Summarize notes' });
+  });
+  expect(await screen.findByLabelText('Describe what you want to do')).toHaveValue(
+    'Summarize notes',
+  );
+  expect(useAppStore.getState().pendingIntent).toBeNull();
+  act(() => {
+    useAppStore.getState().setPendingIntent({ kind: 'new' });
+  });
+  // Exactly one new workflow, however often the store notifies.
+  await waitFor(() =>
+    expect(
+      useAppStore.getState().workflows.filter((w) => w.name.startsWith('Untitled')),
+    ).toHaveLength(1),
+  );
+  expect(useAppStore.getState().pendingIntent).toBeNull();
+});
