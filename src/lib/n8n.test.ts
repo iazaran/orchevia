@@ -694,3 +694,62 @@ it('quotes and splits shell words symmetrically', () => {
   expect(shellWords(`echo "a \\"b\\"" c\\ d`)).toEqual(['echo', 'a "b"', 'c d']);
   expect(shellWords("echo 'open")).toBeNull();
 });
+
+it('exports CI and issue GitHub steps as gh commands', () => {
+  const ci: Workflow = {
+    schemaVersion: 6,
+    id: 'wf-ci',
+    name: 'CI',
+    defaults: { repoDir: '/repo' },
+    nodes: [
+      { id: 's', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'run',
+        type: 'github',
+        label: 'Build apps',
+        position: { x: 0, y: 1 },
+        config: {
+          githubOp: {
+            op: 'runWorkflow',
+            workflow: 'build.yml',
+            ref: 'main',
+            inputs: { track: "o'neil" },
+            artifactsDir: 'artifacts',
+          },
+        },
+      },
+      {
+        id: 'wait',
+        type: 'github',
+        label: 'Wait for CI',
+        position: { x: 0, y: 2 },
+        config: { githubOp: { op: 'waitChecks', number: 12 } },
+      },
+      {
+        id: 'issue',
+        type: 'github',
+        label: 'Read issue',
+        position: { x: 0, y: 3 },
+        config: { githubOp: { op: 'issueDetails', number: 7 } },
+      },
+      { id: 'e', type: 'end', position: { x: 0, y: 4 }, config: {} },
+    ],
+    edges: [
+      { id: 'a', source: 's', target: 'run' },
+      { id: 'b', source: 'run', target: 'wait' },
+      { id: 'c', source: 'wait', target: 'issue' },
+      { id: 'd', source: 'issue', target: 'e' },
+    ],
+  };
+  const { workflow: out } = toN8n(ci);
+  const command = (name: string): string =>
+    String(out.nodes.find((n) => n.name === name)?.parameters.command);
+  // A value with a quote stays one argument.
+  expect(command('Build apps')).toContain(
+    "gh workflow run build.yml --ref main -f 'track=o'\\''neil'",
+  );
+  expect(command('Build apps')).toContain('gh run watch "$id" --exit-status');
+  expect(command('Build apps')).toContain('gh run download "$id" -D artifacts');
+  expect(command('Wait for CI')).toContain('gh pr checks 12 --watch --fail-fast');
+  expect(command('Read issue')).toContain('gh issue view 7');
+});

@@ -86,7 +86,21 @@ export type GitHubOp =
       head: string;
       draft?: boolean | undefined;
     }
-  | { op: 'postComment'; number: number; body: string };
+  | { op: 'postComment'; number: number; body: string }
+  /** Wait for CI: a PR's checks (0: the run's prNumber input, else the current commit). */
+  | { op: 'waitChecks'; number: number }
+  /** Run a GitHub Actions workflow, wait for it, optionally download artifacts. */
+  | {
+      op: 'runWorkflow';
+      workflow: string;
+      ref?: string | undefined;
+      inputs?: Record<string, string> | undefined;
+      artifactsDir?: string | undefined;
+    }
+  /** A GitHub issue (0: the run's issueNumber input), also as ticket.* variables. */
+  | { op: 'issueDetails'; number: number }
+  | { op: 'listIssues'; state?: string | undefined; label?: string | undefined }
+  | { op: 'commentIssue'; number: number; body: string };
 
 export interface WorkflowInput {
   name: string;
@@ -702,7 +716,13 @@ export function isPublicationStep(node: WorkflowNode): boolean {
   const explicit = node.config.publishes;
   if (explicit !== undefined) return explicit && !ROUTING_KINDS.has(node.type);
   const op = node.config.githubOp?.op;
-  return node.type === 'github' && (op === 'createPr' || op === 'postComment');
+  return (
+    node.type === 'github' &&
+    (op === 'createPr' ||
+      op === 'postComment' ||
+      op === 'commentIssue' ||
+      op === 'runWorkflow')
+  );
 }
 
 const PUBLISHING = [
@@ -720,6 +740,19 @@ const PUBLISHING = [
   'cargo publish',
   'twine upload',
   'docker push',
+  // Releases, store uploads and deploys (v0.4.0).
+  'gh workflow run',
+  'gh release upload',
+  'fastlane deliver',
+  'fastlane supply',
+  'fastlane pilot',
+  'fastlane upload_to_play_store',
+  'fastlane upload_to_app_store',
+  'fastlane upload_to_testflight',
+  'eas submit',
+  'firebase deploy',
+  'netlify deploy',
+  'vercel deploy',
 ];
 const WITH_VALUE = ['-c', '-r', '--repo', '--git-dir', '--work-tree'];
 
@@ -804,6 +837,8 @@ export const VALIDATION_CODES = [
   'github-title-required',
   'github-branches-required',
   'github-body-required',
+  'github-workflow-required',
+  'github-artifacts-dir-invalid',
   'ticket-key-required',
   'ticket-server-required',
   'mcp-server-required',
@@ -1197,9 +1232,37 @@ function githubOpIssues(op: GitHubOp, defaultBranch: string | undefined): GitIss
       ]);
     return found;
   }
-  if (op.op === 'postComment' && op.body.trim() === '')
+  if ((op.op === 'postComment' || op.op === 'commentIssue') && op.body.trim() === '')
     return [['github-body-required', 'Comments need an explicit body.']];
+  if (op.op === 'runWorkflow') {
+    const found: GitIssue[] = [];
+    if (op.workflow.trim() === '')
+      found.push([
+        'github-workflow-required',
+        'Running a GitHub Actions workflow needs its file name or name (e.g. build.yml).',
+      ]);
+    if (op.artifactsDir !== undefined && !artifactsDirOk(op.artifactsDir))
+      found.push([
+        'github-artifacts-dir-invalid',
+        "The artifacts folder must be a relative folder inside the repository (no '..', not absolute).",
+      ]);
+    return found;
+  }
   return [];
+}
+
+/** An artifacts folder stays inside the repository (mirrors Rust `artifacts_dir_ok`). */
+export function artifactsDirOk(dir: string): boolean {
+  const value = dir.trim();
+  return (
+    value !== '' &&
+    !value.startsWith('/') &&
+    !value.startsWith('~') &&
+    !value.startsWith('\\') &&
+    !/[\0\n\r]/.test(value) &&
+    !value.split(/[/\\]/).includes('..') &&
+    !(value.length > 1 && value[1] === ':')
+  );
 }
 
 /**

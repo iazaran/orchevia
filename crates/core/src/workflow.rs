@@ -354,6 +354,47 @@ pub enum GitHubOp {
         number: u64,
         body: String,
     },
+    /// Wait for CI to finish (v0.4.0): a pull request's checks (number 0:
+    /// the run's `prNumber` input), or with no number the checks on the
+    /// repository folder's current commit. Fails when a check fails, with the
+    /// failed jobs' log ends in its output.
+    WaitChecks {
+        #[serde(default)]
+        number: u64,
+    },
+    /// Run a GitHub Actions workflow (`workflow_dispatch`), wait for it, and
+    /// optionally download its artifacts into a folder of the repository.
+    RunWorkflow {
+        /// File name (`build.yml`), name or id of the workflow.
+        workflow: String,
+        /// Branch or tag; blank uses the workflow default branch, else the
+        /// repository's default.
+        #[serde(default, rename = "ref", skip_serializing_if = "String::is_empty")]
+        git_ref: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        inputs: std::collections::BTreeMap<String, String>,
+        #[serde(
+            default,
+            rename = "artifactsDir",
+            skip_serializing_if = "Option::is_none"
+        )]
+        artifacts_dir: Option<String>,
+    },
+    /// A GitHub issue (number 0: the run's `issueNumber` input), also as
+    /// `{{ticket.*}}` variables.
+    IssueDetails {
+        number: u64,
+    },
+    ListIssues {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    CommentIssue {
+        number: u64,
+        body: String,
+    },
 }
 
 /// Bounded retry policy. Attempt counts are 1-based: `max_attempts: 1` means
@@ -527,6 +568,8 @@ pub const VALIDATION_CODES: &[&str] = &[
     "github-title-required",
     "github-branches-required",
     "github-body-required",
+    "github-workflow-required",
+    "github-artifacts-dir-invalid",
     "ticket-key-required",
     "ticket-server-required",
     "mcp-server-required",
@@ -562,7 +605,12 @@ pub fn publishes(node: &Node) -> bool {
             node.kind == NodeKind::GitHub
                 && matches!(
                     node.config.github_op,
-                    Some(GitHubOp::CreatePr { .. } | GitHubOp::PostComment { .. })
+                    Some(
+                        GitHubOp::CreatePr { .. }
+                            | GitHubOp::PostComment { .. }
+                            | GitHubOp::CommentIssue { .. }
+                            | GitHubOp::RunWorkflow { .. }
+                    )
                 )
         }
     }
@@ -573,7 +621,7 @@ pub fn publishes(node: &Node) -> bool {
 /// `env … git push` and `bash -c "… git push"`; a script file's contents are
 /// not read. Mirrored by `commandPublishes` in `src/lib/workflow.ts`.
 pub fn command_publishes(executable: &str, args: &[String]) -> bool {
-    const PUBLISHING: [&str; 14] = [
+    const PUBLISHING: [&str; 26] = [
         "git push",
         "gh pr create",
         "gh pr comment",
@@ -588,6 +636,19 @@ pub fn command_publishes(executable: &str, args: &[String]) -> bool {
         "cargo publish",
         "twine upload",
         "docker push",
+        // Releases, store uploads and deploys (v0.4.0).
+        "gh workflow run",
+        "gh release upload",
+        "fastlane deliver",
+        "fastlane supply",
+        "fastlane pilot",
+        "fastlane upload_to_play_store",
+        "fastlane upload_to_app_store",
+        "fastlane upload_to_testflight",
+        "eas submit",
+        "firebase deploy",
+        "netlify deploy",
+        "vercel deploy",
     ];
     let line = std::iter::once(executable)
         .chain(args.iter().map(String::as_str))
@@ -1779,7 +1840,39 @@ fn validate_github_op(
         | GitHubOp::ListPrs { .. }
         | GitHubOp::PrDetails { .. }
         | GitHubOp::PrFiles { .. }
-        | GitHubOp::PrChecks { .. } => {}
+        | GitHubOp::PrChecks { .. }
+        | GitHubOp::WaitChecks { .. }
+        | GitHubOp::IssueDetails { .. }
+        | GitHubOp::ListIssues { .. } => {}
+        GitHubOp::CommentIssue { body, .. } => {
+            if body.trim().is_empty() {
+                err(
+                    "github-body-required",
+                    "Comments need an explicit body.".to_string(),
+                );
+            }
+        }
+        GitHubOp::RunWorkflow {
+            workflow,
+            artifacts_dir,
+            ..
+        } => {
+            if workflow.trim().is_empty() {
+                err(
+                    "github-workflow-required",
+                    "Running a GitHub Actions workflow needs its file name or name (e.g. build.yml)."
+                        .to_string(),
+                );
+            }
+            if let Some(dir) = artifacts_dir {
+                if !artifacts_dir_ok(dir) {
+                    err(
+                        "github-artifacts-dir-invalid",
+                        "The artifacts folder must be a relative folder inside the repository (no '..', not absolute).".to_string(),
+                    );
+                }
+            }
+        }
         GitHubOp::CreatePr {
             title, base, head, ..
         } => {
@@ -1805,6 +1898,19 @@ fn validate_github_op(
             }
         }
     }
+}
+
+/// An artifacts folder stays inside the repository: relative, no `..`
+/// component, not blank, one line. Templated values are checked as written.
+pub fn artifacts_dir_ok(dir: &str) -> bool {
+    let dir = dir.trim();
+    !dir.is_empty()
+        && !dir.starts_with('/')
+        && !dir.starts_with('~')
+        && !dir.starts_with('\\')
+        && !dir.contains(['\0', '\n', '\r'])
+        && !dir.split(['/', '\\']).any(|part| part == "..")
+        && !(dir.len() > 1 && dir.as_bytes()[1] == b':')
 }
 
 /// Validate a Command step's script path (its existence is checked when the

@@ -106,6 +106,16 @@ function describeGitHubOp(op: WorkflowNode['config']['githubOp']): string {
       return `${op.draft === true ? 'draft ' : ''}PR ${op.head} → ${op.base}`;
     case 'postComment':
       return `comment on #${String(op.number)}`;
+    case 'waitChecks':
+      return op.number > 0 ? `wait for CI on #${String(op.number)}` : 'wait for CI';
+    case 'runWorkflow':
+      return `run ${op.workflow}`;
+    case 'issueDetails':
+      return `issue #${String(op.number)}`;
+    case 'listIssues':
+      return `list issues (${op.state ?? 'open'})`;
+    case 'commentIssue':
+      return `comment on issue #${String(op.number)}`;
   }
 }
 

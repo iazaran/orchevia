@@ -278,3 +278,51 @@ it('keeps Refresh on a waiting run with no files yet, and stores choices trimmed
     .click(within(panel).getByRole('button', { name: 'Refresh files' }));
   await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(calls));
 });
+
+it('fills ticket variables from a GitHub issue in the browser preview', async () => {
+  const backend = __setMockBackendForTests();
+  const profile = await backend.saveAgentProfile(createDefaultProfile('claude'));
+  const workflow: Workflow = {
+    schemaVersion: 6,
+    id: 'wf-issue',
+    name: 'Issue',
+    defaults: { repoDir: '/repo' },
+    inputs: [{ name: 'issueNumber', required: true }],
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'issue',
+        type: 'github',
+        position: { x: 0, y: 100 },
+        config: { githubOp: { op: 'issueDetails', number: 0 } },
+      },
+      {
+        id: 'impl',
+        type: 'agent',
+        position: { x: 0, y: 200 },
+        config: {
+          agentProfileId: profile.id,
+          prompt: 'Implement {{ticket.key}}: {{ticket.title}}',
+        },
+      },
+      { id: 'end', type: 'end', position: { x: 0, y: 300 }, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'issue' },
+      { id: 'e2', source: 'issue', target: 'impl' },
+      { id: 'e3', source: 'impl', target: 'end' },
+    ],
+  };
+  await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow('wf-issue', { issueNumber: '#42' });
+  await waitFor(
+    async () => {
+      expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    },
+    { timeout: 5000 },
+  );
+  const rows = await backend.getRunResults(runId);
+  expect(rows.find((r) => r.nodeId === 'impl')?.stdout).toContain(
+    'Implement #42: Mock issue 42',
+  );
+});

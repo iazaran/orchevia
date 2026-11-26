@@ -315,7 +315,24 @@ const GITHUB_OPS = [
   'prChecks',
   'createPr',
   'postComment',
+  'waitChecks',
+  'runWorkflow',
+  'issueDetails',
+  'listIssues',
+  'commentIssue',
 ] as const;
+
+/** What each GitHub operation does, under the operation picker. */
+const GITHUB_OP_HINTS: Partial<Record<(typeof GITHUB_OPS)[number], string>> = {
+  waitChecks:
+    'Waits until CI finishes and fails the step when a check fails, with the end of the failed logs as its output (route a failure edge to a fix step). PR number 0 uses the run’s prNumber input, else the checks on the folder’s current commit (after a push). Waits up to the step timeout, an hour by default.',
+  runWorkflow:
+    'Starts a GitHub Actions workflow that has a workflow_dispatch trigger (a build, a release, an app store upload), waits for it, and can download its artifacts into a folder of the repository. Fails when the run fails, with the failed logs as its output.',
+  issueDetails:
+    'Reads a GitHub issue. Later steps use {{ticket.key}}, {{ticket.title}}, {{ticket.description}} and {{ticket.url}}, as with a Jira ticket. Number 0 uses the run’s issueNumber input.',
+  listIssues: 'Lists issues (open by default), optionally with one label.',
+  commentIssue: 'Posts a comment on an issue. Number 0 uses the run’s issueNumber input.',
+};
 
 export function GitHubEditor({
   workflow,
@@ -352,6 +369,9 @@ export function GitHubEditor({
             </option>
           ))}
         </select>
+        {GITHUB_OP_HINTS[op.op] !== undefined && (
+          <span className="field-hint">{GITHUB_OP_HINTS[op.op]}</span>
+        )}
       </div>
       <DirPicker
         id={`gh-dir-${nodeId}`}
@@ -428,6 +448,116 @@ export function GitHubEditor({
           </label>
         </>
       )}
+      {(op.op === 'waitChecks' || op.op === 'issueDetails') && (
+        <GitTextField
+          label={
+            op.op === 'waitChecks'
+              ? 'PR number (0 = input or current commit)'
+              : 'Issue number'
+          }
+          value={String(op.number)}
+          placeholder="0"
+          onChange={(v) => {
+            const number = v.trim() === '' ? 0 : wholeNumber(v);
+            if (number !== null) setOp({ ...op, number });
+          }}
+        />
+      )}
+      {op.op === 'listIssues' && (
+        <>
+          <GitTextField
+            label="State (open, closed or all)"
+            value={op.state ?? ''}
+            placeholder="open"
+            onChange={(state) => {
+              const next = { ...op };
+              if (state.trim() === '') delete next.state;
+              else next.state = state.trim();
+              setOp(next);
+            }}
+          />
+          <GitTextField
+            label="Label (optional)"
+            value={op.label ?? ''}
+            placeholder="bug"
+            onChange={(label) => {
+              const next = { ...op };
+              if (label.trim() === '') delete next.label;
+              else next.label = label;
+              setOp(next);
+            }}
+          />
+        </>
+      )}
+      {op.op === 'runWorkflow' && (
+        <>
+          <GitTextField
+            label="Workflow file or name"
+            value={op.workflow}
+            placeholder="build.yml"
+            onChange={(workflow) => setOp({ ...op, workflow })}
+          />
+          <GitTextField
+            label="Branch or tag (blank = workflow default, else the repository's)"
+            value={op.ref ?? ''}
+            placeholder="main"
+            onChange={(ref) => {
+              const next = { ...op };
+              if (ref.trim() === '') delete next.ref;
+              else next.ref = ref;
+              setOp(next);
+            }}
+          />
+          <div className="field">
+            <label className="field-label" htmlFor={`gh-wf-inputs-${nodeId}`}>
+              Workflow inputs (one key=value per line; values may use {'{{…}}'})
+            </label>
+            <KeyValueTextarea
+              id={`gh-wf-inputs-${nodeId}`}
+              className="textarea"
+              rows={3}
+              value={op.inputs ?? {}}
+              onChange={(inputs) => {
+                const next = { ...op };
+                if (Object.keys(inputs).length === 0) delete next.inputs;
+                else next.inputs = inputs;
+                setOp(next);
+              }}
+            />
+          </div>
+          <GitTextField
+            label="Download artifacts to (optional folder in the repository)"
+            value={op.artifactsDir ?? ''}
+            placeholder="build-artifacts"
+            onChange={(dir) => {
+              const next = { ...op };
+              if (dir.trim() === '') delete next.artifactsDir;
+              else next.artifactsDir = dir;
+              setOp(next);
+            }}
+          />
+        </>
+      )}
+      {op.op === 'commentIssue' && (
+        <>
+          <GitTextField
+            label="Issue number"
+            value={String(op.number)}
+            placeholder="7"
+            onChange={(v) => {
+              const number = v.trim() === '' ? 0 : wholeNumber(v);
+              if (number !== null) setOp({ ...op, number });
+            }}
+          />
+          <GitTextField
+            label="Body (explicit action)"
+            value={op.body}
+            placeholder="Fixed in …"
+            onChange={(body) => setOp({ ...op, body })}
+            textarea
+          />
+        </>
+      )}
       {op.op === 'postComment' && (
         <>
           <GitTextField
@@ -451,7 +581,7 @@ export function GitHubEditor({
       )}
       <span className="field-hint">
         Uses your <code>gh</code> auth — Orchevia never sees tokens. Remote writes (create
-        PR, comment) only happen when this node runs.
+        PR, comment, run a workflow) only happen when this node runs.
       </span>
     </>
   );
@@ -475,6 +605,16 @@ function defaultGitHubOp(
       return { op: 'createPr', title: '', body: '', base: 'main', head: '', draft: true };
     case 'postComment':
       return { op: 'postComment', number: 0, body: '' };
+    case 'waitChecks':
+      return { op: 'waitChecks', number: 0 };
+    case 'runWorkflow':
+      return { op: 'runWorkflow', workflow: '' };
+    case 'issueDetails':
+      return { op: 'issueDetails', number: 0 };
+    case 'listIssues':
+      return { op: 'listIssues', state: 'open' };
+    case 'commentIssue':
+      return { op: 'commentIssue', number: 0, body: '' };
   }
 }
 

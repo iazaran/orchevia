@@ -10,7 +10,13 @@
     ["bash", "-c", "cargo test && git push origin main"],
     ["sh", "-c", "pnpm publish --access public"],
     ["cargo", "publish"],
-    ["docker", "push", "img:1"]
+    ["docker", "push", "img:1"],
+    ["gh", "workflow", "run", "release.yml", "--ref", "main"],
+    ["fastlane", "supply", "--aab", "app.aab", "--track", "internal"],
+    ["fastlane", "pilot", "upload", "--ipa", "App.ipa"],
+    ["bash", "-c", "npx cap build android && fastlane deliver --submit_for_review"],
+    ["npx", "eas", "submit", "--platform", "ios"],
+    ["netlify", "deploy", "--prod"]
   ],
   "local": [
     ["git", "status"],
@@ -20,6 +26,10 @@
     ["gh", "pr", "checks"],
     ["npm", "test"],
     ["bash", "-c", "git log --oneline"],
-    ["git", "stash", "push"]
+    ["git", "stash", "push"],
+    ["fastlane", "test"],
+    ["npx", "cap", "sync", "android"],
+    ["gh", "run", "watch", "123"],
+    ["firebase", "emulators:start"]
   ]
 }

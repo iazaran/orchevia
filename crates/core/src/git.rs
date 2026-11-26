@@ -83,6 +83,11 @@ pub fn inside_repository(dir: &std::path::Path) -> bool {
         .any(|folder| folder.join(".git").exists())
 }
 
+/// The commit the folder's checkout is on.
+pub fn head_sha(dir: &str) -> Result<String, String> {
+    git(dir, &["rev-parse", "HEAD"], 10).map(|s| s.trim().to_string())
+}
+
 pub fn discover_root(dir: &str) -> Option<String> {
     git(dir, &["rev-parse", "--show-toplevel"], 10)
         .ok()

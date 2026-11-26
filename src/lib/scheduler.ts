@@ -148,7 +148,11 @@ export function workflowRisks(
           risks.add('repositoryMutation');
         break;
       case 'github':
-        if (['createPr', 'postComment'].includes(config.githubOp?.op ?? ''))
+        if (
+          ['createPr', 'postComment', 'commentIssue', 'runWorkflow'].includes(
+            config.githubOp?.op ?? '',
+          )
+        )
           risks.add('remoteWrite');
         break;
       default:

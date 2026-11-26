@@ -383,6 +383,16 @@ export function stepPurpose(
           return 'Reads a pull request';
         case 'listPrs':
           return 'Lists pull requests';
+        case 'waitChecks':
+          return 'Waits for CI to finish';
+        case 'runWorkflow':
+          return `Runs the ${op.workflow} workflow and waits for it`;
+        case 'issueDetails':
+          return 'Reads an issue';
+        case 'listIssues':
+          return 'Lists issues';
+        case 'commentIssue':
+          return 'Comments on an issue';
         default:
           return 'GitHub operation';
       }

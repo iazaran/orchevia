@@ -167,6 +167,26 @@ function githubCommand(op: GitHubOp, q: Quote): string {
         .join(' ');
     case 'postComment':
       return `gh pr comment ${pr(op.number)} --body ${q(op.body)}`;
+    case 'waitChecks':
+      // n8n has no wait loop of its own: gh watches until the checks finish.
+      return `gh pr checks ${op.number === 0 ? '' : `${String(op.number)} `}--watch --fail-fast`;
+    case 'runWorkflow': {
+      const workflow = q(op.workflow);
+      const ref = op.ref ? ` --ref ${q(op.ref)}` : '';
+      const fields = Object.entries(op.inputs ?? {})
+        .map(([key, value]) => ` -f ${q(`${key}=${value}`)}`)
+        .join('');
+      const download = op.artifactsDir
+        ? ` && gh run download "$id" -D ${q(op.artifactsDir)}`
+        : '';
+      return `gh workflow run ${workflow}${ref}${fields} && sleep 10 && id=$(gh run list --workflow ${workflow} --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId') && gh run watch "$id" --exit-status${download}`;
+    }
+    case 'issueDetails':
+      return `gh issue view ${op.number === 0 ? q('{{input.issueNumber}}') : String(op.number)}`;
+    case 'listIssues':
+      return `gh issue list --state ${q(op.state ?? 'open')}${op.label ? ` --label ${q(op.label)}` : ''}`;
+    case 'commentIssue':
+      return `gh issue comment ${op.number === 0 ? q('{{input.issueNumber}}') : String(op.number)} --body ${q(op.body)}`;
   }
 }
 

@@ -1472,6 +1472,40 @@ class MockBackend implements Backend {
               acceptanceCriteria: [],
             },
           });
+        } else if (
+          node.type === 'github' &&
+          node.config.githubOp?.op === 'issueDetails'
+        ) {
+          // Shaped like a Ticket step, as in the engine: {{ticket.*}} works.
+          const number =
+            node.config.githubOp.number > 0
+              ? String(node.config.githubOp.number)
+              : (run.inputs?.issueNumber ?? '').trim().replace(/^#/, '');
+          if (!/^[1-9]\d*$/.test(number)) {
+            const row = this.pushResult(runId, nodeId, 'failed', '');
+            row.error = 'Issue number is 0: provide inputs.issueNumber.';
+            run.status = 'failed';
+            run.finishedAt = new Date().toISOString();
+            this.persist();
+            return;
+          }
+          const row = this.pushResult(
+            runId,
+            nodeId,
+            'succeeded',
+            `#${number} Mock issue ${number} (browser mock, no remote lookup).`,
+          );
+          row.structuredJson = JSON.stringify({
+            simulated: true,
+            ticket: {
+              key: `#${number}`,
+              title: `Mock issue ${number}`,
+              description: 'Simulated issue details.',
+              status: 'open',
+              url: '',
+              acceptanceCriteria: [],
+            },
+          });
         } else {
           this.pushResult(
             runId,
