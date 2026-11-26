@@ -9,6 +9,10 @@ const versions = {
     read('crates/core/Cargo.toml'),
   )?.[1],
 };
+// The website's structured data names the release too.
+versions['docs/index.html (softwareVersion)'] = /"softwareVersion": "([^"]+)"/.exec(
+  read('docs/index.html'),
+)?.[1];
 const lockedPackages = read('Cargo.lock').split('[[package]]');
 for (const name of ['orchevia', 'orchevia-core']) {
   const locked = lockedPackages.find((entry) => entry.includes(`\nname = "${name}"\n`));

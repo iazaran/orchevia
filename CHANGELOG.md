@@ -123,6 +123,12 @@ files it made.
   arguments, and inputs with help text, long text and choices.
 - The workflow panel calls `defaults.repoDir` the **Project folder**: a
   repository for code work or any folder for documents and media.
+- **README and website.** The site's What's new covers 0.4 (CI and Actions
+  steps, Home, Files, the new templates, Shortcut tickets, workspace folders),
+  its setups list has all six groups including **Apps & releases**, its
+  template list shows all 21 with "New" only on 0.4 ones, and the Templates and
+  MCP setup screenshots show 0.4. `pnpm version:check` now also
+  checks the version in the site's structured data, which had stayed at 0.3.2.
 - Dependencies refreshed within their ranges.
 
 ### Fixed

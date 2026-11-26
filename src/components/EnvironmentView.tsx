@@ -934,6 +934,7 @@ const PRESET_MARKS: Record<string, string> = {
   'cloudflare-docs': 'CF',
   playwright: 'PW',
   'brave-search': 'BS',
+  shortcut: 'SC',
 };
 
 /** A short mark for a setup tile: GitHub → GH, Slack → S. */

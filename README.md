@@ -49,7 +49,10 @@ palette (Ctrl/⌘ + K) · **Files** on every run with previews · eight template
 content, research, media and data (blog posts, launch kits, research reports,
 translations, images, social video cuts, spreadsheet insights, meeting actions) ·
 workspace folders for work without a repository · run inputs with help text, long text
-and choices · FFmpeg, ImageMagick, Pandoc and Python detection.
+and choices · GitHub steps that wait for CI, run Actions workflows with their artifacts
+and read issues as tickets · Shortcut stories in Ticket steps · six more MCP setups
+(Shortcut, Firebase, Netlify, Lovable, mobile devices, Maestro) · FFmpeg, ImageMagick,
+Pandoc and Python detection.
 [Changelog](./CHANGELOG.md)
 
 <img src="./docs/images/home.webp" alt="Orchevia's Home screen: a box asking what you want done with example goals, the setup steps left, five kinds of work (software, content and marketing, research, media and design, data and operations) and recent runs." width="100%" />
@@ -175,7 +178,7 @@ CLI, model, effort and permission level. Missing CLIs show their install command
 **Connect tools in one form.** Pick one of 28 MCP setups: it fills in the command, shows
 how to sign in, writes the `export` lines for your shell and lists the tools to call.
 
-<img src="./docs/images/mcp-setups.webp" alt="The Add an MCP server picker: a search field, category filters and tiles for Google Workspace, Microsoft 365, Slack, Notion, Jira and Confluence, GitHub, GitLab, Linear and Sentry with sign-in and read-only badges." />
+<img src="./docs/images/mcp-setups.webp" alt="The Add an MCP server picker with category filters including Apps and releases, and tiles for Google Workspace, Microsoft 365, Slack, Notion, Jira and Confluence, GitHub, GitLab, Linear and Shortcut with sign-in, read-only and Ticket steps badges." />
 
 </td>
 <td width="50%" valign="top">
@@ -219,7 +222,7 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 ## What you get
 
 - **Visual workflow canvas.** Start, Command, Human Approval, AI Agent, Condition, Git,
-  GitHub, Ticket (Jira via MCP), MCP Tool and End nodes; validation badges, run overlays,
+  GitHub, Ticket (Jira or Shortcut via MCP), MCP Tool and End nodes; validation badges, run overlays,
   dependency-aware layout, and Simple/Advanced JSON.
 - **Real control flow.** Constrained conditions (no scripting), parallel branches with
   joins, failure edges, bounded retries with backoff, guarded review/fix loops, per-node
@@ -241,9 +244,10 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 - **Integrations.** Safe Git operations (dirty or lossy states refused), GitHub through
   your own `gh` (draft PRs, waiting for CI, Actions runs with their artifacts, issues as
   tickets, comments), and 28 ready-made MCP setups for Jira, Shortcut,
-  Slack, Google Workspace, Microsoft 365, Notion, GitHub, Linear, Sentry, docs and data
-  tools, with **Check server** to test one before a workflow depends on it. Steps that
-  push, open pull requests or comment are marked as publishing.
+  Slack, Google Workspace, Microsoft 365, Notion, GitHub, Linear, Sentry, Firebase,
+  Netlify, Lovable, mobile devices, Maestro, docs and data tools, with **Check server**
+  to test one before a workflow depends on it. Steps that push, open pull requests,
+  comment, deploy or upload to an app store are marked as publishing.
 - **n8n import and export.** Commands, Git and GitHub steps, agents, conditions,
   approvals and tickets map to Execute Command, If, Wait and Jira nodes and back; the
   conversion notes list everything else.
@@ -260,16 +264,18 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 
 ## Workflow recipes
 
-| Start with                | Typical sequence                                           | What you configure                                   |
-| ------------------------- | ---------------------------------------------------------- | ---------------------------------------------------- |
-| A change you want to make | Plan → Approve → Implement → Test → Review                 | Repository, agent profiles, real test command        |
-| A tracked ticket          | Read Ticket → Plan → Approve → Implement → Test → Draft PR | Jira MCP, `git`/`gh`, profiles, explicit write steps |
-| An existing PR            | Read PR → Independent reviews → Summarize → Human decision | Authenticated `gh`, PR input, reviewer profiles      |
-| A nightly sweep           | Schedule or watcher → Review → Inbox notification          | Trusted schedule, read-only scope, reviewer profiles |
-| A page, docs or a channel | MCP tool (Fetch, AWS Knowledge, Slack) → Brief             | The MCP setup, a planning profile                    |
-| A blog post or launch     | Outline → Draft → Fact-check loop → Approve → Social posts | A topic and notes; files land in the workspace       |
-| A research question       | Research with sources → Second agent checks every source   | Agent web search allowed                             |
-| Images or a video         | Prompts → Approve → Images · or FFmpeg cuts → Captions     | Codex for images (ChatGPT plan), FFmpeg for video    |
+| Start with                    | Typical sequence                                                | What you configure                                                                   |
+| ----------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| A change you want to make     | Plan → Approve → Implement → Test → Review                      | Repository, agent profiles, real test command                                        |
+| A tracked ticket              | Read Ticket → Plan → Approve → Implement → Test → Draft PR      | Jira or Shortcut MCP (or a GitHub issue), `git`/`gh`, profiles, explicit write steps |
+| A change that must pass CI    | Implement → Push → Wait for CI → on failure, fix and push again | Authenticated `gh`, a pushed branch or PR, a bounded loop                            |
+| A build or release in Actions | Approve → Run an Actions workflow → Download its artifacts      | A `workflow_dispatch` workflow, an artifacts folder                                  |
+| An existing PR                | Read PR → Independent reviews → Summarize → Human decision      | Authenticated `gh`, PR input, reviewer profiles                                      |
+| A nightly sweep               | Schedule or watcher → Review → Inbox notification               | Trusted schedule, read-only scope, reviewer profiles                                 |
+| A page, docs or a channel     | MCP tool (Fetch, AWS Knowledge, Slack) → Brief                  | The MCP setup, a planning profile                                                    |
+| A blog post or launch         | Outline → Draft → Fact-check loop → Approve → Social posts      | A topic and notes; files land in the workspace                                       |
+| A research question           | Research with sources → Second agent checks every source        | Agent web search allowed                                                             |
+| Images or a video             | Prompts → Approve → Images · or FFmpeg cuts → Captions          | Codex for images (ChatGPT plan), FFmpeg for video                                    |
 
 Keep commits, pushes, comments and PR creation explicit in the graph. A review or a
 passing test never merges anything unless you add that write step.
@@ -281,7 +287,8 @@ passing test never merges anything unless you add that write step.
 | Implement, plan, or review code                   | AI Agent                   | Profile, prompt, repository, timeout |
 | Inspect a repository or manage branches/worktrees | Git                        | Supported operation and repository   |
 | Inspect a PR, create a draft PR, or add a comment | GitHub                     | Operation through authenticated `gh` |
-| Read a Jira ticket                                | Ticket                     | Enabled MCP server and ticket key    |
+| Wait for CI, run an Actions workflow, read issues | GitHub                     | Operation through authenticated `gh` |
+| Read a Jira issue or a Shortcut story             | Ticket                     | Enabled MCP server and ticket key    |
 | Call another integration operation                | MCP Tool                   | Discovered tool and JSON arguments   |
 | Run tests, Docker, or unsupported CLI operations  | Command                    | Executable and separate arguments    |
 | Choose a path or pause for a decision             | Condition / Human Approval | Condition or approval message        |
