@@ -51,8 +51,11 @@ export function App(): React.JSX.Element {
   // Ctrl/⌘ + K finds a view, workflow, template, run or action. Another open
   // dialog keeps the keys: the palette never opens over it.
   useEffect(() => {
+    // On macOS Ctrl+K deletes to the end of a line in text fields: only ⌘K.
+    const mac = /mac/i.test(navigator.platform);
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return;
+      if (event.key.toLowerCase() !== 'k' || !(mac ? event.metaKey : event.ctrlKey))
+        return;
       if (event.altKey || event.shiftKey) return;
       if (document.querySelector('[aria-modal="true"]') !== null) return;
       event.preventDefault();
@@ -147,7 +150,7 @@ export function App(): React.JSX.Element {
           </span>
           <span className="nav-btn-label">Search</span>
           <kbd className="nav-kbd" aria-hidden="true">
-            {navigator.platform.toLowerCase().includes('mac') ? '⌘K' : 'Ctrl K'}
+            {/mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'}
           </kbd>
         </button>
         {NAV.map((item) => (
