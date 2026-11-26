@@ -457,6 +457,9 @@ export function WorkflowsView(): React.JSX.Element {
   // without inputs still open it so saved limits can be reviewed or
   // overridden before starting.
   const openStartForm = (mode: 'dry' | 'live'): void => {
+    // Read from the store: a palette request may have just selected another
+    // workflow that this render has not seen yet.
+    const active = selectActiveWorkflow(useAppStore.getState());
     if (active === null || starting) return;
     // Warm previously entered values with input defaults on first open.
     if (inputState.workflowId !== active.id) {

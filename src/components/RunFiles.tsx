@@ -69,6 +69,8 @@ export function RunFilesPanel({
   const [open, setOpen] = useState<RunFile | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Bumped by Refresh: a paused run keeps collecting files while it waits.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -85,7 +87,7 @@ export function RunFilesPanel({
     return () => {
       alive = false;
     };
-  }, [run.id, run.status, run.finishedAt, refreshKey]);
+  }, [run.id, run.status, run.finishedAt, refreshKey, reload]);
 
   const images = useMemo(
     () =>
@@ -166,6 +168,15 @@ export function RunFilesPanel({
           )}
           {listing.truncated && ' (newest shown)'}
         </span>
+        <button
+          type="button"
+          className="btn btn-ghost btn-inline run-files-refresh"
+          onClick={() => {
+            setReload((n) => n + 1);
+          }}
+        >
+          Refresh
+        </button>
       </div>
       {actionError !== null && (
         <Notice

@@ -1122,6 +1122,22 @@ class MockBackend implements Backend {
       const errors = validateSessionProfile(profile);
       if (errors.length) throw new Error(errors.join(' '));
     }
+    // Steps without a folder share the workflow's workspace folder: one
+    // open run there at a time (mirrors the engine).
+    const workspace =
+      runOptions.dryRun === true ? null : this.mockWorkspaceOf(wf.definition);
+    if (
+      workspace !== null &&
+      this.runs.some(
+        (r) =>
+          r.workflowId === workflowId &&
+          (r.status === 'running' || r.status === 'paused') &&
+          r.execution?.options.dryRun !== true,
+      )
+    )
+      throw new Error(
+        `'${wf.definition.name}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.`,
+      );
     const runId = `run-mock-${String(this.counter++)}`;
     const run: StoredRun = {
       id: runId,
@@ -1132,6 +1148,7 @@ class MockBackend implements Backend {
         // merged with per-run overrides, snapshotted into the run.
         resolvedLimits: resolveLimits(wf.definition.limits, runOptions),
         consumedAgentAttempts: 0,
+        ...(workspace === null ? {} : { workspace }),
       },
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -2731,11 +2748,13 @@ class MockBackend implements Backend {
   ): void {
     const names = [...new Set(text.match(MOCK_FILE_PATTERN) ?? [])].slice(0, 12);
     if (names.length === 0) return;
-    const folder = this.mockStepFolder(workflow, node);
+    const recorded = this.runs.find((r) => r.id === runId)?.execution?.workspace;
+    const folder = this.mockStepFolder(workflow, node, recorded);
     // A profile that runs in the app's own folder writes nowhere a run lists.
     if (folder === null) return;
+    // Same name in another folder is another file.
     const files = (this.runFiles.get(runId) ?? []).filter(
-      (f) => !names.includes(f.relPath),
+      (f) => !names.some((name) => f.path === `${folder}/${name}`),
     );
     const label = node.label ?? node.id;
     for (const name of names) {
@@ -2762,8 +2781,30 @@ class MockBackend implements Backend {
     this.runFiles.set(runId, files);
   }
 
+  /** The workspace folder a new run records, or null when no step uses it. */
+  private mockWorkspaceOf(workflow: Workflow): string | null {
+    const project = (workflow.defaults?.repoDir ?? '').trim();
+    const uses = workflow.nodes.some(
+      (n) =>
+        (n.type === 'command' || n.type === 'agent') &&
+        (n.config.workingDir ?? '').trim() === '' &&
+        project === '',
+    );
+    return uses
+      ? workspaceFolder(
+          (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
+          workflow.name,
+          workflow.id,
+        )
+      : null;
+  }
+
   /** Where a step runs, as the engine resolves it; null for the app's folder. */
-  private mockStepFolder(workflow: Workflow, node: WorkflowNode): string | null {
+  private mockStepFolder(
+    workflow: Workflow,
+    node: WorkflowNode,
+    recorded?: string,
+  ): string | null {
     const own = (node.config.workingDir ?? '').trim();
     const project = (workflow.defaults?.repoDir ?? '').trim();
     if (node.type === 'agent') {
@@ -2772,15 +2813,7 @@ class MockBackend implements Backend {
         return (profile.workingDir ?? '').trim() || null;
       if (profile?.workingDirMode === 'inherit') return null;
     }
-    return (
-      own ||
-      project ||
-      workspaceFolder(
-        (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
-        workflow.name,
-        workflow.id,
-      )
-    );
+    return own || project || recorded || this.mockWorkspaceOf(workflow);
   }
 
   /** The run's folders, as `outputs::run_folders` lists them (all assumed to exist). */
@@ -2806,14 +2839,9 @@ class MockBackend implements Backend {
       if ((node.config.workingDir ?? '').trim() === '' && project === '')
         workspace = true;
     }
-    if (workspace)
-      folders.add(
-        workspaceFolder(
-          (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
-          workflow.name,
-          workflow.id,
-        ),
-      );
+    const recorded = this.runs.find((r) => r.id === runId)?.execution?.workspace;
+    const current = workspace ? (recorded ?? this.mockWorkspaceOf(workflow)) : null;
+    if (current !== null) folders.add(current);
     const sorted = [...folders].sort();
     return sorted.filter(
       (folder) =>

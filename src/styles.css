@@ -1787,6 +1787,9 @@ details[open] > .gen-summary::after {
   white-space: nowrap;
   max-width: 100%;
 }
+.run-files-refresh {
+  margin-left: auto;
+}
 .run-files-count {
   font-size: 12px;
   font-weight: 600;

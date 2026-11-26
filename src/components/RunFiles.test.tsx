@@ -109,3 +109,67 @@ it('shows nothing for a run that made no files, and refuses other paths', async 
   );
   await expect(backend.listRunFiles('missing')).rejects.toThrow('Run not found.');
 });
+
+it('keeps one open run per workspace folder and same-named files apart', async () => {
+  const backend = __setMockBackendForTests();
+  const profile = await backend.saveAgentProfile(createDefaultProfile('claude'));
+  const workflow: Workflow = {
+    schemaVersion: 6,
+    id: 'wf-gate',
+    name: 'Gate',
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'a',
+        type: 'agent',
+        position: { x: 0, y: 100 },
+        config: { agentProfileId: profile.id, prompt: 'Write report.md' },
+      },
+      {
+        id: 'b',
+        type: 'agent',
+        position: { x: 0, y: 200 },
+        config: {
+          agentProfileId: profile.id,
+          prompt: 'Write report.md here too',
+          workingDir: '/tmp/elsewhere',
+        },
+      },
+      { id: 'wait', type: 'approval', position: { x: 0, y: 300 }, config: {} },
+      { id: 'end', type: 'end', position: { x: 0, y: 400 }, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'a' },
+      { id: 'e2', source: 'a', target: 'b' },
+      { id: 'e3', source: 'b', target: 'wait' },
+      { id: 'e4', source: 'wait', target: 'end' },
+    ],
+  };
+  await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow('wf-gate');
+  await waitFor(
+    async () => {
+      expect((await backend.getRun(runId))?.status).toBe('paused');
+    },
+    { timeout: 5000 },
+  );
+  expect((await backend.getRun(runId))?.execution?.workspace).toBe(
+    '~/Documents/Orchevia/Gate (wfgate)',
+  );
+  await expect(backend.runWorkflow('wf-gate')).rejects.toThrow(
+    "'Gate' already has a run open in its workspace folder.",
+  );
+  // A dry run touches no folder.
+  await expect(
+    backend.runWorkflow('wf-gate', {}, { dryRun: true, fixtures: {} }),
+  ).resolves.toBeDefined();
+  const listed = await backend.listRunFiles(runId);
+  expect(listed.files.map((f) => f.path).sort()).toEqual([
+    '/tmp/elsewhere/report.md',
+    '~/Documents/Orchevia/Gate (wfgate)/report.md',
+  ]);
+  expect(listed.folders).toEqual([
+    '/tmp/elsewhere',
+    '~/Documents/Orchevia/Gate (wfgate)',
+  ]);
+});

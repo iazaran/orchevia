@@ -302,7 +302,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   setView: (view) => {
     navigationSequence++;
-    set({ view });
+    // A search the palette filled in lasts for that visit to Templates.
+    set(
+      get().view === 'templates' && view !== 'templates'
+        ? { view, templateQuery: '' }
+        : { view },
+    );
   },
 
   refreshAll: async () => {

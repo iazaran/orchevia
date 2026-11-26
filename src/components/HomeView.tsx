@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '../store';
 import { Icon, type IconName } from './Icon';
 import { formatTime } from '../lib/time';
@@ -56,6 +56,18 @@ export function HomeView(): React.JSX.Element {
   const setPendingIntent = useAppStore((s) => s.setPendingIntent);
   const [goal, setGoal] = useState('');
   const [now] = useState(() => Date.now());
+  // Scheduled and watcher runs start on their own: keep the lists current.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void useAppStore
+        .getState()
+        .refreshRuns()
+        .catch(() => undefined);
+    }, 10_000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, []);
 
   const nameOf = useMemo(() => {
     const names = new Map(workflows.map((w) => [w.id, w.name]));

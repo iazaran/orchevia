@@ -208,16 +208,22 @@ export function StartRunDialog({
               <select
                 id={id}
                 className="input"
-                value={value}
+                // A padded default shows as the choice it names.
+                value={options.find((o) => o.trim() === value.trim())?.trim() ?? value}
                 disabled={busy}
                 onChange={(e) => setInput(input.name, e.target.value)}
                 {...described}
               >
-                {(value === '' || !options.some((o) => o.trim() === value.trim())) && (
-                  <option value={value} disabled={input.required === true}>
-                    {value === '' ? 'Choose…' : `${value} (not a choice)`}
+                {value.trim() === '' && input.required === true && (
+                  <option value="" disabled>
+                    Choose…
                   </option>
                 )}
+                {input.required !== true && <option value="">(none)</option>}
+                {value.trim() !== '' &&
+                  !options.some((o) => o.trim() === value.trim()) && (
+                    <option value={value}>{value} (not a choice)</option>
+                  )}
                 {options.map((option) => (
                   <option key={option} value={option.trim()}>
                     {option.trim()}

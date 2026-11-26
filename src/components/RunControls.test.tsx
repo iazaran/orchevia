@@ -596,3 +596,25 @@ it('names the choices when a remembered value is no longer one of them', async (
   ).toBeInTheDocument();
   expect(start).not.toHaveBeenCalled();
 });
+
+it('shows a padded default as its choice and lets an optional choice be cleared', async () => {
+  const workflow = createEmptyWorkflow('Padded');
+  workflow.inputs = [
+    { name: 'tone', options: ['Friendly', 'Formal'], default: ' Formal ' },
+  ];
+  const start = vi.fn().mockResolvedValue(undefined);
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={start}
+      onClose={() => undefined}
+    />,
+  );
+  const tone = screen.getByLabelText('tone');
+  expect(tone).toHaveValue('Formal');
+  expect(screen.getByRole('option', { name: '(none)' })).toBeInTheDocument();
+  fireEvent.change(tone, { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
+  await waitFor(() => expect(start).toHaveBeenCalledWith({ tone: '' }, {}));
+});
