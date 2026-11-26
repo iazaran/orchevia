@@ -24,6 +24,7 @@ import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 import { Segmented } from './Segmented';
+import { workspaceFolder } from '../lib/outputs';
 
 /** Kinds of step that can publish (the rest only route or wait). */
 const WORKING_KINDS = new Set(['command', 'agent', 'git', 'github', 'ticket', 'mcp']);
@@ -883,6 +884,7 @@ export function NodeInspector(): React.JSX.Element | null {
   const profiles = useAppStore((s) => s.profiles);
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
   const abilities = useAppStore((s) => s.agentAbilities);
+  const workspaceRoot = useAppStore((s) => s.workspaceRoot);
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
   const [detectingBranch, setDetectingBranch] = useState(false);
@@ -895,7 +897,7 @@ export function NodeInspector(): React.JSX.Element | null {
     if (workflow === null) return;
     const dir = repoDir.trim();
     if (dir === '') {
-      setBranchDetectMsg('Set the repository directory first.');
+      setBranchDetectMsg('Set the project folder to a repository first.');
       return;
     }
     setDetectingBranch(true);
@@ -1021,22 +1023,38 @@ export function NodeInspector(): React.JSX.Element | null {
           the bottom-left message stack. If saving fails, use Retry save in the toolbar.
         </p>
         <div className="field">
-          <span className="field-label">Repository defaults</span>
+          <span className="field-label">Project folder</span>
           <span className="field-hint" style={{ marginBottom: 8 }}>
-            Set once per workflow: Git/GitHub nodes without their own directory or branch
-            use these. Node settings always win when set.
+            A repository for code work, or any folder for documents and media. Steps
+            without a folder of their own run here; a step’s own folder always wins.
           </span>
           <DirPicker
             id="wf-default-repo"
-            label="Repository directory"
+            label="Project or repository folder"
             value={workflow.defaults?.repoDir ?? ''}
-            placeholder="/path/to/repo (optional)"
+            placeholder="/path/to/project (optional)"
             onChange={(v) => {
               updateActiveWorkflow(
                 setWorkflowDefaults(workflow, v, workflow.defaults?.branch ?? ''),
               );
             }}
           />
+          {(workflow.defaults?.repoDir ?? '').trim() === '' && (
+            <span className="field-hint" data-testid="workspace-hint">
+              Blank: commands and agents run in this workflow’s workspace folder
+              {workspaceRoot === null ? (
+                '.'
+              ) : (
+                <>
+                  ,{' '}
+                  <code>
+                    {workspaceFolder(workspaceRoot, workflow.name, workflow.id)}
+                  </code>{' '}
+                  (created on the first run). Git and GitHub steps need a repository.
+                </>
+              )}
+            </span>
+          )}
 
           {branchDetectMsg !== null && (
             <Notice variant="warn" eventId={branchDetectMsgEvent}>
@@ -1384,7 +1402,12 @@ export function NodeInspector(): React.JSX.Element | null {
             id="node-cwd"
             label="Working directory (optional)"
             value={node.config.workingDir ?? ''}
-            placeholder={workflow.defaults?.repoDir ?? '/path/to/project'}
+            placeholder={
+              workflow.defaults?.repoDir ??
+              (workspaceRoot === null
+                ? '/path/to/project'
+                : workspaceFolder(workspaceRoot, workflow.name, workflow.id))
+            }
             onChange={(v) => {
               const value = v.trim();
               const config = { ...node.config };
@@ -1741,7 +1764,12 @@ export function NodeInspector(): React.JSX.Element | null {
               id="node-agent-cwd"
               label="Working directory (optional, overrides profile)"
               value={node.config.workingDir ?? ''}
-              placeholder={workflow.defaults?.repoDir ?? '/path/to/project'}
+              placeholder={
+                workflow.defaults?.repoDir ??
+                (workspaceRoot === null
+                  ? '/path/to/project'
+                  : workspaceFolder(workspaceRoot, workflow.name, workflow.id))
+              }
               onChange={(v) => {
                 const value = v.trim();
                 const config = { ...node.config };
@@ -1754,8 +1782,9 @@ export function NodeInspector(): React.JSX.Element | null {
               }}
             />
             <span className="field-hint">
-              Must exist before execution. Repository changes happen here. Blank uses the
-              workflow’s repository directory, unless the profile sets its own folder.
+              Must exist before execution. Changes happen here. Blank uses the workflow’s
+              project folder, else its workspace folder, unless the profile sets its own
+              folder.
             </span>
           </div>
           <div className="field">

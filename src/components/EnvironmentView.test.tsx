@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { EnvironmentView } from './EnvironmentView';
 import { useAppStore } from '../store';
@@ -161,6 +161,7 @@ it('orders the page Agents, MCP servers, local tools, then maintenance, with a j
     'Agents',
     'MCP servers (0)',
     'Local tools',
+    'Workspace',
     'Updates',
     'Diagnostics',
   ]);
@@ -169,7 +170,14 @@ it('orders the page Agents, MCP servers, local tools, then maintenance, with a j
     within(jump)
       .getAllByRole('link')
       .map((b) => b.textContent),
-  ).toEqual(['Agents', 'MCP servers', 'Local tools', 'Updates', 'Diagnostics']);
+  ).toEqual([
+    'Agents',
+    'MCP servers',
+    'Local tools',
+    'Workspace',
+    'Updates',
+    'Diagnostics',
+  ]);
   const agents = screen.getByRole('region', { name: 'Agents' });
   expect(
     within(agents)
@@ -339,3 +347,47 @@ it('says so when every setup of a category is already set up', () => {
   expect(screen.getByText(/You already set up every setup here/)).toBeInTheDocument();
   expect(screen.queryByText(/No setup matches/)).toBeNull();
 });
+
+it('chooses where folderless steps run and lists media tools apart', async () => {
+  const backend = __setMockBackendForTests();
+  useAppStore.setState({
+    mcpServers: [],
+    adapters: [],
+    profiles: [],
+    workspaceRoot: '~/Documents/Orchevia',
+    tools: [
+      { id: 'git', displayName: 'Git', installed: true },
+      { id: 'ffmpeg', displayName: 'FFmpeg', installed: false },
+    ],
+  });
+  render(<EnvironmentView />);
+  const media = screen.getByRole('heading', { name: 'Media and documents' });
+  expect(media).toBeInTheDocument();
+  expect(
+    screen.getByText('sudo apt install ffmpeg · brew install ffmpeg'),
+  ).toBeInTheDocument();
+  const workspace = screen.getByRole('region', { name: 'Workspace' });
+  const field = within(workspace).getByLabelText(/Workspace folder/);
+  fireEvent.change(field, { target: { value: 'relative/folder' } });
+  fireEvent.click(within(workspace).getByRole('button', { name: 'Save folder' }));
+  await waitFor(() => {
+    expect(noticeTexts()).toContain('The workspace folder must be an absolute path.');
+  });
+  expect(await backend.getSetting('workspace.root')).toBeNull();
+  fireEvent.change(field, { target: { value: '/data/orchevia' } });
+  fireEvent.click(within(workspace).getByRole('button', { name: 'Save folder' }));
+  await waitFor(() => {
+    expect(noticeTexts()).toContain('Workspace folder saved. New runs use it.');
+  });
+  expect(await backend.getSetting('workspace.root')).toBe('/data/orchevia');
+  expect(useAppStore.getState().workspaceRoot).toBe('/data/orchevia');
+  fireEvent.click(within(workspace).getByRole('button', { name: 'Use the default' }));
+  await waitFor(() => {
+    expect(noticeTexts()).toContain('Workspace folder set back to the default.');
+  });
+  expect(useAppStore.getState().workspaceRoot).toBe('~/Documents/Orchevia');
+});
+
+function noticeTexts(): string[] {
+  return useAppStore.getState().uiNotices.map((n) => n.text ?? '');
+}

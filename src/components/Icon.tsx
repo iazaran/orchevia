@@ -24,7 +24,14 @@ export type IconName =
   | 'trash'
   | 'plug'
   | 'check'
-  | 'search';
+  | 'search'
+  | 'home'
+  | 'file'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'folder'
+  | 'command';
 
 const PATHS: Record<IconName, React.JSX.Element> = {
   workflows: (
@@ -136,6 +143,44 @@ const PATHS: Record<IconName, React.JSX.Element> = {
       <circle cx="11" cy="11" r="6.5" />
       <path d="M16 16l4.5 4.5" />
     </>
+  ),
+  home: (
+    <>
+      <path d="M3.5 11 12 4l8.5 7" />
+      <path d="M6 9.5V20h4.5v-5.5h3V20H18V9.5" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M6.5 3.5h7l4 4v12a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z" />
+      <path d="M13.5 3.5v4h4M9 12.5h6M9 16h6" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+      <circle cx="9" cy="10" r="1.8" />
+      <path d="m4 17.5 5-4.5 3.5 3 3-2.5 4.5 4" />
+    </>
+  ),
+  video: (
+    <>
+      <rect x="3.5" y="6" width="12" height="12" rx="2" />
+      <path d="m15.5 10.5 5-3v9l-5-3" />
+    </>
+  ),
+  audio: (
+    <>
+      <path d="M9 17.5V6l10-2v11.5" />
+      <circle cx="6.5" cy="17.5" r="2.5" />
+      <circle cx="16.5" cy="15.5" r="2.5" />
+    </>
+  ),
+  folder: (
+    <path d="M3.5 7a1.5 1.5 0 0 1 1.5-1.5h4.5l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18z" />
+  ),
+  command: (
+    <path d="M9 9V6.5A2.5 2.5 0 1 0 6.5 9H9zm0 0h6m-6 0v6m6-6V6.5A2.5 2.5 0 1 1 17.5 9H15zm0 0v6m0 0h-6m6 0v2.5a2.5 2.5 0 1 0 2.5-2.5H15zm-6 0v2.5A2.5 2.5 0 1 1 6.5 15H9z" />
   ),
 };
 

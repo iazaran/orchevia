@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getBackend } from '../lib/backend';
 import type { ToolStatus } from '../lib/workflow';
 import {
@@ -39,6 +39,120 @@ import { LinesTextarea } from './DraftText';
 import { CheckList, SetupCheckPanel } from './SetupCheck';
 import { CopyButton } from './CopyButton';
 import { Segmented } from './Segmented';
+import { DirPicker } from './DirPicker';
+import {
+  MEDIA_TOOLS,
+  validateWorkspaceRoot,
+  WORKSPACE_ROOT_SETTING,
+} from '../lib/outputs';
+
+function isMediaTool(id: string): boolean {
+  return MEDIA_TOOLS.some((tool) => tool.id === id);
+}
+
+/**
+ * Where steps without a folder of their own run: `<root>/<Workflow name>`,
+ * `~/Documents/Orchevia` unless a folder is chosen here.
+ */
+function WorkspaceSection(): React.JSX.Element {
+  const workspaceRoot = useAppStore((s) => s.workspaceRoot);
+  const refreshWorkspaceRoot = useAppStore((s) => s.refreshWorkspaceRoot);
+  const [saved, setSaved] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [message, setMessage, messageVariant, messageEvent] = useNoticeMessage();
+  useEffect(() => {
+    let alive = true;
+    getBackend()
+      .getSetting(WORKSPACE_ROOT_SETTING)
+      .then((value) => {
+        if (alive) setSaved(value ?? '');
+      })
+      .catch(() => {
+        if (alive) setSaved('');
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const value = draft ?? saved ?? '';
+  const save = (next: string): void => {
+    const problem = validateWorkspaceRoot(next);
+    if (problem !== null) {
+      setMessage(problem, 'error');
+      return;
+    }
+    getBackend()
+      .setSetting(WORKSPACE_ROOT_SETTING, next.trim())
+      .then(async () => {
+        setSaved(next.trim());
+        setDraft(null);
+        await refreshWorkspaceRoot();
+        setMessage(
+          next.trim() === ''
+            ? 'Workspace folder set back to the default.'
+            : 'Workspace folder saved. New runs use it.',
+          'info',
+        );
+      })
+      .catch((err: unknown) => {
+        setMessage(errorMessage(err), 'error');
+      });
+  };
+  return (
+    <section id="env-workspace" aria-labelledby="env-workspace-title" tabIndex={-1}>
+      <h2 id="env-workspace-title" className="section-title">
+        Workspace
+      </h2>
+      <p className="field-hint section-hint">
+        Commands and agents in a workflow without a project folder run in{' '}
+        <code>{workspaceRoot ?? '…'}/&lt;Workflow name&gt;</code>, created on the first
+        run. Each run in Runs lists the files its steps made. Workflows with a project
+        folder keep using it.
+      </p>
+      {message !== null && (
+        <Notice
+          variant={messageVariant}
+          eventId={messageEvent}
+          onDismiss={() => {
+            setMessage(null);
+          }}
+        >
+          {message}
+        </Notice>
+      )}
+      <div className="section-panel">
+        <DirPicker
+          id="workspace-root"
+          label="Workspace folder (blank = Documents/Orchevia in your home folder)"
+          value={value}
+          placeholder={workspaceRoot ?? '/path/to/folder'}
+          onChange={setDraft}
+          onPicked={save}
+        />
+        <div className="section-actions">
+          <button
+            className="btn btn-primary"
+            disabled={draft === null || draft.trim() === (saved ?? '').trim()}
+            onClick={() => {
+              save(value);
+            }}
+          >
+            Save folder
+          </button>
+          <button
+            className="btn btn-ghost"
+            disabled={(saved ?? '') === '' && draft === null}
+            onClick={() => {
+              save('');
+            }}
+          >
+            Use the default
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export function EnvironmentView(): React.JSX.Element {
   const tools = useAppStore((s) => s.tools);
@@ -120,7 +234,10 @@ export function EnvironmentView(): React.JSX.Element {
   };
 
   const developerTools = tools.filter((tool) => tool.id === 'git' || tool.id === 'gh');
-  const agentTools = tools.filter((tool) => tool.id !== 'git' && tool.id !== 'gh');
+  const mediaTools = tools.filter((tool) => isMediaTool(tool.id));
+  const agentTools = tools.filter(
+    (tool) => tool.id !== 'git' && tool.id !== 'gh' && !isMediaTool(tool.id),
+  );
 
   return (
     <>
@@ -285,7 +402,25 @@ export function EnvironmentView(): React.JSX.Element {
           {adapters.length > 0 && agentTools.length === 0 && tools.length > 0 && (
             <p className="field-hint">No AI CLI found yet.</p>
           )}
+          {mediaTools.length > 0 && (
+            <>
+              <h3 id="media-tools" className="subsection-title">
+                Media and documents
+              </h3>
+              <p className="field-hint section-hint">
+                Content, image, audio and video templates use these through Command steps,
+                and agents use them when they are installed. Nothing here is required.
+              </p>
+              <div className="tool-grid">
+                {mediaTools.map((tool) => (
+                  <LocalToolCard key={tool.id} tool={tool} githubState={null} />
+                ))}
+              </div>
+            </>
+          )}
         </section>
+
+        <WorkspaceSection />
 
         {editing !== null && (
           <Modal
@@ -366,6 +501,7 @@ const ENVIRONMENT_SECTIONS = [
   { id: 'env-agents', label: 'Agents' },
   { id: 'env-mcp', label: 'MCP servers' },
   { id: 'env-tools', label: 'Local tools' },
+  { id: 'env-workspace', label: 'Workspace' },
   { id: 'env-updates', label: 'Updates' },
   { id: 'env-diagnostics', label: 'Diagnostics' },
 ] as const;
@@ -379,6 +515,7 @@ function LocalToolCard({
   githubState: GitHubState | null;
 }): React.JSX.Element {
   const agent = BUILTIN_ADAPTERS.find((id) => id === tool.id);
+  const media = MEDIA_TOOLS.find((m) => m.id === tool.id);
   return (
     <div className="tool-card">
       <div className="tool-card-head">
@@ -419,6 +556,17 @@ function LocalToolCard({
             : githubState !== null && !githubState.authenticated
               ? 'Run gh auth login in a terminal. GitHub steps fail with a clear message until then.'
               : 'GitHub steps open pull requests, read checks and post comments.'}
+        </p>
+      )}
+      {media !== undefined && (
+        <p className="field-hint" style={{ marginBottom: 0 }}>
+          {media.use}
+          {!tool.installed && (
+            <>
+              {' '}
+              Install: <code>{media.install}</code>
+            </>
+          )}
         </p>
       )}
       {agent !== undefined && (

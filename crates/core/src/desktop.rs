@@ -179,30 +179,60 @@ pub fn allowed_external_url(url: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-._~/:?=&#%+".contains(c))
 }
 
-/// Open an allowed URL in the default browser without waiting for it.
-pub fn open_external(url: &str) -> Result<(), String> {
-    if !allowed_external_url(url) {
-        return Err("Only Orchevia's own GitHub pages can be opened.".into());
-    }
-    let program = if cfg!(target_os = "macos") {
+/// The system's "open with the default app" program.
+fn opener() -> &'static str {
+    if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(target_os = "windows") {
         "explorer"
     } else {
         "xdg-open"
-    };
+    }
+}
+
+/// Run the opener with `args` without waiting for it.
+fn launch_opener(args: &[&std::ffi::OsStr], what: &str) -> Result<(), String> {
+    let program = opener();
     let mut child = std::process::Command::new(program)
-        .arg(url)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Could not open the browser ({program}): {e}"))?;
+        .map_err(|e| format!("Could not open the {what} ({program}): {e}"))?;
     // Reap the opener so it never lingers as a zombie.
     std::thread::spawn(move || {
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// Open an allowed URL in the default browser without waiting for it.
+pub fn open_external(url: &str) -> Result<(), String> {
+    if !allowed_external_url(url) {
+        return Err("Only Orchevia's own GitHub pages can be opened.".into());
+    }
+    launch_opener(&[std::ffi::OsStr::new(url)], "browser")
+}
+
+/// Open a local file with its default app. Callers decide which files may
+/// be opened (`outputs::open_run_file` allows documents and media only).
+pub fn open_path(path: &std::path::Path) -> Result<(), String> {
+    launch_opener(&[path.as_os_str()], "file")
+}
+
+/// Show a file in its folder: selected in Finder on macOS, the folder itself
+/// elsewhere (file managers differ in how they select a file).
+pub fn reveal_path(path: &std::path::Path) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        return launch_opener(&[std::ffi::OsStr::new("-R"), path.as_os_str()], "folder");
+    }
+    let folder = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    launch_opener(&[folder.as_os_str()], "folder")
 }
 
 /// `updater_configured`: the build carries the public key that verifies

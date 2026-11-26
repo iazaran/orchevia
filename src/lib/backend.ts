@@ -36,6 +36,18 @@ import {
 } from './templates';
 import { readLocal, writeLocal } from './storage';
 import {
+  canOpenFile,
+  fileKindOf,
+  MEDIA_TOOLS,
+  MAX_WORKSPACE_ROOT_BYTES,
+  validateWorkspaceRoot,
+  WORKSPACE_ROOT_SETTING,
+  workspaceFolder,
+  type RunFile,
+  type RunFilePreview,
+  type RunFiles,
+} from './outputs';
+import {
   correctionPlan,
   DEFAULT_CORRECTION_ROUNDS,
   feedbackTarget,
@@ -232,6 +244,14 @@ export interface Backend {
   getRunWorkflow(runId: string): Promise<Workflow | null>;
   listRuns(limit?: number): Promise<StoredRun[]>;
   getRunResults(runId: string): Promise<StoredNodeResult[]>;
+  /** The folder under which folderless steps run, in `<root>/<Workflow name>`. */
+  workspaceRoot(): Promise<string>;
+  /** Files the run's steps created or changed, newest first. Reads only. */
+  listRunFiles(runId: string): Promise<RunFiles>;
+  /** One of the run's files for preview: text, or base64 media. */
+  readRunFile(runId: string, path: string): Promise<RunFilePreview>;
+  /** Open one of the run's documents or media files, or (`reveal`) its folder. */
+  openRunFile(runId: string, path: string, reveal: boolean): Promise<void>;
   deleteRun(runId: string): Promise<boolean>;
   clearFinishedRuns(): Promise<{ removed: number; kept: number }>;
   previewCommand(executable: string, args: string[]): Promise<string>;
@@ -491,6 +511,19 @@ class TauriBackend implements Backend {
   getRunResults(runId: string): Promise<StoredNodeResult[]> {
     return this.invoke('get_run_results', { runId });
   }
+  workspaceRoot(): Promise<string> {
+    return this.invoke('workspace_root');
+  }
+  listRunFiles(runId: string): Promise<RunFiles> {
+    return this.invoke('list_run_files', { runId });
+  }
+  readRunFile(runId: string, path: string): Promise<RunFilePreview> {
+    return this.invoke('read_run_file', { runId, path });
+  }
+  openRunFile(runId: string, path: string, reveal: boolean): Promise<void> {
+    return this.invoke('open_run_file', { runId, path, reveal });
+  }
+
   deleteRun(runId: string): Promise<boolean> {
     return this.invoke('delete_run', { runId });
   }
@@ -783,6 +816,28 @@ function mockStepCommand(
  * Browser-only development backend. Persists workflows in localStorage and
  * simulates command execution deterministically (no processes spawned).
  */
+/** A file a mock step "wrote", with what its preview shows. */
+type MockRunFile = RunFile & { text?: string; base64?: string; mime?: string };
+
+/** Where the browser preview pretends folderless steps run. */
+const MOCK_WORKSPACE_ROOT = '~/Documents/Orchevia';
+
+/** File names a prompt or command mentions (`post.md`, `out/cover.png`). */
+const MOCK_FILE_PATTERN =
+  /(?<![\w/.-])(?:[\w-]+\/)*[\w][\w.-]*\.(?:md|txt|csv|json|html|png|jpe?g|webp|svg|gif|mp4|webm|mov|mp3|wav|pdf|docx)(?![\w])/gi;
+
+function mockFileText(name: string, step: string, author: string): string {
+  if (name.toLowerCase().endsWith('.csv')) return 'item,value\nexample,1\n';
+  if (name.toLowerCase().endsWith('.json')) return '{ "preview": true }\n';
+  return `# ${name}\n\nWritten by ${author} in the step **${step}** (browser preview: no agent ran, so this is placeholder text).\n\n- The desktop app shows the real file here.\n- Open it, or show it in its folder, from this panel.\n`;
+}
+
+function mockImageSvg(name: string, step: string): string {
+  const safe = (text: string): string =>
+    text.replace(/[<>&"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6d5dfc"/><stop offset="1" stop-color="#22c3a6"/></linearGradient></defs><rect width="640" height="400" fill="url(#g)"/><text x="40" y="190" font-family="sans-serif" font-size="34" fill="#fff">${safe(name)}</text><text x="40" y="236" font-family="sans-serif" font-size="18" fill="#eef">${safe(step)} (browser preview)</text></svg>`;
+}
+
 class MockBackend implements Backend {
   private preferences = new Map<string, Preference>();
   private observations = new Map<string, number>();
@@ -793,6 +848,8 @@ class MockBackend implements Backend {
   private runWorkflows = new Map<string, Workflow>();
   private recoverySeeds = new Map<string, StoredNodeResult[]>();
   private feedback = new Map<string, RunFeedback[]>();
+  /** Files mock steps "wrote", with preview content where there is one. */
+  private runFiles = new Map<string, MockRunFile[]>();
   private feedbackCounter = 1;
   private recoveryRequests = new Map<
     string,
@@ -853,6 +910,7 @@ class MockBackend implements Backend {
         runWorkflows?: [string, Workflow][];
         recoverySeeds?: [string, StoredNodeResult[]][];
         feedback?: [string, RunFeedback[]][];
+        runFiles?: [string, MockRunFile[]][];
         feedbackCounter?: number;
         recoveryRequests?: [
           string,
@@ -874,6 +932,7 @@ class MockBackend implements Backend {
       this.runWorkflows = new Map(data.runWorkflows ?? []);
       this.recoverySeeds = new Map(data.recoverySeeds ?? []);
       this.feedback = new Map(data.feedback ?? []);
+      this.runFiles = new Map(data.runFiles ?? []);
       this.feedbackCounter = data.feedbackCounter ?? 1;
       this.recoveryRequests = new Map(data.recoveryRequests ?? []);
       this.counter = data.counter ?? this.runs.length + 1;
@@ -926,6 +985,7 @@ class MockBackend implements Backend {
           runWorkflows: [...this.runWorkflows.entries()],
           recoverySeeds: [...this.recoverySeeds.entries()],
           feedback: [...this.feedback.entries()],
+          runFiles: [...this.runFiles.entries()],
           feedbackCounter: this.feedbackCounter,
           recoveryRequests: [...this.recoveryRequests.entries()],
           counter: this.counter,
@@ -1009,6 +1069,11 @@ class MockBackend implements Backend {
       ...BUILTIN_ADAPTERS.map((id) => ({
         id,
         displayName: ADAPTERS[id].name,
+        installed: false,
+      })),
+      ...MEDIA_TOOLS.map(({ id, name }) => ({
+        id,
+        displayName: name,
         installed: false,
       })),
     ];
@@ -1512,6 +1577,7 @@ class MockBackend implements Backend {
               ...resultMetadata(live),
               ...correction,
             });
+          this.recordMockFiles(runId, workflow, node, rendered.rendered, profile.name);
           this.completeResult(
             live,
             'succeeded',
@@ -1543,6 +1609,7 @@ class MockBackend implements Backend {
           this.timers.set(runId, setTimeout(resolve, 350));
         });
         if (this.runs.find((r) => r.id === runId)?.status !== 'running') return;
+        this.recordMockFiles(runId, workflow, node, command, 'a command');
         this.completeResult(
           live,
           'succeeded',
@@ -2632,6 +2699,105 @@ class MockBackend implements Backend {
     return this.results.get(runId) ?? [];
   }
 
+  async workspaceRoot(): Promise<string> {
+    const saved = (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim();
+    return saved === '' ? MOCK_WORKSPACE_ROOT : saved;
+  }
+
+  /**
+   * The browser preview writes nothing: a step "writes" the files its prompt
+   * or command names (post.md, cover.png…), in the folder the desktop app
+   * would use, so the Files panel can be tried.
+   */
+  private recordMockFiles(
+    runId: string,
+    workflow: Workflow,
+    node: WorkflowNode,
+    text: string,
+    author: string,
+  ): void {
+    const names = [...new Set(text.match(MOCK_FILE_PATTERN) ?? [])].slice(0, 12);
+    if (names.length === 0) return;
+    const folder =
+      (node.config.workingDir ?? '').trim() ||
+      (workflow.defaults?.repoDir ?? '').trim() ||
+      workspaceFolder(
+        (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
+        workflow.name,
+        workflow.id,
+      );
+    const files = (this.runFiles.get(runId) ?? []).filter(
+      (f) => !names.includes(f.relPath),
+    );
+    const label = node.label ?? node.id;
+    for (const name of names) {
+      const kind = fileKindOf(name);
+      const file: MockRunFile = {
+        path: `${folder}/${name}`,
+        folder,
+        relPath: name,
+        size: 0,
+        modifiedAt: new Date().toISOString(),
+        kind,
+      };
+      if (kind === 'markdown' || kind === 'text') {
+        file.text = mockFileText(name, label, author);
+        file.size = new TextEncoder().encode(file.text).length;
+      } else if (kind === 'image') {
+        const svg = mockImageSvg(name, label);
+        file.base64 = btoa(svg);
+        file.mime = 'image/svg+xml';
+        file.size = svg.length;
+      }
+      files.push(file);
+    }
+    this.runFiles.set(runId, files);
+  }
+
+  async listRunFiles(runId: string): Promise<RunFiles> {
+    if (!this.runs.some((r) => r.id === runId)) throw new Error('Run not found.');
+    const files = [...(this.runFiles.get(runId) ?? [])].sort(
+      (a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path),
+    );
+    return {
+      folders: [...new Set(files.map((f) => f.folder))].sort(),
+      files: files.map(
+        ({ text: _text, base64: _base64, mime: _mime, ...file }): RunFile => file,
+      ),
+      truncated: false,
+    };
+  }
+
+  private mockRunFile(runId: string, path: string): MockRunFile {
+    if (!this.runs.some((r) => r.id === runId)) throw new Error('Run not found.');
+    const file = (this.runFiles.get(runId) ?? []).find((f) => f.path === path);
+    if (file === undefined)
+      throw new Error("Only files in this run's folders can be opened.");
+    return file;
+  }
+
+  async readRunFile(runId: string, path: string): Promise<RunFilePreview> {
+    const file = this.mockRunFile(runId, path);
+    return {
+      path: file.path,
+      kind: file.kind,
+      mime: file.mime ?? (file.kind === 'markdown' ? 'text/markdown' : 'text/plain'),
+      size: file.size,
+      ...(file.text === undefined ? {} : { text: file.text }),
+      ...(file.base64 === undefined ? {} : { base64: file.base64 }),
+      truncated: false,
+    };
+  }
+
+  async openRunFile(runId: string, path: string, reveal: boolean): Promise<void> {
+    this.mockRunFile(runId, path);
+    if (!reveal && !canOpenFile(path))
+      throw new Error(
+        'Orchevia opens documents, images, audio and video only. Use Show in folder for other files.',
+      );
+    throw new Error('Opening files is available in the desktop app.');
+  }
+
   async deleteRun(runId: string): Promise<boolean> {
     const run = this.runs.find((r) => r.id === runId);
     if (run === undefined) return false;
@@ -2648,6 +2814,7 @@ class MockBackend implements Backend {
 
   private removeRunHistory(runId: string): void {
     this.feedback.delete(runId);
+    this.runFiles.delete(runId);
     this.results.delete(runId);
     this.runWorkflows.delete(runId);
     this.recoverySeeds.delete(runId);
@@ -3127,6 +3294,7 @@ class MockBackend implements Backend {
         ABILITIES_SETTING,
         'usage.plans',
         'usage.planShare',
+        WORKSPACE_ROOT_SETTING,
       ].includes(key)
     )
       throw new Error(`Setting '${key}' is not user-configurable.`);
@@ -3140,9 +3308,18 @@ class MockBackend implements Backend {
       throw new Error(`'${value}' is not a release version.`);
     if (key === PERMISSION_DEFAULT_SETTING) parsePermissionDefault(value);
     if (key === ABILITIES_SETTING) parseAbilitiesSetting(value);
-    const maxLen = key.startsWith('usage.') || key === ABILITIES_SETTING ? 8000 : 200;
+    const maxLen =
+      key.startsWith('usage.') || key === ABILITIES_SETTING
+        ? 8000
+        : key === WORKSPACE_ROOT_SETTING
+          ? MAX_WORKSPACE_ROOT_BYTES
+          : 200;
     if (new TextEncoder().encode(value).length > maxLen)
       throw new Error('Setting value too long.');
+    if (key === WORKSPACE_ROOT_SETTING) {
+      const problem = validateWorkspaceRoot(value);
+      if (problem !== null) throw new Error(problem);
+    }
     validateUsageSetting(key, value);
     this.settings.set(key, value);
     this.persist();

@@ -98,6 +98,8 @@ interface AppState {
   /** Last detection of each CLI's own setup, this session. */
   hostAbilities: Partial<Record<'claude' | 'codex', HostAbilitiesState>>;
   knownFolders: string[];
+  /** Where folderless steps run (`<root>/<Workflow name>`); null until known. */
+  workspaceRoot: string | null;
   mcpServers: McpServerConfig[];
   githubState: GitHubState | null;
   schedules: Schedule[];
@@ -130,6 +132,8 @@ interface AppState {
   refreshWorkflows: () => Promise<void>;
   refreshRuns: () => Promise<void>;
   refreshTools: () => Promise<void>;
+  /** Read the workspace root again (after Environment changes it). */
+  refreshWorkspaceRoot: () => Promise<void>;
   refreshProfiles: () => Promise<void>;
   /**
    * Switch `profiles` (their own level) back to following the app-wide agent
@@ -206,6 +210,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   agentAbilities: NO_ABILITIES,
   hostAbilities: {},
   knownFolders: [],
+  workspaceRoot: null,
   mcpServers: [],
   githubState: null,
   schedules: [],
@@ -277,6 +282,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         get().refreshWorkflows(),
         get().refreshRuns(),
         get().refreshTools(),
+        get().refreshWorkspaceRoot(),
         get().refreshProfiles(),
         get().refreshIntegrations(),
         get().refreshAutomations(),
@@ -357,6 +363,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const backend = getBackend();
     const tools = await backend.detectTools();
     set({ tools });
+  },
+
+  refreshWorkspaceRoot: async () => {
+    // Only shown as a hint: a backend without a home folder leaves it unknown.
+    try {
+      set({ workspaceRoot: await getBackend().workspaceRoot() });
+    } catch {
+      set({ workspaceRoot: null });
+    }
   },
 
   refreshProfiles: async () => {

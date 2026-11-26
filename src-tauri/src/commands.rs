@@ -1033,6 +1033,7 @@ const ALLOWED_SETTINGS: &[&str] = &[
     orchevia_core::abilities::ABILITIES_SETTING,
     "usage.plans",
     "usage.planShare",
+    orchevia_core::workspace::WORKSPACE_ROOT_SETTING,
 ];
 
 /// User-taught model names per adapter ("claude" | "codex" | "custom").
@@ -1125,6 +1126,8 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     let max_len = if key.starts_with("usage.") || key == orchevia_core::abilities::ABILITIES_SETTING
     {
         8000
+    } else if key == orchevia_core::workspace::WORKSPACE_ROOT_SETTING {
+        orchevia_core::workspace::MAX_ROOT_BYTES
     } else {
         200
     };
@@ -1136,6 +1139,9 @@ fn set_setting_for_db(db: &SqliteDb, key: &str, value: &str) -> Result<(), Strin
     }
     if key == orchevia_core::abilities::ABILITIES_SETTING {
         orchevia_core::abilities::parse_abilities_setting(value)?;
+    }
+    if key == orchevia_core::workspace::WORKSPACE_ROOT_SETTING {
+        orchevia_core::workspace::validate_root_setting(value)?;
     }
     orchevia_core::usage::validate_usage_setting(key, value)?;
     db.set_setting(key, value).map_err(|e| e.to_string())
@@ -1173,6 +1179,55 @@ pub fn get_run_results(
         .db
         .list_node_results(&run_id)
         .map_err(|e| e.to_string())
+}
+
+/// The workspace root: steps with no folder of their own run in
+/// `<root>/<Workflow name>`.
+#[tauri::command]
+pub fn workspace_root(state: State<AppState>) -> Result<String, String> {
+    orchevia_core::workspace::root(&state.db)
+        .map(|root| root.to_string_lossy().into_owned())
+        .ok_or_else(|| "No home folder: set a workspace folder in Environment.".to_string())
+}
+
+/// Files the run's steps created or changed, newest first (reads only).
+#[tauri::command]
+pub async fn list_run_files(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<orchevia_core::outputs::RunFiles, String> {
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::outputs::list_run_files(&db, &run_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One of the run's files for preview: text, or base64 media.
+#[tauri::command]
+pub async fn read_run_file(
+    state: State<'_, AppState>,
+    run_id: String,
+    path: String,
+) -> Result<orchevia_core::outputs::RunFilePreview, String> {
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        orchevia_core::outputs::read_run_file(&db, &run_id, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Open one of the run's documents or media files, or show it in its folder.
+#[tauri::command]
+pub fn open_run_file(
+    state: State<AppState>,
+    run_id: String,
+    path: String,
+    reveal: bool,
+) -> Result<(), String> {
+    orchevia_core::outputs::open_run_file(&state.db, &run_id, &path, reveal)
 }
 
 /// Delete one finished run and its node results. Running/paused runs are

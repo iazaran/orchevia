@@ -55,7 +55,35 @@ pub struct ToolStatus {
     pub path: Option<String>,
 }
 
-/// Default registry: Git, GitHub CLI and the built-in agent adapters.
+/// Media and document tools that Command steps and agents use for content,
+/// image, audio and video work (v0.4.0). Detected so templates and the
+/// Environment page can say what is missing; none is required.
+pub const MEDIA_TOOL_IDS: [&str; 4] = ["ffmpeg", "imagemagick", "pandoc", "python"];
+
+fn media_tools() -> Vec<ToolDefinition> {
+    let tool = |id: &str, name: &str, executables: &[&str], version: &str| ToolDefinition {
+        id: id.into(),
+        display_name: name.into(),
+        executables: executables.iter().map(|e| (*e).to_string()).collect(),
+        version_args: vec![version.into()],
+    };
+    vec![
+        // ffmpeg and ImageMagick print their version with a single dash.
+        tool("ffmpeg", "FFmpeg", &["ffmpeg"], "-version"),
+        // ImageMagick 7 is `magick`; distributions with version 6 ship `convert`.
+        tool(
+            "imagemagick",
+            "ImageMagick",
+            &["magick", "convert"],
+            "-version",
+        ),
+        tool("pandoc", "Pandoc", &["pandoc"], "--version"),
+        tool("python", "Python", &["python3", "python"], "--version"),
+    ]
+}
+
+/// Default registry: Git, GitHub CLI, the built-in agent adapters, then the
+/// media and document tools.
 pub fn default_tools() -> Vec<ToolDefinition> {
     let developer_tools = [
         ToolDefinition {
@@ -83,6 +111,7 @@ pub fn default_tools() -> Vec<ToolDefinition> {
                     version_args: vec!["--version".into()],
                 }),
         )
+        .chain(media_tools())
         .collect()
 }
 
@@ -881,10 +910,19 @@ mod tests {
     #[test]
     fn default_registry_has_developer_tools_and_each_builtin_agent() {
         let tools = default_tools();
-        assert_eq!(tools.len(), 2 + crate::agents::AdapterKind::BUILTIN.len());
+        assert_eq!(
+            tools.len(),
+            2 + crate::agents::AdapterKind::BUILTIN.len() + MEDIA_TOOL_IDS.len()
+        );
         let ids: Vec<&str> = tools.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains(&"git"));
         assert!(ids.contains(&"gh"));
+        for media in MEDIA_TOOL_IDS {
+            assert!(ids.contains(&media), "{media}");
+        }
+        let magick = tools.iter().find(|t| t.id == "imagemagick").unwrap();
+        assert_eq!(magick.executables, ["magick", "convert"]);
+        assert_eq!(magick.version_args, ["-version"]);
         for adapter in crate::agents::AdapterKind::BUILTIN {
             assert!(ids.contains(&adapter.as_str()));
         }
