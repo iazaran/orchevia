@@ -918,7 +918,7 @@ name=$(basename -- "$1")
 dest="inputs/$name"
 n=1
 while [ -e "$dest" ] || [ -L "$dest" ]; do
-  if [ ! -L "$dest" ] && cmp -s -- "$src" "$dest"; then break; fi
+  if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s -- "$src" "$dest"; then break; fi
   n=$((n+1))
   dest="inputs/$n-$name"
 done
@@ -1025,9 +1025,11 @@ fn image_set() -> Template {
 fn video_cut(id: &str, x: f64, label: &str, w: u32, h: u32, file: &str) -> Node {
     let script = format!(
         r#"set -eu
-if [ ! -f "$1" ]; then echo "No video file at $1" >&2; exit 1; fi
+case "$1" in /*) src=$1 ;; *) src=./$1 ;; esac
+if [ ! -f "$src" ]; then echo "No video file at $1" >&2; exit 1; fi
+if [ -L cuts ]; then echo "cuts is a link; refusing to write through it" >&2; exit 1; fi
 mkdir -p cuts
-ffmpeg -hide_banner -loglevel error -y -ss "$2" -t "$3" -i "$1" -vf "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/{file}
+ffmpeg -hide_banner -loglevel error -y -ss "$2" -t "$3" -i "$src" -vf "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/{file}
 echo "Wrote cuts/{file}""#
     );
     let mut step = command(
@@ -1060,9 +1062,11 @@ fn social_video_cuts() -> Template {
             &[
                 "-c",
                 r#"set -eu
-if [ ! -f "$1" ]; then echo "No video file at $1" >&2; exit 1; fi
+case "$1" in /*) src=$1 ;; *) src=./$1 ;; esac
+if [ ! -f "$src" ]; then echo "No video file at $1" >&2; exit 1; fi
+if [ -L cuts ]; then echo "cuts is a link; refusing to write through it" >&2; exit 1; fi
 mkdir -p cuts
-ffmpeg -hide_banner -loglevel error -y -ss "$2" -i "$1" -frames:v 1 -q:v 2 cuts/thumbnail.jpg
+ffmpeg -hide_banner -loglevel error -y -ss "$2" -i "$src" -frames:v 1 -q:v 2 cuts/thumbnail.jpg
 echo "Wrote cuts/thumbnail.jpg""#,
                 "orchevia",
                 "{{input.video}}",
