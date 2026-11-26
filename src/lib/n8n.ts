@@ -169,17 +169,21 @@ function githubCommand(op: GitHubOp, q: Quote): string {
       return `gh pr comment ${pr(op.number)} --body ${q(op.body)}`;
     case 'waitChecks':
       // n8n has no wait loop of its own: gh watches until the checks finish.
-      return `gh pr checks ${op.number === 0 ? '' : `${String(op.number)} `}--watch --fail-fast`;
+      return `gh pr checks ${(op.number ?? 0) === 0 ? '' : `${String(op.number)} `}--watch --fail-fast`;
     case 'runWorkflow': {
       const workflow = q(op.workflow);
       const ref = op.ref ? ` --ref ${q(op.ref)}` : '';
+      // The run list filters by branch name, without `refs/heads/`.
+      const branch = op.ref
+        ? ` --branch ${q(op.ref.trim().replace(/^refs\/heads\//, ''))}`
+        : '';
       const fields = Object.entries(op.inputs ?? {})
         .map(([key, value]) => ` -f ${q(`${key}=${value}`)}`)
         .join('');
       const download = op.artifactsDir
         ? ` && gh run download "$id" -D ${q(op.artifactsDir)}`
         : '';
-      return `gh workflow run ${workflow}${ref}${fields} && sleep 10 && id=$(gh run list --workflow ${workflow} --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId') && gh run watch "$id" --exit-status${download}`;
+      return `gh workflow run ${workflow}${ref}${fields} && sleep 10 && id=$(gh run list --workflow ${workflow}${branch} --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId') && gh run watch "$id" --exit-status${download}`;
     }
     case 'issueDetails':
       return `gh issue view ${op.number === 0 ? q('{{input.issueNumber}}') : String(op.number)}`;

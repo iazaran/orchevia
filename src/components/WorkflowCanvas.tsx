@@ -107,7 +107,9 @@ function describeGitHubOp(op: WorkflowNode['config']['githubOp']): string {
     case 'postComment':
       return `comment on #${String(op.number)}`;
     case 'waitChecks':
-      return op.number > 0 ? `wait for CI on #${String(op.number)}` : 'wait for CI';
+      return (op.number ?? 0) > 0
+        ? `wait for CI on #${String(op.number)}`
+        : 'wait for CI';
     case 'runWorkflow':
       return `run ${op.workflow}`;
     case 'issueDetails':

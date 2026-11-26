@@ -2778,6 +2778,41 @@
             }
           },
           {
+            "id": "option",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "--help"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "gitdir",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "artifactsDir": "out/.GIT/hooks"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "drive",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "artifactsDir": "é:out"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
             "id": "end",
             "type": "end"
           }
@@ -2826,6 +2861,21 @@
           {
             "id": "e9",
             "source": "comment",
+            "target": "option"
+          },
+          {
+            "id": "e10",
+            "source": "option",
+            "target": "gitdir"
+          },
+          {
+            "id": "e11",
+            "source": "gitdir",
+            "target": "drive"
+          },
+          {
+            "id": "e12",
+            "source": "drive",
             "target": "end"
           }
         ]
@@ -2850,6 +2900,21 @@
           "code": "github-body-required",
           "severity": "error",
           "nodeId": "comment"
+        },
+        {
+          "code": "github-workflow-required",
+          "severity": "error",
+          "nodeId": "option"
+        },
+        {
+          "code": "github-artifacts-dir-invalid",
+          "severity": "error",
+          "nodeId": "gitdir"
+        },
+        {
+          "code": "github-artifacts-dir-invalid",
+          "severity": "error",
+          "nodeId": "drive"
         }
       ]
     }

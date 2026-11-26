@@ -748,6 +748,10 @@ it('exports CI and issue GitHub steps as gh commands', () => {
   expect(command('Build apps')).toContain(
     "gh workflow run build.yml --ref main -f 'track=o'\\''neil'",
   );
+  // The run is looked up on the dispatched branch, not any branch's newest.
+  expect(command('Build apps')).toContain(
+    'gh run list --workflow build.yml --branch main --event workflow_dispatch',
+  );
   expect(command('Build apps')).toContain('gh run watch "$id" --exit-status');
   expect(command('Build apps')).toContain('gh run download "$id" -D artifacts');
   expect(command('Wait for CI')).toContain('gh pr checks 12 --watch --fail-fast');

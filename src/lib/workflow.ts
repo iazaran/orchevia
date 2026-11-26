@@ -88,7 +88,7 @@ export type GitHubOp =
     }
   | { op: 'postComment'; number: number; body: string }
   /** Wait for CI: a PR's checks (0: the run's prNumber input, else the current commit). */
-  | { op: 'waitChecks'; number: number }
+  | { op: 'waitChecks'; number?: number }
   /** Run a GitHub Actions workflow, wait for it, optionally download artifacts. */
   | {
       op: 'runWorkflow';
@@ -750,9 +750,12 @@ const PUBLISHING = [
   'fastlane upload_to_app_store',
   'fastlane upload_to_testflight',
   'eas submit',
+  'eas-cli submit',
   'firebase deploy',
   'netlify deploy',
   'vercel deploy',
+  // `vercel` with no command deploys; `--prod` makes it production.
+  'vercel --prod',
 ];
 const WITH_VALUE = ['-c', '-r', '--repo', '--git-dir', '--work-tree'];
 
@@ -771,7 +774,8 @@ export function commandPublishes(executable: string, args: string[]): boolean {
   const phraseAt = (start: number, parts: string[]): boolean => {
     let at = start;
     for (const [index, part] of parts.entries()) {
-      if (index > 0)
+      // Options are skipped between words, unless the phrase names one.
+      if (index > 0 && !part.startsWith('-'))
         while (words[at]?.startsWith('-') === true)
           at += WITH_VALUE.includes(words[at] ?? '') ? 2 : 1;
       if (words[at] !== part) return false;
@@ -1241,6 +1245,11 @@ function githubOpIssues(op: GitHubOp, defaultBranch: string | undefined): GitIss
         'github-workflow-required',
         'Running a GitHub Actions workflow needs its file name or name (e.g. build.yml).',
       ]);
+    else if (!workflowNameOk(op.workflow))
+      found.push([
+        'github-workflow-required',
+        "A workflow name must not start with '-' or hold line breaks.",
+      ]);
     if (op.artifactsDir !== undefined && !artifactsDirOk(op.artifactsDir))
       found.push([
         'github-artifacts-dir-invalid',
@@ -1259,10 +1268,20 @@ export function artifactsDirOk(dir: string): boolean {
     !value.startsWith('/') &&
     !value.startsWith('~') &&
     !value.startsWith('\\') &&
+    !value.startsWith('-') &&
     !/[\0\n\r]/.test(value) &&
-    !value.split(/[/\\]/).includes('..') &&
-    !(value.length > 1 && value[1] === ':')
+    !value
+      .split(/[/\\]/)
+      .some((part) => part === '..' || part.toLowerCase() === '.git') &&
+    // A drive letter (`C:`), counted in characters like the Rust twin.
+    Array.from(value)[1] !== ':'
   );
+}
+
+/** One `gh workflow run` argument: never an option or several lines (mirrors Rust `workflow_name_ok`). */
+export function workflowNameOk(workflow: string): boolean {
+  const value = workflow.trim();
+  return !value.startsWith('-') && !/[\0\n\r]/.test(value);
 }
 
 /**

@@ -1474,14 +1474,16 @@ class MockBackend implements Backend {
           });
         } else if (
           node.type === 'github' &&
-          node.config.githubOp?.op === 'issueDetails'
+          (node.config.githubOp?.op === 'issueDetails' ||
+            node.config.githubOp?.op === 'commentIssue')
         ) {
-          // Shaped like a Ticket step, as in the engine: {{ticket.*}} works.
-          const number =
-            node.config.githubOp.number > 0
-              ? String(node.config.githubOp.number)
-              : (run.inputs?.issueNumber ?? '').trim().replace(/^#/, '');
-          if (!/^[1-9]\d*$/.test(number)) {
+          const op = node.config.githubOp;
+          // Number 0 reads the issueNumber input like the engine: leading
+          // '#' marks dropped, then a whole number above 0.
+          const raw = (run.inputs?.issueNumber ?? '').trim().replace(/^#+/, '');
+          const fromInput = /^\+?\d+$/.test(raw) ? Number(raw) : 0;
+          const value = op.number > 0 ? op.number : fromInput;
+          if (!(value > 0) || !Number.isSafeInteger(value)) {
             const row = this.pushResult(runId, nodeId, 'failed', '');
             row.error = 'Issue number is 0: provide inputs.issueNumber.';
             run.status = 'failed';
@@ -1489,6 +1491,17 @@ class MockBackend implements Backend {
             this.persist();
             return;
           }
+          const number = String(value);
+          if (op.op === 'commentIssue') {
+            this.pushResult(
+              runId,
+              nodeId,
+              'succeeded',
+              `Comment on issue #${number} (browser mock, nothing posted).`,
+            );
+            continue;
+          }
+          // Shaped like a Ticket step, as in the engine: {{ticket.*}} works.
           const row = this.pushResult(
             runId,
             nodeId,

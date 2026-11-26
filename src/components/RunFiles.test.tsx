@@ -326,3 +326,56 @@ it('fills ticket variables from a GitHub issue in the browser preview', async ()
     'Implement #42: Mock issue 42',
   );
 });
+
+it('reads an issue number the way the engine does in the browser preview', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow = (op: 'issueDetails' | 'commentIssue'): Workflow => ({
+    schemaVersion: 6,
+    id: `wf-${op}`,
+    name: op,
+    defaults: { repoDir: '/repo' },
+    inputs: [{ name: 'issueNumber', required: true }],
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'g',
+        type: 'github',
+        position: { x: 0, y: 100 },
+        config: {
+          githubOp:
+            op === 'issueDetails'
+              ? { op, number: 0 }
+              : { op, number: 0, body: 'Fixed in the latest build.' },
+        },
+      },
+      { id: 'end', type: 'end', position: { x: 0, y: 200 }, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'g' },
+      { id: 'e2', source: 'g', target: 'end' },
+    ],
+  });
+  const finish = async (
+    op: 'issueDetails' | 'commentIssue',
+    issueNumber: string,
+  ): Promise<{ status: string | undefined; row: string }> => {
+    await backend.saveWorkflow(workflow(op));
+    const { runId } = await backend.runWorkflow(`wf-${op}`, { issueNumber });
+    let status: string | undefined;
+    await waitFor(
+      async () => {
+        status = (await backend.getRun(runId))?.status;
+        expect(['succeeded', 'failed']).toContain(status);
+      },
+      { timeout: 5000 },
+    );
+    const row = (await backend.getRunResults(runId)).find((r) => r.nodeId === 'g');
+    return { status, row: `${row?.stdout ?? ''}${row?.error ?? ''}` };
+  };
+  // Leading '#' marks, a '+' and zeros read as Rust's u64 parse reads them.
+  expect((await finish('issueDetails', ' ##+007 ')).row).toContain('#7 Mock issue 7');
+  expect((await finish('commentIssue', '#12')).row).toContain('issue #12');
+  const missing = await finish('commentIssue', 'none');
+  expect(missing.status).toBe('failed');
+  expect(missing.row).toContain('provide inputs.issueNumber');
+});

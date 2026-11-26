@@ -16,7 +16,9 @@
     ["fastlane", "pilot", "upload", "--ipa", "App.ipa"],
     ["bash", "-c", "npx cap build android && fastlane deliver --submit_for_review"],
     ["npx", "eas", "submit", "--platform", "ios"],
-    ["netlify", "deploy", "--prod"]
+    ["netlify", "deploy", "--prod"],
+    ["npx", "vercel", "--prod"],
+    ["npx", "eas-cli", "submit", "-p", "android"]
   ],
   "local": [
     ["git", "status"],
@@ -30,6 +32,8 @@
     ["fastlane", "test"],
     ["npx", "cap", "sync", "android"],
     ["gh", "run", "watch", "123"],
-    ["firebase", "emulators:start"]
+    ["firebase", "emulators:start"],
+    ["vercel", "env", "pull"],
+    ["vercel", "--version"]
   ]
 }

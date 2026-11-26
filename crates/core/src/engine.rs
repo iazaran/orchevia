@@ -4605,23 +4605,109 @@ fn wait_github_op(
     }
 }
 
-/// The ends of the failed logs of up to two Actions runs named in `links`.
+/// The ends of the failed logs of up to two failed checks named in `links`:
+/// the job's own log when the link names a job, else the run's.
 fn failed_logs(runner: &crate::github::GhRunner, root: &str, links: &[&str]) -> String {
-    let mut ids: Vec<u64> = links
-        .iter()
-        .filter_map(|link| crate::github::run_id_from_url(link))
-        .collect();
-    ids.dedup();
+    let mut seen = HashSet::new();
     let mut out = String::new();
-    for id in ids.into_iter().take(2) {
-        let tail = crate::github::failed_log_tail(runner, root, id, CI_LOG_CHARS);
+    let mut shown = 0;
+    for link in links {
+        if shown >= 2 {
+            break;
+        }
+        let (label, tail) = if let Some(job) = crate::github::job_id_from_url(link) {
+            if !seen.insert(("job", job)) {
+                continue;
+            }
+            (
+                format!("job {job}"),
+                crate::github::failed_job_log(runner, root, job, CI_LOG_CHARS),
+            )
+        } else if let Some(run) = crate::github::run_id_from_url(link) {
+            if !seen.insert(("run", run)) {
+                continue;
+            }
+            (
+                format!("run {run}"),
+                crate::github::failed_log_tail(runner, root, run, CI_LOG_CHARS),
+            )
+        } else {
+            continue;
+        };
         if !tail.trim().is_empty() {
             out.push_str(&format!(
-                "\n--- Failed steps of run {id} (end of log) ---\n{tail}\n"
+                "\n--- Failed steps of {label} (end of log) ---\n{tail}\n"
             ));
+            shown += 1;
         }
     }
     out
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(10).collect()
+}
+
+/// What one look at CI found.
+struct CiLook {
+    checks: Vec<crate::github::CiCheck>,
+    /// Work not among `checks` yet: Actions runs still queued or running, or
+    /// a pushed commit GitHub does not show on the pull request yet.
+    waiting: Vec<String>,
+    note: String,
+}
+
+fn look_at_ci(
+    runner: &crate::github::GhRunner,
+    root: &str,
+    number: u64,
+    sha: &str,
+    local: Option<&(String, String)>,
+    past_grace: bool,
+) -> Result<CiLook, String> {
+    let runs_on = |sha: &str| -> Result<Vec<String>, String> {
+        Ok(crate::github::unfinished_runs(runner, root, sha)?
+            .into_iter()
+            .map(|name| format!("workflow {name}"))
+            .collect())
+    };
+    if number == 0 {
+        return Ok(CiLook {
+            checks: crate::github::commit_ci_checks(runner, root, sha)?,
+            waiting: runs_on(sha)?,
+            note: String::new(),
+        });
+    }
+    let pr = crate::github::pr_details(runner, root, number)?;
+    let mut waiting = Vec::new();
+    let mut note = String::new();
+    // Right after a push the pull request still shows the previous commit,
+    // whose checks may all be done.
+    if let Some((branch, head)) = local {
+        if *branch == pr.head_branch && *head != pr.head_sha {
+            if past_grace {
+                note = format!(
+                    "Note: pull request #{number} is on commit {}; this checkout is on {}.\n",
+                    short_sha(&pr.head_sha),
+                    short_sha(head)
+                );
+            } else {
+                waiting.push(format!(
+                    "GitHub to show commit {} on the pull request",
+                    short_sha(head)
+                ));
+            }
+        }
+    }
+    let checks = crate::github::pr_ci_checks(runner, root, number)?;
+    if !pr.head_sha.is_empty() {
+        waiting.extend(runs_on(&pr.head_sha)?);
+    }
+    Ok(CiLook {
+        checks,
+        waiting,
+        note,
+    })
 }
 
 fn wait_for_checks(
@@ -4635,117 +4721,148 @@ fn wait_for_checks(
         (format!("pull request #{number}"), String::new())
     } else {
         let sha = crate::git::head_sha(root)?;
-        (format!("commit {}", &sha[..sha.len().min(10)]), sha)
+        // GitHub runs nothing for a commit it does not have.
+        if !crate::git::on_remote_branch(root, &sha).unwrap_or(false) {
+            return Err(format!(
+                "Commit {} is not on any remote branch: push it before waiting for its CI.",
+                short_sha(&sha)
+            ));
+        }
+        (format!("commit {}", short_sha(&sha)), sha)
+    };
+    // The checkout's branch and commit, to tell a pull request GitHub has
+    // not updated yet from one that is current.
+    let local = if number > 0 {
+        match (crate::git::current_branch(root), crate::git::head_sha(root)) {
+            (Ok(branch), Ok(head)) if branch != "HEAD" => Some((branch, head)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let cancelled = || CiOutcome::Cancelled {
+        report: format!("Stopped waiting for CI on {target}.\n"),
     };
     let started = Instant::now();
     let mut errors = 0u32;
+    let mut settled = 0u32;
+    let mut waiting: Vec<String> = Vec::new();
     loop {
         if flag.load(Ordering::SeqCst) {
-            return Ok(CiOutcome::Cancelled {
-                report: format!("Stopped waiting for CI on {target}.\n"),
-            });
+            return Ok(cancelled());
         }
-        let listed = if number > 0 {
-            crate::github::pr_ci_checks(runner, root, number)
-        } else {
-            crate::github::commit_ci_checks(runner, root, &sha)
-        };
-        let checks = match listed {
-            Ok(checks) => {
+        let past_grace = started.elapsed() >= CI_START_GRACE;
+        match look_at_ci(runner, root, number, &sha, local.as_ref(), past_grace) {
+            Ok(look) => {
                 errors = 0;
-                checks
+                waiting = look
+                    .checks
+                    .iter()
+                    .filter(|c| c.bucket == "pending")
+                    .map(|c| c.name.clone())
+                    .chain(look.waiting.iter().cloned())
+                    .collect();
+                let done = !look.checks.is_empty() && waiting.is_empty();
+                let nothing = look.checks.is_empty() && waiting.is_empty() && past_grace;
+                // Done twice in a row: a later workflow's or job's checks can
+                // appear a moment after the first ones finish.
+                settled = if done { settled + 1 } else { 0 };
+                if settled >= 2 || nothing {
+                    return Ok(ci_checks_outcome(runner, root, &target, look, nothing));
+                }
             }
             // A network blip is not a CI failure: try again a few times.
             Err(e) => {
                 errors += 1;
+                settled = 0;
                 if errors >= 3 {
                     return Err(format!("Could not read CI for {target}: {e}"));
                 }
-                Vec::new()
             }
-        };
-        let pending: Vec<&str> = checks
-            .iter()
-            .filter(|c| c.bucket == "pending")
-            .map(|c| c.name.as_str())
-            .collect();
-        let done = errors == 0 && !checks.is_empty() && pending.is_empty();
-        let nothing = errors == 0 && checks.is_empty() && started.elapsed() >= CI_START_GRACE;
-        if done || nothing {
-            let failed: Vec<&crate::github::CiCheck> =
-                checks.iter().filter(|c| c.bucket == "fail").collect();
-            let count = |bucket: &str| checks.iter().filter(|c| c.bucket == bucket).count();
-            let mut report = if nothing {
-                format!(
-                    "No CI checks reported for {target} within {} s.\n",
-                    CI_START_GRACE.as_secs()
-                )
-            } else {
-                format!(
-                    "CI on {target}: {} passed, {} failed, {} skipped\n",
-                    count("pass"),
-                    count("fail"),
-                    count("skip")
-                )
-            };
-            for check in &checks {
-                let mark = match check.bucket.as_str() {
-                    "pass" => "✓",
-                    "fail" => "✕",
-                    _ => "–",
-                };
-                report.push_str(&format!("{mark} {}", check.name));
-                if check.bucket == "fail" && !check.link.is_empty() {
-                    report.push_str(&format!(" — {}", check.link));
-                }
-                report.push('\n');
-            }
-            let conclusion = if !failed.is_empty() {
-                "failure"
-            } else if nothing {
-                "none"
-            } else {
-                "success"
-            };
-            let structured = serde_json::json!({"ci": {
-                "target": target,
-                "conclusion": conclusion,
-                "checks": checks,
-            }})
-            .to_string();
-            if failed.is_empty() {
-                return Ok(CiOutcome::Passed { report, structured });
-            }
-            let links: Vec<&str> = failed.iter().map(|c| c.link.as_str()).collect();
-            report.push_str(&failed_logs(runner, root, &links));
-            return Ok(CiOutcome::Failed {
-                error: format!(
-                    "CI failed on {target}: {}",
-                    failed
-                        .iter()
-                        .map(|c| c.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                report,
-                structured,
-            });
         }
         if Instant::now() >= deadline {
             return Err(format!(
                 "CI on {target} was still running when the step's time ran out{}.",
-                if pending.is_empty() {
+                if waiting.is_empty() {
                     String::new()
                 } else {
-                    format!(" (waiting for: {})", pending.join(", "))
+                    format!(" (waiting for: {})", waiting.join(", "))
                 }
             ));
         }
         if sleep_unless_cancelled(flag, CI_POLL) {
-            return Ok(CiOutcome::Cancelled {
-                report: format!("Stopped waiting for CI on {target}.\n"),
-            });
+            return Ok(cancelled());
         }
+    }
+}
+
+/// The report and outcome of finished checks (or of none at all).
+fn ci_checks_outcome(
+    runner: &crate::github::GhRunner,
+    root: &str,
+    target: &str,
+    look: CiLook,
+    nothing: bool,
+) -> CiOutcome {
+    let checks = look.checks;
+    let failed: Vec<&crate::github::CiCheck> =
+        checks.iter().filter(|c| c.bucket == "fail").collect();
+    let count = |bucket: &str| checks.iter().filter(|c| c.bucket == bucket).count();
+    let mut report = if nothing {
+        format!(
+            "No CI checks reported for {target} within {} s.\n",
+            CI_START_GRACE.as_secs()
+        )
+    } else {
+        format!(
+            "CI on {target}: {} passed, {} failed, {} skipped\n",
+            count("pass"),
+            count("fail"),
+            count("skip")
+        )
+    };
+    report.push_str(&look.note);
+    for check in &checks {
+        let mark = match check.bucket.as_str() {
+            "pass" => "✓",
+            "fail" => "✕",
+            _ => "–",
+        };
+        report.push_str(&format!("{mark} {}", check.name));
+        if check.bucket == "fail" && !check.link.is_empty() {
+            report.push_str(&format!(" — {}", check.link));
+        }
+        report.push('\n');
+    }
+    let conclusion = if !failed.is_empty() {
+        "failure"
+    } else if nothing {
+        "none"
+    } else {
+        "success"
+    };
+    let structured = serde_json::json!({"ci": {
+        "target": target,
+        "conclusion": conclusion,
+        "checks": checks,
+    }})
+    .to_string();
+    if failed.is_empty() {
+        return CiOutcome::Passed { report, structured };
+    }
+    let links: Vec<&str> = failed.iter().map(|c| c.link.as_str()).collect();
+    report.push_str(&failed_logs(runner, root, &links));
+    CiOutcome::Failed {
+        error: format!(
+            "CI failed on {target}: {}",
+            failed
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        report,
+        structured,
     }
 }
 
@@ -4773,21 +4890,31 @@ fn run_actions_workflow(
     // GitHub lists a dispatched run a moment later when gh did not print it.
     let id = match printed {
         Some(id) => id,
-        None => loop {
-            if let Some(id) =
-                crate::github::find_dispatched_run(runner, root, workflow, git_ref, &since)?
-            {
-                break id;
+        None => {
+            let mut lookup_errors = 0u32;
+            loop {
+                match crate::github::find_dispatched_run(runner, root, workflow, git_ref, &since) {
+                    Ok(Some(id)) => break id,
+                    Ok(None) => lookup_errors = 0,
+                    Err(e) => {
+                        lookup_errors += 1;
+                        if lookup_errors >= 3 {
+                            return Err(format!(
+                                "Started '{workflow}', but could not find its run: {e}"
+                            ));
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "Started '{workflow}', but GitHub listed no run for it in time."
+                    ));
+                }
+                if sleep_unless_cancelled(flag, CI_POLL) {
+                    return Ok(stopped(None));
+                }
             }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "Started '{workflow}', but GitHub listed no run for it in time."
-                ));
-            }
-            if sleep_unless_cancelled(flag, CI_POLL) {
-                return Ok(stopped(None));
-            }
-        },
+        }
     };
     let mut errors = 0u32;
     let run = loop {
@@ -4815,25 +4942,57 @@ fn run_actions_workflow(
         run.id, run.conclusion, run.url
     );
     if run.conclusion == "success" {
+        let structured = serde_json::json!({"run": run, "artifactsDir": artifacts_dir}).to_string();
         if let Some(dir) = artifacts_dir {
-            // Downloads can be large: give them longer than a status call.
+            if flag.load(Ordering::SeqCst) {
+                return Ok(CiOutcome::Cancelled {
+                    report: format!("{report}Stopped before downloading its artifacts.\n"),
+                });
+            }
+            // Downloads can be large: they get what is left of the step's
+            // time, and at least a minute.
             let downloader = crate::github::GhRunner {
                 executable: runner.executable.clone(),
-                timeout_secs: 1800,
+                timeout_secs: deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_secs()
+                    .max(60),
             };
-            let note = crate::github::download_artifacts(&downloader, root, run.id, dir)?;
-            report.push_str(&format!("{note}\n"));
+            match crate::github::download_artifacts(&downloader, root, run.id, dir) {
+                Ok(note) => report.push_str(&format!("{note}\n")),
+                Err(e) => {
+                    return Ok(CiOutcome::Failed {
+                        error: format!(
+                            "Run {} of '{workflow}' passed, but its artifacts could not be downloaded: {e}",
+                            run.id
+                        ),
+                        report,
+                        structured,
+                    })
+                }
+            }
         }
-        let structured = serde_json::json!({"run": run, "artifactsDir": artifacts_dir}).to_string();
         return Ok(CiOutcome::Passed { report, structured });
     }
     if !run.failed_jobs.is_empty() {
         report.push_str(&format!("Failed jobs: {}\n", run.failed_jobs.join(", ")));
     }
-    let tail = crate::github::failed_log_tail(runner, root, run.id, CI_LOG_CHARS);
-    if !tail.trim().is_empty() {
-        report.push_str(&format!("\n--- Failed steps (end of log) ---\n{tail}\n"));
+    let mut logs = String::new();
+    for job in run.failed_job_ids.iter().take(2) {
+        let tail = crate::github::failed_job_log(runner, root, *job, CI_LOG_CHARS);
+        if !tail.trim().is_empty() {
+            logs.push_str(&format!(
+                "\n--- Failed steps of job {job} (end of log) ---\n{tail}\n"
+            ));
+        }
     }
+    if logs.is_empty() {
+        let tail = crate::github::failed_log_tail(runner, root, run.id, CI_LOG_CHARS);
+        if !tail.trim().is_empty() {
+            logs = format!("\n--- Failed steps (end of log) ---\n{tail}\n");
+        }
+    }
+    report.push_str(&logs);
     let structured = serde_json::json!({"run": run}).to_string();
     Ok(CiOutcome::Failed {
         error: format!("Workflow '{workflow}' ended: {}", run.conclusion),
@@ -5066,7 +5225,7 @@ fn render_github_op(
         } => {
             let artifacts_dir = match artifacts_dir {
                 Some(dir) => {
-                    let dir = render_maybe(dir)?;
+                    let dir = render_maybe(dir)?.trim().to_string();
                     if !crate::workflow::artifacts_dir_ok(&dir) {
                         return Err(format!(
                             "The artifacts folder '{dir}' must be a relative folder inside the repository."
@@ -5076,8 +5235,14 @@ fn render_github_op(
                 }
                 None => None,
             };
+            let workflow = render_maybe(workflow)?.trim().to_string();
+            if workflow.is_empty() || !crate::workflow::workflow_name_ok(&workflow) {
+                return Err(format!(
+                    "'{workflow}' is not a workflow name or file: it must not be empty, start with '-' or hold line breaks."
+                ));
+            }
             Op::RunWorkflow {
-                workflow: render_maybe(workflow)?,
+                workflow,
                 git_ref: render_maybe(git_ref)?,
                 inputs: inputs
                     .iter()
@@ -12618,6 +12783,13 @@ exit 1
         }
         std::env::set_var("ORCHEVIA_GH_BIN", script.to_string_lossy().into_owned());
         let (repo, root) = fresh_repo()?;
+        // As if pushed: a remote-tracking branch holds the commit.
+        assert!(std::process::Command::new("git")
+            .args(["update-ref", "refs/remotes/origin/main", "HEAD"])
+            .current_dir(&root)
+            .status()
+            .expect("git")
+            .success());
         let (db, engine) = harness();
         let node = |id: &str, kind: NodeKind, config: NodeConfig| Node {
             id: id.into(),
@@ -12678,17 +12850,21 @@ exit 1
     #[allow(clippy::await_holding_lock)] // test-only serialization of ORCHEVIA_GH_BIN
     async fn waiting_for_pr_checks_passes_once_they_finish_and_fails_with_their_logs() {
         let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
-        // Pending on the first look, then done.
+        // The first look shows the previous commit on the pull request (its
+        // checks all passed); later looks show this checkout's commit.
         let passing = r#"
 case "$1 $2" in
-  "pr checks")
+  "pr view")
     n=$(cat $state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/n
-    if [ "$n" = 1 ]; then echo '[{"name":"build","bucket":"pending","link":""}]'; exit 8; fi
+    if [ "$n" = 1 ]; then oid=0000000000; else oid=$(git rev-parse HEAD); fi
+    echo "{\"number\":12,\"headRefName\":\"main\",\"headRefOid\":\"$oid\"}" ;;
+  "pr checks")
     echo '[{"name":"build","bucket":"pass","link":""},{"name":"lint","bucket":"skipping","link":""}]' ;;
+  "run list") echo '[]' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 "#;
-        let Some((status, rows, _dir)) = run_fake_gh(
+        let Some((status, rows, dir)) = run_fake_gh(
             passing,
             GitHubOp::WaitChecks { number: 0 },
             HashMap::from([("prNumber".to_string(), "12".to_string())]),
@@ -12707,12 +12883,19 @@ esac
             row.stdout
         );
         assert!(row.structured_json.contains("\"conclusion\":\"success\""));
+        // One look waited for the pushed commit, then two in a row were done.
+        let looks = std::fs::read_to_string(dir.path().join("n")).unwrap();
+        assert_eq!(looks.trim(), "3");
 
         let failing = r#"
 case "$1 $2" in
+  "pr view") echo '{"number":12,"headRefName":"feature","headRefOid":"abcdef1234"}' ;;
   "pr checks")
-    echo '[{"name":"test","bucket":"fail","link":"https://github.com/o/r/actions/runs/77/job/1"}]'; exit 1 ;;
-  "run view") printf 'test\tRun tests\tError: expected 2, got 3\n' ;;
+    echo '[{"name":"test","bucket":"fail","link":"https://github.com/o/r/actions/runs/77/job/5"}]'; exit 1 ;;
+  "run list") echo '[]' ;;
+  "run view")
+    [ "$3 $4 $5" = "--job 5 --log-failed" ] || { echo "unexpected: $*" >&2; exit 1; }
+    printf 'test\tRun tests\tError: expected 2, got 3\n' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 "#;
@@ -12733,25 +12916,61 @@ esac
             row.error.as_deref(),
             Some("CI failed on pull request #12: test")
         );
-        // The failed log reaches the step's output, for a step that fixes it.
+        // The failed job's log reaches the step's output, for a fix step.
         assert!(
-            row.stdout.contains("Error: expected 2, got 3"),
+            row.stdout.contains("Failed steps of job 5")
+                && row.stdout.contains("Error: expected 2, got 3"),
             "{}",
             row.stdout
         );
+
+        // gh failing (not exit 1 or 8 with a list) is an error, not a parse
+        // problem, and never a CI failure.
+        let broken = r#"
+case "$1 $2" in
+  "pr view") echo '{"number":12,"headRefName":"feature","headRefOid":"abcdef1234"}' ;;
+  "pr checks") echo 'HTTP 401: Bad credentials' >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            broken,
+            GitHubOp::WaitChecks { number: 12 },
+            HashMap::new(),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        let error = row.error.as_deref().unwrap_or("");
+        assert!(error.contains("Bad credentials"), "{error}");
     }
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // test-only serialization of ORCHEVIA_GH_BIN
     async fn waiting_without_a_pr_reads_the_current_commit() {
         let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        // Android finishes first while the iOS workflow is still queued (no
+        // check run yet); the wait lasts until iOS has run too.
         let commit = r#"
 case "$1" in
   api)
-    case "$2" in
-      *check-runs*) echo '{"total_count":1,"check_runs":[{"name":"android","status":"completed","conclusion":"success","html_url":"u"}]}' ;;
-      *status) echo '{"state":"success","statuses":[{"context":"preview","state":"success","target_url":"p"}]}' ;;
+    [ "$2" = "--paginate" ] || { echo "unexpected: $*" >&2; exit 1; }
+    case "$3" in
+      *check-runs*)
+        n=$(cat $state/c 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/c
+        echo '{"name":"android","status":"completed","conclusion":"success","html_url":"u"}'
+        if [ "$n" -ge 3 ]; then echo '{"name":"ios","status":"completed","conclusion":"success","html_url":"i"}'; fi ;;
+      *statuses*)
+        echo '{"context":"preview","state":"success","target_url":"p"}'
+        echo '{"context":"preview","state":"pending","target_url":"p"}' ;;
     esac ;;
+  run)
+    n=$(cat $state/r 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/r
+    if [ "$n" -le 2 ]; then echo '[{"name":"iOS","status":"queued"}]'; else echo '[]'; fi ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 "#;
@@ -12768,7 +12987,37 @@ esac
         assert_eq!(status, RunStatus::Succeeded);
         let row = rows.iter().find(|r| r.node_id == "g").unwrap();
         assert!(row.stdout.starts_with("CI on commit "), "{}", row.stdout);
-        assert!(row.stdout.contains("✓ android") && row.stdout.contains("✓ preview"));
+        // The newest status of a context wins (the list is newest first).
+        assert!(
+            row.stdout.contains("✓ android")
+                && row.stdout.contains("✓ ios")
+                && row.stdout.contains("✓ preview"),
+            "{}",
+            row.stdout
+        );
+    }
+
+    #[test]
+    fn waiting_for_an_unpushed_commit_says_to_push_it() {
+        let Some((_repo, root)) = fresh_repo() else {
+            return;
+        };
+        let runner = crate::github::GhRunner {
+            executable: "gh-never-called".into(),
+            timeout_secs: 5,
+        };
+        let flag = AtomicBool::new(false);
+        let outcome = wait_for_checks(
+            &runner,
+            &root,
+            0,
+            Instant::now() + Duration::from_secs(5),
+            &flag,
+        );
+        let Err(message) = outcome else {
+            panic!("an unpushed commit has no CI to wait for");
+        };
+        assert!(message.contains("push it"), "{message}");
     }
 
     #[tokio::test]
@@ -12783,27 +13032,24 @@ case "$1 $2" in
   "run view")
     n=$(cat $state/v 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/v
     if [ "$n" = 1 ]; then echo '{"status":"in_progress","conclusion":"","url":"https://github.com/o/r/actions/runs/4242","jobs":[]}'; exit 0; fi
-    echo '{"status":"completed","conclusion":"success","url":"https://github.com/o/r/actions/runs/4242","jobs":[{"name":"android","status":"completed","conclusion":"success"}]}' ;;
+    echo '{"status":"completed","conclusion":"success","url":"https://github.com/o/r/actions/runs/4242","jobs":[{"name":"android","status":"completed","conclusion":"success","databaseId":1}]}' ;;
   "run download")
-    mkdir -p "$5"; echo apk > "$5/app-release.apk" ;;
+    d="${4#--dir=}"; mkdir -p "$d"; echo apk > "$d/app-release.apk" ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
 "#;
-        let Some((status, rows, dir)) = run_fake_gh(
-            actions,
-            GitHubOp::RunWorkflow {
-                workflow: "build.yml".into(),
-                git_ref: "main".into(),
-                inputs: std::collections::BTreeMap::from([(
-                    "track".to_string(),
-                    "{{input.track}}".to_string(),
-                )]),
-                artifacts_dir: Some("build-artifacts".into()),
-            },
-            HashMap::from([("track".to_string(), "internal".to_string())]),
-            None,
-        )
-        .await
+        let op = GitHubOp::RunWorkflow {
+            workflow: "build.yml".into(),
+            git_ref: "main".into(),
+            inputs: std::collections::BTreeMap::from([(
+                "track".to_string(),
+                "{{input.track}}".to_string(),
+            )]),
+            artifacts_dir: Some("build-artifacts".into()),
+        };
+        let inputs = HashMap::from([("track".to_string(), "internal".to_string())]);
+        let Some((status, rows, dir)) =
+            run_fake_gh(actions, op.clone(), inputs.clone(), None).await
         else {
             return;
         };
@@ -12820,11 +13066,62 @@ esac
                 "workflow",
                 "run",
                 "build.yml",
-                "--ref",
-                "main",
-                "-f",
-                "track=internal"
+                "--ref=main",
+                "--raw-field=track=internal"
             ]
+        );
+
+        // A passed run whose download fails fails the step and keeps the
+        // run's report.
+        let no_download = actions.replace(
+            r#"d="${4#--dir=}"; mkdir -p "$d"; echo apk > "$d/app-release.apk" ;;"#,
+            "echo 'error: network unreachable' >&2; exit 1 ;;",
+        );
+        let Some((status, rows, _dir)) = run_fake_gh(&no_download, op, inputs, None).await else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(row.stdout.contains("run 4242: success"), "{}", row.stdout);
+        let error = row.error.as_deref().unwrap_or("");
+        assert!(
+            error.contains("artifacts could not be downloaded") && error.contains("unreachable"),
+            "{error}"
+        );
+
+        // A failed run shows its failed jobs' own logs.
+        let failed_run = r#"
+case "$1 $2" in
+  "workflow run") echo "https://github.com/o/r/actions/runs/4243" ;;
+  "run view")
+    if [ "$3" = "--job" ]; then printf 'ios\tBuild\terror: signing identity not found\n'; exit 0; fi
+    echo '{"status":"completed","conclusion":"failure","url":"u","jobs":[{"name":"android","status":"completed","conclusion":"success","databaseId":1},{"name":"ios","status":"completed","conclusion":"failure","databaseId":2}]}' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            failed_run,
+            GitHubOp::RunWorkflow {
+                workflow: "build.yml".into(),
+                git_ref: String::new(),
+                inputs: std::collections::BTreeMap::new(),
+                artifacts_dir: None,
+            },
+            HashMap::new(),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(
+            row.stdout.contains("Failed jobs: ios")
+                && row.stdout.contains("Failed steps of job 2")
+                && row.stdout.contains("signing identity not found"),
+            "{}",
+            row.stdout
         );
     }
 

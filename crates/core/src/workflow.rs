@@ -621,7 +621,7 @@ pub fn publishes(node: &Node) -> bool {
 /// `env … git push` and `bash -c "… git push"`; a script file's contents are
 /// not read. Mirrored by `commandPublishes` in `src/lib/workflow.ts`.
 pub fn command_publishes(executable: &str, args: &[String]) -> bool {
-    const PUBLISHING: [&str; 26] = [
+    const PUBLISHING: [&str; 28] = [
         "git push",
         "gh pr create",
         "gh pr comment",
@@ -646,9 +646,12 @@ pub fn command_publishes(executable: &str, args: &[String]) -> bool {
         "fastlane upload_to_app_store",
         "fastlane upload_to_testflight",
         "eas submit",
+        "eas-cli submit",
         "firebase deploy",
         "netlify deploy",
         "vercel deploy",
+        // `vercel` with no command deploys; `--prod` makes it production.
+        "vercel --prod",
     ];
     let line = std::iter::once(executable)
         .chain(args.iter().map(String::as_str))
@@ -672,7 +675,8 @@ fn phrase_at(words: &[&str], start: usize, parts: &[&str]) -> bool {
     const WITH_VALUE: [&str; 6] = ["-c", "-C", "-R", "--repo", "--git-dir", "--work-tree"];
     let mut at = start;
     for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
+        // Options are skipped between words, unless the phrase names one.
+        if index > 0 && !part.starts_with('-') {
             while words.get(at).is_some_and(|w| w.starts_with('-')) {
                 let flag = words.get(at).copied().unwrap_or("");
                 at += if WITH_VALUE.iter().any(|f| f.eq_ignore_ascii_case(flag)) {
@@ -1863,6 +1867,11 @@ fn validate_github_op(
                     "Running a GitHub Actions workflow needs its file name or name (e.g. build.yml)."
                         .to_string(),
                 );
+            } else if !workflow_name_ok(workflow) {
+                err(
+                    "github-workflow-required",
+                    "A workflow name must not start with '-' or hold line breaks.".to_string(),
+                );
             }
             if let Some(dir) = artifacts_dir {
                 if !artifacts_dir_ok(dir) {
@@ -1908,9 +1917,21 @@ pub fn artifacts_dir_ok(dir: &str) -> bool {
         && !dir.starts_with('/')
         && !dir.starts_with('~')
         && !dir.starts_with('\\')
+        && !dir.starts_with('-')
         && !dir.contains(['\0', '\n', '\r'])
-        && !dir.split(['/', '\\']).any(|part| part == "..")
-        && !(dir.len() > 1 && dir.as_bytes()[1] == b':')
+        && !dir
+            .split(['/', '\\'])
+            .any(|part| part == ".." || part.eq_ignore_ascii_case(".git"))
+        // A drive letter (`C:`), counted in characters like the TypeScript
+        // twin, so both sides agree on any text.
+        && dir.chars().nth(1) != Some(':')
+}
+
+/// A workflow name or file is one argument to `gh workflow run`: never an
+/// option, never more than one line.
+pub fn workflow_name_ok(workflow: &str) -> bool {
+    let workflow = workflow.trim();
+    !workflow.starts_with('-') && !workflow.contains(['\0', '\n', '\r'])
 }
 
 /// Validate a Command step's script path (its existence is checked when the

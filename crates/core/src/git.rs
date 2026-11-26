@@ -88,6 +88,12 @@ pub fn head_sha(dir: &str) -> Result<String, String> {
     git(dir, &["rev-parse", "HEAD"], 10).map(|s| s.trim().to_string())
 }
 
+/// Whether a remote-tracking branch holds `sha`, that is, whether the commit
+/// was pushed (as far as this checkout knows).
+pub fn on_remote_branch(dir: &str, sha: &str) -> Result<bool, String> {
+    git(dir, &["branch", "-r", "--contains", sha], 10).map(|out| !out.trim().is_empty())
+}
+
 pub fn discover_root(dir: &str) -> Option<String> {
     git(dir, &["rev-parse", "--show-toplevel"], 10)
         .ok()

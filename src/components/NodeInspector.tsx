@@ -455,7 +455,7 @@ export function GitHubEditor({
               ? 'PR number (0 = input or current commit)'
               : 'Issue number'
           }
-          value={String(op.number)}
+          value={String(op.number ?? 0)}
           placeholder="0"
           onChange={(v) => {
             const number = v.trim() === '' ? 0 : wholeNumber(v);

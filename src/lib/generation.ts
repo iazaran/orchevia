@@ -189,7 +189,7 @@ export function describeGeneratedStep(
       return op.op + ': #' + String(op.number);
     }
     if (op.op === 'waitChecks')
-      return op.number > 0
+      return (op.number ?? 0) > 0
         ? `waitChecks: #${String(op.number)}`
         : 'waitChecks: current commit';
     if (op.op === 'runWorkflow')
