@@ -5494,13 +5494,12 @@ async fn execute_ticket_task(
     let blocking = tokio::task::spawn_blocking(move || {
         let source = crate::ticket::JiraMcpSource {
             server,
-            tool_name: "jira_get_issue".to_string(),
+            tool_name: crate::ticket::DEFAULT_TICKET_TOOL.to_string(),
             timeout,
             cancel: flag_clone,
             max_context_chars: 8000,
         };
-        use crate::ticket::TicketSource;
-        source.load_ticket(rendered_key.trim())
+        source.load_ticket_with_tool(rendered_key.trim())
     })
     .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -5516,9 +5515,10 @@ async fn execute_ticket_task(
         return TaskOutcome::Cancelled;
     }
     match blocking {
-        Ok(Ok(ticket)) => {
+        Ok(Ok((ticket, tool))) => {
             let structured = serde_json::json!({"ticket": ticket}).to_string();
-            let with_provenance = merge_provenance(&structured, "jira-mcp");
+            let with_provenance =
+                merge_provenance(&structured, crate::ticket::provider_of_tool(&tool));
             let _ = db.record_node_result(NewNodeResult {
                 run_id: &task.run_id,
                 node_id,
@@ -12494,25 +12494,50 @@ mod integration_tests {
 
     /// Fixture MCP server answering ticket calls.
     fn ticket_server() -> (tempfile::TempDir, McpServerConfig) {
+        fake_ticket_server(
+            "jira_get_issue",
+            r#"{"key":"DEV-1234","summary":"Cart bug","description":"Empty cart fails","status":{"name":"To Do"}}"#,
+        )
+    }
+
+    /// An MCP server listing one ticket tool whose every call returns `text`;
+    /// the last call's request is kept in `<dir>/call`.
+    fn fake_ticket_server(tool: &str, text: &str) -> (tempfile::TempDir, McpServerConfig) {
         let dir = tempfile::tempdir().expect("tempdir");
+        let line = |result: serde_json::Value| {
+            serde_json::json!({"jsonrpc": "2.0", "id": "__ID__", "result": result}).to_string()
+        };
+        std::fs::write(
+            dir.path().join("list.json"),
+            line(serde_json::json!({"tools": [{"name": tool, "inputSchema": {"type": "object"}}]})),
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join("call.json"),
+            line(
+                serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false}),
+            ),
+        )
+        .expect("write");
         let script = dir.path().join("ticket-mcp.sh");
         std::fs::write(
             &script,
-            r#"#!/bin/sh
+            format!(
+                r#"#!/bin/sh
+d='{}'
 while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
   case "$line" in
     *'"method":"initialize"'*)
-      n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}\n' "$n"
-      ;;
-    *'"method":"tools/call"'*)
-      n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"{\\"key\\":\\"DEV-1234\\",\\"summary\\":\\"Cart bug\\",\\"description\\":\\"Empty cart fails\\",\\"status\\":{\\"name\\":\\"To Do\\"}}"}],"isError":false}}\n' "$n"
-      ;;
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"2024-11-05","capabilities":{{}}}}}}\n' "$n" ;;
+    *'"method":"tools/list"'*) sed "s/\"__ID__\"/$n/" "$d/list.json"; echo ;;
+    *'"method":"tools/call"'*) printf '%s\n' "$line" > "$d/call"; sed "s/\"__ID__\"/$n/" "$d/call.json"; echo ;;
     *) ;;
   esac
 done
 "#,
+                dir.path().display()
+            ),
         )
         .expect("write");
         #[cfg(unix)]
@@ -12608,6 +12633,66 @@ done
         assert_eq!(
             vars.get("ticket.title").map(String::as_str),
             Some("Cart bug")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ticket_step_reads_a_shortcut_story_from_its_link() {
+        let story = r#"Story: sc-42
+
+<json>
+{"story": {"id": 42, "name": "Dark mode", "app_url": "https://app.shortcut.com/acme/story/42", "description": "Add a toggle", "workflow_state_id": 7, "labels": ["ui"]},
+ "relatedEntities": {"workflows": {"1": {"id": 1, "name": "Dev", "states": [{"id": 7, "name": "Ready", "type": "unstarted"}]}}}}
+</json>"#;
+        let (dir, mut server) = fake_ticket_server("stories-get-by-id", story);
+        server.id = "shortcut".into();
+        server.name = "Shortcut".into();
+        let (db, engine) = harness();
+        db.upsert_mcp_server(&server).expect("server");
+        let wf = ticket_workflow(
+            "shortcut",
+            "https://app.shortcut.com/acme/story/42/dark-mode",
+        );
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "run-story", &HashMap::new())
+            .expect("start");
+        engine.execute(wf.clone(), "run-story".to_string()).await;
+        let rows = db.list_node_results("run-story").expect("rows");
+        let row = rows.iter().find(|r| r.node_id == "t").expect("row");
+        assert_eq!(row.status, "succeeded", "{:?}", row.error);
+        assert!(
+            row.structured_json.contains("shortcut-mcp"),
+            "{}",
+            row.structured_json
+        );
+        // The story number, as a number, is what Shortcut's tool takes.
+        let call = std::fs::read_to_string(dir.path().join("call")).expect("call");
+        assert!(call.contains(r#""storyPublicId":42"#), "{call}");
+        let vars = build_vars(&db, &wf.id, &wf.name, "run-story", &HashMap::new()).expect("vars");
+        assert_eq!(vars.get("ticket.key").map(String::as_str), Some("sc-42"));
+        assert_eq!(
+            vars.get("ticket.title").map(String::as_str),
+            Some("Dark mode")
+        );
+        assert_eq!(vars.get("ticket.status").map(String::as_str), Some("Ready"));
+
+        // A Jira key is not a story: the step says what a story key looks like.
+        let wf = ticket_workflow("shortcut", "DEV-12");
+        engine
+            .start_run(&wf, "run-story-2", &HashMap::new())
+            .expect("start");
+        engine.execute(wf.clone(), "run-story-2".to_string()).await;
+        let rows = db.list_node_results("run-story-2").expect("rows");
+        let row = rows.iter().find(|r| r.node_id == "t").expect("row");
+        assert_eq!(row.status, "failed");
+        assert!(
+            row.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("not a Shortcut story"),
+            "{:?}",
+            row.error
         );
     }
 

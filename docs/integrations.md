@@ -82,7 +82,7 @@ posts a comment (a publishing step).
 shows repository, branch/base, title, draft flag, and body preview in history.
 Nothing pushes or comments unless the workflow explicitly contains that node.
 
-## Tickets (`ticket` node, Jira over MCP)
+## Tickets (`ticket` node, Jira or Shortcut over MCP)
 
 Register an MCP server in Environment (command + args only — no secrets
 stored), then reference it with a key like `{{input.ticket}}`. The ticket is
@@ -90,6 +90,21 @@ normalized (`key`, `title`, `description`, `acceptanceCriteria`, `status`,
 `url`, `labels`) into `ticket.*` prompt variables with a bounded context
 (default 8000 chars). Non-Jira field layouts degrade gracefully (unknown
 fields ignored, raw text kept as description).
+
+The step reads with whichever ticket tool its server lists: `jira_get_issue`
+(Jira) or `stories-get-by-id` (Shortcut), in one server session. A Shortcut key is
+the story number, `sc-123` or the story's link
+(`https://app.shortcut.com/<workspace>/story/123/…`); the ticket's key becomes
+`sc-123`, its status the story's workflow state, its URL the story's link, and the
+story's tasks its acceptance criteria. The result records `jira-mcp` or
+`shortcut-mcp` as its source.
+
+Shortcut's own server is hosted (`https://mcp.shortcut.com/mcp`) and signs in with
+OAuth, so the **Shortcut** setup runs it through `mcp-remote`: the first connection
+opens Shortcut sign-in in the browser, and the token is kept by `mcp-remote` (in
+`~/.mcp-auth`), not by Orchevia. Run **Check server** once to sign in before a run
+needs the server. MCP Tool steps on the same server can comment on a story
+(`stories-create-comment`) or move it (`stories-update`).
 
 No Jira credentials live in Orchevia: authenticate inside your MCP server setup.
 For Orchevia's suggested `uvx mcp-atlassian` server, the Jira Cloud environment
@@ -114,7 +129,8 @@ schema inputs need manual handling.
 **Check server** (Environment, v0.2.0) checks one server when you click it: the
 program is found, it starts and completes the MCP handshake, it lists its tools, and
 the tools your saved workflows use on it are there (MCP steps' tools and the
-`jira_get_issue` lookup Ticket steps call). It never calls a tool. A failure says
+`jira_get_issue` or `stories-get-by-id` lookup Ticket steps call, of which one is
+enough). It never calls a tool. A failure says
 where the check stopped and what to do next, quoting the server's error output; a
 silent server is stopped after 45 seconds, and **Cancel check** stops it sooner. The
 check proves the server answers and lists its tools, not that a tool works with your
@@ -127,7 +143,7 @@ server. A setup fills in the command and arguments, lists how to sign in, writes
 the `export` lines for your shell profile, checks which of those variables the
 running app can see (names only, never values), and lists tools you can call.
 Save the server, choose **Check server**, then select the server and one of its
-tools in an **MCP Tool** step. Jira also works in a **Ticket** step.
+tools in an **MCP Tool** step. Jira and Shortcut also work in a **Ticket** step.
 
 The list leaves out setups you already saved (they are named under it, with
 **Add another one** for a second copy), and each saved server says which setup it
@@ -161,6 +177,7 @@ project reference) cannot be saved until you replace it.
 |                 | GitHub             | `docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server stdio --read-only …` | `GITHUB_PERSONAL_ACCESS_TOKEN`                         |
 |                 | GitLab             | `npx -y mcp-remote https://gitlab.com/api/v4/mcp`                                                         | Browser                                                |
 |                 | Linear             | `npx -y mcp-remote https://mcp.linear.app/mcp/readonly`                                                   | Browser                                                |
+|                 | Shortcut           | `npx -y mcp-remote https://mcp.shortcut.com/mcp`                                                          | Browser                                                |
 |                 | Sentry             | `npx -y @sentry/mcp-server@latest --skills=inspect`                                                       | `SENTRY_AUTH_TOKEN`                                    |
 | Web & research  | Fetch web pages    | `uvx mcp-server-fetch`                                                                                    | None                                                   |
 |                 | AWS Knowledge      | `uvx fastmcp run https://knowledge-mcp.global.api.aws`                                                    | None                                                   |
@@ -243,7 +260,7 @@ JSON** offers both formats. Paste exported n8n JSON onto an n8n canvas (Ctrl+V o
 | Condition            | `if`                                          | True and false outputs keep their branches.                                  |
 | Failure edge         | error output                                  | The node uses “continue (using error output)”.                               |
 | Approval             | `wait`                                        | Resumes on its webhook; swap in a “send and wait” node to approve from chat. |
-| Ticket               | `jira` (issue → get)                          | Connect Jira credentials in n8n.                                             |
+| Ticket               | `jira` (issue → get)                          | Connect Jira credentials in n8n; Shortcut needs an HTTP Request node.        |
 | MCP tool             | `noOp` placeholder                            | n8n calls MCP only from an AI Agent; the note keeps the tool and arguments.  |
 
 Values a step inserts (`{{input.x}}`, `{{node.x.output}}`) are exported inside

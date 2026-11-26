@@ -1627,7 +1627,7 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
         if ((config.mcpServerId ?? '').trim() === '')
           error(
             'ticket-server-required',
-            'Ticket node requires an MCP server (Jira source).',
+            'Ticket node requires an MCP server (Jira or Shortcut).',
             at,
           );
         break;

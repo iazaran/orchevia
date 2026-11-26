@@ -154,6 +154,59 @@ pub fn call_tool(
     })
 }
 
+/// Call the first of `candidates` the server lists, in one session: start,
+/// list tools, pick, call. `arguments` builds the call's arguments for the
+/// tool picked. Ticket steps use it to read Jira and Shortcut servers alike.
+pub fn call_first_listed(
+    config: &McpServerConfig,
+    candidates: &[&str],
+    arguments: impl FnOnce(&str) -> Result<serde_json::Value, String> + Send + 'static,
+    timeout: Duration,
+    cancel: &Arc<AtomicBool>,
+) -> Result<McpCallResult, String> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Cancelled.".to_string());
+    }
+    let SpawnedServer {
+        mut child,
+        group,
+        pipes,
+        stderr_log,
+    } = spawn_server(config)?;
+    let wanted: Vec<String> = candidates.iter().map(|c| (*c).to_string()).collect();
+    let server_name = config.name.clone();
+    let result = run_bounded(&mut child, &group, pipes, timeout, cancel, move |pipes| {
+        pipes.initialize()?;
+        let listed = pipes.list_tools()?;
+        let Some(tool) = wanted
+            .iter()
+            .find(|name| listed.iter().any(|t| &t.name == *name))
+            .cloned()
+        else {
+            return Ok(Err(format!(
+                "Server '{server_name}' has none of these tools: {}.",
+                wanted.join(", ")
+            )));
+        };
+        let args = match arguments(&tool) {
+            Ok(args) => args,
+            Err(e) => return Ok(Err(e)),
+        };
+        let (is_error, text) = pipes.call_tool(&tool, &args)?;
+        Ok(Ok((tool, is_error, text)))
+    });
+    shutdown(child, group);
+    let (tool, is_error, text) =
+        result.map_err(|e| format!("{} Server stderr: {}", e, stderr_tail_wait(&stderr_log)))??;
+    Ok(McpCallResult {
+        server_id: config.id.clone(),
+        server_name: config.name.clone(),
+        tool,
+        is_error,
+        text,
+    })
+}
+
 /// Spawn the server child (own process group on Unix), returning ownership of
 /// the process, its group and pipes. The caller keeps the [`Child`] so
 /// timeouts can stop it even while a worker thread blocks on stdio. Server
@@ -468,6 +521,17 @@ pub struct McpCheckReport {
 
 /// The tools saved workflows call on `server_id`: MCP steps' tools, and the
 /// issue lookup Ticket steps use.
+/// Joins tools of which a server needs only one (Ticket steps).
+pub const ANY_OF: &str = " or ";
+
+/// Whether the listed tools satisfy one required entry (a name, or names
+/// joined by [`ANY_OF`]).
+fn requirement_met(required: &str, tools: &[McpToolInfo]) -> bool {
+    required
+        .split(ANY_OF)
+        .any(|name| tools.iter().any(|t| t.name == name))
+}
+
 pub fn required_tools(workflows: &[crate::workflow::Workflow], server_id: &str) -> Vec<String> {
     use crate::workflow::NodeKind;
     let mut tools: Vec<String> = Vec::new();
@@ -481,7 +545,8 @@ pub fn required_tools(workflows: &[crate::workflow::Workflow], server_id: &str) 
                 .mcp_tool
                 .clone()
                 .filter(|t| !t.trim().is_empty()),
-            NodeKind::Ticket => Some(crate::ticket::DEFAULT_TICKET_TOOL.to_string()),
+            // Any one of the ticket tools will do (Jira or Shortcut).
+            NodeKind::Ticket => Some(crate::ticket::TICKET_TOOLS.join(ANY_OF)),
             _ => None,
         };
         if let Some(tool) = tool {
@@ -637,7 +702,7 @@ pub fn check_server(
                 }
                 let missing: Vec<&String> = required
                     .iter()
-                    .filter(|name| !tools.iter().any(|t| &t.name == *name))
+                    .filter(|name| !requirement_met(name, &tools))
                     .collect();
                 items.push(if required.is_empty() {
                     check_item("required", REQUIRED, "skipped", "No saved workflow uses a tool from this server.", None)
@@ -824,6 +889,41 @@ done
 
     #[cfg(unix)]
     #[test]
+    fn one_session_calls_the_first_tool_the_server_lists() {
+        let (_dir, config) = fixture_config();
+        // Ticket steps need one of these; this server only has the Jira one.
+        let report = check_server(
+            &config,
+            &["jira_get_issue or stories-get-by-id".into()],
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert_eq!(report.status, "passed", "{report:#?}");
+        let result = call_first_listed(
+            &config,
+            &["stories-get-by-id", "jira_get_issue"],
+            |tool| Ok(serde_json::json!({ "tool": tool })),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        )
+        .expect("call");
+        assert_eq!(result.tool, "jira_get_issue");
+        assert!(result.text.contains("Cart bug"), "{}", result.text);
+        let none = call_first_listed(
+            &config,
+            &["stories-get-by-id"],
+            |_| Ok(serde_json::json!({})),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert_eq!(
+            none.expect_err("no such tool"),
+            "Server 'Jira MCP' has none of these tools: stories-get-by-id."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_working_server_passes_and_names_missing_workflow_tools() {
         let (_dir, config) = fixture_config();
         let report = check_server(
@@ -932,7 +1032,7 @@ done
         .expect("workflow");
         assert_eq!(
             required_tools(&[workflow], "jira"),
-            ["jira_get_issue", "jira_search"]
+            ["jira_get_issue or stories-get-by-id", "jira_search"]
         );
     }
 

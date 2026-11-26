@@ -65,27 +65,40 @@ files it made.
 - **Wait for CI, run GitHub Actions, and work from GitHub issues.** Three new
   kinds of GitHub step:
   - **waitChecks** waits until CI finishes, on a pull request or on the commit
-    you just pushed (check runs and commit statuses). A failed check fails the
-    step, with the end of the failed jobs' logs as its output for a step that
-    fixes it, so a workflow can push, wait, fix and push again in a bounded loop.
+    you just pushed (check runs and commit statuses). It counts Actions runs
+    that are still queued, waits for GitHub to show a just-pushed commit on the
+    pull request, and finishes only when two looks in a row find everything
+    done; an unpushed commit is refused with "push it first". A failed check
+    fails the step, with the end of each failed job's log as its output for a
+    step that fixes it, so a workflow can push, wait, fix and push again in a
+    bounded loop.
   - **runWorkflow** starts a GitHub Actions workflow (a build, a mobile app
     build, a release or store upload), waits for it and can download its
-    artifacts into a folder of the repository.
+    artifacts into a folder of the repository, within the step's time. A
+    passed run whose download fails fails the step and keeps the run's report.
   - **issueDetails**, **listIssues** and **commentIssue** work with GitHub
     issues; an issue fills `{{ticket.key}}`, `{{ticket.title}}` and the other
     ticket variables, as a Jira ticket does.
 
   The generator knows all of them, and n8n export turns them into `gh` commands.
 
-- **Five more MCP setups (27 in all)** under a new **Apps & releases** group:
-  Firebase (official), Netlify (official), Lovable (official), Mobile devices
-  (drive iOS simulators and Android emulators to test an app) and Maestro (UI
-  test flows).
+- **Shortcut tickets.** A Ticket step now reads a Shortcut story as well as a
+  Jira issue, using whichever tool its server lists (`stories-get-by-id` or
+  `jira_get_issue`). Give it the story number, `sc-123` or the story's link; the
+  story fills `{{ticket.key}}` (`sc-123`), `{{ticket.title}}`,
+  `{{ticket.status}}` (its workflow state), `{{ticket.url}}` and the other
+  ticket variables, its tasks become the acceptance criteria, and **Check
+  server** accepts either tool for a Ticket step. A new **Shortcut** setup
+  connects Shortcut's hosted server with browser sign-in.
+- **Six more MCP setups (28 in all):** Shortcut under **Code & tickets**, and
+  under a new **Apps & releases** group Firebase (official), Netlify (official),
+  Lovable (official), Mobile devices (drive iOS simulators and Android emulators
+  to test an app) and Maestro (UI test flows).
 - **Release and deploy commands count as publishing:** `gh workflow run`,
   `gh release upload`, `fastlane supply`, `fastlane pilot`, `fastlane deliver`
-  and the `upload_to_*` actions, `eas submit`, `firebase deploy`,
-  `netlify deploy` and `vercel deploy`, so feedback is handled before them and an
-  unmarked one is flagged.
+  and the `upload_to_*` actions, `eas submit` (or `eas-cli submit`),
+  `firebase deploy`, `netlify deploy`, `vercel deploy` and `vercel --prod`, so
+  feedback is handled before them and an unmarked one is flagged.
 - **Media and document tools.** Environment → Local tools detects FFmpeg,
   ImageMagick, Pandoc and Python under **Media and documents**, with what each
   is for and how to install it. Template cards say what they need: ✓ FFmpeg when

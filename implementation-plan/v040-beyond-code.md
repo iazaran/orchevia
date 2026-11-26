@@ -137,6 +137,51 @@ Missing, now added:
   Connect and Google Play have only small community servers, so they are named in
   the docs, not shipped as setups; fastlane covers both stores as Command steps.
 
+## Review of the CI additions (Fable)
+
+High: `waitChecks` could finish early. A fast check could pass before another
+workflow's jobs had check runs, and right after a push a pull request still
+shows the previous commit, whose checks may all be done. Now each look also
+lists the commit's unfinished Actions runs (`gh run list --commit`), compares
+the pull request's head with the checkout when they are on the same branch
+(waiting up to the two-minute grace, then noting the difference), and the wait
+ends only after two looks in a row find nothing pending. A commit on no
+remote-tracking branch is refused before any call. Medium: failed logs are read
+per failed job (`gh run view --job <id> --log-failed`, ids from the check link or
+the run's jobs), and a log longer than the process cap says its end is missing
+instead of showing the middle; commit check runs and statuses are paginated
+through `--jq`, one object per line, with each status context's newest state;
+`gh pr checks` exiting 1 or 8 without a JSON list reports gh's error; artifact
+downloads check cancel first, get the step's remaining time (at least a
+minute) and fail the step with the run's report kept. Low: a workflow name
+starting with `-` and artifacts folders with a `.git` part are refused on both
+sides (the drive-letter check counts characters on both), values reach gh as
+`--ref=`, `--raw-field=` and `--branch=`, the dispatched-run lookup allows a
+minute of clock skew, strips `refs/heads/` and survives two failed lookups,
+and `vercel --prod` and `eas-cli submit` count as publishing.
+
+## Shortcut tickets
+
+Asked for during the CI work: Shortcut works like Jira. Checked in November
+2026: Shortcut's hosted server (`https://mcp.shortcut.com/mcp`) needs OAuth (a
+401 without a token; its authorization server supports dynamic client
+registration, PKCE S256 and refresh tokens), so the setup runs it through
+`mcp-remote`, as Linear's does. The open-source `@shortcut/mcp` package was
+archived in July 2026. Its story tool is `stories-get-by-id` with a numeric
+`storyPublicId`, and it answers with `Story: sc-N` and a `<json>` block holding
+`story` and `relatedEntities.workflows` (state names). The hosted server's tool
+names were taken from that source, not seen after a sign-in; **Check server**
+lists them.
+
+Rather than a new workflow field, a Ticket step lists its server's tools and
+calls the first ticket tool it finds (`jira_get_issue`, then
+`stories-get-by-id`) in one session (`mcp::call_first_listed`). The required
+tools of a Ticket step are one entry, `jira_get_issue or stories-get-by-id`,
+that either tool satisfies. Story keys can be a number, `#N`, `sc-N` or a story
+link; a Jira-looking key on a Shortcut server fails with what a story key looks
+like. n8n export keeps Jira nodes for Ticket steps and says to use an HTTP
+Request node for Shortcut.
+
 ## Left for later
 
 - Media MCP presets (see above) once real accounts confirm their tools.

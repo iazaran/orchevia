@@ -15,7 +15,7 @@ import { CopyButton } from './CopyButton';
 import { JsonEditor, JsonView } from './JsonEditor';
 import { Segmented } from './Segmented';
 import { prepareImportText, toN8n } from '../lib/n8n';
-import { MCP_PRESETS } from '../lib/integrations';
+import { MCP_PRESETS, TICKET_TOOLS } from '../lib/integrations';
 import {
   domainLabel,
   matchesTemplateSearch,
@@ -48,7 +48,7 @@ function templateNeedsRepository(template: WorkflowTemplate): boolean {
 function expectedMcpSetups(template: WorkflowTemplate): string[] {
   const tools = template.workflow.nodes.flatMap((n) =>
     n.type === 'ticket'
-      ? ['jira_get_issue']
+      ? [...TICKET_TOOLS]
       : n.type === 'mcp'
         ? [n.config.mcpTool ?? '']
         : [],

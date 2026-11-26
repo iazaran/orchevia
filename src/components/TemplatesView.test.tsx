@@ -150,7 +150,7 @@ it('asks for the repository before creating a workflow from a template', async (
   expect(within(dialog).getByRole('combobox', { name: 'MCP server' })).toHaveValue(
     'jira',
   );
-  expect(dialog).toHaveTextContent('Expects the Jira & Confluence setup');
+  expect(dialog).toHaveTextContent('Expects the Jira & Confluence or Shortcut setup');
   expect(dialog).toHaveTextContent('Jira ticket key or URL');
   // The one-time agent permissions question comes with the first template.
   expect(dialog).toHaveTextContent('Let AI agents work without asking?');

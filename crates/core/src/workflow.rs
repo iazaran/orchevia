@@ -1400,7 +1400,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     push_error(
                         &mut issues,
                         "ticket-server-required",
-                        "Ticket node requires an MCP server (Jira source).".to_string(),
+                        "Ticket node requires an MCP server (Jira or Shortcut).".to_string(),
                         Some(node.id.clone()),
                     );
                 }

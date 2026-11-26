@@ -638,7 +638,7 @@ export function TicketEditor({
         <input
           id={`ticket-key-${nodeId}`}
           className="input"
-          placeholder="DEV-1234 or {{input.ticket}}"
+          placeholder="DEV-1234, sc-123 or {{input.ticket}}"
           value={node.config.ticketKey ?? ''}
           onChange={(e) => {
             patchNode({ ...node.config, ticketKey: e.target.value }, node.label);
@@ -647,7 +647,7 @@ export function TicketEditor({
       </div>
       <div className="field">
         <label className="field-label" htmlFor={`ticket-server-${nodeId}`}>
-          Jira MCP server
+          Ticket server (Jira or Shortcut)
         </label>
         <select
           id={`ticket-server-${nodeId}`}
@@ -665,7 +665,9 @@ export function TicketEditor({
           ))}
         </select>
         <span className="field-hint">
-          Ticket fields become{' '}
+          Reads a Jira issue (<code>jira_get_issue</code>) or a Shortcut story (
+          <code>stories-get-by-id</code>: a number, sc-123 or a link), whichever the
+          server has. Ticket fields become{' '}
           <code>ticket.key/title/description/acceptanceCriteria</code>. Ticket text is
           untrusted input — passed to agents as data, never executed.
         </span>

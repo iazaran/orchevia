@@ -21,6 +21,12 @@ export type McpCategory =
   | 'Data & cloud'
   | 'Local';
 
+/**
+ * The tools a Ticket step reads a ticket with, whichever its server lists:
+ * Jira's and Shortcut's (mirrors Rust `ticket::TICKET_TOOLS`).
+ */
+export const TICKET_TOOLS = ['jira_get_issue', 'stories-get-by-id'] as const;
+
 export const MCP_CATEGORIES: McpCategory[] = [
   'Work & docs',
   'Code & tickets',
@@ -62,7 +68,7 @@ export interface McpPreset {
   tools: { name: string; args: string }[];
   /** An argument you must replace before saving. */
   placeholder?: string;
-  /** Works with Ticket steps (`jira_get_issue`). */
+  /** Works with Ticket steps (one of `TICKET_TOOLS`). */
   ticket?: boolean;
   source: string;
   /**
@@ -312,6 +318,31 @@ export const MCP_PRESETS: McpPreset[] = [
       { name: 'list_issues', args: 'filters' },
     ],
     source: 'https://linear.app/docs/mcp',
+  },
+  {
+    id: 'shortcut',
+    name: 'Shortcut',
+    category: 'Code & tickets',
+    summary:
+      'Load stories for Ticket steps; search, create and update stories, epics and docs.',
+    command: 'npx',
+    args: ['-y', 'mcp-remote', 'https://mcp.shortcut.com/mcp'],
+    env: [],
+    auth: 'oauth',
+    readOnly: false,
+    needs: 'Node.js',
+    steps: [
+      'The first connection opens Shortcut sign-in in your browser; run Check once to sign in before a run needs it.',
+      'Ticket steps call stories-get-by-id on this server: give them a story number, sc-123 or a story link.',
+      'Shortcut grants what your account can do. MCP Tool steps can also comment (stories-create-comment) or move a story (stories-update).',
+    ],
+    tools: [
+      { name: 'stories-get-by-id', args: 'storyPublicId' },
+      { name: 'stories-search', args: 'filters' },
+      { name: 'stories-create-comment', args: 'storyPublicId, text' },
+    ],
+    ticket: true,
+    source: 'https://www.shortcut.com/help/integrations/mcp-server',
   },
   {
     id: 'sentry',

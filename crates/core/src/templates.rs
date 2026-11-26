@@ -2313,6 +2313,7 @@ while IFS= read -r line; do
   n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
   case "$line" in
     *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$n" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"jira_get_issue","inputSchema":{"type":"object"}}]}}\n' "$n" ;;
     *'"method":"tools/call"'*'"DEV-1234"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"{\\"key\\":\\"DEV-1234\\",\\"summary\\":\\"Cart bug\\"}"}],"isError":false}}\n' "$n" ;;
     *'"method":"tools/call"'*'jira_get_issue'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"not found"}],"isError":true}}\n' "$n" ;;
     *'"method":"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"Release 2.0 drops Node 18. Decision: ship on Friday."}],"isError":false}}\n' "$n" ;;

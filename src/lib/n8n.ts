@@ -515,7 +515,7 @@ export function toN8n(workflow: Workflow, profiles: AgentProfile[] = []): N8nExp
           },
         });
         notes.add(
-          'Ticket steps become Jira nodes; connect your Jira credentials in n8n.',
+          "Ticket steps become Jira nodes; connect your Jira credentials in n8n (for Shortcut stories, use an HTTP Request node with Shortcut's API instead).",
         );
         break;
       case 'mcp':

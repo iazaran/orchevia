@@ -35,7 +35,7 @@ depends only on nodes + edges.
 | `condition` | `condition` (required: `logic` + `clauses[]`), `maxVisits?`                                                             | Branch on a constrained expression; needs `true` + `false` labeled edges                     |
 | `git`       | `gitOp` (required), `workingDir` (required repo dir)                                                                    | Safe repo ops; lossy states refused                                                          |
 | `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs, checks, waiting for CI, Actions runs, issues and comments via local `gh`                |
-| `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load Jira ticket via MCP → `ticket.*` vars                                                   |
+| `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load a Jira issue or Shortcut story via MCP → `ticket.*` vars                                |
 | `mcp`       | `mcpServerId` + `mcpTool` (required), `mcpArgs` (templates ok)                                                          | Call one MCP tool with provenance                                                            |
 | `end`       | —                                                                                                                       | Terminal node; at least one required                                                         |
 

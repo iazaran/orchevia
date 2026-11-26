@@ -1,7 +1,10 @@
-//! Ticket Source interface with a Jira-over-MCP implementation (Milestone 4).
+//! Ticket Source interface with a ticket-over-MCP implementation: Jira
+//! issues (`jira_get_issue`) and Shortcut stories (`stories-get-by-id`),
+//! whichever tool the step's server lists.
 //!
 //! Ticket data is normalized to a provider-neutral structure so prompts,
-//! conditions, and later workflow steps never depend on Jira field layouts.
+//! conditions, and later workflow steps never depend on Jira or Shortcut
+//! field layouts.
 //! Ticket/PR text is **untrusted input**: it is passed to agents as data and
 //! is never executed. History and prompts cap ticket context explicitly.
 
@@ -59,11 +62,25 @@ pub trait TicketSource {
     fn load_ticket(&self, key: &str) -> Result<NormalizedTicket, String>;
 }
 
-/// The tool Ticket steps call on their MCP server.
+/// The tool Ticket steps call on a Jira MCP server.
 pub const DEFAULT_TICKET_TOOL: &str = "jira_get_issue";
+/// The tool Ticket steps call on Shortcut's MCP server.
+pub const SHORTCUT_STORY_TOOL: &str = "stories-get-by-id";
+/// The tools a Ticket step can read a ticket with, in the order tried.
+pub const TICKET_TOOLS: [&str; 2] = [DEFAULT_TICKET_TOOL, SHORTCUT_STORY_TOOL];
 
-/// Jira via a configured MCP server. The tool name is configurable because
-/// MCP servers differ (`jira_get_issue` is the common default).
+/// Which ticket system a ticket came from, by the tool that read it (the
+/// provenance recorded with the step's result).
+pub fn provider_of_tool(tool: &str) -> &'static str {
+    if tool == SHORTCUT_STORY_TOOL {
+        "shortcut-mcp"
+    } else {
+        "jira-mcp"
+    }
+}
+
+/// Jira or Shortcut via a configured MCP server: the step uses whichever
+/// ticket tool the server lists. `tool_name` is the Jira tool's name.
 pub struct JiraMcpSource {
     pub server: crate::mcp::McpServerConfig,
     pub tool_name: String,
@@ -91,25 +108,165 @@ impl TicketSource for JiraMcpSource {
     }
 
     fn load_ticket(&self, key: &str) -> Result<NormalizedTicket, String> {
-        let key = ticket_key(key);
-        let trimmed = key.as_str();
-        if trimmed.is_empty() {
+        self.load_ticket_with_tool(key).map(|(ticket, _)| ticket)
+    }
+}
+
+impl JiraMcpSource {
+    /// The ticket and the tool that read it.
+    pub fn load_ticket_with_tool(&self, key: &str) -> Result<(NormalizedTicket, String), String> {
+        let input = key.trim();
+        if input.is_empty() {
             return Err("Ticket key must not be empty.".to_string());
         }
-        if trimmed.len() > 60 {
+        if input.chars().count() > 300 {
             return Err("Ticket key is too long.".to_string());
         }
-        let result = crate::mcp::call_tool(
+        let jira_key = ticket_key(input);
+        let story = shortcut_story_id(input);
+        let jira_tool = self.tool_name.clone();
+        let candidates = [jira_tool.as_str(), SHORTCUT_STORY_TOOL];
+        let arguments = {
+            let jira_key = jira_key.clone();
+            let jira_tool = jira_tool.clone();
+            let input = input.to_string();
+            move |tool: &str| {
+                if tool == jira_tool {
+                    if jira_key.len() > 60 {
+                        return Err("Ticket key is too long.".to_string());
+                    }
+                    return Ok(serde_json::json!({ "key": jira_key, "issueKey": jira_key }));
+                }
+                match story {
+                    Some(id) => Ok(serde_json::json!({ "storyPublicId": id })),
+                    None => Err(format!(
+                        "'{input}' is not a Shortcut story: use its number, sc-123 or the story's link."
+                    )),
+                }
+            }
+        };
+        let result = crate::mcp::call_first_listed(
             &self.server,
-            &self.tool_name,
-            &serde_json::json!({ "key": trimmed, "issueKey": trimmed }),
+            &candidates,
+            arguments,
             self.timeout,
             &self.cancel,
         )?;
         if result.is_error {
             return Err(format!("Ticket tool error: {}", snippet(&result.text, 500)));
         }
-        normalize_jira_payload(trimmed, &result.text)
+        let ticket = if result.tool == SHORTCUT_STORY_TOOL {
+            // The id was checked before the call.
+            normalize_shortcut_payload(story.unwrap_or_default(), &result.text)
+        } else {
+            normalize_jira_payload(&jira_key, &result.text)?
+        };
+        Ok((ticket, result.tool))
+    }
+}
+
+/// A Shortcut story's number in a ticket input: `123`, `#123`, `sc-123`, or
+/// a story link such as `https://app.shortcut.com/acme/story/123/a-title`.
+pub fn shortcut_story_id(input: &str) -> Option<u64> {
+    let trimmed = input.trim();
+    let number = |text: &str| {
+        let digits = text.trim();
+        (!digits.is_empty() && digits.len() <= 12 && digits.chars().all(|c| c.is_ascii_digit()))
+            .then(|| digits.parse::<u64>().ok())
+            .flatten()
+            .filter(|n| *n > 0)
+    };
+    if trimmed.contains("://") {
+        let mut parts = trimmed.split(['/', '?', '#']);
+        while let Some(part) = parts.next() {
+            if part == "story" {
+                return parts.next().and_then(number);
+            }
+        }
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("sc-")
+        .or_else(|| lower.strip_prefix('#'))
+        .unwrap_or(&lower);
+    number(rest)
+}
+
+/// Normalize a Shortcut story read by `stories-get-by-id`: its JSON holds
+/// `story` (name, description, `app_url`, labels, `workflow_state_id`) and
+/// `relatedEntities.workflows` with the state names.
+pub fn normalize_shortcut_payload(id: u64, text: &str) -> NormalizedTicket {
+    let key = format!("sc-{id}");
+    let value = extract_json_object(text)
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+    let Some(value) = value else {
+        return NormalizedTicket {
+            key,
+            title: snippet(text, 120),
+            description: snippet(text, 4000),
+            acceptance_criteria: Vec::new(),
+            status: String::new(),
+            url: None,
+            labels: Vec::new(),
+        };
+    };
+    let story = value.get("story").unwrap_or(&value);
+    let text_of = |names: &[&str]| {
+        names
+            .iter()
+            .filter_map(|n| story.get(*n))
+            .find_map(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let state_id = story.get("workflow_state_id").and_then(|v| v.as_u64());
+    let status = value
+        .get("relatedEntities")
+        .and_then(|r| r.get("workflows"))
+        .and_then(|w| w.as_object())
+        .into_iter()
+        .flat_map(|workflows| workflows.values())
+        .filter_map(|workflow| workflow.get("states").and_then(|s| s.as_array()))
+        .flatten()
+        .find(|state| state.get("id").and_then(|v| v.as_u64()) == state_id && state_id.is_some())
+        .and_then(|state| state.get("name").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .unwrap_or_else(|| text_of(&["workflow_state_name", "state"]));
+    let labels = story
+        .get("labels")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Open tasks read as acceptance criteria: they are what "done" means.
+    let acceptance_criteria = story
+        .get("tasks")
+        .and_then(|v| v.as_array())
+        .map(|tasks| {
+            tasks
+                .iter()
+                .filter_map(|t| t.get("description").and_then(|d| d.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let url = Some(text_of(&["app_url", "url"])).filter(|u| !u.is_empty());
+    NormalizedTicket {
+        key,
+        title: text_of(&["name", "title"]),
+        description: text_of(&["description"]),
+        acceptance_criteria,
+        status,
+        url,
+        labels,
     }
 }
 
@@ -296,6 +453,70 @@ mod tests {
         let context = ticket.prompt_context(100);
         assert!(context.chars().count() <= 200);
         assert!(context.contains("truncated"));
+    }
+
+    #[test]
+    fn shortcut_story_ids_come_from_numbers_keys_and_links() {
+        for (input, id) in [
+            ("123", Some(123)),
+            (" sc-123 ", Some(123)),
+            ("SC-77", Some(77)),
+            ("#9", Some(9)),
+            (
+                "https://app.shortcut.com/acme/story/4567/dark-mode",
+                Some(4567),
+            ),
+            (
+                "https://app.shortcut.com/acme/story/4567?ct_workflow=all",
+                Some(4567),
+            ),
+            ("https://app.shortcut.com/acme/epic/12", None),
+            ("DEV-12", None),
+            ("0", None),
+            ("sc-", None),
+        ] {
+            assert_eq!(shortcut_story_id(input), id, "{input}");
+        }
+    }
+
+    #[test]
+    fn normalizes_a_shortcut_story() {
+        let text = r#"Story: sc-42
+
+<json>
+{
+  "story": {
+    "id": 42,
+    "name": "Dark mode",
+    "app_url": "https://app.shortcut.com/acme/story/42",
+    "description": "Add a toggle in settings",
+    "workflow_state_id": 500000008,
+    "labels": ["ui"],
+    "tasks": [{"id": 1, "description": "Toggle persists", "complete": false}]
+  },
+  "relatedEntities": {
+    "workflows": {
+      "500000005": {"id": 500000005, "name": "Engineering", "states": [
+        {"id": 500000007, "name": "To Do", "type": "unstarted"},
+        {"id": 500000008, "name": "In Progress", "type": "started"}
+      ]}
+    }
+  }
+}
+</json>"#;
+        let ticket = normalize_shortcut_payload(42, text);
+        assert_eq!(ticket.key, "sc-42");
+        assert_eq!(ticket.title, "Dark mode");
+        assert_eq!(ticket.status, "In Progress");
+        assert_eq!(ticket.description, "Add a toggle in settings");
+        assert_eq!(
+            ticket.url.as_deref(),
+            Some("https://app.shortcut.com/acme/story/42")
+        );
+        assert_eq!(ticket.labels, ["ui"]);
+        assert_eq!(ticket.acceptance_criteria, ["Toggle persists"]);
+        assert_eq!(provider_of_tool(SHORTCUT_STORY_TOOL), "shortcut-mcp");
+        assert_eq!(provider_of_tool(DEFAULT_TICKET_TOOL), "jira-mcp");
     }
 
     #[test]
