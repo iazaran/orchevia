@@ -173,3 +173,60 @@ it('keeps one open run per workspace folder and same-named files apart', async (
     '~/Documents/Orchevia/Gate (wfgate)',
   ]);
 });
+
+it('recovers in the failed run’s folder once no other run is open there', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow: Workflow = {
+    schemaVersion: 6,
+    id: 'wf-recover',
+    name: 'Recover',
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'cmd',
+        type: 'command',
+        position: { x: 0, y: 100 },
+        config: { executable: 'echo', args: ['notes.md'] },
+      },
+      { id: 'gate', type: 'approval', position: { x: 0, y: 200 }, config: {} },
+      { id: 'end', type: 'end', position: { x: 0, y: 300 }, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'cmd' },
+      { id: 'e2', source: 'cmd', target: 'gate' },
+      { id: 'e3', source: 'gate', target: 'end' },
+    ],
+  };
+  await backend.saveWorkflow(workflow);
+  const paused = async (id: string): Promise<void> => {
+    await waitFor(
+      async () => {
+        expect((await backend.getRun(id))?.status).toBe('paused');
+      },
+      { timeout: 5000 },
+    );
+  };
+  const { runId: first } = await backend.runWorkflow('wf-recover');
+  await paused(first);
+  await backend.approveRun(first, false);
+  expect((await backend.getRun(first))?.status).toBe('failed');
+  const { runId: second } = await backend.runWorkflow('wf-recover');
+  await paused(second);
+  const plan = await backend.previewRecovery(first);
+  const choices = Object.fromEntries(
+    plan.nodes.map((n) => [n.nodeId, n.choices.includes('reuse') ? 'reuse' : 'replay']),
+  ) as Record<string, 'reuse' | 'replay'>;
+  await expect(
+    backend.recoverRun(first, choices, plan.fingerprint, 'req-ws-1'),
+  ).rejects.toThrow("'Recover' already has a run open in its workspace folder.");
+  await backend.cancelRun(second);
+  const { runId: recovered } = await backend.recoverRun(
+    first,
+    choices,
+    plan.fingerprint,
+    'req-ws-2',
+  );
+  expect((await backend.getRun(recovered))?.execution?.workspace).toBe(
+    (await backend.getRun(first))?.execution?.workspace,
+  );
+});

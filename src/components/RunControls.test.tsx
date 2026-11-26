@@ -618,3 +618,19 @@ it('shows a padded default as its choice and lets an optional choice be cleared'
   fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
   await waitFor(() => expect(start).toHaveBeenCalledWith({ tone: '' }, {}));
 });
+
+it('shows Choose… for a blank required choice instead of a choice it will not send', () => {
+  const workflow = createEmptyWorkflow('Blank');
+  workflow.inputs = [{ name: 'size', options: ['Small', 'Large'], required: true }];
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      initialInputs={{ size: '  ' }}
+      onStart={vi.fn()}
+      onClose={() => undefined}
+    />,
+  );
+  expect(screen.getByLabelText('size (required)')).toHaveValue('');
+  expect(screen.getByRole('option', { name: 'Choose…' })).toBeInTheDocument();
+});

@@ -1126,18 +1126,7 @@ class MockBackend implements Backend {
     // open run there at a time (mirrors the engine).
     const workspace =
       runOptions.dryRun === true ? null : this.mockWorkspaceOf(wf.definition);
-    if (
-      workspace !== null &&
-      this.runs.some(
-        (r) =>
-          r.workflowId === workflowId &&
-          (r.status === 'running' || r.status === 'paused') &&
-          r.execution?.options.dryRun !== true,
-      )
-    )
-      throw new Error(
-        `'${wf.definition.name}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.`,
-      );
+    if (workspace !== null) this.ensureMockWorkspaceFree(workflowId, wf.definition.name);
     const runId = `run-mock-${String(this.counter++)}`;
     const run: StoredRun = {
       id: runId,
@@ -1781,10 +1770,16 @@ class MockBackend implements Backend {
     const reusedPublication = workflow.nodes.find(
       (n) => isPublicationStep(n) && choices[n.id] === 'reuse',
     );
+    // The recovery works where the failed run left its files, and waits for
+    // another open run in that folder (mirrors the engine).
+    const workspace = source.execution?.workspace;
+    if (workspace !== undefined && source.execution?.options.dryRun !== true)
+      this.ensureMockWorkspaceFree(source.workflowId, workflow.name);
     const execution = {
       options: structuredClone(source.execution?.options ?? {}),
       recoveredFrom: runId,
       recoveryChoices: { ...choices },
+      ...(workspace === undefined ? {} : { workspace }),
       // Recovery is new execution under the same effective limits; reused
       // results are never re-charged.
       resolvedLimits: structuredClone(source.execution?.resolvedLimits ?? {}),
@@ -2781,15 +2776,34 @@ class MockBackend implements Backend {
     this.runFiles.set(runId, files);
   }
 
+  /** One open run per workspace folder (mirrors `ensure_workspace_free`). */
+  private ensureMockWorkspaceFree(workflowId: string, name: string): void {
+    if (
+      this.runs.some(
+        (r) =>
+          r.workflowId === workflowId &&
+          (r.status === 'running' || r.status === 'paused') &&
+          r.execution?.options.dryRun !== true,
+      )
+    )
+      throw new Error(
+        `'${name}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.`,
+      );
+  }
+
+  /** A folderless step that really works in the workspace (mirrors `step_uses_workspace`). */
+  private mockStepUsesWorkspace(workflow: Workflow, node: WorkflowNode): boolean {
+    if (node.type !== 'command' && node.type !== 'agent') return false;
+    if ((node.config.workingDir ?? '').trim() !== '') return false;
+    if ((workflow.defaults?.repoDir ?? '').trim() !== '') return false;
+    if (node.type !== 'agent') return true;
+    const profile = this.profiles.get(node.config.agentProfileId ?? '');
+    return profile === undefined || profile.workingDirMode === 'node';
+  }
+
   /** The workspace folder a new run records, or null when no step uses it. */
   private mockWorkspaceOf(workflow: Workflow): string | null {
-    const project = (workflow.defaults?.repoDir ?? '').trim();
-    const uses = workflow.nodes.some(
-      (n) =>
-        (n.type === 'command' || n.type === 'agent') &&
-        (n.config.workingDir ?? '').trim() === '' &&
-        project === '',
-    );
+    const uses = workflow.nodes.some((n) => this.mockStepUsesWorkspace(workflow, n));
     return uses
       ? workspaceFolder(
           (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
@@ -2836,8 +2850,7 @@ class MockBackend implements Backend {
           ? this.profiles.get(node.config.agentProfileId ?? '')
           : undefined;
       if (profile?.workingDirMode === 'profile') add(profile.workingDir);
-      if ((node.config.workingDir ?? '').trim() === '' && project === '')
-        workspace = true;
+      if (this.mockStepUsesWorkspace(workflow, node)) workspace = true;
     }
     const recorded = this.runs.find((r) => r.id === runId)?.execution?.workspace;
     const current = workspace ? (recorded ?? this.mockWorkspaceOf(workflow)) : null;

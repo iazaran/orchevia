@@ -38,7 +38,8 @@ files it made.
   runs create nothing), instead of wherever the app happened to start. The short
   id keeps two workflows with the same name apart, the folder is recorded when
   a run starts (changing the root later never moves a waiting run), a workflow
-  that works there takes one open run at a time, and a folder that cannot be
+  that works there takes one open run at a time (schedules and watchers wait
+  for it, and a recovery waits too), and a folder that cannot be
   created fails the step with its path. A workflow that relied on the folder
   the app was launched from (a relative `bash scripts/check.sh`) now needs its
   **Project folder** set. Environment →

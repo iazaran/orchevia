@@ -209,7 +209,11 @@ export function StartRunDialog({
                 id={id}
                 className="input"
                 // A padded default shows as the choice it names.
-                value={options.find((o) => o.trim() === value.trim())?.trim() ?? value}
+                value={
+                  value.trim() === ''
+                    ? ''
+                    : (options.find((o) => o.trim() === value.trim())?.trim() ?? value)
+                }
                 disabled={busy}
                 onChange={(e) => setInput(input.name, e.target.value)}
                 {...described}

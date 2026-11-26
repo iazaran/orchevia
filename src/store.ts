@@ -615,6 +615,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (request !== navigationSequence) return false;
     set({
       view: 'workflows',
+      templateQuery: '',
       activeRunId: runId,
       activeWorkflowId: run.workflowId,
       overlayRunId: runId,
@@ -664,6 +665,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     runsRefreshSequence++;
     set({
       view: 'runs',
+      templateQuery: '',
       activeRunId: runId,
       runs: [run, ...get().runs.filter((existing) => existing.id !== runId)],
       runResults:
