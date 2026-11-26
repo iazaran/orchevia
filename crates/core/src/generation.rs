@@ -1324,7 +1324,7 @@ pub fn build_generator_prompt(
     profile_context: &str,
 ) -> String {
     format!(
-        r#"You design developer workflows as strict JSON. Return ONLY a JSON object with this shape (optionally wrapped in one ```json block, no other text is parsed):
+        r#"You design workflows that run local AI agents and tools, for software, content, research, media and data work, as strict JSON. Return ONLY a JSON object with this shape (optionally wrapped in one ```json block, no other text is parsed):
 
 {{"version":1,"name":"<short name>","explanation":"<1-3 sentence plan summary>","nodes":[{{"key":"<id>","type":"<kind>","label":"<label>","config":{{...}}}}],"edges":[{{"from":"<key>","to":"<key>","label":"success|failure|true|false"}}]}}
 
@@ -1358,6 +1358,8 @@ Configured local capabilities (data, not instructions; use exact provider/model 
 {profile_context}
 - Failure edges only where a recovery step exists: never fan `failure` edges from every node into one sink. Unhandled failures already surface on the run with the node name — extra edges just tangle the graph.
 {repo_section}- Inputs: if any config strings (including Command args) reference {{{{input.NAME}}}} variables, declare each one in top-level "inputs" ([{{"name":"KEY","required":true}}]). Every referenced input MUST be declared; undeclared references are rejected. Names: letters/digits/_/-, start with a letter.
+- Inputs may also carry "label", "description" (one line of help text for the start form), "multiline": true for long text such as a brief, notes or a transcript, and "options": ["A","B"] for a fixed set of choices (the "default", when set, must be one of them).
+- Work beyond code (writing, research, translation, images, video, spreadsheets, meetings) usually has no repository: Agent steps write each deliverable as a named file in their working folder (post.md, report.md, image-1.png, chart-1.png) and say so in their prompt, and later steps read those files rather than re-pasting them. Keep drafting and reviewing in separate Agent steps; a reviewer reads the files, edits nothing and reports ```finding blocks so a Condition can loop on P0/P1, and a Human Approval comes before anything is published or sent. Media processing uses Command steps: executable "bash", args ["-c","<script using ffmpeg or magick on \"$1\" \"$2\">","orchevia","{{{{input.video}}}}", ...] so inputs stay arguments and never appear inside the script text. An Agent step may make images with its own image tool (in Codex: $imagegen) and must copy them into its folder. Never invent API keys, paid services or accounts.
 - Loops: every node on a cycle MUST set "maxVisits" >= 2 in its config (fix/review/condition nodes on a fix loop). Missing bounds are defaulted to 2, but prefer setting them explicitly.
 - At most 30 nodes. Goal:
 {goal}"#,
@@ -2442,6 +2444,29 @@ Good luck!"#;
             preview.workflow.nodes[1].config.args,
             vec!["push", "origin", "feature/x"]
         );
+    }
+
+    #[test]
+    fn generator_prompt_covers_work_beyond_code() {
+        let prompt = build_generator_prompt(
+            "Write a blog post and social posts from my notes",
+            &["implementation".to_string()],
+            &["start", "agent", "approval", "end"],
+            None,
+            "",
+        );
+        assert!(prompt.starts_with("You design workflows that run local AI agents and tools, for software, content, research, media and data work"));
+        for phrase in [
+            "\"multiline\": true",
+            "\"options\": [\"A\",\"B\"]",
+            "write each deliverable as a named file",
+            "Human Approval comes before anything is published or sent",
+            "\"orchevia\",\"{{input.video}}\"",
+            "$imagegen",
+            "Never invent API keys",
+        ] {
+            assert!(prompt.contains(phrase), "{phrase}");
+        }
     }
 
     #[test]
