@@ -873,6 +873,16 @@ fn prepare(
     })
 }
 
+/// Codex refuses a folder outside a Git repository unless told otherwise.
+/// Steps in a workspace or documents folder are deliberate, so a known
+/// folder outside any repository gets `--skip-git-repo-check`; repository
+/// folders and an unknown folder keep Codex's own check.
+fn push_codex_outside_repository(args: &mut Vec<String>, working_dir: Option<&str>) {
+    if working_dir.is_some_and(|dir| !crate::git::inside_repository(std::path::Path::new(dir))) {
+        args.push("--skip-git-repo-check".to_string());
+    }
+}
+
 fn push_model_and_effort(args: &mut Vec<String>, profile: &AgentProfile, effort: Option<&str>) {
     if let Some(model) = profile.model.as_deref().filter(|m| !m.trim().is_empty()) {
         args.push("--model".to_string());
@@ -992,6 +1002,7 @@ pub fn build_text_agent_command(
         }
         AdapterKind::Codex => {
             args.push("exec".to_string());
+            push_codex_outside_repository(&mut args, working_dir.as_deref());
             push_model_and_effort(&mut args, profile, effort.as_deref());
             push_permissions(&mut args, profile);
             args.push("-".to_string());
@@ -1065,6 +1076,9 @@ fn build_structured_command(
     } else {
         vec!["exec".into(), "--json".into()]
     };
+    if profile.adapter == AdapterKind::Codex {
+        push_codex_outside_repository(&mut args, working_dir.as_deref());
+    }
     push_model_and_effort(&mut args, profile, effort.as_deref());
     push_permissions(&mut args, profile);
     push_browser(&mut args, profile);
@@ -1474,6 +1488,50 @@ mod tests {
         codex.permission_level = PermissionLevel::CliSettings;
         let spec = build_agent_command(&codex, "hi", None).unwrap();
         assert_eq!(spec.args, ["exec", "--json", "--model", "opus", "-"]);
+    }
+
+    #[test]
+    fn codex_runs_outside_a_repository_only_where_asked() {
+        let outside = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let nested = repo.path().join("docs");
+        std::fs::create_dir(&nested).unwrap();
+        let mut codex = claude_profile();
+        codex.adapter = AdapterKind::Codex;
+        codex.permission_level = PermissionLevel::CliSettings;
+        codex.working_dir_mode = WorkingDirMode::Node;
+        let dir = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let flagged = |spec: &CommandSpec| spec.args.iter().any(|a| a == "--skip-git-repo-check");
+        let spec = build_agent_command(&codex, "hi", Some(&dir(outside.path()))).unwrap();
+        assert_eq!(spec.args[..3], ["exec", "--json", "--skip-git-repo-check"]);
+        let resumed = build_session_command(
+            &codex,
+            "hi",
+            Some(&dir(outside.path())),
+            Some("019a0000-0000-7000-8000-000000000001"),
+        )
+        .unwrap();
+        let skip = resumed
+            .args
+            .iter()
+            .position(|a| a == "--skip-git-repo-check")
+            .unwrap();
+        let resume = resumed.args.iter().position(|a| a == "resume").unwrap();
+        assert!(skip < resume, "exec options precede the resume subcommand");
+        let text = build_text_agent_command(&codex, "hi", Some(&dir(outside.path()))).unwrap();
+        assert_eq!(text.args[..2], ["exec", "--skip-git-repo-check"]);
+        for inside in [repo.path(), nested.as_path()] {
+            assert!(!flagged(
+                &build_agent_command(&codex, "hi", Some(&dir(inside))).unwrap()
+            ));
+        }
+        assert!(!flagged(&build_agent_command(&codex, "hi", None).unwrap()));
+        let mut claude = claude_profile();
+        claude.working_dir_mode = WorkingDirMode::Node;
+        assert!(!flagged(
+            &build_agent_command(&claude, "hi", Some(&dir(outside.path()))).unwrap()
+        ));
     }
 
     #[test]

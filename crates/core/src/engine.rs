@@ -1619,12 +1619,15 @@ impl Engine {
                     }
                     let db = Arc::clone(&self.db);
                     let task_flag = Arc::clone(flag);
+                    let workspace_dir =
+                        task_workspace(&self.db, workflow, &node, run.execution.options.dry_run);
                     let owned = TaskInput {
                         session_locks: Arc::clone(&session_locks),
                         node,
                         workflow_id: workflow.id.clone(),
                         workflow_name: workflow.name.clone(),
                         workflow_defaults: workflow.defaults.clone(),
+                        workspace_dir,
                         run_id: run_id.to_string(),
                         inputs: run.inputs.clone(),
                         execution: RunExecution {
@@ -2748,6 +2751,7 @@ impl Engine {
         };
         let task = TaskInput {
             session_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            workspace_dir: task_workspace(&self.db, workflow, &node, run.execution.options.dry_run),
             node: node.clone(),
             workflow_id: workflow.id.clone(),
             workflow_name: workflow.name.clone(),
@@ -2998,6 +3002,9 @@ struct TaskInput {
     workflow_id: String,
     workflow_name: String,
     workflow_defaults: Option<crate::workflow::WorkflowDefaults>,
+    /// The workflow's workspace folder, set (and created) only for a Command
+    /// or Agent step with no folder of its own and no repository folder.
+    workspace_dir: Option<String>,
     run_id: String,
     inputs: HashMap<String, String>,
 }
@@ -3909,7 +3916,8 @@ fn resolve_repo_root(task: &TaskInput) -> Result<String, String> {
 }
 
 /// Working directory for command and agent nodes: explicit node dir wins,
-/// blank inherits the workflow default (repo-bound work runs in the repo).
+/// blank inherits the workflow default (repo-bound work runs in the repo),
+/// and with neither the step runs in the workflow's workspace folder.
 /// Agent profiles in `profile` or `inherit` mode ignore it.
 fn command_working_dir(task: &TaskInput) -> Option<&str> {
     let node_dir = task.node.config.working_dir.as_deref().unwrap_or("").trim();
@@ -3919,9 +3927,31 @@ fn command_working_dir(task: &TaskInput) -> Option<&str> {
             .and_then(|d| d.repo_dir.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty())
+            .or(task.workspace_dir.as_deref())
     } else {
         Some(node_dir)
     }
+}
+
+/// The workspace folder for a step that has no folder of its own, created
+/// before it runs. Dry runs execute nothing and create nothing; a folder that
+/// cannot be created leaves the step where steps ran before 0.4.0.
+fn task_workspace(
+    db: &SqliteDb,
+    workflow: &Workflow,
+    node: &Node,
+    dry_run: bool,
+) -> Option<String> {
+    if dry_run || !crate::workspace::uses_workspace(node, workflow.defaults.as_ref()) {
+        return None;
+    }
+    let root = crate::workspace::root(db)?;
+    crate::workspace::prepare(&crate::workspace::workflow_folder(
+        &root,
+        &workflow.name,
+        &workflow.id,
+    ))
+    .ok()
 }
 
 /// Workflow default branch, when set and non-blank.
@@ -6202,6 +6232,7 @@ mod tests {
             workflow_id: "wf".to_string(),
             workflow_name: "W".to_string(),
             workflow_defaults: defaults,
+            workspace_dir: None,
             run_id: "run".to_string(),
             inputs: HashMap::new(),
         }
@@ -6918,6 +6949,57 @@ mod tests {
         let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
         assert_eq!(agent.status, "succeeded", "{:?}", agent.error);
         assert_eq!(agent.stdout.trim(), repo.to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn folderless_steps_run_in_the_workflow_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root_path.to_string_lossy(),
+        )
+        .unwrap();
+        let mut profile = echo_profile("pwd-workspace");
+        profile.adapter = crate::agents::AdapterKind::Custom;
+        profile.executable = Some("sh".into());
+        profile.extra_args = vec!["-c".into(), "pwd".into()];
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.name = "Launch kit / spring".into();
+        run_to_end(&db, &engine, wf, "agent-workspace").await;
+        let rows = db.list_node_results("agent-workspace").unwrap();
+        let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(agent.status, "succeeded", "{:?}", agent.error);
+        let expected = root_path.join("Launch kit - spring");
+        assert!(expected.is_dir());
+        assert_eq!(agent.stdout.trim(), expected.to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn dry_runs_create_no_workspace_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root.path().to_string_lossy(),
+        )
+        .unwrap();
+        let profile = echo_profile("dry-workspace");
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        let options = RunOptions {
+            dry_run: true,
+            ..RunOptions::default()
+        };
+        engine
+            .start_run_with_options(&wf, "dry-ws", &empty_inputs(), &options)
+            .expect("start");
+        engine.execute(wf, "dry-ws".to_string()).await;
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
     fn agent_workflow(profile_id: &str) -> Workflow {

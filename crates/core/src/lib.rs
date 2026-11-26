@@ -18,6 +18,7 @@ pub mod github;
 pub mod mcp;
 pub mod memory;
 pub mod notify;
+pub mod outputs;
 pub mod permissions;
 pub mod process;
 pub mod project_detect;
@@ -34,6 +35,7 @@ pub mod trust;
 pub mod updates;
 pub mod usage;
 pub mod workflow;
+pub mod workspace;
 
 pub use agents::AgentProfile;
 pub use db::SqliteDb;

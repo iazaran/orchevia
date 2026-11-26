@@ -1385,6 +1385,12 @@ pub(crate) fn generator_command(
             return Err("Repository directory no longer exists.".into());
         }
         spec.working_dir = Some(dir.into());
+        if profile.adapter == crate::agents::AdapterKind::Codex
+            && !crate::git::inside_repository(std::path::Path::new(dir))
+            && spec.args.first().is_some_and(|arg| arg == "exec")
+        {
+            spec.args.insert(1, "--skip-git-repo-check".into());
+        }
     }
     Ok(spec)
 }

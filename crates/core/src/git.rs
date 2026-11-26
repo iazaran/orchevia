@@ -72,6 +72,12 @@ fn git(dir: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
 }
 
 /// Find the repository root for `dir` (empty when not in a repo).
+/// Whether `dir` or a folder above it holds a `.git` entry (a repository or
+/// a worktree). Reads the file system only; no Git process runs.
+pub fn inside_repository(dir: &std::path::Path) -> bool {
+    dir.ancestors().any(|folder| folder.join(".git").exists())
+}
+
 pub fn discover_root(dir: &str) -> Option<String> {
     git(dir, &["rev-parse", "--show-toplevel"], 10)
         .ok()
