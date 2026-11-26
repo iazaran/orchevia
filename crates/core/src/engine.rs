@@ -632,10 +632,20 @@ impl Engine {
             })
             .cloned()
             .collect();
+        // The recovery works in the failed run's folder, where the files of the
+        // steps it reuses already are; a run from before 0.4.0 recorded none
+        // and gets today's.
+        let workspace = if source.execution.options.dry_run {
+            None
+        } else {
+            source
+                .execution
+                .workspace
+                .clone()
+                .or_else(|| run_workspace(&self.db, &workflow))
+        };
         let execution = RunExecution {
-            // The recovery works in the failed run's folder, where the files
-            // of the steps it reuses already are.
-            workspace: source.execution.workspace.clone(),
+            workspace,
             options: source.execution.options.clone(),
             recovered_from: Some(source_id.into()),
             recovery_choices: choices.clone(),
@@ -667,7 +677,12 @@ impl Engine {
             },
         };
         let _starting = WORKSPACE_STARTS.lock().unwrap_or_else(|e| e.into_inner());
-        if execution.workspace.is_some() && !execution.options.dry_run {
+        // A repeated request returns its run (create_recovery_run), so it is
+        // never turned away by the run it already started.
+        if execution.workspace.is_some()
+            && !execution.options.dry_run
+            && !self.db.recovery_request_exists(request_id)?
+        {
             self.ensure_workspace_free(&workflow)?;
         }
         let _admitting = self.cancel.flags();
@@ -688,7 +703,7 @@ impl Engine {
             .any(|r| r.workflow_id == workflow.id && !r.execution.options.dry_run)
         {
             return Err(EngineError::Validation(format!(
-                "'{}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.",
+                "'{}' {WORKSPACE_BUSY}. Let it finish, or cancel it, before starting another, or give the workflow a project folder.",
                 workflow.name
             )));
         }
@@ -880,6 +895,15 @@ impl Engine {
             .collect();
         for (key, value) in inputs {
             merged.insert(key.clone(), value.clone());
+        }
+        // A value naming a choice is stored as that choice, so conditions
+        // and prompts never see stray spaces (" Formal " is "Formal").
+        for input in workflow.inputs.iter().filter(|i| !i.options.is_empty()) {
+            if let Some(value) = merged.get_mut(&input.name) {
+                if let Some(choice) = input.options.iter().find(|o| o.trim() == value.trim()) {
+                    *value = choice.trim().to_string();
+                }
+            }
         }
         let mut issues = validate_workflow(workflow);
         // Required inputs validate the effective value after caller overrides.
@@ -3041,6 +3065,11 @@ enum RunOutcome {
     /// Feedback needs the person before a checkpoint.
     FeedbackPaused(String),
 }
+
+/// Part of the message a start gets while another run of the workflow is
+/// open in its workspace folder; schedules and watchers wait for their next
+/// check instead of failing.
+pub const WORKSPACE_BUSY: &str = "already has a run open in its workspace folder";
 
 /// Serializes the one-open-run check with the insert that follows it.
 static WORKSPACE_STARTS: std::sync::Mutex<()> = std::sync::Mutex::new(());

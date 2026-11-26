@@ -1213,6 +1213,19 @@ impl SqliteDb {
 
     /// Persist recovery provenance and reusable visit data before dispatch.
     #[allow(clippy::too_many_arguments)]
+    /// Whether a recovery request id was already used (it then returns its run).
+    pub fn recovery_request_exists(&self, request_id: &str) -> DbResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".into()))?;
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM recovery_requests WHERE request_id=?1)",
+            params![request_id],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn create_recovery_run(
         &self,
         id: &str,

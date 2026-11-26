@@ -398,6 +398,12 @@ impl Scheduler {
                             defer(&mut schedule, "an update is installing");
                             self.record_schedule(&before, &schedule, false);
                         }
+                        Err(e) if e.contains(crate::engine::WORKSPACE_BUSY) => {
+                            // A run started by hand took the folder after the
+                            // overlap check: wait for it, as an overlap does.
+                            defer(&mut schedule, "a run is still open in its workspace folder");
+                            self.record_schedule(&before, &schedule, false);
+                        }
                         Err(e) => {
                             // No retry storm: this slot is spent; the next one
                             // tries again.
@@ -501,6 +507,14 @@ impl Scheduler {
                     if !detail.starts_with("quiet") {
                         notes.push(detail);
                     }
+                }
+                Err(e) if e.contains(crate::engine::WORKSPACE_BUSY) => {
+                    // The workflow's folder is busy: check again next time,
+                    // without an error.
+                    watcher.last_checked_at = Some(now);
+                    watcher.last_result =
+                        Some("waiting: a run is still open in its workspace folder".into());
+                    let _ = self.db.record_watcher_check(&before, &watcher);
                 }
                 Err(e) => {
                     // Back off: push next check out instead of hammering.
@@ -1755,6 +1769,45 @@ fi
     }
 
     use crate::schedule::{MissedPolicy, Schedule, ScheduleKind};
+
+    #[tokio::test]
+    async fn a_slot_waits_while_its_workspace_folder_is_busy() {
+        struct Busy;
+        impl RunStarter for Busy {
+            fn start_workflow_run(
+                &self,
+                _workflow_id: &str,
+                _inputs: &HashMap<String, String>,
+            ) -> Result<String, String> {
+                Err(format!(
+                    "validation failed: 'Due' {}. Let it finish.",
+                    crate::engine::WORKSPACE_BUSY
+                ))
+            }
+        }
+        let db = Arc::new(SqliteDb::open_in_memory().expect("db"));
+        let wf = sample_workflow();
+        db.upsert_workflow(&wf).expect("wf");
+        let slot = Utc::now();
+        db.upsert_schedule(&due_schedule("busy", &wf.id, slot))
+            .expect("schedule");
+        let refused: Arc<dyn RunStarter> = Arc::new(Busy);
+        Scheduler::new(Arc::clone(&db))
+            .tick_once(&refused, slot)
+            .await;
+        let saved = db.get_schedule("busy").expect("get").expect("exists");
+        // The slot is kept for the next check, not spent as a failure.
+        assert_eq!(saved.deferred_slot, Some(slot));
+        assert_eq!(
+            saved.last_status.as_deref(),
+            Some("deferred: a run is still open in its workspace folder")
+        );
+        assert!(db
+            .list_notifications(10, false)
+            .expect("notes")
+            .iter()
+            .all(|n| n.kind != "schedule-failed"));
+    }
 
     #[tokio::test]
     async fn a_slot_refused_while_an_update_installs_runs_after_the_restart() {

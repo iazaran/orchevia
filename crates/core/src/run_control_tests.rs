@@ -1007,3 +1007,90 @@ fn recovery_waits_for_an_open_run_in_the_same_workspace_folder() {
         execution.workspace
     );
 }
+
+#[test]
+fn recovering_an_older_run_still_waits_and_a_repeated_request_returns_its_run() {
+    let (db, engine, wf) = setup();
+    // A run from before 0.4.0 recorded no workspace folder.
+    db.create_run_with_workflow("old-source", &wf, &HashMap::new())
+        .unwrap();
+    for (id, status) in [("s", "succeeded"), ("a", "succeeded"), ("b", "failed")] {
+        db.record_node_result(crate::db::NewNodeResult::simple(
+            "old-source",
+            id,
+            status,
+            None,
+            None,
+        ))
+        .unwrap();
+    }
+    db.finish_run("old-source", RunStatus::Failed).unwrap();
+    db.create_run_with_workflow("old-open", &wf, &HashMap::new())
+        .unwrap();
+    let plan = engine.preview_recovery("old-source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    assert!(engine
+        .recover_run(
+            "old-source",
+            "old-child",
+            &choices,
+            &plan.fingerprint,
+            "old-1"
+        )
+        .is_err());
+    db.finish_run("old-open", RunStatus::Cancelled).unwrap();
+    let child = engine
+        .recover_run(
+            "old-source",
+            "old-child",
+            &choices,
+            &plan.fingerprint,
+            "old-2",
+        )
+        .unwrap();
+    assert!(db
+        .get_run(&child)
+        .unwrap()
+        .unwrap()
+        .execution
+        .workspace
+        .is_some());
+    // The child is open now; asking again with the same request returns it.
+    assert_eq!(
+        engine
+            .recover_run(
+                "old-source",
+                "old-child-2",
+                &choices,
+                &plan.fingerprint,
+                "old-2"
+            )
+            .unwrap(),
+        child
+    );
+}
+
+#[test]
+fn a_value_naming_a_choice_is_stored_as_that_choice() {
+    let (db, engine, mut wf) = setup();
+    wf.inputs.push(crate::workflow::WorkflowInput {
+        name: "tone".into(),
+        options: vec!["Friendly".into(), "Formal".into()],
+        ..Default::default()
+    });
+    db.upsert_workflow(&wf).unwrap();
+    let inputs = HashMap::from([("tone".to_string(), " Formal ".to_string())]);
+    engine.start_run(&wf, "tone-run", &inputs).unwrap();
+    assert_eq!(
+        db.get_run("tone-run")
+            .unwrap()
+            .unwrap()
+            .inputs
+            .get("tone")
+            .map(String::as_str),
+        Some("Formal")
+    );
+}

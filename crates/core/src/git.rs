@@ -75,7 +75,12 @@ fn git(dir: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
 /// Whether `dir` or a folder above it holds a `.git` entry (a repository or
 /// a worktree). Reads the file system only; no Git process runs.
 pub fn inside_repository(dir: &std::path::Path) -> bool {
-    dir.ancestors().any(|folder| folder.join(".git").exists())
+    // Where the folder really is: a link from inside a repository to a folder
+    // outside one starts Codex outside the repository.
+    let resolved = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    resolved
+        .ancestors()
+        .any(|folder| folder.join(".git").exists())
 }
 
 pub fn discover_root(dir: &str) -> Option<String> {
@@ -659,5 +664,17 @@ mod tests {
         // distinctive missing subdir guard instead).
         let missing = dir.path().join("nope").to_string_lossy().into_owned();
         assert!(discover_root(&missing).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_a_repository_is_outside_it() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = repo.path().join("drafts");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        assert!(inside_repository(repo.path()));
+        assert!(!inside_repository(&link));
     }
 }
