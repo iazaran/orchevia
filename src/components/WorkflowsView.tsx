@@ -137,8 +137,10 @@ export function WorkflowsView(): React.JSX.Element {
   // Home and the command palette ask for one thing when they open this view.
   const [intent] = useState(() => useAppStore.getState().pendingIntent);
   const [goal, setGoal] = useState(intent?.kind === 'generate' ? intent.goal : '');
-  const [genRepoDir, setGenRepoDir] = useState<string>(
-    () => readLocal('orchevia.genRepo.v1') ?? '',
+  // A goal from Home may not be about code: it starts without a repository,
+  // which the dialog can still add, rather than the last one used.
+  const [genRepoDir, setGenRepoDir] = useState<string>(() =>
+    intent?.kind === 'generate' ? '' : (readLocal('orchevia.genRepo.v1') ?? ''),
   );
   const [genBranch, setGenBranch] = useState('');
   const [detectingGenBranch, setDetectingGenBranch] = useState(false);
