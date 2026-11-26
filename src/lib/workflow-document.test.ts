@@ -237,6 +237,8 @@ it('rejects malformed typed config, operations, inputs, defaults and graph label
     { ...base, nodes: [{ key: 'a', type: 'agent', profileName: 2, config: {} }] },
     { ...base, defaults: { repoDir: 2 } },
     { ...base, inputs: [{ name: 'testCommand', required: 'yes' }] },
+    { ...base, inputs: [{ name: 'tone', options: 'Friendly' }] },
+    { ...base, inputs: [{ name: 'tone', multiline: 'yes' }] },
     { ...base, inputs: {} },
     {
       ...base,

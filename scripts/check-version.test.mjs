@@ -16,7 +16,7 @@ const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 function fixture(run) {
   const dir = mkdtempSync(join(tmpdir(), 'orchevia-version-'));
   try {
-    for (const path of ['scripts', 'src-tauri', 'crates/core'])
+    for (const path of ['scripts', 'src-tauri', 'crates/core', 'docs'])
       mkdirSync(join(dir, path), { recursive: true });
     for (const path of [
       'scripts/check-version.mjs',
@@ -27,6 +27,7 @@ function fixture(run) {
       'Cargo.lock',
       'pnpm-lock.yaml',
       'CHANGELOG.md',
+      'docs/index.html',
     ])
       cpSync(path, join(dir, path));
     run(dir, (tag) =>
@@ -54,6 +55,20 @@ test('version drift in an application manifest is rejected', () => {
     const config = JSON.parse(readFileSync(path, 'utf8'));
     config.version = '99.0.0';
     writeFileSync(path, JSON.stringify(config));
+    assert.notEqual(check().status, 0);
+  });
+});
+
+test("version drift in the website's structured data is rejected", () => {
+  fixture((dir, check) => {
+    const path = join(dir, 'docs/index.html');
+    writeFileSync(
+      path,
+      readFileSync(path, 'utf8').replace(
+        `"softwareVersion": "${version}"`,
+        '"softwareVersion": "0.3.2"',
+      ),
+    );
     assert.notEqual(check().status, 0);
   });
 });

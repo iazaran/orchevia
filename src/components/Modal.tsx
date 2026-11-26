@@ -16,6 +16,7 @@ export function Modal({
   maxWidth,
   style,
   role,
+  className,
   children,
 }: {
   label: string;
@@ -26,6 +27,8 @@ export function Modal({
   maxWidth?: number;
   style?: CSSProperties;
   role?: 'dialog' | 'alertdialog';
+  /** Extra class on the card, for dialogs with their own layout. */
+  className?: string;
   children: ReactNode;
 }): React.JSX.Element {
   const backdrop = useRef<HTMLDivElement>(null);
@@ -111,7 +114,7 @@ export function Modal({
       }}
     >
       <section
-        className="modal-card"
+        className={`modal-card${className === undefined ? '' : ` ${className}`}`}
         style={{ ...(maxWidth !== undefined ? { maxWidth } : {}), ...style }}
         onClick={(e) => {
           e.stopPropagation();

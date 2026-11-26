@@ -14,6 +14,7 @@ import {
   toScriptMode,
   type NodeConfig,
   type Workflow,
+  type WorkflowInput,
 } from '../lib/workflow';
 import { profileGrants } from '../lib/permissions';
 import { DirPicker } from './DirPicker';
@@ -24,6 +25,7 @@ import { Notice, useNoticeMessage } from './Notice';
 import { useAppStore } from '../store';
 import { errorMessage } from '../lib/errors';
 import { Segmented } from './Segmented';
+import { workspaceFolder } from '../lib/outputs';
 
 /** Kinds of step that can publish (the rest only route or wait). */
 const WORKING_KINDS = new Set(['command', 'agent', 'git', 'github', 'ticket', 'mcp']);
@@ -313,7 +315,24 @@ const GITHUB_OPS = [
   'prChecks',
   'createPr',
   'postComment',
+  'waitChecks',
+  'runWorkflow',
+  'issueDetails',
+  'listIssues',
+  'commentIssue',
 ] as const;
+
+/** What each GitHub operation does, under the operation picker. */
+const GITHUB_OP_HINTS: Partial<Record<(typeof GITHUB_OPS)[number], string>> = {
+  waitChecks:
+    'Waits until CI finishes and fails the step when a check fails, with the end of the failed logs as its output (route a failure edge to a fix step). PR number 0 uses the run’s prNumber input, else the checks on the folder’s current commit (after a push). Waits up to the step timeout, an hour by default.',
+  runWorkflow:
+    'Starts a GitHub Actions workflow that has a workflow_dispatch trigger (a build, a release, an app store upload), waits for it, and can download its artifacts into a folder of the repository. Fails when the run fails, with the failed logs as its output.',
+  issueDetails:
+    'Reads a GitHub issue. Later steps use {{ticket.key}}, {{ticket.title}}, {{ticket.description}} and {{ticket.url}}, as with a Jira ticket. Number 0 uses the run’s issueNumber input.',
+  listIssues: 'Lists issues (open by default), optionally with one label.',
+  commentIssue: 'Posts a comment on an issue. Number 0 uses the run’s issueNumber input.',
+};
 
 export function GitHubEditor({
   workflow,
@@ -350,6 +369,9 @@ export function GitHubEditor({
             </option>
           ))}
         </select>
+        {GITHUB_OP_HINTS[op.op] !== undefined && (
+          <span className="field-hint">{GITHUB_OP_HINTS[op.op]}</span>
+        )}
       </div>
       <DirPicker
         id={`gh-dir-${nodeId}`}
@@ -426,6 +448,116 @@ export function GitHubEditor({
           </label>
         </>
       )}
+      {(op.op === 'waitChecks' || op.op === 'issueDetails') && (
+        <GitTextField
+          label={
+            op.op === 'waitChecks'
+              ? 'PR number (0 = input or current commit)'
+              : 'Issue number'
+          }
+          value={String(op.number ?? 0)}
+          placeholder="0"
+          onChange={(v) => {
+            const number = v.trim() === '' ? 0 : wholeNumber(v);
+            if (number !== null) setOp({ ...op, number });
+          }}
+        />
+      )}
+      {op.op === 'listIssues' && (
+        <>
+          <GitTextField
+            label="State (open, closed or all)"
+            value={op.state ?? ''}
+            placeholder="open"
+            onChange={(state) => {
+              const next = { ...op };
+              if (state.trim() === '') delete next.state;
+              else next.state = state.trim();
+              setOp(next);
+            }}
+          />
+          <GitTextField
+            label="Label (optional)"
+            value={op.label ?? ''}
+            placeholder="bug"
+            onChange={(label) => {
+              const next = { ...op };
+              if (label.trim() === '') delete next.label;
+              else next.label = label;
+              setOp(next);
+            }}
+          />
+        </>
+      )}
+      {op.op === 'runWorkflow' && (
+        <>
+          <GitTextField
+            label="Workflow file or name"
+            value={op.workflow}
+            placeholder="build.yml"
+            onChange={(workflow) => setOp({ ...op, workflow })}
+          />
+          <GitTextField
+            label="Branch or tag (blank = workflow default, else the repository's)"
+            value={op.ref ?? ''}
+            placeholder="main"
+            onChange={(ref) => {
+              const next = { ...op };
+              if (ref.trim() === '') delete next.ref;
+              else next.ref = ref;
+              setOp(next);
+            }}
+          />
+          <div className="field">
+            <label className="field-label" htmlFor={`gh-wf-inputs-${nodeId}`}>
+              Workflow inputs (one key=value per line; values may use {'{{…}}'})
+            </label>
+            <KeyValueTextarea
+              id={`gh-wf-inputs-${nodeId}`}
+              className="textarea"
+              rows={3}
+              value={op.inputs ?? {}}
+              onChange={(inputs) => {
+                const next = { ...op };
+                if (Object.keys(inputs).length === 0) delete next.inputs;
+                else next.inputs = inputs;
+                setOp(next);
+              }}
+            />
+          </div>
+          <GitTextField
+            label="Download artifacts to (optional folder in the repository)"
+            value={op.artifactsDir ?? ''}
+            placeholder="build-artifacts"
+            onChange={(dir) => {
+              const next = { ...op };
+              if (dir.trim() === '') delete next.artifactsDir;
+              else next.artifactsDir = dir;
+              setOp(next);
+            }}
+          />
+        </>
+      )}
+      {op.op === 'commentIssue' && (
+        <>
+          <GitTextField
+            label="Issue number"
+            value={String(op.number)}
+            placeholder="7"
+            onChange={(v) => {
+              const number = v.trim() === '' ? 0 : wholeNumber(v);
+              if (number !== null) setOp({ ...op, number });
+            }}
+          />
+          <GitTextField
+            label="Body (explicit action)"
+            value={op.body}
+            placeholder="Fixed in …"
+            onChange={(body) => setOp({ ...op, body })}
+            textarea
+          />
+        </>
+      )}
       {op.op === 'postComment' && (
         <>
           <GitTextField
@@ -449,7 +581,7 @@ export function GitHubEditor({
       )}
       <span className="field-hint">
         Uses your <code>gh</code> auth — Orchevia never sees tokens. Remote writes (create
-        PR, comment) only happen when this node runs.
+        PR, comment, run a workflow) only happen when this node runs.
       </span>
     </>
   );
@@ -473,6 +605,16 @@ function defaultGitHubOp(
       return { op: 'createPr', title: '', body: '', base: 'main', head: '', draft: true };
     case 'postComment':
       return { op: 'postComment', number: 0, body: '' };
+    case 'waitChecks':
+      return { op: 'waitChecks', number: 0 };
+    case 'runWorkflow':
+      return { op: 'runWorkflow', workflow: '' };
+    case 'issueDetails':
+      return { op: 'issueDetails', number: 0 };
+    case 'listIssues':
+      return { op: 'listIssues', state: 'open' };
+    case 'commentIssue':
+      return { op: 'commentIssue', number: 0, body: '' };
   }
 }
 
@@ -496,7 +638,7 @@ export function TicketEditor({
         <input
           id={`ticket-key-${nodeId}`}
           className="input"
-          placeholder="DEV-1234 or {{input.ticket}}"
+          placeholder="DEV-1234, sc-123 or {{input.ticket}}"
           value={node.config.ticketKey ?? ''}
           onChange={(e) => {
             patchNode({ ...node.config, ticketKey: e.target.value }, node.label);
@@ -505,7 +647,7 @@ export function TicketEditor({
       </div>
       <div className="field">
         <label className="field-label" htmlFor={`ticket-server-${nodeId}`}>
-          Jira MCP server
+          Ticket server (Jira or Shortcut)
         </label>
         <select
           id={`ticket-server-${nodeId}`}
@@ -523,7 +665,9 @@ export function TicketEditor({
           ))}
         </select>
         <span className="field-hint">
-          Ticket fields become{' '}
+          Reads a Jira issue (<code>jira_get_issue</code>) or a Shortcut story (
+          <code>stories-get-by-id</code>: a number, sc-123 or a link), whichever the
+          server has. Ticket fields become{' '}
           <code>ticket.key/title/description/acceptanceCriteria</code>. Ticket text is
           untrusted input — passed to agents as data, never executed.
         </span>
@@ -883,6 +1027,7 @@ export function NodeInspector(): React.JSX.Element | null {
   const profiles = useAppStore((s) => s.profiles);
   const appDefault = useAppStore((s) => s.agentPermissionDefault);
   const abilities = useAppStore((s) => s.agentAbilities);
+  const workspaceRoot = useAppStore((s) => s.workspaceRoot);
   const [preview, setPreview] = useState<string | null>(null);
   const [agentPreview, setAgentPreview] = useState<string | null>(null);
   const [detectingBranch, setDetectingBranch] = useState(false);
@@ -895,7 +1040,7 @@ export function NodeInspector(): React.JSX.Element | null {
     if (workflow === null) return;
     const dir = repoDir.trim();
     if (dir === '') {
-      setBranchDetectMsg('Set the repository directory first.');
+      setBranchDetectMsg('Set the project folder to a repository first.');
       return;
     }
     setDetectingBranch(true);
@@ -1021,22 +1166,38 @@ export function NodeInspector(): React.JSX.Element | null {
           the bottom-left message stack. If saving fails, use Retry save in the toolbar.
         </p>
         <div className="field">
-          <span className="field-label">Repository defaults</span>
+          <span className="field-label">Project folder</span>
           <span className="field-hint" style={{ marginBottom: 8 }}>
-            Set once per workflow: Git/GitHub nodes without their own directory or branch
-            use these. Node settings always win when set.
+            A repository for code work, or any folder for documents and media. Steps
+            without a folder of their own run here; a step’s own folder always wins.
           </span>
           <DirPicker
             id="wf-default-repo"
-            label="Repository directory"
+            label="Project or repository folder"
             value={workflow.defaults?.repoDir ?? ''}
-            placeholder="/path/to/repo (optional)"
+            placeholder="/path/to/project (optional)"
             onChange={(v) => {
               updateActiveWorkflow(
                 setWorkflowDefaults(workflow, v, workflow.defaults?.branch ?? ''),
               );
             }}
           />
+          {(workflow.defaults?.repoDir ?? '').trim() === '' && (
+            <span className="field-hint" data-testid="workspace-hint">
+              Blank: commands and agents run in this workflow’s workspace folder
+              {workspaceRoot === null ? (
+                '.'
+              ) : (
+                <>
+                  ,{' '}
+                  <code>
+                    {workspaceFolder(workspaceRoot, workflow.name, workflow.id)}
+                  </code>{' '}
+                  (created on the first run). Git and GitHub steps need a repository.
+                </>
+              )}
+            </span>
+          )}
 
           {branchDetectMsg !== null && (
             <Notice variant="warn" eventId={branchDetectMsgEvent}>
@@ -1106,54 +1267,149 @@ export function NodeInspector(): React.JSX.Element | null {
           <span className="field-label">Workflow inputs (as {'{{input.name}}'})</span>
           {/* Rows go by position: a name changes while it is typed and two
               rows may briefly share one. */}
-          {(workflow.inputs ?? []).map((input, index) => (
-            <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-              <input
-                className="input"
-                value={input.name}
-                aria-label="Input name"
-                onChange={(e) => {
-                  updateActiveWorkflow({
-                    ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x, i) =>
-                      i === index ? { ...x, name: e.target.value } : x,
-                    ),
-                  });
-                }}
-              />
-              <input
-                className="input"
-                value={input.default ?? ''}
-                placeholder="default"
-                aria-label="Input default"
-                onChange={(e) => {
-                  updateActiveWorkflow({
-                    ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x, i) =>
-                      i === index
-                        ? {
-                            ...x,
-                            default: e.target.value === '' ? undefined : e.target.value,
-                          }
-                        : x,
-                    ),
-                  });
-                }}
-              />
-              <button
-                className="btn btn-ghost"
-                aria-label={`Remove input ${input.name}`}
-                onClick={() => {
-                  updateActiveWorkflow({
-                    ...workflow,
-                    inputs: (workflow.inputs ?? []).filter((_, i) => i !== index),
-                  });
-                }}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+          {(workflow.inputs ?? []).map((input, index) => {
+            const setInput = (next: WorkflowInput): void => {
+              updateActiveWorkflow({
+                ...workflow,
+                inputs: (workflow.inputs ?? []).map((x, i) => (i === index ? next : x)),
+              });
+            };
+            const without = (
+              key:
+                | 'default'
+                | 'label'
+                | 'description'
+                | 'required'
+                | 'multiline'
+                | 'options',
+            ): WorkflowInput =>
+              Object.fromEntries(
+                Object.entries(input).filter(([k]) => k !== key),
+              ) as unknown as WorkflowInput;
+            const text = (key: 'label' | 'description', value: string): WorkflowInput =>
+              value.trim() === '' ? without(key) : { ...input, [key]: value };
+            return (
+              <div key={index} className="input-row">
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    className="input"
+                    value={input.name}
+                    aria-label="Input name"
+                    onChange={(e) => {
+                      setInput({ ...input, name: e.target.value });
+                    }}
+                  />
+                  <input
+                    className="input"
+                    value={input.default ?? ''}
+                    placeholder="default"
+                    aria-label="Input default"
+                    onChange={(e) => {
+                      setInput(
+                        e.target.value === ''
+                          ? without('default')
+                          : { ...input, default: e.target.value },
+                      );
+                    }}
+                  />
+                  <button
+                    className="btn btn-ghost"
+                    aria-label={`Remove input ${input.name}`}
+                    onClick={() => {
+                      updateActiveWorkflow({
+                        ...workflow,
+                        inputs: (workflow.inputs ?? []).filter((_, i) => i !== index),
+                      });
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <details className="input-details">
+                  <summary className="field-hint">
+                    Details
+                    {input.options !== undefined && input.options.length > 0
+                      ? ` · ${String(input.options.length)} choices`
+                      : ''}
+                    {input.multiline === true ? ' · long text' : ''}
+                    {input.required === true ? ' · required' : ''}
+                  </summary>
+                  <label className="field-label" htmlFor={`input-label-${String(index)}`}>
+                    Label in the start form
+                  </label>
+                  <input
+                    id={`input-label-${String(index)}`}
+                    className="input"
+                    value={input.label ?? ''}
+                    placeholder={input.name}
+                    onChange={(e) => {
+                      setInput(text('label', e.target.value));
+                    }}
+                  />
+                  <label className="field-label" htmlFor={`input-help-${String(index)}`}>
+                    Help text
+                  </label>
+                  <input
+                    id={`input-help-${String(index)}`}
+                    className="input"
+                    value={input.description ?? ''}
+                    placeholder="What to enter, with an example"
+                    onChange={(e) => {
+                      setInput(text('description', e.target.value));
+                    }}
+                  />
+                  <label className="field-hint" style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={input.required === true}
+                      onChange={(e) => {
+                        setInput(
+                          e.target.checked
+                            ? { ...input, required: true }
+                            : without('required'),
+                        );
+                      }}
+                    />
+                    Required
+                  </label>
+                  <label className="field-hint" style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={input.multiline === true}
+                      disabled={(input.options ?? []).length > 0}
+                      onChange={(e) => {
+                        setInput(
+                          e.target.checked
+                            ? { ...input, multiline: true }
+                            : without('multiline'),
+                        );
+                      }}
+                    />
+                    Long text (a brief, notes, a list)
+                  </label>
+                  <label
+                    className="field-label"
+                    htmlFor={`input-options-${String(index)}`}
+                  >
+                    Choices (one per line; blank allows any value)
+                  </label>
+                  <LinesTextarea
+                    id={`input-options-${String(index)}`}
+                    className="textarea"
+                    rows={3}
+                    value={input.options ?? []}
+                    onChange={(lines) => {
+                      setInput(
+                        lines.length === 0
+                          ? without('options')
+                          : { ...input, options: lines },
+                      );
+                    }}
+                  />
+                </details>
+              </div>
+            );
+          })}
           <button
             className="btn btn-ghost"
             onClick={() => {
@@ -1170,7 +1426,8 @@ export function NodeInspector(): React.JSX.Element | null {
             + Add input
           </button>
           <span className="field-hint">
-            Required inputs without defaults must be supplied at ▶ Run time.
+            The start form asks for these at ▶ Run time: a choice list for inputs with
+            choices, a text area for long text, and your help text under each field.
           </span>
         </div>
       </aside>
@@ -1384,7 +1641,12 @@ export function NodeInspector(): React.JSX.Element | null {
             id="node-cwd"
             label="Working directory (optional)"
             value={node.config.workingDir ?? ''}
-            placeholder={workflow.defaults?.repoDir ?? '/path/to/project'}
+            placeholder={
+              workflow.defaults?.repoDir ??
+              (workspaceRoot === null
+                ? '/path/to/project'
+                : workspaceFolder(workspaceRoot, workflow.name, workflow.id))
+            }
             onChange={(v) => {
               const value = v.trim();
               const config = { ...node.config };
@@ -1741,7 +2003,12 @@ export function NodeInspector(): React.JSX.Element | null {
               id="node-agent-cwd"
               label="Working directory (optional, overrides profile)"
               value={node.config.workingDir ?? ''}
-              placeholder={workflow.defaults?.repoDir ?? '/path/to/project'}
+              placeholder={
+                workflow.defaults?.repoDir ??
+                (workspaceRoot === null
+                  ? '/path/to/project'
+                  : workspaceFolder(workspaceRoot, workflow.name, workflow.id))
+              }
               onChange={(v) => {
                 const value = v.trim();
                 const config = { ...node.config };
@@ -1754,8 +2021,9 @@ export function NodeInspector(): React.JSX.Element | null {
               }}
             />
             <span className="field-hint">
-              Must exist before execution. Repository changes happen here. Blank uses the
-              workflow’s repository directory, unless the profile sets its own folder.
+              Must exist before execution. Changes happen here. Blank uses the workflow’s
+              project folder, else its workspace folder, unless the profile sets its own
+              folder.
             </span>
           </div>
           <div className="field">

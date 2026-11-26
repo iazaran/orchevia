@@ -17,6 +17,7 @@ import {
   type UsagePause,
 } from '../lib/run-controls';
 import {
+  inputChoiceProblem,
   issueNodeLabel,
   validateWorkflowLimits,
   type ValidationIssue,
@@ -104,9 +105,12 @@ export function StartRunDialog({
         setSetupIssues(blocking);
         return;
       }
-      for (const input of workflow.inputs ?? [])
+      for (const input of workflow.inputs ?? []) {
         if (input.required && !inputs[input.name]?.trim())
           throw new Error(`Input '${input.name}' is required.`);
+        const choice = inputChoiceProblem(input, inputs[input.name] ?? '');
+        if (choice !== null) throw new Error(choice);
+      }
       let options: RunOptions;
       if (dryRun) {
         const value: unknown = JSON.parse(fixtures);
@@ -158,47 +162,105 @@ export function StartRunDialog({
           missing fixtures fail. This tests your scenario, not the real tools.
         </p>
       )}
+      {(workflow.inputs ?? []).length > 0 && (
+        <p className="field-hint start-run-intro">
+          {dryRun
+            ? 'Values for this dry run:'
+            : `What ${workflow.name.trim() === '' ? 'this workflow' : `“${workflow.name}”`} needs for this run:`}
+        </p>
+      )}
       {(workflow.inputs ?? []).map((input) => {
         const value = inputs[input.name] ?? input.default ?? '';
-        const isExpanded = expanded[input.name] === true || value.length > 80;
+        const id = `start-run-input-${input.name}`;
+        const hintId = `${id}-hint`;
+        const options = input.options ?? [];
+        const isExpanded =
+          input.multiline === true || expanded[input.name] === true || value.length > 80;
+        const described =
+          input.description !== undefined && input.description.trim() !== ''
+            ? { 'aria-describedby': hintId }
+            : {};
         return (
           <div className="field" key={input.name}>
-            <label className="field-label" htmlFor={`start-run-input-${input.name}`}>
-              {input.label ?? input.name}
-              {input.required ? ' (required)' : ''}
-            </label>
-            {isExpanded ? (
+            <div className="field-label-row">
+              <label className="field-label" htmlFor={id}>
+                {input.label ?? input.name}
+                {input.required ? ' (required)' : ''}
+              </label>
+              {options.length === 0 && input.multiline !== true && (
+                <button
+                  className="btn btn-ghost btn-inline"
+                  aria-expanded={isExpanded}
+                  aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${input.label ?? input.name}`}
+                  disabled={busy}
+                  title={
+                    isExpanded ? 'Collapse to a single line' : 'Expand for long text'
+                  }
+                  onClick={() => {
+                    setExpanded((current) => ({ ...current, [input.name]: !isExpanded }));
+                  }}
+                >
+                  {isExpanded ? 'Collapse ▲' : 'Expand ▼'}
+                </button>
+              )}
+            </div>
+            {options.length > 0 ? (
+              <select
+                id={id}
+                className="input"
+                // A padded default shows as the choice it names.
+                value={
+                  value.trim() === ''
+                    ? ''
+                    : (options.find((o) => o.trim() === value.trim())?.trim() ?? value)
+                }
+                disabled={busy}
+                onChange={(e) => setInput(input.name, e.target.value)}
+                {...described}
+              >
+                {value.trim() === '' && input.required === true && (
+                  <option value="" disabled>
+                    Choose…
+                  </option>
+                )}
+                {input.required !== true && <option value="">(none)</option>}
+                {value.trim() !== '' &&
+                  !options.some((o) => o.trim() === value.trim()) && (
+                    <option value={value}>{value} (not a choice)</option>
+                  )}
+                {options.map((option) => (
+                  <option key={option} value={option.trim()}>
+                    {option.trim()}
+                  </option>
+                ))}
+              </select>
+            ) : isExpanded ? (
               <textarea
-                id={`start-run-input-${input.name}`}
+                id={id}
                 className="textarea"
-                rows={4}
+                rows={input.multiline === true ? 6 : 4}
                 value={value}
                 placeholder={input.default ?? ''}
                 disabled={busy}
                 onChange={(e) => setInput(input.name, e.target.value)}
+                {...described}
               />
             ) : (
               <input
-                id={`start-run-input-${input.name}`}
+                id={id}
                 className="input"
                 value={value}
                 placeholder={input.default ?? ''}
                 disabled={busy}
                 onChange={(e) => setInput(input.name, e.target.value)}
+                {...described}
               />
             )}
-            <button
-              className="btn btn-ghost"
-              style={{ alignSelf: 'flex-start', padding: '2px 8px', fontSize: 12 }}
-              aria-expanded={isExpanded}
-              disabled={busy}
-              title={isExpanded ? 'Collapse to a single line' : 'Expand for long text'}
-              onClick={() => {
-                setExpanded((current) => ({ ...current, [input.name]: !isExpanded }));
-              }}
-            >
-              {isExpanded ? 'Collapse ▲' : 'Expand ▼'}
-            </button>
+            {input.description !== undefined && input.description.trim() !== '' && (
+              <span className="field-hint" id={hintId}>
+                {input.description}
+              </span>
+            )}
           </div>
         );
       })}
@@ -222,7 +284,7 @@ export function StartRunDialog({
           </p>
         </div>
       ) : (
-        <details className="field" open={(workflow.inputs ?? []).length === 0}>
+        <details className="field start-run-limits">
           <summary className="field-label">
             Limits for this run (optional override)
           </summary>

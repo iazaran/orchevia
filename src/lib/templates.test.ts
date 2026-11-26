@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
@@ -20,9 +20,9 @@ it('creates independent workflow clones on repeated template use', () => {
   expect(first.nodes.map((n) => n.id)).not.toEqual(second.nodes.map((n) => n.id));
 });
 
-it('mirrors thirteen portable templates, required commands and role setup', () => {
+it('mirrors twenty-one portable templates, required commands and role setup', () => {
   const templates = builtinTemplates();
-  expect(templates).toHaveLength(13);
+  expect(templates).toHaveLength(21);
   for (const template of templates) {
     const roles = Object.fromEntries(
       template.workflow.nodes.flatMap((n) =>
@@ -215,11 +215,14 @@ it('ships bounded handoffs and implementation sessions in portable built-ins', (
       (n) => n.config.contextRefs?.length,
     ))
       // Reviewers fed a whole PR or branch diff get a larger handoff, and
-      // research steps read a whole page or search result.
+      // steps reading an MCP result get a whole page or search result.
       expect(node.config.contextMaxChars).toBe(
         node.config.contextRefs?.includes('diff') === true
           ? 48000
-          : template.category === 'research' || template.category === 'integration'
+          : (node.config.contextRefs ?? []).some(
+                (ref) =>
+                  template.workflow.nodes.find((n) => n.id === ref)?.type === 'mcp',
+              )
             ? 20000
             : 12000,
       );
@@ -350,4 +353,44 @@ it('ships MCP templates that need a server but no repository', () => {
     expect(agent?.config.requiredTools ?? []).toEqual([]);
     expect(agent?.config.prompt).toMatch(/Do not edit any files/);
   }
+});
+
+it('runs a content template in the browser preview to the files it writes', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = await backend.saveAgentProfile(createDefaultProfile('claude'));
+  const blog = builtinTemplates().find((t) => t.id === 'blog-post')!;
+  const roles = Object.fromEntries(
+    ['planning', 'implementation', 'deepReview'].map((role) => [role, profile.id]),
+  );
+  const { workflow } = instantiateTemplateLocal(blog, roles);
+  await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow(workflow.id, { topic: 'Weekly reports' });
+  // The mock editor reports nothing, so the loop ends and the approval waits.
+  await vi.waitFor(
+    async () => expect((await backend.getRun(runId))?.status).toBe('paused'),
+    { timeout: 4000 },
+  );
+  await backend.approveRun(runId, true);
+  await vi.waitFor(
+    async () => expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+    { timeout: 4000 },
+  );
+  const files = await backend.listRunFiles(runId);
+  expect(files.files.map((f) => f.relPath).sort()).toEqual([
+    'outline.md',
+    'post.md',
+    'social-posts.md',
+  ]);
+  expect(files.folders).toEqual([
+    `~/Documents/Orchevia/Blog Post from a Brief (${workflow.id
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(-6)
+      .toLowerCase()})`,
+  ]);
+  const revise = workflow.nodes.find((n) => n.label === 'Revise the draft')!;
+  const rows = await backend.getRunResults(runId);
+  expect(rows.filter((r) => r.nodeId === revise.id).map((r) => r.status)).toEqual([
+    'skipped',
+  ]);
 });

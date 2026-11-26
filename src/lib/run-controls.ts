@@ -64,6 +64,8 @@ export interface RunExecution {
   usagePause?: UsagePause;
   /** Feedback cutoff, correction rounds and a feedback pause. */
   feedback?: FeedbackState;
+  /** The workspace folder recorded when the run started (v0.4.0). */
+  workspace?: string;
 }
 export interface RecoveryNode {
   nodeId: string;

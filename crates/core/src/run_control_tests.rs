@@ -609,7 +609,7 @@ async fn recovery_rejects_reuse_of_failed_and_data_dependent_outputs() {
 
 #[test]
 fn run_options_reject_absent_null_zero_negative_and_out_of_range_usage_limits() {
-    let (_, engine, wf) = setup();
+    let (db, engine, wf) = setup();
     // Zero, negative (via serde f64 for spend; u32 rejects negative at parse),
     // non-finite and out-of-range values are all rejected.
     for value in [
@@ -665,6 +665,12 @@ fn run_options_reject_absent_null_zero_negative_and_out_of_range_usage_limits() 
                 .is_ok(),
             "{value}"
         );
+        // One open run per workspace folder: close this one before the next.
+        db.finish_run(
+            &format!("valid-usage-{index}"),
+            crate::db::RunStatus::Cancelled,
+        )
+        .unwrap();
     }
 }
 
@@ -952,5 +958,139 @@ async fn recovery_waits_while_an_update_holds_admission() {
             .recover_run("source", "after", &choices, &plan.fingerprint, "request")
             .unwrap(),
         "after"
+    );
+}
+
+#[test]
+fn recovery_waits_for_an_open_run_in_the_same_workspace_folder() {
+    let (db, engine, wf) = setup();
+    let execution = crate::run_controls::RunExecution {
+        workspace: Some("/tmp/orchevia-recovery-workspace".into()),
+        ..crate::run_controls::RunExecution::default()
+    };
+    db.create_run_with_execution("ws-source", &wf, &HashMap::new(), &execution)
+        .unwrap();
+    for (id, status) in [("s", "succeeded"), ("a", "succeeded"), ("b", "failed")] {
+        db.record_node_result(crate::db::NewNodeResult::simple(
+            "ws-source",
+            id,
+            status,
+            None,
+            None,
+        ))
+        .unwrap();
+    }
+    db.finish_run("ws-source", RunStatus::Failed).unwrap();
+    // Another run of the workflow is open in the same folder.
+    db.create_run_with_execution("ws-open", &wf, &HashMap::new(), &execution)
+        .unwrap();
+    let plan = engine.preview_recovery("ws-source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    let err = engine
+        .recover_run("ws-source", "ws-child", &choices, &plan.fingerprint, "ws-1")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("already has a run open in its workspace folder"),
+        "{err}"
+    );
+    db.finish_run("ws-open", RunStatus::Cancelled).unwrap();
+    engine
+        .recover_run("ws-source", "ws-child", &choices, &plan.fingerprint, "ws-2")
+        .unwrap();
+    // The recovery works where the failed run left its files.
+    assert_eq!(
+        db.get_run("ws-child").unwrap().unwrap().execution.workspace,
+        execution.workspace
+    );
+}
+
+#[test]
+fn recovering_an_older_run_still_waits_and_a_repeated_request_returns_its_run() {
+    let (db, engine, wf) = setup();
+    // A run from before 0.4.0 recorded no workspace folder.
+    db.create_run_with_workflow("old-source", &wf, &HashMap::new())
+        .unwrap();
+    for (id, status) in [("s", "succeeded"), ("a", "succeeded"), ("b", "failed")] {
+        db.record_node_result(crate::db::NewNodeResult::simple(
+            "old-source",
+            id,
+            status,
+            None,
+            None,
+        ))
+        .unwrap();
+    }
+    db.finish_run("old-source", RunStatus::Failed).unwrap();
+    db.create_run_with_workflow("old-open", &wf, &HashMap::new())
+        .unwrap();
+    let plan = engine.preview_recovery("old-source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    assert!(engine
+        .recover_run(
+            "old-source",
+            "old-child",
+            &choices,
+            &plan.fingerprint,
+            "old-1"
+        )
+        .is_err());
+    db.finish_run("old-open", RunStatus::Cancelled).unwrap();
+    let child = engine
+        .recover_run(
+            "old-source",
+            "old-child",
+            &choices,
+            &plan.fingerprint,
+            "old-2",
+        )
+        .unwrap();
+    assert!(db
+        .get_run(&child)
+        .unwrap()
+        .unwrap()
+        .execution
+        .workspace
+        .is_some());
+    // The child is open now; asking again with the same request returns it.
+    assert_eq!(
+        engine
+            .recover_run(
+                "old-source",
+                "old-child-2",
+                &choices,
+                &plan.fingerprint,
+                "old-2"
+            )
+            .unwrap(),
+        child
+    );
+}
+
+#[test]
+fn a_value_naming_a_choice_is_stored_as_that_choice() {
+    let (db, engine, mut wf) = setup();
+    wf.inputs.push(crate::workflow::WorkflowInput {
+        name: "tone".into(),
+        options: vec!["Friendly".into(), "Formal".into()],
+        ..Default::default()
+    });
+    db.upsert_workflow(&wf).unwrap();
+    let inputs = HashMap::from([("tone".to_string(), " Formal ".to_string())]);
+    engine.start_run(&wf, "tone-run", &inputs).unwrap();
+    assert_eq!(
+        db.get_run("tone-run")
+            .unwrap()
+            .unwrap()
+            .inputs
+            .get("tone")
+            .map(String::as_str),
+        Some("Formal")
     );
 }

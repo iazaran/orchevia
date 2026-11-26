@@ -210,17 +210,40 @@ function configShape(value: unknown, raw = false): void {
         'prChecks',
         'createPr',
         'postComment',
+        'waitChecks',
+        'runWorkflow',
+        'issueDetails',
+        'listIssues',
+        'commentIssue',
       ].includes(String(op.op))
     )
       throw new Error('Invalid GitHub operation.');
-    if (['prDetails', 'prFiles', 'prChecks', 'postComment'].includes(String(op.op)))
+    if (
+      [
+        'prDetails',
+        'prFiles',
+        'prChecks',
+        'postComment',
+        'issueDetails',
+        'commentIssue',
+      ].includes(String(op.op))
+    )
       uintField(op, 'number', true);
+    if (op.op === 'waitChecks') uintField(op, 'number');
     if (op.op === 'createPr')
       for (const key of ['title', 'base', 'head']) stringField(op, key, true);
     stringField(op, 'state');
+    stringField(op, 'label');
     if (op.body === null) throw new Error('Invalid body: expected a string.');
-    stringField(op, 'body', op.op === 'postComment');
+    stringField(op, 'body', op.op === 'postComment' || op.op === 'commentIssue');
     boolField(op, 'draft');
+    stringField(op, 'workflow', op.op === 'runWorkflow');
+    stringField(op, 'ref');
+    stringField(op, 'artifactsDir');
+    if (op.inputs !== undefined)
+      for (const value of Object.values(objectShape(op.inputs, 'workflow inputs')))
+        if (typeof value !== 'string')
+          throw new Error('Invalid workflow input: expected a string.');
   }
   if (config.mcpArgs !== undefined)
     for (const arg of Object.values(objectShape(config.mcpArgs, 'mcpArgs')))
@@ -260,6 +283,9 @@ function workflowFieldsShape(value: Record<string, unknown>): void {
       stringField(item, 'label');
       stringField(item, 'default');
       boolField(item, 'required');
+      stringField(item, 'description');
+      boolField(item, 'multiline');
+      stringsField(item, 'options');
     }
   }
 }

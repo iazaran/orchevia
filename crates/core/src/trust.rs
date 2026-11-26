@@ -86,7 +86,12 @@ pub fn workflow_risks(workflow: &Workflow) -> BTreeSet<RiskCategory> {
             NodeKind::GitHub => {
                 use crate::workflow::GitHubOp as Op;
                 match node.config.github_op.as_ref() {
-                    Some(Op::CreatePr { .. } | Op::PostComment { .. }) => {
+                    Some(
+                        Op::CreatePr { .. }
+                        | Op::PostComment { .. }
+                        | Op::CommentIssue { .. }
+                        | Op::RunWorkflow { .. },
+                    ) => {
                         risks.insert(RiskCategory::RemoteWrite);
                     }
                     _ => {

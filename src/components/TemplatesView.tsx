@@ -15,12 +15,26 @@ import { CopyButton } from './CopyButton';
 import { JsonEditor, JsonView } from './JsonEditor';
 import { Segmented } from './Segmented';
 import { prepareImportText, toN8n } from '../lib/n8n';
-import { MCP_PRESETS } from '../lib/integrations';
+import { MCP_PRESETS, TICKET_TOOLS } from '../lib/integrations';
+import {
+  domainLabel,
+  matchesTemplateSearch,
+  TEMPLATE_DOMAINS,
+  templateDomain,
+  templateNeeds,
+} from '../lib/template-domains';
 
 const STARTER_TEMPLATE = 'first-workflow';
 
-/** Steps that run in a repository: commands, Git, GitHub or agents that edit files. */
+/**
+ * Software templates work in a repository: commands, Git, GitHub or agents
+ * that edit files. Content, research, media and data templates write their
+ * files in the workflow's workspace folder unless a folder is chosen.
+ */
 function templateNeedsRepository(template: WorkflowTemplate): boolean {
+  const domain = templateDomain(template.category);
+  if (domain !== 'software' && domain !== 'other')
+    return template.workflow.nodes.some((n) => n.type === 'git' || n.type === 'github');
   return template.workflow.nodes.some(
     (n) =>
       n.type === 'command' ||
@@ -34,7 +48,7 @@ function templateNeedsRepository(template: WorkflowTemplate): boolean {
 function expectedMcpSetups(template: WorkflowTemplate): string[] {
   const tools = template.workflow.nodes.flatMap((n) =>
     n.type === 'ticket'
-      ? ['jira_get_issue']
+      ? [...TICKET_TOOLS]
       : n.type === 'mcp'
         ? [n.config.mcpTool ?? '']
         : [],
@@ -57,7 +71,11 @@ function categoryTone(category: string): string {
     case 'feature':
       return 'blue';
     case 'integration':
+    case 'media':
       return 'pink';
+    case 'content':
+    case 'data':
+      return 'green';
     default:
       return 'amber';
   }
@@ -66,6 +84,12 @@ function categoryTone(category: string): string {
 export function TemplatesView(): React.JSX.Element {
   const builtinTemplates = useAppStore((s) => s.builtinTemplates);
   const starter = builtinTemplates.find((template) => template.id === STARTER_TEMPLATE);
+  const domain = useAppStore((s) => s.templateDomain);
+  const setDomain = useAppStore((s) => s.setTemplateDomain);
+  const tools = useAppStore((s) => s.tools);
+  const workspaceRoot = useAppStore((s) => s.workspaceRoot);
+  const query = useAppStore((s) => s.templateQuery);
+  const setQuery = useAppStore((s) => s.setTemplateQuery);
   const userTemplates = useAppStore((s) => s.userTemplates);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
   const refreshWorkflows = useAppStore((s) => s.refreshWorkflows);
@@ -290,7 +314,10 @@ export function TemplatesView(): React.JSX.Element {
       <div className="template-card-head" style={{ paddingRight: builtin ? 0 : 36 }}>
         <h3>{template.name}</h3>
         <div className="template-tags">
-          <span className={`tag tag-${categoryTone(template.category)}`}>
+          <span
+            className={`tag tag-${categoryTone(template.category)}`}
+            title={domainLabel(templateDomain(template.category))}
+          >
             {template.category}
           </span>
           {template.workflow.nodes.some(
@@ -313,6 +340,21 @@ export function TemplatesView(): React.JSX.Element {
             <code key={i.name} title={i.label ?? i.name}>
               {i.name}
             </code>
+          ))}
+        </p>
+      )}
+      {templateNeeds(template, tools).length > 0 && (
+        <p className="template-inputs template-needs">
+          <span>Needs</span>{' '}
+          {templateNeeds(template, tools).map((need) => (
+            <span
+              key={need.label}
+              className={`need-chip${need.ready === false ? ' missing' : need.ready === true ? ' ready' : ''}`}
+              title={need.hint}
+            >
+              {need.ready === true ? '✓ ' : need.ready === false ? '✕ ' : ''}
+              {need.label}
+            </span>
           ))}
         </p>
       )}
@@ -341,7 +383,8 @@ export function TemplatesView(): React.JSX.Element {
       <div className="topbar">
         <h1>Templates</h1>
         <span className="topbar-sub">
-          Versioned, cloneable starters — roles resolve to your profiles on use.
+          Ready-made workflows for code, content, research, media and data. Roles map to
+          your agent profiles when you use one.
         </span>
         <div className="topbar-actions">
           <button
@@ -392,20 +435,105 @@ export function TemplatesView(): React.JSX.Element {
             </ul>
           </Notice>
         )}
-        <h2 className="section-title">Built-in ({builtinTemplates.length})</h2>
-        <div className="tool-grid">
-          {starter !== undefined && renderCard(starter, true)}
-          {builtinTemplates
-            .filter((t) => t.id !== STARTER_TEMPLATE)
-            .map((t) => renderCard(t, true))}
+        <div className="template-filters">
+          <label className="sr-only" htmlFor="template-search">
+            Search templates
+          </label>
+          <input
+            id="template-search"
+            className="input template-search"
+            type="search"
+            placeholder="Search templates (blog, video, review, research…)"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+            }}
+          />
+          <div className="filter-chips" role="group" aria-label="Template kinds">
+            {(['all', ...TEMPLATE_DOMAINS.map((d) => d.id)] as const).map((id) => {
+              const count = [...builtinTemplates, ...userTemplates].filter(
+                (t) => id === 'all' || templateDomain(t.category) === id,
+              ).length;
+              if (count === 0 && id !== 'all') return null;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={`filter-chip${domain === id ? ' active' : ''}`}
+                  aria-pressed={domain === id}
+                  onClick={() => {
+                    setDomain(id);
+                  }}
+                >
+                  {id === 'all' ? 'All' : domainLabel(id)}{' '}
+                  <span className="filter-chip-count">{count}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <h2 className="section-title">Mine ({userTemplates.length})</h2>
-        {userTemplates.length === 0 && (
-          <p className="field-hint">
-            Save any workflow as a template from the Workflows tab, or import JSON below.
-          </p>
-        )}
-        <div className="tool-grid">{userTemplates.map((t) => renderCard(t, false))}</div>
+        {(() => {
+          const shown = (t: WorkflowTemplate): boolean =>
+            (domain === 'all' || templateDomain(t.category) === domain) &&
+            matchesTemplateSearch(t, query);
+          const builtins = [
+            ...(starter === undefined ? [] : [starter]),
+            ...builtinTemplates.filter((t) => t.id !== STARTER_TEMPLATE),
+          ].filter(shown);
+          const mine = userTemplates.filter(shown);
+          const grouped = domain === 'all' && query.trim() === '';
+          return (
+            <>
+              {builtins.length === 0 && mine.length === 0 && (
+                <div className="empty-state">
+                  <strong>No templates match.</strong>
+                  <p className="field-hint">
+                    Try another word, or describe what you want on Workflows →{' '}
+                    <strong>Generate</strong>.
+                  </p>
+                </div>
+              )}
+              {builtins.length > 0 && (
+                <h2 className="section-title">Built-in ({builtins.length})</h2>
+              )}
+              {grouped ? (
+                TEMPLATE_DOMAINS.map((d) => {
+                  const inDomain = builtins.filter(
+                    (t) => templateDomain(t.category) === d.id,
+                  );
+                  if (inDomain.length === 0) return null;
+                  return (
+                    <section
+                      key={d.id}
+                      className="template-group"
+                      aria-labelledby={`template-group-${d.id}`}
+                    >
+                      <h3 id={`template-group-${d.id}`} className="subsection-title">
+                        {d.label}
+                      </h3>
+                      <p className="field-hint section-hint">{d.blurb}</p>
+                      <div className="tool-grid">
+                        {inDomain.map((t) => renderCard(t, true))}
+                      </div>
+                    </section>
+                  );
+                })
+              ) : (
+                <div className="tool-grid">
+                  {builtins.map((t) => renderCard(t, true))}
+                </div>
+              )}
+              <h2 className="section-title">Mine ({mine.length})</h2>
+              {userTemplates.length === 0 && (
+                <p className="field-hint">
+                  Save any workflow as a template from the Workflows tab, or import JSON
+                  below.
+                </p>
+              )}
+              <div className="tool-grid">{mine.map((t) => renderCard(t, false))}</div>
+            </>
+          );
+        })()}
         <p className="field-hint" style={{ marginTop: 20 }}>
           Tip: save any workflow as a template from the Workflows tab (“Save as
           template”), or bring a portable template in with <strong>Import JSON…</strong>{' '}
@@ -448,16 +576,20 @@ export function TemplatesView(): React.JSX.Element {
               <>
                 <DirPicker
                   id="tpl-repo"
-                  label="Folder for AI steps (optional)"
+                  label="Project folder (optional)"
                   value={useTarget.repoDir}
-                  placeholder="/path/to/your/project"
+                  placeholder={
+                    workspaceRoot === null
+                      ? 'Blank: a new folder for this workflow'
+                      : `Blank: a new folder in ${workspaceRoot}`
+                  }
                   onChange={(repoDir) => {
                     setUseTarget({ ...useTarget, repoDir });
                   }}
                 />
                 <p className="field-hint">
-                  AI steps read files here when the prompt needs them. Leave it empty when
-                  the steps only work with what earlier steps return.
+                  Steps read and write files here. Leave it empty to use this workflow’s
+                  own workspace folder; what each run makes shows under Files on the run.
                 </p>
               </>
             )}
@@ -507,7 +639,13 @@ export function TemplatesView(): React.JSX.Element {
                   {useTarget.template.workflow.inputs?.map((input) => (
                     <li key={input.name}>
                       {input.label ?? input.name}
-                      {input.default !== undefined && ` (default: ${input.default})`}
+                      {(input.options ?? []).length > 0
+                        ? ` (choose: ${(input.options ?? []).join(', ')})`
+                        : input.default !== undefined && input.default.trim() !== ''
+                          ? ` (default: ${input.default})`
+                          : input.required === true
+                            ? ''
+                            : ' (optional)'}
                     </li>
                   ))}
                 </ul>

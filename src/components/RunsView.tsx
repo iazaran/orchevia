@@ -1,4 +1,5 @@
 import { RunTimeline } from './RunTimeline';
+import { RunFilesPanel } from './RunFiles';
 import { RecoveryDialog, SpendContinueDialog, UsageContinueDialog } from './RunControls';
 import { resultMetadata, type SpendPause, type UsagePause } from '../lib/run-controls';
 import { playbookField, successfulCommand } from '../lib/memory';
@@ -1546,6 +1547,13 @@ export function RunsView(): React.JSX.Element {
                     </>
                   );
                 })()}
+                <RunFilesPanel
+                  key={activeRun.id}
+                  run={activeRun}
+                  refreshKey={results
+                    .filter((r) => r.finishedAt !== undefined)
+                    .length.toString()}
+                />
                 {runWorkflow && (
                   <RunTimeline
                     run={activeRun}

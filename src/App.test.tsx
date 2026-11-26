@@ -31,3 +31,29 @@ it('opens a confirmation above a dialog that is already open', async () => {
   const dialogs = document.querySelectorAll('[aria-modal="true"]');
   expect(dialogs[dialogs.length - 1]).toBe(confirm);
 });
+
+it('opens the command palette with Ctrl+K, never over another dialog', async () => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+  const backend = __setMockBackendForTests();
+  await backend.setSetting('onboarding.completed', '1');
+  useAppStore.setState({ view: 'home' });
+  render(<App />);
+  await screen.findByRole('heading', { name: /What do you want done/ });
+  act(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
+  });
+  const palette = await screen.findByRole('dialog', { name: 'Command palette' });
+  expect(palette).toBeInTheDocument();
+  // A second press while a dialog is open does nothing more.
+  act(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
+  });
+  expect(screen.getAllByRole('dialog', { name: 'Command palette' })).toHaveLength(1);
+});

@@ -182,10 +182,18 @@ export function describeGeneratedStep(
       op.op === 'postComment' ||
       op.op === 'prDetails' ||
       op.op === 'prFiles' ||
-      op.op === 'prChecks'
+      op.op === 'prChecks' ||
+      op.op === 'issueDetails' ||
+      op.op === 'commentIssue'
     ) {
       return op.op + ': #' + String(op.number);
     }
+    if (op.op === 'waitChecks')
+      return (op.number ?? 0) > 0
+        ? `waitChecks: #${String(op.number)}`
+        : 'waitChecks: current commit';
+    if (op.op === 'runWorkflow')
+      return `runWorkflow: ${op.workflow}${op.ref ? ` @ ${op.ref}` : ''}`;
     return op.op;
   }
   if (node.type === 'agent') {

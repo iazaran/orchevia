@@ -47,6 +47,8 @@
     "github-title-required",
     "github-branches-required",
     "github-body-required",
+    "github-workflow-required",
+    "github-artifacts-dir-invalid",
     "ticket-key-required",
     "ticket-server-required",
     "mcp-server-required",
@@ -56,6 +58,7 @@
     "loop-limit-invalid",
     "input-name-invalid",
     "input-duplicate",
+    "input-settings-invalid",
     "workflow-limits-invalid",
     "edge-label-unknown",
     "edge-label-misplaced",
@@ -75,6 +78,10 @@
     {
       "code": "input-required",
       "reason": "Checked when a run starts, against the values the run was given; a saved workflow has no run inputs yet."
+    },
+    {
+      "code": "input-choice-invalid",
+      "reason": "Checked when a run starts, against the value the run was given for an input with choices."
     },
     {
       "code": "agent-role-unresolved",
@@ -2145,6 +2152,71 @@
       ]
     },
     {
+      "name": "input help text and choices",
+      "workflow": {
+        "inputs": [
+          {
+            "name": "tone",
+            "options": ["Friendly", "Formal"],
+            "default": "Formal",
+            "description": "How it should sound."
+          },
+          {
+            "name": "blank",
+            "options": ["A", " "]
+          },
+          {
+            "name": "twice",
+            "options": ["A", " A"]
+          },
+          {
+            "name": "stray",
+            "options": ["A"],
+            "default": "B"
+          },
+          {
+            "name": "long",
+            "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "start",
+            "type": "start"
+          },
+          {
+            "id": "end",
+            "type": "end"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e1",
+            "source": "start",
+            "target": "end"
+          }
+        ]
+      },
+      "issues": [
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        },
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        },
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        },
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        }
+      ]
+    },
+    {
       "name": "loops need a Condition and bounds, reported once per step",
       "workflow": {
         "nodes": [
@@ -2597,6 +2669,252 @@
         {
           "code": "workflow-limits-invalid",
           "severity": "error"
+        }
+      ]
+    },
+    {
+      "name": "GitHub Actions runs and issue comments",
+      "workflow": {
+        "nodes": [
+          {
+            "id": "start",
+            "type": "start"
+          },
+          {
+            "id": "blank",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": " "
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "escape",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "artifactsDir": "../outside"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "absolute",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "artifactsDir": "/tmp/out"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "ok",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "ref": "main",
+                "inputs": {
+                  "track": "internal"
+                },
+                "artifactsDir": "dist/apps"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "wait",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "waitChecks",
+                "number": 0
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "issue",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "issueDetails",
+                "number": 0
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "list",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "listIssues",
+                "state": "open",
+                "label": "bug"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "comment",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "commentIssue",
+                "number": 3,
+                "body": " "
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "option",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "--help"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "gitdir",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "artifactsDir": "out/.GIT/hooks"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "drive",
+            "type": "github",
+            "config": {
+              "githubOp": {
+                "op": "runWorkflow",
+                "workflow": "build.yml",
+                "artifactsDir": "é:out"
+              },
+              "workingDir": "/repo"
+            }
+          },
+          {
+            "id": "end",
+            "type": "end"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e1",
+            "source": "start",
+            "target": "blank"
+          },
+          {
+            "id": "e2",
+            "source": "blank",
+            "target": "escape"
+          },
+          {
+            "id": "e3",
+            "source": "escape",
+            "target": "absolute"
+          },
+          {
+            "id": "e4",
+            "source": "absolute",
+            "target": "ok"
+          },
+          {
+            "id": "e5",
+            "source": "ok",
+            "target": "wait"
+          },
+          {
+            "id": "e6",
+            "source": "wait",
+            "target": "issue"
+          },
+          {
+            "id": "e7",
+            "source": "issue",
+            "target": "list"
+          },
+          {
+            "id": "e8",
+            "source": "list",
+            "target": "comment"
+          },
+          {
+            "id": "e9",
+            "source": "comment",
+            "target": "option"
+          },
+          {
+            "id": "e10",
+            "source": "option",
+            "target": "gitdir"
+          },
+          {
+            "id": "e11",
+            "source": "gitdir",
+            "target": "drive"
+          },
+          {
+            "id": "e12",
+            "source": "drive",
+            "target": "end"
+          }
+        ]
+      },
+      "issues": [
+        {
+          "code": "github-workflow-required",
+          "severity": "error",
+          "nodeId": "blank"
+        },
+        {
+          "code": "github-artifacts-dir-invalid",
+          "severity": "error",
+          "nodeId": "escape"
+        },
+        {
+          "code": "github-artifacts-dir-invalid",
+          "severity": "error",
+          "nodeId": "absolute"
+        },
+        {
+          "code": "github-body-required",
+          "severity": "error",
+          "nodeId": "comment"
+        },
+        {
+          "code": "github-workflow-required",
+          "severity": "error",
+          "nodeId": "option"
+        },
+        {
+          "code": "github-artifacts-dir-invalid",
+          "severity": "error",
+          "nodeId": "gitdir"
+        },
+        {
+          "code": "github-artifacts-dir-invalid",
+          "severity": "error",
+          "nodeId": "drive"
         }
       ]
     }

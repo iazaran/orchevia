@@ -52,7 +52,7 @@ pub struct WorkflowDefaults {
 }
 
 /// A declared workflow input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowInput {
     pub name: String,
@@ -62,6 +62,89 @@ pub struct WorkflowInput {
     pub default: Option<String>,
     #[serde(default)]
     pub required: bool,
+    /// Help shown under the field when a run starts (v0.4.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A long value (a brief, notes, a list): the start form shows a text area.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multiline: bool,
+    /// The values a run may use: the start form offers a choice, and a run
+    /// with any other value is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+/// Bounds for input help text and choices (mirrored in `workflow.ts`).
+pub const MAX_INPUT_DESCRIPTION_CHARS: usize = 500;
+pub const MAX_INPUT_OPTIONS: usize = 50;
+pub const MAX_INPUT_OPTION_CHARS: usize = 200;
+
+/// Why an input's help text or choices cannot be saved, if they cannot.
+pub fn input_settings_problem(input: &WorkflowInput) -> Option<String> {
+    let name = &input.name;
+    if input
+        .description
+        .as_deref()
+        .is_some_and(|d| d.chars().count() > MAX_INPUT_DESCRIPTION_CHARS)
+    {
+        return Some(format!(
+            "Input '{name}' help text must be at most {MAX_INPUT_DESCRIPTION_CHARS} characters."
+        ));
+    }
+    if input.options.len() > MAX_INPUT_OPTIONS {
+        return Some(format!(
+            "Input '{name}' can offer at most {MAX_INPUT_OPTIONS} choices."
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for option in &input.options {
+        let trimmed = option.trim();
+        if trimmed.is_empty() {
+            return Some(format!("Input '{name}' has a blank choice."));
+        }
+        if option.chars().count() > MAX_INPUT_OPTION_CHARS {
+            return Some(format!(
+                "Input '{name}' choices must be at most {MAX_INPUT_OPTION_CHARS} characters."
+            ));
+        }
+        if !seen.insert(trimmed) {
+            return Some(format!(
+                "Input '{name}' lists the choice '{trimmed}' twice."
+            ));
+        }
+    }
+    if let Some(default) = input.default.as_deref().map(str::trim) {
+        if !default.is_empty()
+            && !input.options.is_empty()
+            && !input.options.iter().any(|o| o.trim() == default)
+        {
+            return Some(format!(
+                "Input '{name}' defaults to '{default}', which is not one of its choices."
+            ));
+        }
+    }
+    None
+}
+
+/// A value outside an input's choices, as the message a run start shows.
+pub fn input_choice_problem(input: &WorkflowInput, value: &str) -> Option<String> {
+    let value = value.trim();
+    if input.options.is_empty() || value.is_empty() {
+        return None;
+    }
+    if input.options.iter().any(|o| o.trim() == value) {
+        return None;
+    }
+    Some(format!(
+        "Workflow input '{}' must be one of: {}.",
+        input.name,
+        input
+            .options
+            .iter()
+            .map(|o| o.trim())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// A single node in the workflow graph.
@@ -271,6 +354,47 @@ pub enum GitHubOp {
         number: u64,
         body: String,
     },
+    /// Wait for CI to finish (v0.4.0): a pull request's checks (number 0:
+    /// the run's `prNumber` input), or with no number the checks on the
+    /// repository folder's current commit. Fails when a check fails, with the
+    /// failed jobs' log ends in its output.
+    WaitChecks {
+        #[serde(default)]
+        number: u64,
+    },
+    /// Run a GitHub Actions workflow (`workflow_dispatch`), wait for it, and
+    /// optionally download its artifacts into a folder of the repository.
+    RunWorkflow {
+        /// File name (`build.yml`), name or id of the workflow.
+        workflow: String,
+        /// Branch or tag; blank uses the workflow default branch, else the
+        /// repository's default.
+        #[serde(default, rename = "ref", skip_serializing_if = "String::is_empty")]
+        git_ref: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        inputs: std::collections::BTreeMap<String, String>,
+        #[serde(
+            default,
+            rename = "artifactsDir",
+            skip_serializing_if = "Option::is_none"
+        )]
+        artifacts_dir: Option<String>,
+    },
+    /// A GitHub issue (number 0: the run's `issueNumber` input), also as
+    /// `{{ticket.*}}` variables.
+    IssueDetails {
+        number: u64,
+    },
+    ListIssues {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    CommentIssue {
+        number: u64,
+        body: String,
+    },
 }
 
 /// Bounded retry policy. Attempt counts are 1-based: `max_attempts: 1` means
@@ -444,6 +568,8 @@ pub const VALIDATION_CODES: &[&str] = &[
     "github-title-required",
     "github-branches-required",
     "github-body-required",
+    "github-workflow-required",
+    "github-artifacts-dir-invalid",
     "ticket-key-required",
     "ticket-server-required",
     "mcp-server-required",
@@ -453,6 +579,7 @@ pub const VALIDATION_CODES: &[&str] = &[
     "loop-limit-invalid",
     "input-name-invalid",
     "input-duplicate",
+    "input-settings-invalid",
     "workflow-limits-invalid",
     "edge-label-unknown",
     "edge-label-misplaced",
@@ -478,7 +605,12 @@ pub fn publishes(node: &Node) -> bool {
             node.kind == NodeKind::GitHub
                 && matches!(
                     node.config.github_op,
-                    Some(GitHubOp::CreatePr { .. } | GitHubOp::PostComment { .. })
+                    Some(
+                        GitHubOp::CreatePr { .. }
+                            | GitHubOp::PostComment { .. }
+                            | GitHubOp::CommentIssue { .. }
+                            | GitHubOp::RunWorkflow { .. }
+                    )
                 )
         }
     }
@@ -489,7 +621,7 @@ pub fn publishes(node: &Node) -> bool {
 /// `env … git push` and `bash -c "… git push"`; a script file's contents are
 /// not read. Mirrored by `commandPublishes` in `src/lib/workflow.ts`.
 pub fn command_publishes(executable: &str, args: &[String]) -> bool {
-    const PUBLISHING: [&str; 14] = [
+    const PUBLISHING: [&str; 28] = [
         "git push",
         "gh pr create",
         "gh pr comment",
@@ -504,6 +636,22 @@ pub fn command_publishes(executable: &str, args: &[String]) -> bool {
         "cargo publish",
         "twine upload",
         "docker push",
+        // Releases, store uploads and deploys (v0.4.0).
+        "gh workflow run",
+        "gh release upload",
+        "fastlane deliver",
+        "fastlane supply",
+        "fastlane pilot",
+        "fastlane upload_to_play_store",
+        "fastlane upload_to_app_store",
+        "fastlane upload_to_testflight",
+        "eas submit",
+        "eas-cli submit",
+        "firebase deploy",
+        "netlify deploy",
+        "vercel deploy",
+        // `vercel` with no command deploys; `--prod` makes it production.
+        "vercel --prod",
     ];
     let line = std::iter::once(executable)
         .chain(args.iter().map(String::as_str))
@@ -525,9 +673,19 @@ pub fn command_publishes(executable: &str, args: &[String]) -> bool {
 /// (`git -C dir push`, `gh -R owner/repo pr create`).
 fn phrase_at(words: &[&str], start: usize, parts: &[&str]) -> bool {
     const WITH_VALUE: [&str; 6] = ["-c", "-C", "-R", "--repo", "--git-dir", "--work-tree"];
+    // How far ahead a phrase's option (`vercel --prod`) may come, past other
+    // options and their values (`vercel --yes --token t --prod`).
+    const OPTION_REACH: usize = 6;
     let mut at = start;
     for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
+        if index > 0 && part.starts_with('-') {
+            match (at..words.len().min(at + OPTION_REACH)).find(|&i| words.get(i) == Some(part)) {
+                Some(found) => at = found,
+                None => return false,
+            }
+        }
+        // Options are skipped between words, unless the phrase names one.
+        if index > 0 && !part.starts_with('-') {
             while words.get(at).is_some_and(|w| w.starts_with('-')) {
                 let flag = words.get(at).copied().unwrap_or("");
                 at += if WITH_VALUE.iter().any(|f| f.eq_ignore_ascii_case(flag)) {
@@ -1251,7 +1409,7 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     push_error(
                         &mut issues,
                         "ticket-server-required",
-                        "Ticket node requires an MCP server (Jira source).".to_string(),
+                        "Ticket node requires an MCP server (Jira or Shortcut).".to_string(),
                         Some(node.id.clone()),
                     );
                 }
@@ -1371,6 +1529,9 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     format!("Duplicate workflow input '{}'.", input.name),
                     None,
                 );
+            }
+            if let Some(problem) = input_settings_problem(input) {
+                push_error(&mut issues, "input-settings-invalid", problem, None);
             }
         }
     }
@@ -1692,7 +1853,44 @@ fn validate_github_op(
         | GitHubOp::ListPrs { .. }
         | GitHubOp::PrDetails { .. }
         | GitHubOp::PrFiles { .. }
-        | GitHubOp::PrChecks { .. } => {}
+        | GitHubOp::PrChecks { .. }
+        | GitHubOp::WaitChecks { .. }
+        | GitHubOp::IssueDetails { .. }
+        | GitHubOp::ListIssues { .. } => {}
+        GitHubOp::CommentIssue { body, .. } => {
+            if body.trim().is_empty() {
+                err(
+                    "github-body-required",
+                    "Comments need an explicit body.".to_string(),
+                );
+            }
+        }
+        GitHubOp::RunWorkflow {
+            workflow,
+            artifacts_dir,
+            ..
+        } => {
+            if workflow.trim().is_empty() {
+                err(
+                    "github-workflow-required",
+                    "Running a GitHub Actions workflow needs its file name or name (e.g. build.yml)."
+                        .to_string(),
+                );
+            } else if !workflow_name_ok(workflow) {
+                err(
+                    "github-workflow-required",
+                    "A workflow name must not start with '-' or hold line breaks.".to_string(),
+                );
+            }
+            if let Some(dir) = artifacts_dir {
+                if !artifacts_dir_ok(dir) {
+                    err(
+                        "github-artifacts-dir-invalid",
+                        "The artifacts folder must be a relative folder inside the repository (no '..', not absolute).".to_string(),
+                    );
+                }
+            }
+        }
         GitHubOp::CreatePr {
             title, base, head, ..
         } => {
@@ -1718,6 +1916,31 @@ fn validate_github_op(
             }
         }
     }
+}
+
+/// An artifacts folder stays inside the repository: relative, no `..`
+/// component, not blank, one line. Templated values are checked as written.
+pub fn artifacts_dir_ok(dir: &str) -> bool {
+    let dir = dir.trim();
+    !dir.is_empty()
+        && !dir.starts_with('/')
+        && !dir.starts_with('~')
+        && !dir.starts_with('\\')
+        && !dir.starts_with('-')
+        && !dir.contains(['\0', '\n', '\r'])
+        && !dir
+            .split(['/', '\\'])
+            .any(|part| part == ".." || part.eq_ignore_ascii_case(".git"))
+        // A drive letter (`C:`), counted in characters like the TypeScript
+        // twin, so both sides agree on any text.
+        && dir.chars().nth(1) != Some(':')
+}
+
+/// A workflow name or file is one argument to `gh workflow run`: never an
+/// option, never more than one line.
+pub fn workflow_name_ok(workflow: &str) -> bool {
+    let workflow = workflow.trim();
+    !workflow.starts_with('-') && !workflow.contains(['\0', '\n', '\r'])
 }
 
 /// Validate a Command step's script path (its existence is checked when the
@@ -2313,6 +2536,7 @@ mod tests {
             label: None,
             default: Some("fast".into()),
             required: false,
+            ..Default::default()
         });
         let issues = validate_workflow(&wf);
         let errors: Vec<&ValidationIssue> = issues
@@ -2526,6 +2750,88 @@ mod tests {
     }
 
     #[test]
+    fn input_help_text_and_choices_stay_bounded() {
+        let check = |input: WorkflowInput| {
+            let mut wf = linear_workflow();
+            wf.inputs.push(input);
+            validate_workflow(&wf)
+                .into_iter()
+                .filter(|i| i.code == "input-settings-invalid")
+                .map(|i| i.message)
+                .collect::<Vec<_>>()
+        };
+        let base = || WorkflowInput {
+            name: "tone".into(),
+            ..Default::default()
+        };
+        assert!(check(WorkflowInput {
+            options: vec!["Friendly".into(), "Formal".into()],
+            default: Some("Formal".into()),
+            description: Some("How the post should sound.".into()),
+            multiline: false,
+            ..base()
+        })
+        .is_empty());
+        let cases = [
+            (
+                WorkflowInput {
+                    options: vec!["A".into(), " ".into()],
+                    ..base()
+                },
+                "Input 'tone' has a blank choice.",
+            ),
+            (
+                WorkflowInput {
+                    options: vec!["A".into(), " A".into()],
+                    ..base()
+                },
+                "Input 'tone' lists the choice 'A' twice.",
+            ),
+            (
+                WorkflowInput {
+                    options: vec!["A".into()],
+                    default: Some("B".into()),
+                    ..base()
+                },
+                "Input 'tone' defaults to 'B', which is not one of its choices.",
+            ),
+            (
+                WorkflowInput {
+                    description: Some("x".repeat(MAX_INPUT_DESCRIPTION_CHARS + 1)),
+                    ..base()
+                },
+                "Input 'tone' help text must be at most 500 characters.",
+            ),
+            (
+                WorkflowInput {
+                    options: (0..=MAX_INPUT_OPTIONS).map(|i| i.to_string()).collect(),
+                    ..base()
+                },
+                "Input 'tone' can offer at most 50 choices.",
+            ),
+            (
+                WorkflowInput {
+                    options: vec!["x".repeat(MAX_INPUT_OPTION_CHARS + 1)],
+                    ..base()
+                },
+                "Input 'tone' choices must be at most 200 characters.",
+            ),
+        ];
+        for (input, message) in cases {
+            assert_eq!(check(input), [message]);
+        }
+        // New fields stay out of saved JSON until used.
+        let json = serde_json::to_string(&base()).unwrap();
+        assert_eq!(json, r#"{"name":"tone","required":false}"#);
+        let full: WorkflowInput = serde_json::from_str(
+            r#"{"name":"tone","multiline":true,"options":["A"],"description":"Help"}"#,
+        )
+        .unwrap();
+        assert!(full.multiline);
+        assert_eq!(full.options, ["A"]);
+    }
+
+    #[test]
     fn duplicate_inputs_rejected() {
         let mut wf = linear_workflow();
         for _ in 0..2 {
@@ -2534,6 +2840,7 @@ mod tests {
                 label: None,
                 default: None,
                 required: false,
+                ..Default::default()
             });
         }
         assert!(validate_workflow(&wf)

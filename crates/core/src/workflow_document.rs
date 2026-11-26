@@ -646,6 +646,8 @@ mod tests {
         }
         for extra in [
             json!({"inputs":[{"name":"testCommand","required":"yes"}]}),
+            json!({"inputs":[{"name":"tone","options":"Friendly"}]}),
+            json!({"inputs":[{"name":"tone","multiline":"yes"}]}),
             json!({"defaults":{"repoDir":2}}),
             json!({"edges":[{"from":"a","to":"a","label":2}]}),
         ] {

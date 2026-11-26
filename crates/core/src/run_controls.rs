@@ -77,6 +77,12 @@ pub struct RunExecution {
         skip_serializing_if = "crate::feedback::FeedbackState::is_empty"
     )]
     pub feedback: crate::feedback::FeedbackState,
+    /// The workspace folder chosen when the run started (v0.4.0), for steps
+    /// with no folder of their own. Kept with the run, so changing the
+    /// workspace root or renaming the workflow never moves a run that is
+    /// waiting, and its Files still look in the right place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

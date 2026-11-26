@@ -632,7 +632,20 @@ impl Engine {
             })
             .cloned()
             .collect();
+        // The recovery works in the failed run's folder, where the files of the
+        // steps it reuses already are; a run from before 0.4.0 recorded none
+        // and gets today's.
+        let workspace = if source.execution.options.dry_run {
+            None
+        } else {
+            source
+                .execution
+                .workspace
+                .clone()
+                .or_else(|| run_workspace(&self.db, &workflow))
+        };
         let execution = RunExecution {
+            workspace,
             options: source.execution.options.clone(),
             recovered_from: Some(source_id.into()),
             recovery_choices: choices.clone(),
@@ -663,11 +676,38 @@ impl Engine {
                 ..crate::feedback::FeedbackState::default()
             },
         };
+        let _starting = WORKSPACE_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+        // A repeated request returns its run (create_recovery_run), so it is
+        // never turned away by the run it already started.
+        if execution.workspace.is_some()
+            && !execution.options.dry_run
+            && !self.db.recovery_request_exists(request_id)?
+        {
+            self.ensure_workspace_free(&workflow)?;
+        }
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
         self.db
             .create_recovery_run(new_id, &source, &workflow, &execution, &seeds, request_id)
             .map_err(EngineError::from)
+    }
+
+    /// Steps without a folder share the workflow's workspace folder: two open
+    /// runs there would overwrite each other's files (a second run replacing
+    /// prompts the first is waiting to have approved). Dry runs do not count.
+    fn ensure_workspace_free(&self, workflow: &Workflow) -> Result<(), EngineError> {
+        if self
+            .db
+            .list_active_runs()?
+            .iter()
+            .any(|r| r.workflow_id == workflow.id && !r.execution.options.dry_run)
+        {
+            return Err(EngineError::Validation(format!(
+                "'{}' {WORKSPACE_BUSY}. Let it finish, or cancel it, before starting another, or give the workflow a project folder.",
+                workflow.name
+            )));
+        }
+        Ok(())
     }
 
     pub async fn continue_spend_run(
@@ -856,6 +896,15 @@ impl Engine {
         for (key, value) in inputs {
             merged.insert(key.clone(), value.clone());
         }
+        // A value naming a choice is stored as that choice, so conditions
+        // and prompts never see stray spaces (" Formal " is "Formal").
+        for input in workflow.inputs.iter().filter(|i| !i.options.is_empty()) {
+            if let Some(value) = merged.get_mut(&input.name) {
+                if let Some(choice) = input.options.iter().find(|o| o.trim() == value.trim()) {
+                    *value = choice.trim().to_string();
+                }
+            }
+        }
         let mut issues = validate_workflow(workflow);
         // Required inputs validate the effective value after caller overrides.
         for input in &workflow.inputs {
@@ -868,6 +917,19 @@ impl Engine {
                 issues.push(crate::workflow::ValidationIssue {
                     code: "input-required".to_string(),
                     message: format!("Workflow input '{}' is required.", input.name),
+                    severity: ValidationSeverity::Error,
+                    node_id: None,
+                    edge_id: None,
+                });
+            }
+            // An input with choices takes only one of them (v0.4.0).
+            if let Some(message) = merged
+                .get(&input.name)
+                .and_then(|value| crate::workflow::input_choice_problem(input, value))
+            {
+                issues.push(crate::workflow::ValidationIssue {
+                    code: "input-choice-invalid".to_string(),
+                    message,
                     severity: ValidationSeverity::Error,
                     node_id: None,
                     edge_id: None,
@@ -1014,6 +1076,16 @@ impl Engine {
                 .collect();
             return Err(EngineError::Validation(msgs.join("; ")));
         }
+        let workspace = if options.dry_run {
+            None
+        } else {
+            run_workspace(&self.db, workflow)
+        };
+        // Checked and created together, so two starts at once cannot both pass.
+        let _starting = WORKSPACE_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+        if workspace.is_some() {
+            self.ensure_workspace_free(workflow)?;
+        }
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
         self.db.create_run_with_execution(
@@ -1026,6 +1098,7 @@ impl Engine {
                 // per-run overrides for manual, scheduled and watcher runs
                 // alike; UI-only resolution would leave those paths raw.
                 resolved_limits: run_controls::resolve_limits(workflow.limits.as_ref(), options),
+                workspace,
                 ..RunExecution::default()
             },
         )?;
@@ -1619,12 +1692,14 @@ impl Engine {
                     }
                     let db = Arc::clone(&self.db);
                     let task_flag = Arc::clone(flag);
+                    let workspace_dir = task_workspace(&self.db, workflow, &node, &run.execution);
                     let owned = TaskInput {
                         session_locks: Arc::clone(&session_locks),
                         node,
                         workflow_id: workflow.id.clone(),
                         workflow_name: workflow.name.clone(),
                         workflow_defaults: workflow.defaults.clone(),
+                        workspace_dir,
                         run_id: run_id.to_string(),
                         inputs: run.inputs.clone(),
                         execution: RunExecution {
@@ -2748,6 +2823,7 @@ impl Engine {
         };
         let task = TaskInput {
             session_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            workspace_dir: task_workspace(&self.db, workflow, &node, &run.execution),
             node: node.clone(),
             workflow_id: workflow.id.clone(),
             workflow_name: workflow.name.clone(),
@@ -2990,6 +3066,14 @@ enum RunOutcome {
     FeedbackPaused(String),
 }
 
+/// Part of the message a start gets while another run of the workflow is
+/// open in its workspace folder; schedules and watchers wait for their next
+/// check instead of failing.
+pub const WORKSPACE_BUSY: &str = "already has a run open in its workspace folder";
+
+/// Serializes the one-open-run check with the insert that follows it.
+static WORKSPACE_STARTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Owned inputs for a spawned node task.
 struct TaskInput {
     session_locks: SessionLocks,
@@ -2998,6 +3082,9 @@ struct TaskInput {
     workflow_id: String,
     workflow_name: String,
     workflow_defaults: Option<crate::workflow::WorkflowDefaults>,
+    /// The workflow's workspace folder, set (and created) only for a Command
+    /// or Agent step with no folder of its own and no repository folder.
+    workspace_dir: Option<String>,
     run_id: String,
     inputs: HashMap<String, String>,
 }
@@ -3451,7 +3538,7 @@ fn command_invocation(
         .map(std::path::PathBuf::from)
         .filter(|home| home.is_absolute());
     let path =
-        crate::workflow::resolve_script_file(script, command_working_dir(task), home.as_deref())?;
+        crate::workflow::resolve_script_file(script, explicit_working_dir(task), home.as_deref())?;
     // A relative working folder leaves the path relative too, but the
     // interpreter starts inside that folder: anchor it where the app runs, as
     // the process's own working folder is.
@@ -3909,9 +3996,73 @@ fn resolve_repo_root(task: &TaskInput) -> Result<String, String> {
 }
 
 /// Working directory for command and agent nodes: explicit node dir wins,
-/// blank inherits the workflow default (repo-bound work runs in the repo).
+/// blank inherits the workflow default (repo-bound work runs in the repo),
+/// and with neither the step runs in the workflow's workspace folder.
 /// Agent profiles in `profile` or `inherit` mode ignore it.
 fn command_working_dir(task: &TaskInput) -> Option<&str> {
+    let node_dir = task.node.config.working_dir.as_deref().unwrap_or("").trim();
+    if node_dir.is_empty() {
+        task.workflow_defaults
+            .as_ref()
+            .and_then(|d| d.repo_dir.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or(task.workspace_dir.as_deref())
+    } else {
+        Some(node_dir)
+    }
+}
+
+/// The workspace folder of a new run: set when a Command or Agent step has
+/// no folder of its own and the workflow has no project folder.
+fn run_workspace(db: &SqliteDb, workflow: &Workflow) -> Option<String> {
+    let profiles = db.list_agent_profiles().unwrap_or_default();
+    if !crate::workspace::workflow_uses_workspace(workflow, &profiles) {
+        return None;
+    }
+    let root = crate::workspace::root(db)?;
+    Some(
+        crate::workspace::workflow_folder(&root, &workflow.name, &workflow.id)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// The workspace folder for a step that has no folder of its own, created
+/// before it runs: the folder recorded when the run started (a run from
+/// before 0.4.0 has none and gets today's). Dry runs execute nothing and
+/// create nothing. A folder that cannot be created is still the step's
+/// folder, so the step fails with "Working directory does not exist"
+/// instead of running somewhere else.
+fn task_workspace(
+    db: &SqliteDb,
+    workflow: &Workflow,
+    node: &Node,
+    execution: &RunExecution,
+) -> Option<String> {
+    if execution.options.dry_run
+        || !crate::workspace::step_uses_workspace(
+            node,
+            workflow.defaults.as_ref(),
+            &db.list_agent_profiles().unwrap_or_default(),
+        )
+    {
+        return None;
+    }
+    let folder = match execution.workspace.clone() {
+        Some(folder) => folder,
+        None => run_workspace(db, workflow)?,
+    };
+    if let Err(error) = crate::workspace::prepare(std::path::Path::new(&folder)) {
+        eprintln!("orchevia: {error}");
+    }
+    Some(folder)
+}
+
+/// The folder a step names itself or inherits from the project folder,
+/// without the workspace fallback: relative script files resolve only
+/// against a folder the author chose, as dry runs and validation do.
+fn explicit_working_dir(task: &TaskInput) -> Option<&str> {
     let node_dir = task.node.config.working_dir.as_deref().unwrap_or("").trim();
     if node_dir.is_empty() {
         task.workflow_defaults
@@ -3982,6 +4133,17 @@ fn apply_github_branch_default(
             base,
             head: branch.to_string(),
             draft,
+        },
+        Op::RunWorkflow {
+            workflow,
+            git_ref,
+            inputs,
+            artifacts_dir,
+        } if git_ref.trim().is_empty() => Op::RunWorkflow {
+            workflow,
+            git_ref: branch.to_string(),
+            inputs,
+            artifacts_dir,
         },
         other => other,
     }
@@ -4322,6 +4484,27 @@ async fn execute_github_task(
             return TaskOutcome::Failed;
         }
     };
+    if matches!(
+        op,
+        crate::workflow::GitHubOp::WaitChecks { .. }
+            | crate::workflow::GitHubOp::RunWorkflow { .. }
+    ) {
+        // Waiting for CI takes minutes: an hour unless the step says otherwise.
+        let timeout = Duration::from_secs(
+            task.node
+                .config
+                .timeout_secs
+                .unwrap_or(CI_DEFAULT_TIMEOUT_SECS)
+                .clamp(1, MAX_TIMEOUT_SECS),
+        );
+        let started = Instant::now();
+        let waiting_flag = Arc::clone(flag);
+        let blocking =
+            tokio::task::spawn_blocking(move || wait_github_op(&op, &root, timeout, &waiting_flag))
+                .await;
+        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return record_ci_outcome(db, &task.run_id, node_id, duration_ms, blocking);
+    }
     let timeout = integration_timeout(task);
     let started = Instant::now();
     let blocking = tokio::task::spawn_blocking(move || do_github_op(&op, &root, timeout)).await;
@@ -4345,6 +4528,627 @@ async fn execute_github_task(
     }
 }
 
+/// How often a step waiting for CI asks again, how long it waits for checks
+/// to appear after a push, and how long it waits by default.
+#[cfg(not(test))]
+const CI_POLL: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const CI_POLL: Duration = Duration::from_millis(20);
+#[cfg(not(test))]
+const CI_START_GRACE: Duration = Duration::from_secs(120);
+#[cfg(test)]
+const CI_START_GRACE: Duration = Duration::from_millis(150);
+const CI_DEFAULT_TIMEOUT_SECS: u64 = 3600;
+/// Log characters kept from each failed run, for the step that fixes it.
+const CI_LOG_CHARS: usize = 6000;
+
+/// How a wait for CI ended. A failure keeps its report as the step's output,
+/// so a later step (a fix) can read what failed.
+enum CiOutcome {
+    Passed {
+        report: String,
+        structured: String,
+    },
+    Failed {
+        report: String,
+        error: String,
+        structured: String,
+    },
+    Cancelled {
+        report: String,
+    },
+}
+
+/// Sleep `total` in short slices; true when the run was cancelled meanwhile.
+fn sleep_unless_cancelled(flag: &AtomicBool, total: Duration) -> bool {
+    let slice = Duration::from_millis(250).min(total);
+    let until = Instant::now() + total;
+    while Instant::now() < until {
+        if flag.load(Ordering::SeqCst) {
+            return true;
+        }
+        std::thread::sleep(slice.min(until.saturating_duration_since(Instant::now())));
+    }
+    flag.load(Ordering::SeqCst)
+}
+
+fn wait_github_op(
+    op: &crate::workflow::GitHubOp,
+    root: &str,
+    timeout: Duration,
+    flag: &AtomicBool,
+) -> Result<CiOutcome, String> {
+    use crate::workflow::GitHubOp as Op;
+    let runner = crate::github::GhRunner {
+        executable: crate::github::default_executable(),
+        timeout_secs: 60,
+    };
+    let deadline = Instant::now() + timeout;
+    match op {
+        Op::WaitChecks { number } => wait_for_checks(&runner, root, *number, deadline, flag),
+        Op::RunWorkflow {
+            workflow,
+            git_ref,
+            inputs,
+            artifacts_dir,
+        } => run_actions_workflow(
+            &runner,
+            root,
+            workflow,
+            git_ref,
+            inputs,
+            artifacts_dir.as_deref(),
+            deadline,
+            flag,
+        ),
+        _ => Err("Not a waiting GitHub step.".into()),
+    }
+}
+
+/// The ends of the failed logs of up to two failed checks named in `links`:
+/// the job's own log when the link names a job, else the run's.
+fn failed_logs(runner: &crate::github::GhRunner, root: &str, links: &[&str]) -> String {
+    let mut seen = HashSet::new();
+    let mut out = String::new();
+    let mut shown = 0;
+    for link in links {
+        if shown >= 2 {
+            break;
+        }
+        let (label, tail) = if let Some(job) = crate::github::job_id_from_url(link) {
+            if !seen.insert(("job", job)) {
+                continue;
+            }
+            (
+                format!("job {job}"),
+                crate::github::failed_job_log(runner, root, job, CI_LOG_CHARS),
+            )
+        } else if let Some(run) = crate::github::run_id_from_url(link) {
+            if !seen.insert(("run", run)) {
+                continue;
+            }
+            (
+                format!("run {run}"),
+                crate::github::failed_log_tail(runner, root, run, CI_LOG_CHARS),
+            )
+        } else {
+            continue;
+        };
+        if !tail.trim().is_empty() {
+            out.push_str(&format!(
+                "\n--- Failed steps of {label} (end of log) ---\n{tail}\n"
+            ));
+            shown += 1;
+        }
+    }
+    out
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(10).collect()
+}
+
+/// What one look at CI found.
+struct CiLook {
+    checks: Vec<crate::github::CiCheck>,
+    /// Work not among `checks` yet: Actions runs still queued or running, or
+    /// a pushed commit GitHub does not show on the pull request yet.
+    waiting: Vec<String>,
+    note: String,
+}
+
+/// A look at CI, or a reason to stop waiting at once.
+enum Look {
+    Seen(CiLook),
+    Stop(String),
+}
+
+/// The checkout a wait runs in: its commit, and its branch and the branch it
+/// tracks (none when detached).
+struct Checkout {
+    head: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+}
+
+impl Checkout {
+    fn read(root: &str) -> Option<Self> {
+        let head = crate::git::head_sha(root).ok()?;
+        let branch = crate::git::current_branch(root)
+            .ok()
+            .filter(|b| b != "HEAD");
+        Some(Self {
+            head,
+            branch,
+            upstream: crate::git::upstream_branch(root),
+        })
+    }
+
+    /// The checkout holds commits the open pull request does not show yet:
+    /// it is on the pull request's branch (or detached), and the pull
+    /// request's head is an ancestor of its commit.
+    fn ahead_of(&self, root: &str, pr: &crate::github::PullRequest) -> bool {
+        let same_branch = match &self.branch {
+            None => true,
+            Some(branch) => {
+                *branch == pr.head_branch || self.upstream.as_deref() == Some(&pr.head_branch)
+            }
+        };
+        pr.state.eq_ignore_ascii_case("open")
+            && !pr.head_sha.is_empty()
+            && self.head != pr.head_sha
+            && same_branch
+            && crate::git::is_ancestor(root, &pr.head_sha, &self.head)
+    }
+}
+
+/// Whether GitHub has `sha`: on a remote-tracking branch here, or, failing
+/// that, by asking GitHub (a commit pushed only with a tag).
+fn pushed(runner: &crate::github::GhRunner, root: &str, sha: &str) -> Result<bool, String> {
+    if crate::git::on_remote_branch(root, sha).unwrap_or(false) {
+        return Ok(true);
+    }
+    crate::github::commit_on_github(runner, root, sha)
+}
+
+fn look_at_ci(
+    runner: &crate::github::GhRunner,
+    root: &str,
+    number: u64,
+    sha: &str,
+    checkout: Option<&Checkout>,
+    past_grace: bool,
+) -> Result<Look, String> {
+    // Listing runs needs Actions access a token may lack; checks alone still
+    // tell the result, so a failed listing is a note, not an error.
+    let mut note = String::new();
+    let mut runs_on = |sha: &str| -> Vec<String> {
+        match crate::github::unfinished_runs(runner, root, sha) {
+            Ok(names) => names
+                .into_iter()
+                .map(|name| format!("workflow {name}"))
+                .collect(),
+            Err(e) => {
+                note = format!(
+                    "Note: could not list Actions runs ({e}); judged by the checks alone.\n"
+                );
+                Vec::new()
+            }
+        }
+    };
+    if number == 0 {
+        let checks = crate::github::commit_ci_checks(runner, root, sha)?;
+        let waiting = runs_on(sha);
+        return Ok(Look::Seen(CiLook {
+            checks,
+            waiting,
+            note,
+        }));
+    }
+    let pr = crate::github::pr_details(runner, root, number)?;
+    let mut waiting = Vec::new();
+    // Right after a push the pull request still shows the previous commit,
+    // whose checks may all be done: wait for it to show this checkout's.
+    if let Some(checkout) = checkout.filter(|c| c.ahead_of(root, &pr)) {
+        let head = short_sha(&checkout.head);
+        match pushed(runner, root, &checkout.head) {
+            Ok(true) if past_grace => {
+                return Ok(Look::Stop(format!(
+                    "Pull request #{number} still shows commit {}, not this checkout's {head}: push {head} to {}.",
+                    short_sha(&pr.head_sha),
+                    pr.head_branch
+                )))
+            }
+            Ok(true) => waiting.push(format!("GitHub to show commit {head} on the pull request")),
+            Ok(false) => {
+                return Ok(Look::Stop(format!(
+                    "Commit {head} is not pushed: push it to {} before waiting for pull request #{number}'s CI.",
+                    pr.head_branch
+                )))
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let checks = crate::github::pr_ci_checks(runner, root, number)?;
+    if !pr.head_sha.is_empty() {
+        waiting.extend(runs_on(&pr.head_sha));
+    }
+    Ok(Look::Seen(CiLook {
+        checks,
+        waiting,
+        note,
+    }))
+}
+
+fn wait_for_checks(
+    runner: &crate::github::GhRunner,
+    root: &str,
+    number: u64,
+    deadline: Instant,
+    flag: &AtomicBool,
+) -> Result<CiOutcome, String> {
+    let (target, sha) = if number > 0 {
+        (format!("pull request #{number}"), String::new())
+    } else {
+        let sha = crate::git::head_sha(root)?;
+        // GitHub runs nothing for a commit it does not have.
+        match pushed(runner, root, &sha) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(format!(
+                    "Commit {} is not on GitHub: push it before waiting for its CI.",
+                    short_sha(&sha)
+                ))
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Could not tell whether commit {} is on GitHub: {e}",
+                    short_sha(&sha)
+                ))
+            }
+        }
+        (format!("commit {}", short_sha(&sha)), sha)
+    };
+    // The checkout, to tell a pull request GitHub has not updated yet from
+    // one that is current.
+    let checkout = if number > 0 {
+        Checkout::read(root)
+    } else {
+        None
+    };
+    let cancelled = || CiOutcome::Cancelled {
+        report: format!("Stopped waiting for CI on {target}.\n"),
+    };
+    let started = Instant::now();
+    let mut errors = 0u32;
+    let mut settled = 0u32;
+    let mut waiting: Vec<String> = Vec::new();
+    // The last look that found everything done, for a deadline that falls
+    // between the two looks a wait needs.
+    let mut last_done: Option<CiLook>;
+    loop {
+        if flag.load(Ordering::SeqCst) {
+            return Ok(cancelled());
+        }
+        let past_grace = started.elapsed() >= CI_START_GRACE;
+        match look_at_ci(runner, root, number, &sha, checkout.as_ref(), past_grace) {
+            Ok(Look::Stop(message)) => return Err(message),
+            Ok(Look::Seen(look)) => {
+                errors = 0;
+                waiting = look
+                    .checks
+                    .iter()
+                    .filter(|c| c.bucket == "pending")
+                    .map(|c| c.name.clone())
+                    .chain(look.waiting.iter().cloned())
+                    .collect();
+                let done = !look.checks.is_empty() && waiting.is_empty();
+                let nothing = look.checks.is_empty() && waiting.is_empty() && past_grace;
+                // Done twice in a row: a later workflow's or job's checks can
+                // appear a moment after the first ones finish.
+                settled = if done { settled + 1 } else { 0 };
+                if settled >= 2 || nothing {
+                    return Ok(ci_checks_outcome(runner, root, &target, look, nothing));
+                }
+                last_done = done.then_some(look);
+            }
+            // A network blip is not a CI failure: try again a few times.
+            Err(e) => {
+                errors += 1;
+                settled = 0;
+                last_done = None;
+                if errors >= 3 {
+                    return Err(format!("Could not read CI for {target}: {e}"));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            if let Some(look) = last_done {
+                return Ok(ci_checks_outcome(runner, root, &target, look, false));
+            }
+            return Err(format!(
+                "CI on {target} was still running when the step's time ran out{}.",
+                if waiting.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (waiting for: {})", waiting.join(", "))
+                }
+            ));
+        }
+        if sleep_unless_cancelled(flag, CI_POLL) {
+            return Ok(cancelled());
+        }
+    }
+}
+
+/// The report and outcome of finished checks (or of none at all).
+fn ci_checks_outcome(
+    runner: &crate::github::GhRunner,
+    root: &str,
+    target: &str,
+    look: CiLook,
+    nothing: bool,
+) -> CiOutcome {
+    let checks = look.checks;
+    let failed: Vec<&crate::github::CiCheck> =
+        checks.iter().filter(|c| c.bucket == "fail").collect();
+    let count = |bucket: &str| checks.iter().filter(|c| c.bucket == bucket).count();
+    let mut report = if nothing {
+        format!(
+            "No CI checks reported for {target} within {} s.\n",
+            CI_START_GRACE.as_secs()
+        )
+    } else {
+        format!(
+            "CI on {target}: {} passed, {} failed, {} skipped\n",
+            count("pass"),
+            count("fail"),
+            count("skip")
+        )
+    };
+    report.push_str(&look.note);
+    for check in &checks {
+        let mark = match check.bucket.as_str() {
+            "pass" => "✓",
+            "fail" => "✕",
+            _ => "–",
+        };
+        report.push_str(&format!("{mark} {}", check.name));
+        if check.bucket == "fail" && !check.link.is_empty() {
+            report.push_str(&format!(" — {}", check.link));
+        }
+        report.push('\n');
+    }
+    let conclusion = if !failed.is_empty() {
+        "failure"
+    } else if nothing {
+        "none"
+    } else {
+        "success"
+    };
+    let structured = serde_json::json!({"ci": {
+        "target": target,
+        "conclusion": conclusion,
+        "checks": checks,
+    }})
+    .to_string();
+    if failed.is_empty() {
+        return CiOutcome::Passed { report, structured };
+    }
+    let links: Vec<&str> = failed.iter().map(|c| c.link.as_str()).collect();
+    report.push_str(&failed_logs(runner, root, &links));
+    CiOutcome::Failed {
+        error: format!(
+            "CI failed on {target}: {}",
+            failed
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        report,
+        structured,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_actions_workflow(
+    runner: &crate::github::GhRunner,
+    root: &str,
+    workflow: &str,
+    git_ref: &str,
+    inputs: &std::collections::BTreeMap<String, String>,
+    artifacts_dir: Option<&str>,
+    deadline: Instant,
+    flag: &AtomicBool,
+) -> Result<CiOutcome, String> {
+    let since = chrono::Utc::now();
+    let printed = crate::github::dispatch_workflow(runner, root, workflow, git_ref, inputs)?;
+    let stopped = |id: Option<u64>| CiOutcome::Cancelled {
+        report: match id {
+            Some(id) => format!(
+                "Stopped waiting for '{workflow}' (run {id}); the run keeps going on GitHub.\n"
+            ),
+            None => format!("Stopped waiting for '{workflow}'; the run keeps going on GitHub.\n"),
+        },
+    };
+    // GitHub lists a dispatched run a moment later when gh did not print it.
+    let id = match printed {
+        Some(id) => id,
+        None => {
+            let mut lookup_errors = 0u32;
+            loop {
+                match crate::github::find_dispatched_run(runner, root, workflow, git_ref, &since) {
+                    Ok(Some(id)) => break id,
+                    Ok(None) => lookup_errors = 0,
+                    Err(e) => {
+                        lookup_errors += 1;
+                        if lookup_errors >= 3 {
+                            return Err(format!(
+                                "Started '{workflow}', but could not find its run: {e}"
+                            ));
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "Started '{workflow}', but GitHub listed no run for it in time."
+                    ));
+                }
+                if sleep_unless_cancelled(flag, CI_POLL) {
+                    return Ok(stopped(None));
+                }
+            }
+        }
+    };
+    let mut errors = 0u32;
+    let run = loop {
+        match crate::github::actions_run(runner, root, id) {
+            Ok(run) if run.status == "completed" => break run,
+            Ok(_) => errors = 0,
+            Err(e) => {
+                errors += 1;
+                if errors >= 3 {
+                    return Err(format!("Could not read run {id} of '{workflow}': {e}"));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "'{workflow}' (run {id}) was still running when the step's time ran out."
+            ));
+        }
+        if sleep_unless_cancelled(flag, CI_POLL) {
+            return Ok(stopped(Some(id)));
+        }
+    };
+    let mut report = format!(
+        "Workflow '{workflow}' run {}: {}\n{}\n",
+        run.id, run.conclusion, run.url
+    );
+    if run.conclusion == "success" {
+        let structured = serde_json::json!({"run": run, "artifactsDir": artifacts_dir}).to_string();
+        if let Some(dir) = artifacts_dir {
+            if flag.load(Ordering::SeqCst) {
+                return Ok(CiOutcome::Cancelled {
+                    report: format!("{report}Stopped before downloading its artifacts.\n"),
+                });
+            }
+            // Downloads can be large: they get what is left of the step's
+            // time, and at least a minute.
+            let downloader = crate::github::GhRunner {
+                executable: runner.executable.clone(),
+                timeout_secs: deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_secs()
+                    .max(60),
+            };
+            match crate::github::download_artifacts(&downloader, root, run.id, dir) {
+                Ok(note) => report.push_str(&format!("{note}\n")),
+                Err(e) => {
+                    return Ok(CiOutcome::Failed {
+                        error: format!(
+                            "Run {} of '{workflow}' passed, but its artifacts could not be downloaded: {e}",
+                            run.id
+                        ),
+                        report,
+                        structured,
+                    })
+                }
+            }
+        }
+        return Ok(CiOutcome::Passed { report, structured });
+    }
+    if !run.failed_jobs.is_empty() {
+        report.push_str(&format!("Failed jobs: {}\n", run.failed_jobs.join(", ")));
+    }
+    let mut logs = String::new();
+    for job in run.failed_job_ids.iter().take(2) {
+        let tail = crate::github::failed_job_log(runner, root, *job, CI_LOG_CHARS);
+        if !tail.trim().is_empty() {
+            logs.push_str(&format!(
+                "\n--- Failed steps of job {job} (end of log) ---\n{tail}\n"
+            ));
+        }
+    }
+    if logs.is_empty() {
+        let tail = crate::github::failed_log_tail(runner, root, run.id, CI_LOG_CHARS);
+        if !tail.trim().is_empty() {
+            logs = format!("\n--- Failed steps (end of log) ---\n{tail}\n");
+        }
+    }
+    report.push_str(&logs);
+    let structured = serde_json::json!({"run": run}).to_string();
+    Ok(CiOutcome::Failed {
+        error: format!("Workflow '{workflow}' ended: {}", run.conclusion),
+        report,
+        structured,
+    })
+}
+
+/// Record how a wait for CI ended.
+fn record_ci_outcome(
+    db: &Arc<SqliteDb>,
+    run_id: &str,
+    node_id: &str,
+    duration_ms: u64,
+    outcome: Result<Result<CiOutcome, String>, tokio::task::JoinError>,
+) -> TaskOutcome {
+    let failed = |stdout: &str, error: &str, structured: &str, status: &str| {
+        let _ = db.record_node_result(NewNodeResult {
+            run_id,
+            node_id,
+            status,
+            exit_code: None,
+            stdout: &truncate_chars(stdout.to_string()),
+            stderr: "",
+            error: Some(error),
+            attempt: 1,
+            duration_ms,
+            structured_json: structured,
+        });
+    };
+    match outcome {
+        Ok(Ok(CiOutcome::Passed { report, structured })) => record_integration_result(
+            db,
+            run_id,
+            node_id,
+            duration_ms,
+            Ok((report, structured)),
+            "gh",
+        ),
+        Ok(Ok(CiOutcome::Failed {
+            report,
+            error,
+            structured,
+        })) => {
+            failed(
+                &report,
+                &error,
+                &merge_provenance(&structured, "gh"),
+                "failed",
+            );
+            TaskOutcome::Failed
+        }
+        Ok(Ok(CiOutcome::Cancelled { report })) => {
+            failed(
+                &report,
+                "Cancelled while waiting for CI.",
+                "{}",
+                "cancelled",
+            );
+            TaskOutcome::Cancelled
+        }
+        Ok(Err(message)) => {
+            record_integration_result(db, run_id, node_id, duration_ms, Err(message), "gh")
+        }
+        Err(_) => {
+            failed("", "GitHub worker panicked.", "{}", "failed");
+            TaskOutcome::Failed
+        }
+    }
+}
+
 /// Resolve PR number 0 from runtime inputs (watchers inject `prNumber`).
 /// Explicit numbers pass through untouched.
 fn resolve_pr_number(
@@ -4362,6 +5166,13 @@ fn resolve_pr_number(
                     .to_string()
             })
     };
+    let from_issue_input = || {
+        inputs
+            .get("issueNumber")
+            .and_then(|s| s.trim().trim_start_matches('#').parse::<u64>().ok())
+            .filter(|n| *n > 0)
+            .ok_or_else(|| "Issue number is 0: provide inputs.issueNumber.".to_string())
+    };
     Ok(match op {
         Op::PrDetails { number } if *number == 0 => Op::PrDetails {
             number: from_inputs()?,
@@ -4374,6 +5185,17 @@ fn resolve_pr_number(
         },
         Op::PostComment { number, body } if *number == 0 => Op::PostComment {
             number: from_inputs()?,
+            body: body.clone(),
+        },
+        // No number and no prNumber input: wait on the current commit.
+        Op::WaitChecks { number } if *number == 0 => Op::WaitChecks {
+            number: from_inputs().unwrap_or(0),
+        },
+        Op::IssueDetails { number } if *number == 0 => Op::IssueDetails {
+            number: from_issue_input()?,
+        },
+        Op::CommentIssue { number, body } if *number == 0 => Op::CommentIssue {
+            number: from_issue_input()?,
             body: body.clone(),
         },
         other => other.clone(),
@@ -4447,6 +5269,13 @@ fn render_github_op(
             Err(format!("Missing variables: {}", missing.join(", ")))
         }
     };
+    let render_maybe = |template: &str| {
+        if template.contains("{{") {
+            render(template)
+        } else {
+            Ok(template.to_string())
+        }
+    };
     Ok(match op {
         Op::PrStatus => Op::PrStatus,
         Op::ListPrs { state } => Op::ListPrs {
@@ -4469,6 +5298,53 @@ fn render_github_op(
             draft: *draft,
         },
         Op::PostComment { number, body } => Op::PostComment {
+            number: *number,
+            body: render(body)?,
+        },
+        Op::WaitChecks { number } => Op::WaitChecks { number: *number },
+        Op::RunWorkflow {
+            workflow,
+            git_ref,
+            inputs,
+            artifacts_dir,
+        } => {
+            let artifacts_dir = match artifacts_dir {
+                Some(dir) => {
+                    let dir = render_maybe(dir)?.trim().to_string();
+                    if !crate::workflow::artifacts_dir_ok(&dir) {
+                        return Err(format!(
+                            "The artifacts folder '{dir}' must be a relative folder inside the repository."
+                        ));
+                    }
+                    Some(dir)
+                }
+                None => None,
+            };
+            let workflow = render_maybe(workflow)?.trim().to_string();
+            if workflow.is_empty() || !crate::workflow::workflow_name_ok(&workflow) {
+                return Err(format!(
+                    "'{workflow}' is not a workflow name or file: it must not be empty, start with '-' or hold line breaks."
+                ));
+            }
+            Op::RunWorkflow {
+                workflow,
+                git_ref: render_maybe(git_ref)?,
+                inputs: inputs
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone(), render_maybe(v)?)))
+                    .collect::<Result<_, String>>()?,
+                artifacts_dir,
+            }
+        }
+        Op::IssueDetails { number } => Op::IssueDetails { number: *number },
+        Op::ListIssues { state, label } => Op::ListIssues {
+            state: state.clone(),
+            label: match label {
+                Some(l) => Some(render_maybe(l)?),
+                None => None,
+            },
+        },
+        Op::CommentIssue { number, body } => Op::CommentIssue {
             number: *number,
             body: render(body)?,
         },
@@ -4568,6 +5444,64 @@ fn do_github_op(
                 serde_json::json!({"op": "postComment", "number": number}).to_string(),
             ))
         }
+        Op::IssueDetails { number } => {
+            let issue = crate::github::issue_details(&runner, root, *number)?;
+            let field = |name: &str| {
+                issue
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let display = format!(
+                "#{} {} ({})\n{}\n\n{}\n",
+                number,
+                field("title"),
+                field("state").to_ascii_lowercase(),
+                field("url"),
+                field("body")
+            );
+            // Shaped like a Ticket step, so `{{ticket.*}}` works for issues.
+            let ticket = serde_json::json!({
+                "key": format!("#{number}"),
+                "title": field("title"),
+                "description": field("body"),
+                "status": field("state").to_ascii_lowercase(),
+                "url": field("url"),
+                "acceptanceCriteria": [],
+            });
+            Ok((
+                display,
+                serde_json::json!({"issue": issue, "ticket": ticket}).to_string(),
+            ))
+        }
+        Op::ListIssues { state, label } => {
+            let issues = crate::github::list_issues(
+                &runner,
+                root,
+                state.as_deref().unwrap_or("open"),
+                label.as_deref(),
+            )?;
+            let mut display = String::new();
+            for issue in &issues {
+                display.push_str(&format!(
+                    "#{} {}\n",
+                    issue.get("number").and_then(|v| v.as_u64()).unwrap_or(0),
+                    issue.get("title").and_then(|v| v.as_str()).unwrap_or("")
+                ));
+            }
+            Ok((display, serde_json::json!({"issues": issues}).to_string()))
+        }
+        Op::CommentIssue { number, body } => {
+            let done = crate::github::comment_issue(&runner, root, *number, body)?;
+            Ok((
+                format!("{done}\n"),
+                serde_json::json!({"op": "commentIssue", "number": number}).to_string(),
+            ))
+        }
+        Op::WaitChecks { .. } | Op::RunWorkflow { .. } => {
+            Err("This GitHub step waits for CI and runs on its own path.".into())
+        }
     }
 }
 
@@ -4645,13 +5579,12 @@ async fn execute_ticket_task(
     let blocking = tokio::task::spawn_blocking(move || {
         let source = crate::ticket::JiraMcpSource {
             server,
-            tool_name: "jira_get_issue".to_string(),
+            tool_name: crate::ticket::DEFAULT_TICKET_TOOL.to_string(),
             timeout,
             cancel: flag_clone,
             max_context_chars: 8000,
         };
-        use crate::ticket::TicketSource;
-        source.load_ticket(rendered_key.trim())
+        source.load_ticket_with_tool(rendered_key.trim())
     })
     .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -4667,9 +5600,10 @@ async fn execute_ticket_task(
         return TaskOutcome::Cancelled;
     }
     match blocking {
-        Ok(Ok(ticket)) => {
+        Ok(Ok((ticket, tool))) => {
             let structured = serde_json::json!({"ticket": ticket}).to_string();
-            let with_provenance = merge_provenance(&structured, "jira-mcp");
+            let with_provenance =
+                merge_provenance(&structured, crate::ticket::provider_of_tool(&tool));
             let _ = db.record_node_result(NewNodeResult {
                 run_id: &task.run_id,
                 node_id,
@@ -6202,6 +7136,7 @@ mod tests {
             workflow_id: "wf".to_string(),
             workflow_name: "W".to_string(),
             workflow_defaults: defaults,
+            workspace_dir: None,
             run_id: "run".to_string(),
             inputs: HashMap::new(),
         }
@@ -6918,6 +7853,201 @@ mod tests {
         let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
         assert_eq!(agent.status, "succeeded", "{:?}", agent.error);
         assert_eq!(agent.stdout.trim(), repo.to_string_lossy());
+    }
+
+    #[test]
+    fn inputs_with_choices_refuse_other_values_at_run_start() {
+        let (db, engine) = harness();
+        let mut wf = agent_workflow("missing-profile");
+        wf.nodes.retain(|n| n.kind != NodeKind::Agent);
+        wf.edges = vec![edge("e0", "start", "end", None)];
+        wf.inputs.push(WorkflowInput {
+            name: "tone".into(),
+            options: vec!["Friendly".into(), "Formal".into()],
+            default: Some("Friendly".into()),
+            ..Default::default()
+        });
+        db.upsert_workflow(&wf).unwrap();
+        let mut inputs = empty_inputs();
+        inputs.insert("tone".into(), "Sarcastic".into());
+        let err = engine.start_run(&wf, "tone-bad", &inputs).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Workflow input 'tone' must be one of: Friendly, Formal."),
+            "{err}"
+        );
+        inputs.insert("tone".into(), " Formal ".into());
+        engine
+            .start_run(&wf, "tone-ok", &inputs)
+            .expect("a listed choice starts");
+        engine
+            .start_run(&wf, "tone-default", &empty_inputs())
+            .expect("the default is a choice");
+    }
+
+    #[tokio::test]
+    async fn folderless_steps_run_in_the_workflow_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root_path.to_string_lossy(),
+        )
+        .unwrap();
+        let mut profile = echo_profile("pwd-workspace");
+        profile.adapter = crate::agents::AdapterKind::Custom;
+        profile.executable = Some("sh".into());
+        profile.extra_args = vec!["-c".into(), "pwd".into()];
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        let mut wf = agent_workflow(&profile.id);
+        wf.name = "Launch kit / spring".into();
+        run_to_end(&db, &engine, wf, "agent-workspace").await;
+        let rows = db.list_node_results("agent-workspace").unwrap();
+        let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(agent.status, "succeeded", "{:?}", agent.error);
+        let expected = root_path.join("Launch kit - spring (fagent)");
+        assert!(expected.is_dir());
+        assert_eq!(agent.stdout.trim(), expected.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_workspace_that_cannot_be_made_fails_the_step_clearly() {
+        let blocker = tempfile::tempdir().unwrap();
+        // A file where the root folder should be: nothing can be created in it.
+        let root = blocker.path().join("not-a-folder");
+        std::fs::write(&root, "x").unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root.to_string_lossy(),
+        )
+        .unwrap();
+        let mut profile = echo_profile("pwd-blocked");
+        profile.adapter = crate::agents::AdapterKind::Custom;
+        profile.executable = Some("sh".into());
+        profile.extra_args = vec!["-c".into(), "pwd".into()];
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "blocked").await;
+        let rows = db.list_node_results("blocked").unwrap();
+        let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(agent.status, "failed");
+        assert!(
+            agent
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Working directory does not exist"),
+            "{:?}",
+            agent.error
+        );
+    }
+
+    #[test]
+    fn a_workspace_folder_takes_one_open_run_and_keeps_its_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root.path().to_string_lossy(),
+        )
+        .unwrap();
+        let mut profile = echo_profile("one-open");
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine
+            .start_run(&wf, "first", &empty_inputs())
+            .expect("first starts");
+        let recorded = db.get_run("first").unwrap().unwrap().execution.workspace;
+        assert_eq!(
+            recorded.as_deref(),
+            Some(
+                root.path()
+                    .join("Agent slice (fagent)")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        let err = engine
+            .start_run(&wf, "second", &empty_inputs())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("already has a run open in its workspace folder"),
+            "{err}"
+        );
+        // A dry run touches no folder, so it may run alongside.
+        let dry = RunOptions {
+            dry_run: true,
+            ..RunOptions::default()
+        };
+        engine
+            .start_run_with_options(&wf, "dry", &empty_inputs(), &dry)
+            .expect("dry runs are not blocked");
+        assert_eq!(
+            db.get_run("dry").unwrap().unwrap().execution.workspace,
+            None
+        );
+        // Moving the root later never moves the open run.
+        db.set_setting(crate::workspace::WORKSPACE_ROOT_SETTING, "/elsewhere")
+            .unwrap();
+        let run = db.get_run("first").unwrap().unwrap();
+        let node = wf.nodes.iter().find(|n| n.id == "agent1").unwrap();
+        assert_eq!(task_workspace(&db, &wf, node, &run.execution), recorded);
+        db.finish_run("first", crate::db::RunStatus::Succeeded)
+            .unwrap();
+        engine
+            .start_run(&wf, "third", &empty_inputs())
+            .expect("starts once the first is done");
+    }
+
+    #[test]
+    fn agents_in_their_profiles_folder_never_use_the_workspace() {
+        let elsewhere = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut profile = echo_profile("own-folder");
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Profile;
+        profile.working_dir = Some(elsewhere.path().to_string_lossy().into_owned());
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "own-1", &empty_inputs()).unwrap();
+        engine
+            .start_run(&wf, "own-2", &empty_inputs())
+            .expect("no shared workspace folder, so no limit");
+        assert_eq!(
+            db.get_run("own-1").unwrap().unwrap().execution.workspace,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_runs_create_no_workspace_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root.path().to_string_lossy(),
+        )
+        .unwrap();
+        let profile = echo_profile("dry-workspace");
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        let options = RunOptions {
+            dry_run: true,
+            ..RunOptions::default()
+        };
+        engine
+            .start_run_with_options(&wf, "dry-ws", &empty_inputs(), &options)
+            .expect("start");
+        engine.execute(wf, "dry-ws".to_string()).await;
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
     fn agent_workflow(profile_id: &str) -> Workflow {
@@ -7794,6 +8924,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                 label: None,
                 default: Some("fast".into()),
                 required: false,
+                ..Default::default()
             }],
             defaults: None,
             limits: None,
@@ -8070,6 +9201,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                     label: None,
                     default: Some("yes".into()),
                     required: false,
+                    ..Default::default()
                 }]
             } else {
                 Vec::new()
@@ -9517,6 +10649,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                 label: None,
                 default: Some("you".into()),
                 required: false,
+                ..Default::default()
             }],
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
@@ -9676,6 +10809,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             label: None,
             default: Some("printf REAL_TEST".into()),
             required: true,
+            ..Default::default()
         });
         db.upsert_workflow(&wf).unwrap();
         for (i, value) in ["", "  "].iter().enumerate() {
@@ -9712,6 +10846,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             label: None,
             default: None,
             required: true,
+            ..Default::default()
         });
         let err = engine
             .start_run(&wf, "run-input", &empty_inputs())
@@ -11444,25 +12579,50 @@ mod integration_tests {
 
     /// Fixture MCP server answering ticket calls.
     fn ticket_server() -> (tempfile::TempDir, McpServerConfig) {
+        fake_ticket_server(
+            "jira_get_issue",
+            r#"{"key":"DEV-1234","summary":"Cart bug","description":"Empty cart fails","status":{"name":"To Do"}}"#,
+        )
+    }
+
+    /// An MCP server listing one ticket tool whose every call returns `text`;
+    /// the last call's request is kept in `<dir>/call`.
+    fn fake_ticket_server(tool: &str, text: &str) -> (tempfile::TempDir, McpServerConfig) {
         let dir = tempfile::tempdir().expect("tempdir");
+        let line = |result: serde_json::Value| {
+            serde_json::json!({"jsonrpc": "2.0", "id": "__ID__", "result": result}).to_string()
+        };
+        std::fs::write(
+            dir.path().join("list.json"),
+            line(serde_json::json!({"tools": [{"name": tool, "inputSchema": {"type": "object"}}]})),
+        )
+        .expect("write");
+        std::fs::write(
+            dir.path().join("call.json"),
+            line(
+                serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false}),
+            ),
+        )
+        .expect("write");
         let script = dir.path().join("ticket-mcp.sh");
         std::fs::write(
             &script,
-            r#"#!/bin/sh
+            format!(
+                r#"#!/bin/sh
+d='{}'
 while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
   case "$line" in
     *'"method":"initialize"'*)
-      n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}\n' "$n"
-      ;;
-    *'"method":"tools/call"'*)
-      n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"{\\"key\\":\\"DEV-1234\\",\\"summary\\":\\"Cart bug\\",\\"description\\":\\"Empty cart fails\\",\\"status\\":{\\"name\\":\\"To Do\\"}}"}],"isError":false}}\n' "$n"
-      ;;
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"2024-11-05","capabilities":{{}}}}}}\n' "$n" ;;
+    *'"method":"tools/list"'*) sed "s/\"__ID__\"/$n/" "$d/list.json"; echo ;;
+    *'"method":"tools/call"'*) printf '%s\n' "$line" > "$d/call"; sed "s/\"__ID__\"/$n/" "$d/call.json"; echo ;;
     *) ;;
   esac
 done
 "#,
+                dir.path().display()
+            ),
         )
         .expect("write");
         #[cfg(unix)]
@@ -11558,6 +12718,66 @@ done
         assert_eq!(
             vars.get("ticket.title").map(String::as_str),
             Some("Cart bug")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ticket_step_reads_a_shortcut_story_from_its_link() {
+        let story = r#"Story: sc-42
+
+<json>
+{"story": {"id": 42, "name": "Dark mode", "app_url": "https://app.shortcut.com/acme/story/42", "description": "Add a toggle", "workflow_state_id": 7, "labels": ["ui"]},
+ "relatedEntities": {"workflows": {"1": {"id": 1, "name": "Dev", "states": [{"id": 7, "name": "Ready", "type": "unstarted"}]}}}}
+</json>"#;
+        let (dir, mut server) = fake_ticket_server("stories-get-by-id", story);
+        server.id = "shortcut".into();
+        server.name = "Shortcut".into();
+        let (db, engine) = harness();
+        db.upsert_mcp_server(&server).expect("server");
+        let wf = ticket_workflow(
+            "shortcut",
+            "https://app.shortcut.com/acme/story/42/dark-mode",
+        );
+        db.upsert_workflow(&wf).expect("upsert");
+        engine
+            .start_run(&wf, "run-story", &HashMap::new())
+            .expect("start");
+        engine.execute(wf.clone(), "run-story".to_string()).await;
+        let rows = db.list_node_results("run-story").expect("rows");
+        let row = rows.iter().find(|r| r.node_id == "t").expect("row");
+        assert_eq!(row.status, "succeeded", "{:?}", row.error);
+        assert!(
+            row.structured_json.contains("shortcut-mcp"),
+            "{}",
+            row.structured_json
+        );
+        // The story number, as a number, is what Shortcut's tool takes.
+        let call = std::fs::read_to_string(dir.path().join("call")).expect("call");
+        assert!(call.contains(r#""storyPublicId":42"#), "{call}");
+        let vars = build_vars(&db, &wf.id, &wf.name, "run-story", &HashMap::new()).expect("vars");
+        assert_eq!(vars.get("ticket.key").map(String::as_str), Some("sc-42"));
+        assert_eq!(
+            vars.get("ticket.title").map(String::as_str),
+            Some("Dark mode")
+        );
+        assert_eq!(vars.get("ticket.status").map(String::as_str), Some("Ready"));
+
+        // A Jira key is not a story: the step says what a story key looks like.
+        let wf = ticket_workflow("shortcut", "DEV-12");
+        engine
+            .start_run(&wf, "run-story-2", &HashMap::new())
+            .expect("start");
+        engine.execute(wf.clone(), "run-story-2".to_string()).await;
+        let rows = db.list_node_results("run-story-2").expect("rows");
+        let row = rows.iter().find(|r| r.node_id == "t").expect("row");
+        assert_eq!(row.status, "failed");
+        assert!(
+            row.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("not a Shortcut story"),
+            "{:?}",
+            row.error
         );
     }
 
@@ -11704,5 +12924,512 @@ exit 1
             .expect("row");
         assert!(row.stdout.contains("#3"));
         std::env::remove_var("ORCHEVIA_GH_BIN");
+    }
+
+    /// A run of one GitHub step (and an optional Command after it) against a
+    /// scripted fake `gh`; returns the run's rows.
+    async fn run_fake_gh(
+        script_body: &str,
+        op: GitHubOp,
+        inputs: HashMap<String, String>,
+        after: Option<NodeConfig>,
+    ) -> Option<(
+        RunStatus,
+        Vec<crate::db::StoredNodeResult>,
+        tempfile::TempDir,
+    )> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("gh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nstate={}\n{script_body}", dir.path().display()),
+        )
+        .expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        std::env::set_var("ORCHEVIA_GH_BIN", script.to_string_lossy().into_owned());
+        let (repo, root) = two_commit_repo(true)?;
+        let (db, engine) = harness();
+        let node = |id: &str, kind: NodeKind, config: NodeConfig| Node {
+            id: id.into(),
+            kind,
+            position: Position::default(),
+            config,
+            label: None,
+        };
+        let mut nodes = vec![
+            node("start", NodeKind::Start, NodeConfig::default()),
+            node(
+                "g",
+                NodeKind::GitHub,
+                NodeConfig {
+                    github_op: Some(op),
+                    working_dir: Some(root.clone()),
+                    timeout_secs: Some(20),
+                    ..NodeConfig::default()
+                },
+            ),
+        ];
+        let edge = |id: &str, source: &str, target: &str, _label: Option<&str>| Edge {
+            id: id.into(),
+            source: source.into(),
+            target: target.into(),
+            label: None,
+        };
+        let mut edges = vec![edge("e0", "start", "g", None)];
+        if let Some(config) = after {
+            nodes.push(node("after", NodeKind::Command, config));
+            edges.push(edge("e1", "g", "after", None));
+            edges.push(edge("e2", "after", "end", None));
+        } else {
+            edges.push(edge("e1", "g", "end", None));
+        }
+        nodes.push(node("end", NodeKind::End, NodeConfig::default()));
+        let wf = Workflow {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: "wf-ci".into(),
+            name: "CI".into(),
+            inputs: Vec::new(),
+            defaults: None,
+            limits: None,
+            nodes,
+            edges,
+        };
+        db.upsert_workflow(&wf).expect("upsert");
+        engine.start_run(&wf, "run-ci", &inputs).expect("start");
+        engine.execute(wf, "run-ci".into()).await;
+        let status = db.get_run("run-ci").unwrap().unwrap().status;
+        let rows = db.list_node_results("run-ci").unwrap();
+        std::env::remove_var("ORCHEVIA_GH_BIN");
+        drop(repo);
+        Some((status, rows, dir))
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test-only serialization of ORCHEVIA_GH_BIN
+    async fn waiting_for_pr_checks_passes_once_they_finish_and_fails_with_their_logs() {
+        let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        // The first look shows the previous commit on the pull request (its
+        // checks all passed); later looks show this checkout's commit.
+        let passing = r#"
+case "$1 $2" in
+  "pr view")
+    n=$(cat $state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/n
+    if [ "$n" = 1 ]; then oid=$(git rev-parse HEAD~1); else oid=$(git rev-parse HEAD); fi
+    echo "{\"number\":12,\"headRefName\":\"main\",\"headRefOid\":\"$oid\"}" ;;
+  "pr checks")
+    echo '[{"name":"build","bucket":"pass","link":""},{"name":"lint","bucket":"skipping","link":""}]' ;;
+  "run list") echo '[]' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, dir)) = run_fake_gh(
+            passing,
+            GitHubOp::WaitChecks { number: 0 },
+            HashMap::from([("prNumber".to_string(), "12".to_string())]),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Succeeded);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(
+            row.stdout
+                .contains("CI on pull request #12: 1 passed, 0 failed, 1 skipped"),
+            "{}",
+            row.stdout
+        );
+        assert!(row.structured_json.contains("\"conclusion\":\"success\""));
+        // One look waited for the pushed commit, then two in a row were done.
+        let looks = std::fs::read_to_string(dir.path().join("n")).unwrap();
+        assert_eq!(looks.trim(), "3");
+
+        let failing = r#"
+case "$1 $2" in
+  "pr view") echo '{"number":12,"headRefName":"feature","headRefOid":"abcdef1234"}' ;;
+  "pr checks")
+    echo '[{"name":"test","bucket":"fail","link":"https://github.com/o/r/actions/runs/77/job/5"}]'; exit 1 ;;
+  "run list") echo '[]' ;;
+  "run view")
+    [ "$3 $4 $5" = "--job 5 --log-failed" ] || { echo "unexpected: $*" >&2; exit 1; }
+    printf 'test\tRun tests\tError: expected 2, got 3\n' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            failing,
+            GitHubOp::WaitChecks { number: 12 },
+            HashMap::new(),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert_eq!(row.status, "failed");
+        assert_eq!(
+            row.error.as_deref(),
+            Some("CI failed on pull request #12: test")
+        );
+        // The failed job's log reaches the step's output, for a fix step.
+        assert!(
+            row.stdout.contains("Failed steps of job 5")
+                && row.stdout.contains("Error: expected 2, got 3"),
+            "{}",
+            row.stdout
+        );
+
+        // gh failing (not exit 1 or 8 with a list) is an error, not a parse
+        // problem, and never a CI failure.
+        let broken = r#"
+case "$1 $2" in
+  "pr view") echo '{"number":12,"headRefName":"feature","headRefOid":"abcdef1234"}' ;;
+  "pr checks") echo 'HTTP 401: Bad credentials' >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            broken,
+            GitHubOp::WaitChecks { number: 12 },
+            HashMap::new(),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        let error = row.error.as_deref().unwrap_or("");
+        assert!(error.contains("Bad credentials"), "{error}");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test-only serialization of ORCHEVIA_GH_BIN
+    async fn waiting_without_a_pr_reads_the_current_commit() {
+        let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        // Android finishes first while the iOS workflow is still queued (no
+        // check run yet); the wait lasts until iOS has run too.
+        let commit = r#"
+case "$1" in
+  api)
+    [ "$2" = "--paginate" ] || { echo "unexpected: $*" >&2; exit 1; }
+    case "$3" in
+      *check-runs*)
+        n=$(cat $state/c 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/c
+        echo '{"name":"android","status":"completed","conclusion":"success","html_url":"u"}'
+        if [ "$n" -ge 3 ]; then echo '{"name":"ios","status":"completed","conclusion":"success","html_url":"i"}'; fi ;;
+      *statuses*)
+        echo '{"context":"preview","state":"success","target_url":"p"}'
+        echo '{"context":"preview","state":"pending","target_url":"p"}' ;;
+    esac ;;
+  run)
+    n=$(cat $state/r 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/r
+    if [ "$n" -le 2 ]; then echo '[{"name":"iOS","status":"queued"}]'; else echo '[]'; fi ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            commit,
+            GitHubOp::WaitChecks { number: 0 },
+            HashMap::new(),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Succeeded);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(row.stdout.starts_with("CI on commit "), "{}", row.stdout);
+        // The newest status of a context wins (the list is newest first).
+        assert!(
+            row.stdout.contains("✓ android")
+                && row.stdout.contains("✓ ios")
+                && row.stdout.contains("✓ preview"),
+            "{}",
+            row.stdout
+        );
+    }
+
+    /// A repository with two commits on `main`; the remote-tracking
+    /// `origin/main` holds the newest one when `pushed`, else its parent.
+    fn two_commit_repo(pushed: bool) -> Option<(tempfile::TempDir, String)> {
+        let (repo, root) = fresh_repo()?;
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git")
+                .status
+                .success());
+        };
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        std::fs::write(std::path::Path::new(&root).join("b.txt"), "b\n").expect("write");
+        git(&["add", "b.txt"]);
+        git(&["commit", "-m", "second"]);
+        if pushed {
+            git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        }
+        Some((repo, root))
+    }
+
+    /// A scripted `gh` for calling the wait directly; `$state` is its folder.
+    fn scripted_gh(dir: &std::path::Path, body: &str) -> crate::github::GhRunner {
+        let script = dir.join("gh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nstate={}\n{body}", dir.display()),
+        )
+        .expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        crate::github::GhRunner {
+            executable: script.to_string_lossy().into_owned(),
+            timeout_secs: 10,
+        }
+    }
+
+    fn wait_now(
+        runner: &crate::github::GhRunner,
+        root: &str,
+        number: u64,
+    ) -> Result<CiOutcome, String> {
+        let flag = AtomicBool::new(false);
+        wait_for_checks(
+            runner,
+            root,
+            number,
+            Instant::now() + Duration::from_secs(10),
+            &flag,
+        )
+    }
+
+    fn report_of(outcome: Result<CiOutcome, String>) -> String {
+        match outcome {
+            Ok(CiOutcome::Passed { report, .. }) => report,
+            Ok(CiOutcome::Failed { error, .. }) => panic!("failed: {error}"),
+            Ok(CiOutcome::Cancelled { .. }) => panic!("cancelled"),
+            Err(e) => panic!("error: {e}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waiting_for_an_unpushed_commit_says_to_push_it() {
+        let Some((_repo, root)) = two_commit_repo(false) else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gh = scripted_gh(
+            dir.path(),
+            r#"
+case "$1" in
+  api) echo 'gh: No commit found for SHA: abc (HTTP 422)' >&2; exit 1 ;;
+  pr)
+    echo "{\"number\":3,\"state\":\"OPEN\",\"headRefName\":\"main\",\"headRefOid\":\"$(git rev-parse HEAD~1)\"}" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#,
+        );
+        // Without a pull request: GitHub has no such commit.
+        let Err(message) = wait_now(&gh, &root, 0) else {
+            panic!("an unpushed commit has no CI to wait for");
+        };
+        assert!(message.contains("push it"), "{message}");
+        // With one: the pull request's old, finished checks never pass for
+        // the commit that was not pushed.
+        let Err(message) = wait_now(&gh, &root, 3) else {
+            panic!("a pull request without this commit is not its CI");
+        };
+        assert!(
+            message.contains("is not pushed: push it to main"),
+            "{message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ci_reads_tag_pushes_and_newer_pull_requests_without_waiting() {
+        let Some((_repo, root)) = two_commit_repo(false) else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No remote-tracking branch holds HEAD (pushed with a tag only), but
+        // GitHub has it; and the pull request is ahead of this checkout.
+        let gh = scripted_gh(
+            dir.path(),
+            r#"
+case "$1 $2" in
+  "api repos/{owner}/{repo}/commits/"*) git rev-parse HEAD ;;
+  "api --paginate")
+    case "$3" in
+      *check-runs*) echo '{"name":"release","status":"completed","conclusion":"success","html_url":"u"}' ;;
+    esac ;;
+  "pr view")
+    n=$(cat $state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/n
+    echo '{"number":4,"state":"OPEN","headRefName":"main","headRefOid":"abcdef0123456789"}' ;;
+  "pr checks") echo '[{"name":"build","bucket":"pass","link":""}]' ;;
+  "run list") echo 'HTTP 403: Resource not accessible by personal access token' >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#,
+        );
+        let report = report_of(wait_now(&gh, &root, 0));
+        assert!(report.contains("✓ release"), "{report}");
+        // A token without Actions access still gets an answer from the checks.
+        assert!(report.contains("could not list Actions runs"), "{report}");
+        let report = report_of(wait_now(&gh, &root, 4));
+        assert!(report.contains("✓ build"), "{report}");
+        // Two looks, no waiting for GitHub to show this older commit.
+        let looks = std::fs::read_to_string(dir.path().join("n")).expect("looks");
+        assert_eq!(looks.trim(), "2");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test-only serialization of ORCHEVIA_GH_BIN
+    async fn running_an_actions_workflow_waits_and_downloads_its_artifacts() {
+        let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let actions = r#"
+case "$1 $2" in
+  "workflow run")
+    printf '%s\n' "$@" > $state/dispatch
+    echo "https://github.com/o/r/actions/runs/4242" ;;
+  "run view")
+    n=$(cat $state/v 2>/dev/null || echo 0); n=$((n+1)); echo $n > $state/v
+    if [ "$n" = 1 ]; then echo '{"status":"in_progress","conclusion":"","url":"https://github.com/o/r/actions/runs/4242","jobs":[]}'; exit 0; fi
+    echo '{"status":"completed","conclusion":"success","url":"https://github.com/o/r/actions/runs/4242","jobs":[{"name":"android","status":"completed","conclusion":"success","databaseId":1}]}' ;;
+  "run download")
+    d="${4#--dir=}"; mkdir -p "$d"; echo apk > "$d/app-release.apk" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let op = GitHubOp::RunWorkflow {
+            workflow: "build.yml".into(),
+            git_ref: "main".into(),
+            inputs: std::collections::BTreeMap::from([(
+                "track".to_string(),
+                "{{input.track}}".to_string(),
+            )]),
+            artifacts_dir: Some("build-artifacts".into()),
+        };
+        let inputs = HashMap::from([("track".to_string(), "internal".to_string())]);
+        let Some((status, rows, dir)) =
+            run_fake_gh(actions, op.clone(), inputs.clone(), None).await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Succeeded);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(row.stdout.contains("run 4242: success"), "{}", row.stdout);
+        assert!(row
+            .stdout
+            .contains("Artifacts downloaded to build-artifacts"));
+        let dispatch = std::fs::read_to_string(dir.path().join("dispatch")).unwrap();
+        assert_eq!(
+            dispatch.lines().collect::<Vec<_>>(),
+            [
+                "workflow",
+                "run",
+                "build.yml",
+                "--ref=main",
+                "--raw-field=track=internal"
+            ]
+        );
+
+        // A passed run whose download fails fails the step and keeps the
+        // run's report.
+        let no_download = actions.replace(
+            r#"d="${4#--dir=}"; mkdir -p "$d"; echo apk > "$d/app-release.apk" ;;"#,
+            "echo 'error: network unreachable' >&2; exit 1 ;;",
+        );
+        let Some((status, rows, _dir)) = run_fake_gh(&no_download, op, inputs, None).await else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(row.stdout.contains("run 4242: success"), "{}", row.stdout);
+        let error = row.error.as_deref().unwrap_or("");
+        assert!(
+            error.contains("artifacts could not be downloaded") && error.contains("unreachable"),
+            "{error}"
+        );
+
+        // A failed run shows its failed jobs' own logs.
+        let failed_run = r#"
+case "$1 $2" in
+  "workflow run") echo "https://github.com/o/r/actions/runs/4243" ;;
+  "run view")
+    if [ "$3" = "--job" ]; then printf 'ios\tBuild\terror: signing identity not found\n'; exit 0; fi
+    echo '{"status":"completed","conclusion":"failure","url":"u","jobs":[{"name":"android","status":"completed","conclusion":"success","databaseId":1},{"name":"ios","status":"completed","conclusion":"failure","databaseId":2}]}' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            failed_run,
+            GitHubOp::RunWorkflow {
+                workflow: "build.yml".into(),
+                git_ref: String::new(),
+                inputs: std::collections::BTreeMap::new(),
+                artifacts_dir: None,
+            },
+            HashMap::new(),
+            None,
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Failed);
+        let row = rows.iter().find(|r| r.node_id == "g").unwrap();
+        assert!(
+            row.stdout.contains("Failed jobs: ios")
+                && row.stdout.contains("Failed steps of job 2")
+                && row.stdout.contains("signing identity not found"),
+            "{}",
+            row.stdout
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test-only serialization of ORCHEVIA_GH_BIN
+    async fn a_github_issue_fills_the_ticket_variables() {
+        let _bin_guard = crate::github::GH_BIN_TEST_LOCK.lock().expect("lock");
+        let issue = r#"
+case "$1 $2" in
+  "issue view") echo '{"number":7,"title":"Dark mode","body":"Add a toggle","state":"OPEN","labels":[],"url":"https://github.com/o/r/issues/7","author":{"login":"a"},"comments":[]}' ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+"#;
+        let Some((status, rows, _dir)) = run_fake_gh(
+            issue,
+            GitHubOp::IssueDetails { number: 0 },
+            HashMap::from([("issueNumber".to_string(), "#7".to_string())]),
+            Some(NodeConfig {
+                executable: Some("echo".into()),
+                args: vec!["{{ticket.key}} {{ticket.title}}".into()],
+                ..NodeConfig::default()
+            }),
+        )
+        .await
+        else {
+            return;
+        };
+        assert_eq!(status, RunStatus::Succeeded);
+        let after = rows.iter().find(|r| r.node_id == "after").unwrap();
+        assert!(after.stdout.contains("#7 Dark mode"), "{}", after.stdout);
     }
 }

@@ -631,3 +631,89 @@ it('marks a step as publishing, and keeps GitHub writes publishing by default', 
   fireEvent.click(box());
   expect(config('pr')?.publishes).toBeUndefined();
 });
+
+it('edits an input’s label, help text, long-text flag and choices', async () => {
+  const user = (await import('@testing-library/user-event')).default.setup();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Details');
+  workflow.inputs = [{ name: 'tone', default: '' }];
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: null,
+    selectedEdgeId: null,
+    overlayRunId: null,
+    workspaceRoot: '/home/me/Documents/Orchevia',
+  });
+  render(<NodeInspector />);
+  // No project folder: the workspace folder is named.
+  expect(screen.getByTestId('workspace-hint')).toHaveTextContent(
+    '/home/me/Documents/Orchevia/Details',
+  );
+  await user.click(screen.getByText('Details'));
+  await user.type(screen.getByLabelText('Label in the start form'), 'Tone');
+  await user.type(screen.getByLabelText('Help text'), 'How it should sound');
+  await user.click(screen.getByLabelText('Required'));
+  await user.click(screen.getByLabelText('Long text (a brief, notes, a list)'));
+  const current = (): Record<string, unknown> | undefined =>
+    useAppStore.getState().workflows.find((w) => w.id === stored.id)?.definition
+      .inputs?.[0] as Record<string, unknown> | undefined;
+  expect(current()).toMatchObject({
+    name: 'tone',
+    label: 'Tone',
+    description: 'How it should sound',
+    required: true,
+    multiline: true,
+  });
+  await user.click(screen.getByLabelText('Long text (a brief, notes, a list)'));
+  await user.type(
+    screen.getByLabelText('Choices (one per line; blank allows any value)'),
+    'Friendly{enter}Formal',
+  );
+  expect(current()?.options).toEqual(['Friendly', 'Formal']);
+  expect(current()).not.toHaveProperty('multiline');
+  // Clearing the help text removes the field rather than saving a blank.
+  await user.clear(screen.getByLabelText('Help text'));
+  expect(current()).not.toHaveProperty('description');
+});
+
+it('edits the CI and issue GitHub operations', async () => {
+  const user = (await import('@testing-library/user-event')).default.setup();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('CI');
+  workflow.nodes.push({
+    id: 'gh',
+    type: 'github',
+    position: { x: 0, y: 0 },
+    config: { githubOp: { op: 'prStatus' } },
+  });
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: 'gh',
+    selectedEdgeId: null,
+    overlayRunId: null,
+  });
+  render(<NodeInspector />);
+  const op = (): unknown =>
+    useAppStore.getState().workflows.find((w) => w.id === stored.id)?.definition.nodes[2]
+      ?.config.githubOp;
+  await user.selectOptions(screen.getByLabelText('Operation'), 'runWorkflow');
+  expect(screen.getByText(/workflow_dispatch trigger/)).toBeInTheDocument();
+  await user.type(screen.getByLabelText('Workflow file or name'), 'build.yml');
+  await user.type(screen.getByLabelText(/Workflow inputs/), 'track=internal');
+  await user.type(screen.getByLabelText(/Download artifacts to/), 'artifacts');
+  expect(op()).toEqual({
+    op: 'runWorkflow',
+    workflow: 'build.yml',
+    inputs: { track: 'internal' },
+    artifactsDir: 'artifacts',
+  });
+  await user.selectOptions(screen.getByLabelText('Operation'), 'waitChecks');
+  expect(op()).toEqual({ op: 'waitChecks', number: 0 });
+  expect(screen.getByText(/fails the step when a check fails/)).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText('Operation'), 'issueDetails');
+  expect(screen.getByText(/\{\{ticket\.title\}\}/)).toBeInTheDocument();
+});

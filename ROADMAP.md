@@ -9,20 +9,24 @@ Playbooks page and setup for more agents and MCP servers; 0.3.1 connects Orchevi
 more of a team's stack (22 MCP setups, seven more coding CLIs), moves workflows to and
 from n8n, and refreshes the interface. 0.3.3 lets workflow steps keep what your agents
 already have: your browser through Claude in Chrome, and the connectors and MCP servers
-you set up in Claude Code and Codex, chosen once.
+you set up in Claude Code and Codex, chosen once. 0.4 takes the same agents, reviews and
+approvals beyond code: content, research, media and data templates that work in their
+own workspace folder, a Files panel on every run, a Home page that starts from a goal,
+and a command palette.
 
 ## Implemented
 
-| Area            | Current capabilities                                                                                                                                                                                                               |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps, publishing-step marker                                                                            |
-| Agent profiles  | Claude Code, Codex, Muse Code, Google Antigravity CLI, Gemini CLI, OpenCode and custom profiles (one-click Copilot, Cursor, Qwen Code, Amp, Aider, Goose, Kiro), setup checks, abilities from your own setup (browser, connectors) |
-| Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard, feedback on steps during a run with correction rounds                                           |
-| Integrations    | Native Git and GitHub operations, Jira tickets through MCP, 22 MCP setups (Google Workspace, Microsoft 365, Slack, Notion, GitHub, Linear, Sentry…), server checks, n8n import and export                                          |
-| Reuse           | Built-in/user templates (three with MCP), JSON and n8n import, project playbooks with command detection, reviewed suggestions, generation history                                                                                  |
-| Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode                                                                                                                |
-| Onboarding      | Tool detection, setup wizard, install/auth guidance, setup check for every profile, system/light/dark themes                                                                                                                       |
-| Delivery        | Gated validation, tag-driven Linux/macOS installers launched before release, checksums, signed in-place updates (AppImage, macOS), apt repository, weekly CLI canary, project page with demo                                       |
+| Area            | Current capabilities                                                                                                                                                                                                                                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow editor | Autosaved graph editing, dependency-aware layout, reviewable workflow assistance, JSON, run overlays, script-file Command steps, publishing-step marker                                                                                                                                                              |
+| Agent profiles  | Claude Code, Codex, Muse Code, Google Antigravity CLI, Gemini CLI, OpenCode and custom profiles (one-click Copilot, Cursor, Qwen Code, Amp, Aider, Goose, Kiro), setup checks, abilities from your own setup (browser, connectors)                                                                                   |
+| Execution       | Parallel paths/joins, bounded and nested loops, retries, approvals, dry-run fixtures, deliberate failed-run recovery, spend guard, feedback on steps during a run with correction rounds                                                                                                                             |
+| Integrations    | Native Git and GitHub operations (waiting for CI, Actions runs with artifacts, issues as tickets), Jira and Shortcut tickets through MCP, 28 MCP setups (Google Workspace, Microsoft 365, Slack, Notion, GitHub, Linear, Shortcut, Sentry, Firebase, Netlify, mobile devices…), server checks, n8n import and export |
+| Reuse           | 21 built-in templates for code, content, research, media and data (three with MCP), search and kind filters, JSON and n8n import, project playbooks with command detection, reviewed suggestions, generation history                                                                                                 |
+| Outputs         | Workspace folders for work without a repository, a Files panel with previews (documents, images, audio, video, PDF) on every run, media-tool detection (FFmpeg, ImageMagick, Pandoc, Python)                                                                                                                         |
+| Automation      | On-time local schedules/watchers, pause switches, requested-review scope, revision tracking, inbox, background mode                                                                                                                                                                                                  |
+| Onboarding      | Tool detection, setup wizard, install/auth guidance, setup check for every profile, system/light/dark themes                                                                                                                                                                                                         |
+| Delivery        | Gated validation, tag-driven Linux/macOS installers launched before release, checksums, signed in-place updates (AppImage, macOS), apt repository, weekly CLI canary, project page with demo                                                                                                                         |
 
 ## Current priorities
 
@@ -35,6 +39,13 @@ These priorities improve existing capabilities. New features should follow a
 concrete use case, fit the existing architecture, and include tests and documentation.
 
 ## Next improvements to validate with real use
+
+- Work beyond code with real users: which content, research, media and data templates
+  people run, whether Codex's image tool in `codex exec` copies images into the
+  workspace as asked, and which media MCP servers (ComfyUI, Hugging Face, Replicate)
+  are worth a ready-made setup.
+- Files on runs with large repositories: whether the 300-file limit and the skipped
+  folders fit, and whether runs should record each step's own files.
 
 - n8n round trips with real workflows: which nodes people need converted next, and
   whether MCP steps should become an n8n AI Agent with the MCP Client tool.
@@ -64,7 +75,9 @@ concrete use case, fit the existing architecture, and include tests and document
 
 - Orchevia orchestrates tools; it does not provide AI models or manage provider accounts.
 - Execution and scheduling remain local. There is no hosted worker or telemetry service.
-- The focus is developer workflows rather than general business automation.
+- Developer workflows come first. Content, research, media and data work is in scope
+  when it runs the same local agents and tools with reviews and approvals; general
+  SaaS automation (app-to-app triggers, hosted webhooks) stays with tools like n8n.
 - Linux x86_64 and macOS Apple Silicon/Intel are the initial targets. Windows is not
   currently supported.
 - Git and GitHub tasks belong in workflows; a separate file-browser Git client is

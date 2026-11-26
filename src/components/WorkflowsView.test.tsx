@@ -542,3 +542,79 @@ it('says which problems Use template will refuse, apart from setup', async () =>
     await screen.findByText(/Use template refuses it until 1 problem is fixed/),
   ).toBeInTheDocument();
 });
+
+it('opens the generator with a goal from Home, without the last repository', async () => {
+  localStorage.clear();
+  localStorage.setItem('orchevia.genRepo.v1', '/home/me/code/app');
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Any'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    pendingIntent: { kind: 'generate', goal: 'Write a launch email for our new plan' },
+  });
+  render(<WorkflowsView />);
+  expect(screen.getByLabelText('Describe what you want to do')).toHaveValue(
+    'Write a launch email for our new plan',
+  );
+  expect(screen.getByLabelText('Repository directory')).toHaveValue('');
+  // The request is done once.
+  expect(useAppStore.getState().pendingIntent).toBeNull();
+});
+
+it('starts the selected workflow when Home asks to run it', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Weekly'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    pendingIntent: { kind: 'run' },
+  });
+  render(<WorkflowsView />);
+  expect(await screen.findByRole('dialog', { name: 'Start run' })).toBeInTheDocument();
+  expect(useAppStore.getState().pendingIntent).toBeNull();
+});
+
+it('handles a palette request while Workflows is already open', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const stored = await backend.saveWorkflow(createEmptyWorkflow('Open'));
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    profiles: [],
+    overlayRunId: null,
+    overlayWorkflow: null,
+    validation: [],
+    pendingIntent: null,
+  });
+  render(<WorkflowsView />);
+  act(() => {
+    useAppStore
+      .getState()
+      .setPendingIntent({ kind: 'generate', goal: 'Summarize notes' });
+  });
+  expect(await screen.findByLabelText('Describe what you want to do')).toHaveValue(
+    'Summarize notes',
+  );
+  expect(useAppStore.getState().pendingIntent).toBeNull();
+  act(() => {
+    useAppStore.getState().setPendingIntent({ kind: 'new' });
+  });
+  // Exactly one new workflow, however often the store notifies.
+  await waitFor(() =>
+    expect(
+      useAppStore.getState().workflows.filter((w) => w.name.startsWith('Untitled')),
+    ).toHaveLength(1),
+  );
+  expect(useAppStore.getState().pendingIntent).toBeNull();
+});

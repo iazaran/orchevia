@@ -72,6 +72,56 @@ fn git(dir: &str, args: &[&str], timeout_secs: u64) -> Result<String, String> {
 }
 
 /// Find the repository root for `dir` (empty when not in a repo).
+/// Whether `dir` or a folder above it holds a `.git` entry (a repository or
+/// a worktree). Reads the file system only; no Git process runs.
+pub fn inside_repository(dir: &std::path::Path) -> bool {
+    // Where the folder really is: a link from inside a repository to a folder
+    // outside one starts Codex outside the repository.
+    let resolved = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    resolved
+        .ancestors()
+        .any(|folder| folder.join(".git").exists())
+}
+
+/// The commit the folder's checkout is on.
+pub fn head_sha(dir: &str) -> Result<String, String> {
+    git(dir, &["rev-parse", "HEAD"], 10).map(|s| s.trim().to_string())
+}
+
+/// Whether a remote-tracking branch holds `sha`, that is, whether the commit
+/// was pushed (as far as this checkout knows).
+pub fn on_remote_branch(dir: &str, sha: &str) -> Result<bool, String> {
+    git(dir, &["branch", "-r", "--contains", sha], 10).map(|out| !out.trim().is_empty())
+}
+
+/// Whether `ancestor` is an ancestor of `descendant` (false when either is
+/// unknown here, for example a commit this checkout has not fetched).
+pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
+    git(
+        dir,
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+        10,
+    )
+    .is_ok()
+}
+
+/// The branch name the current branch tracks on its remote (`feature` for
+/// `origin/feature`), if it tracks one.
+pub fn upstream_branch(dir: &str) -> Option<String> {
+    let branch = current_branch(dir).ok().filter(|b| b != "HEAD")?;
+    let out = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:lstrip=3)",
+            &format!("refs/heads/{branch}"),
+        ],
+        10,
+    )
+    .ok()?;
+    Some(out.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 pub fn discover_root(dir: &str) -> Option<String> {
     git(dir, &["rev-parse", "--show-toplevel"], 10)
         .ok()
@@ -653,5 +703,17 @@ mod tests {
         // distinctive missing subdir guard instead).
         let missing = dir.path().join("nope").to_string_lossy().into_owned();
         assert!(discover_root(&missing).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_a_repository_is_outside_it() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = repo.path().join("drafts");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        assert!(inside_repository(repo.path()));
+        assert!(!inside_repository(&link));
     }
 }

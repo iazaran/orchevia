@@ -13,6 +13,8 @@ import { RunsView } from './components/RunsView';
 import { TemplatesView } from './components/TemplatesView';
 import { UsageView } from './components/UsageView';
 import { WorkflowsView } from './components/WorkflowsView';
+import { HomeView } from './components/HomeView';
+import { CommandPalette } from './components/CommandPalette';
 import { useAppStore, type View } from './store';
 import { errorMessage } from './lib/errors';
 import { readLocal, writeLocal } from './lib/storage';
@@ -22,6 +24,7 @@ import { UpdateBanner, useAutomaticUpdateChecks } from './components/Updates';
 import { BrandMark, Icon, type IconName } from './components/Icon';
 
 const NAV: { id: View; label: string; icon: IconName }[] = [
+  { id: 'home', label: 'Home', icon: 'home' },
   { id: 'workflows', label: 'Workflows', icon: 'workflows' },
   { id: 'agents', label: 'Agents', icon: 'agents' },
   { id: 'templates', label: 'Templates', icon: 'templates' },
@@ -43,7 +46,26 @@ export function App(): React.JSX.Element {
   const unread = notifications.filter((n) => !n.read).length;
   const { theme, setTheme } = useTheme();
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   useAutomaticUpdateChecks();
+  // Ctrl/⌘ + K finds a view, workflow, template, run or action. Another open
+  // dialog keeps the keys: the palette never opens over it.
+  useEffect(() => {
+    // On macOS Ctrl+K deletes to the end of a line in text fields: only ⌘K.
+    const mac = /mac/i.test(navigator.platform);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key.toLowerCase() !== 'k' || !(mac ? event.metaKey : event.ctrlKey))
+        return;
+      if (event.altKey || event.shiftKey) return;
+      if (document.querySelector('[aria-modal="true"]') !== null) return;
+      event.preventDefault();
+      setPaletteOpen(true);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
   const [collapsed, setCollapsed] = useState<boolean>(
     () => readLocal('orchevia.sidebar.v1') === 'collapsed',
   );
@@ -114,6 +136,23 @@ export function App(): React.JSX.Element {
             </svg>
           </button>
         </div>
+        <button
+          className="nav-search"
+          onClick={() => {
+            setPaletteOpen(true);
+          }}
+          title="Find a view, workflow, template or action (Ctrl/⌘ + K)"
+          aria-label="Search (Ctrl or Command + K)"
+          aria-keyshortcuts="Control+K Meta+K"
+        >
+          <span className="nav-icon" aria-hidden="true">
+            <Icon name="search" />
+          </span>
+          <span className="nav-btn-label">Search</span>
+          <kbd className="nav-kbd" aria-hidden="true">
+            {/mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'}
+          </kbd>
+        </button>
         {NAV.map((item) => (
           <button
             key={item.id}
@@ -187,7 +226,18 @@ export function App(): React.JSX.Element {
             }}
           />
         )}
+        {paletteOpen && (
+          <CommandPalette
+            onClose={() => {
+              setPaletteOpen(false);
+            }}
+            onOpenWizard={() => {
+              setWizardOpen(true);
+            }}
+          />
+        )}
         <ViewErrorBoundary key={view}>
+          {view === 'home' && <HomeView />}
           {view === 'workflows' && <WorkflowsView />}
           {view === 'agents' && <AgentsView />}
           {view === 'templates' && <TemplatesView />}

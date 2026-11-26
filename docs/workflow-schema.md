@@ -34,13 +34,51 @@ depends only on nodes + edges.
 | `agent`     | `agentProfileId` (required), `prompt` (required), `workingDir?`, `timeoutSecs?`, `inputRefs[]?`, `retry?`, `maxVisits?` | Run a local AI CLI via an Agent Profile; prompt is a `{{variable}}` template                 |
 | `condition` | `condition` (required: `logic` + `clauses[]`), `maxVisits?`                                                             | Branch on a constrained expression; needs `true` + `false` labeled edges                     |
 | `git`       | `gitOp` (required), `workingDir` (required repo dir)                                                                    | Safe repo ops; lossy states refused                                                          |
-| `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs/checks/comments via local `gh`                                                           |
-| `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load Jira ticket via MCP → `ticket.*` vars                                                   |
+| `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs, checks, waiting for CI, Actions runs, issues and comments via local `gh`                |
+| `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load a Jira issue or Shortcut story via MCP → `ticket.*` vars                                |
 | `mcp`       | `mcpServerId` + `mcpTool` (required), `mcpArgs` (templates ok)                                                          | Call one MCP tool with provenance                                                            |
 | `end`       | —                                                                                                                       | Terminal node; at least one required                                                         |
 
 Future milestones extend this enum (`test`, `review`, `schedule`, …) with a
 schema bump + migration. Full integration guide: [integrations.md](./integrations.md).
+
+### Where steps run
+
+A Command or Agent step runs in its own `workingDir` when set, else in the
+workflow's `defaults.repoDir` (the project folder). With neither, it runs in the
+workflow's **workspace folder**, `<workspace root>/<Workflow name> (<id>)`, created on
+the first run (never by a dry run). The workspace root is `~/Documents/Orchevia`
+(or `~/Orchevia` without a Documents folder) unless Environment → Workspace saves
+another absolute path (`workspace.root`). The folder name keeps letters, digits,
+spaces and `-_.()+`, turns anything else into `-`, drops leading dots and is cut
+at 80 characters; `(<id>)` is the last six letters or digits of the workflow id,
+so two workflows with the same name (two uses of one template) never share a
+folder. Before 0.4.0 such steps ran in the app's own folder. Codex
+steps whose folder is outside any Git repository get `--skip-git-repo-check`.
+Git and GitHub steps always need a repository. The folder is recorded when a
+run starts (a recovery keeps the failed run's), so changing the root or renaming
+the workflow never moves a run that is waiting. While a run of a workflow is open
+in its workspace folder (running or paused), another run of it is refused; dry
+runs are not. A workflow that relied on the folder the app was launched from needs
+its project folder set.
+
+Templates that take a file (Translate a Document, Spreadsheet Insights) first copy
+it into `inputs/` in the step's folder, print the copy's absolute path for the
+agents, and never replace a different file already there: the copy takes a new
+name (`inputs/2-sales.csv`), is created exclusively, and links are not followed.
+Video templates accept a local file only.
+
+Runs → **Files** lists what a run's steps created or changed in these folders
+(modified, or on Unix copied in, between its start and end, newest first, at most
+300, skipping hidden entries and `node_modules`, `target`, `dist`, `build`,
+`vendor`, virtual environments and caches). A paused run (waiting for an
+approval, feedback or a limit) keeps listing edits made while it waits, including
+your own edits in a repository folder; **Refresh** on the panel lists them again.
+A file counts when its modification time or its status change time falls inside
+the window, so a later rename never hides it. Previews show text and Markdown up to 512 KB
+and images, audio, video and PDFs up to 20 MB; **Open** hands documents and media
+to the default app (never scripts, programs, web pages or XML), and **Show in
+folder** reveals the file.
 
 ### Script files
 
@@ -121,12 +159,20 @@ Errors block execution; warnings don't. Current rules:
 - Git/GitHub nodes need an operation and a folder (node `workingDir` or
   `defaults.repoDir`); branch, path, message, title and body fields must be
   filled, and a blank branch or PR head uses `defaults.branch` when it is set
+- a GitHub `runWorkflow` step needs a workflow (`github-workflow-required`), and its
+  artifacts folder must be relative and inside the repository
+  (`github-artifacts-dir-invalid`); a blank `ref` uses `defaults.branch`
 - `retry.maxAttempts` 1–10, `retry.delayMs` ≤ 60000 (Command and Agent nodes);
   `timeoutSecs` 1–43200; `maxVisits` 1–100
 - cycles need a `condition` on the loop and `maxVisits >= 2` on cycle nodes
 - prompt/condition/session-group variable refs must resolve (`workflow.*`,
   declared `input.*`, `ticket.*`, existing `node.*`); inputs need valid unique
   names
+- inputs may carry `description` (help text, ≤ 500 characters), `multiline: true`
+  (a text area in the start form) and `options` (≤ 50 distinct, non-blank choices of
+  ≤ 200 characters; a `default` must be one of them), otherwise
+  `input-settings-invalid`; a run started with a value outside an input's `options`
+  is refused (`input-choice-invalid`)
 - runs additionally require the referenced profile to exist and its CLI to be on
   `PATH` (checked at start; missing tools fail with `agent-cli-unavailable`)
 - unreachable-from-start nodes → warning; dead-end non-`end` nodes → warning

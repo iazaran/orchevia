@@ -838,3 +838,549 @@ exit 1
         assert_eq!(classify_comment_source("bob", "please fix"), "comment");
     }
 }
+
+// -- CI, Actions runs and issues (v0.4.0) -------------------------------------
+
+/// One CI check, normalized from PR checks, commit check runs or commit
+/// statuses. `bucket` is `pass`, `fail`, `pending` or `skip`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CiCheck {
+    pub name: String,
+    pub bucket: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub link: String,
+}
+
+/// Where a check is in its life, from GitHub's words for it.
+fn bucket_of(status: &str, conclusion: &str) -> &'static str {
+    match (
+        status.to_ascii_lowercase().as_str(),
+        conclusion.to_ascii_lowercase().as_str(),
+    ) {
+        (_, "success" | "pass") => "pass",
+        (_, "skipped" | "skipping" | "neutral" | "skip") => "skip",
+        (
+            _,
+            "failure" | "fail" | "cancelled" | "cancel" | "timed_out" | "action_required" | "error"
+            | "startup_failure" | "stale",
+        ) => "fail",
+        ("completed", "") => "skip",
+        _ => "pending",
+    }
+}
+
+/// A PR's checks, with links to their runs.
+pub fn pr_ci_checks(runner: &GhRunner, cwd: &str, number: u64) -> Result<Vec<CiCheck>, String> {
+    let num = number.to_string();
+    let result = runner.run_result(cwd, &["pr", "checks", &num, "--json", "name,bucket,link"])?;
+    // gh exits 1 for failed and 8 for pending checks, still printing the
+    // list; "no checks reported" is an empty list while CI has not started.
+    let parsed = serde_json::from_str::<Vec<serde_json::Value>>(result.stdout.trim());
+    let values = match (result.exit_code, parsed) {
+        (Some(0), Ok(values)) | (Some(1 | 8), Ok(values)) => values,
+        (Some(0), Err(_)) => return Err("Cannot parse `gh pr checks` output.".to_string()),
+        _ if result.stderr.contains("no checks reported") => return Ok(Vec::new()),
+        // Anything else is gh failing (auth, network, no such PR): say so.
+        _ => return OkDenied::redact(&result.stdout, result.stderr.trim()),
+    };
+    Ok(values
+        .iter()
+        .map(|v| {
+            let field = |name: &str| {
+                v.get(name)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let bucket = match field("bucket").as_str() {
+                "pass" => "pass",
+                "fail" | "cancel" => "fail",
+                "skipping" => "skip",
+                _ => "pending",
+            };
+            CiCheck {
+                name: field("name"),
+                bucket: bucket.into(),
+                link: field("link"),
+            }
+        })
+        .collect())
+}
+
+fn commit_sha_ok(sha: &str) -> bool {
+    (7..=64).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Every page of a commit's check runs or statuses, one compact JSON
+/// object per line (`--jq`), so hundreds of checks stay small.
+fn api_lines(
+    runner: &GhRunner,
+    cwd: &str,
+    path: &str,
+    jq: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let out = runner.run(cwd, &["api", "--paginate", path, "--jq", jq])?;
+    out.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            serde_json::from_str(line).map_err(|_| format!("Cannot parse `gh api {path}` output."))
+        })
+        .collect()
+}
+
+/// The check runs and commit statuses on one commit.
+pub fn commit_ci_checks(runner: &GhRunner, cwd: &str, sha: &str) -> Result<Vec<CiCheck>, String> {
+    if !commit_sha_ok(sha) {
+        return Err(format!("Not a commit: {sha}"));
+    }
+    let field = |v: &serde_json::Value, name: &str| {
+        v.get(name)
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut checks: Vec<CiCheck> = api_lines(
+        runner,
+        cwd,
+        &format!("repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100"),
+        ".check_runs[] | {name, status, conclusion, html_url}",
+    )?
+    .iter()
+    .map(|run| CiCheck {
+        name: field(run, "name"),
+        bucket: bucket_of(&field(run, "status"), &field(run, "conclusion")).into(),
+        link: field(run, "html_url"),
+    })
+    .collect();
+    // Commit statuses (deploy previews and other services) next to Actions.
+    let statuses = api_lines(
+        runner,
+        cwd,
+        &format!("repos/{{owner}}/{{repo}}/commits/{sha}/statuses?per_page=100"),
+        ".[] | {context, state, target_url}",
+    )?;
+    // The statuses list has every update, newest first: keep each context's
+    // latest one.
+    let mut seen = std::collections::HashSet::new();
+    for item in statuses {
+        let context = field(&item, "context");
+        if !seen.insert(context.clone()) {
+            continue;
+        }
+        checks.push(CiCheck {
+            name: context,
+            bucket: match field(&item, "state").as_str() {
+                "success" => "pass",
+                "failure" | "error" => "fail",
+                _ => "pending",
+            }
+            .into(),
+            link: field(&item, "target_url"),
+        });
+    }
+    Ok(checks)
+}
+
+/// Whether GitHub has a commit (pushed on a branch or only with a tag).
+/// `Ok(false)` when GitHub answers that it has no such commit.
+pub fn commit_on_github(runner: &GhRunner, cwd: &str, sha: &str) -> Result<bool, String> {
+    if !commit_sha_ok(sha) {
+        return Err(format!("Not a commit: {sha}"));
+    }
+    let path = format!("repos/{{owner}}/{{repo}}/commits/{sha}");
+    let result = runner.run_result(cwd, &["api", &path, "--jq", ".sha"])?;
+    if result.exit_code == Some(0) {
+        return Ok(true);
+    }
+    if result.stderr.contains("No commit found") {
+        return Ok(false);
+    }
+    OkDenied::redact(&result.stdout, result.stderr.trim())
+}
+
+/// Names of the Actions runs on a commit that have not finished. A queued
+/// run's jobs have no check runs yet, so checks alone can look done early.
+pub fn unfinished_runs(runner: &GhRunner, cwd: &str, sha: &str) -> Result<Vec<String>, String> {
+    if !commit_sha_ok(sha) {
+        return Err(format!("Not a commit: {sha}"));
+    }
+    let out = runner.run(
+        cwd,
+        &[
+            "run",
+            "list",
+            "--commit",
+            sha,
+            "--limit",
+            "100",
+            "--json",
+            "name,status",
+        ],
+    )?;
+    let runs: Vec<serde_json::Value> =
+        serde_json::from_str(out.trim()).map_err(|_| "Cannot parse `gh run list`.".to_string())?;
+    Ok(runs
+        .iter()
+        .filter(|run| run.get("status").and_then(|v| v.as_str()) != Some("completed"))
+        .map(|run| {
+            run.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("workflow")
+                .to_string()
+        })
+        .collect())
+}
+
+/// The id of an Actions run from a URL such as
+/// `https://github.com/o/r/actions/runs/123/job/456`.
+pub fn run_id_from_url(url: &str) -> Option<u64> {
+    let rest = url.split("/actions/runs/").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// The id of an Actions job from a check link (`…/actions/runs/1/job/2`).
+pub fn job_id_from_url(url: &str) -> Option<u64> {
+    let rest = url.split("/actions/runs/").nth(1)?;
+    let rest = rest.split("/job/").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Strip `refs/heads/` or `refs/tags/` so a branch filter matches what
+/// Actions records as the run's branch (a tag run records the tag).
+fn branch_name(git_ref: &str) -> &str {
+    let git_ref = git_ref.trim();
+    git_ref
+        .strip_prefix("refs/heads/")
+        .or_else(|| git_ref.strip_prefix("refs/tags/"))
+        .unwrap_or(git_ref)
+}
+
+/// Start a `workflow_dispatch` run. Returns the run id when gh prints it.
+pub fn dispatch_workflow(
+    runner: &GhRunner,
+    cwd: &str,
+    workflow: &str,
+    git_ref: &str,
+    inputs: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<u64>, String> {
+    if !crate::workflow::workflow_name_ok(workflow) || workflow.trim().is_empty() {
+        return Err(format!("Not a workflow name or file: {workflow}"));
+    }
+    let mut args: Vec<String> = vec!["workflow".into(), "run".into(), workflow.trim().into()];
+    if !git_ref.trim().is_empty() {
+        // `--flag=value` keeps a value that starts with '-' a value.
+        args.push(format!("--ref={}", git_ref.trim()));
+    }
+    for (key, value) in inputs {
+        let key = key.trim();
+        if key.is_empty() || key.contains(['=', '\n', '\r', '\0']) {
+            return Err(format!(
+                "Workflow input name '{key}' must not be empty or hold '=' or line breaks."
+            ));
+        }
+        // A raw field keeps the value a plain string (no @file reading).
+        args.push(format!("--raw-field={key}={value}"));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = runner.run(cwd, &refs)?;
+    Ok(out.split_whitespace().find_map(run_id_from_url))
+}
+
+/// How far before the dispatch a listed run may start (clock skew between
+/// this machine and GitHub).
+const DISPATCH_SKEW_SECS: i64 = 60;
+
+/// The newest `workflow_dispatch` run of `workflow` created at or after
+/// `since` (RFC 3339), on `git_ref` when given.
+pub fn find_dispatched_run(
+    runner: &GhRunner,
+    cwd: &str,
+    workflow: &str,
+    git_ref: &str,
+    since: &chrono::DateTime<chrono::Utc>,
+) -> Result<Option<u64>, String> {
+    let mut args: Vec<String> = [
+        "run",
+        "list",
+        "--workflow",
+        workflow.trim(),
+        "--event",
+        "workflow_dispatch",
+        "--limit",
+        "10",
+        "--json",
+        "databaseId,createdAt",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    if !git_ref.trim().is_empty() {
+        args.push(format!("--branch={}", branch_name(git_ref)));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = runner.run(cwd, &refs)?;
+    let runs: Vec<serde_json::Value> =
+        serde_json::from_str(out.trim()).map_err(|_| "Cannot parse `gh run list`.".to_string())?;
+    let earliest = *since - chrono::Duration::seconds(DISPATCH_SKEW_SECS);
+    Ok(runs
+        .iter()
+        .filter(|run| {
+            run.get("createdAt")
+                .and_then(|v| v.as_str())
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .is_some_and(|at| at.with_timezone(&chrono::Utc) >= earliest)
+        })
+        .filter_map(|run| run.get("databaseId").and_then(|v| v.as_u64()))
+        .max())
+}
+
+/// An Actions run's state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionsRun {
+    pub id: u64,
+    pub status: String,
+    pub conclusion: String,
+    pub url: String,
+    #[serde(default)]
+    pub failed_jobs: Vec<String>,
+    /// Ids of the failed jobs, for their logs (not part of the output).
+    #[serde(skip)]
+    pub failed_job_ids: Vec<u64>,
+}
+
+pub fn actions_run(runner: &GhRunner, cwd: &str, id: u64) -> Result<ActionsRun, String> {
+    let out = runner.run(
+        cwd,
+        &[
+            "run",
+            "view",
+            &id.to_string(),
+            "--json",
+            "status,conclusion,url,jobs",
+        ],
+    )?;
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).map_err(|_| "Cannot parse `gh run view`.".to_string())?;
+    let field = |name: &str| {
+        v.get(name)
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let failed: Vec<&serde_json::Value> = v
+        .get("jobs")
+        .and_then(|j| j.as_array())
+        .map(|jobs| {
+            jobs.iter()
+                .filter(|job| {
+                    bucket_of(
+                        job.get("status").and_then(|x| x.as_str()).unwrap_or(""),
+                        job.get("conclusion").and_then(|x| x.as_str()).unwrap_or(""),
+                    ) == "fail"
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ActionsRun {
+        id,
+        status: field("status"),
+        conclusion: field("conclusion"),
+        url: field("url"),
+        failed_jobs: failed
+            .iter()
+            .filter_map(|job| job.get("name").and_then(|x| x.as_str()).map(str::to_string))
+            .collect(),
+        failed_job_ids: failed
+            .iter()
+            .filter_map(|job| job.get("databaseId").and_then(|x| x.as_u64()))
+            .collect(),
+    })
+}
+
+/// The last `max_chars` of a log. Output past the process cap is cut at the
+/// end, so a cut log's tail is not the real end: say so instead.
+fn log_tail(log: &str, max_chars: usize) -> String {
+    const CUT: &str = "\n… [truncated]";
+    let (body, cut) = match log.strip_suffix(CUT) {
+        Some(body) => (body, true),
+        None => (log, false),
+    };
+    let chars: Vec<char> = body.chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(max_chars)..]
+        .iter()
+        .collect();
+    if cut {
+        format!("{tail}\n… [the log goes on past what Orchevia reads; open the link for its end]")
+    } else {
+        tail
+    }
+}
+
+/// The end of one failed job's failed-step logs.
+pub fn failed_job_log(runner: &GhRunner, cwd: &str, job_id: u64, max_chars: usize) -> String {
+    runner
+        .run(
+            cwd,
+            &["run", "view", "--job", &job_id.to_string(), "--log-failed"],
+        )
+        .map(|log| log_tail(&log, max_chars))
+        .unwrap_or_default()
+}
+
+/// The end of a whole run's failed-step logs, when its jobs are unknown.
+pub fn failed_log_tail(runner: &GhRunner, cwd: &str, id: u64, max_chars: usize) -> String {
+    runner
+        .run(cwd, &["run", "view", &id.to_string(), "--log-failed"])
+        .map(|log| log_tail(&log, max_chars))
+        .unwrap_or_default()
+}
+
+/// Download a run's artifacts into `dir` (relative to `cwd`). A run with no
+/// artifacts downloads nothing and is not an error.
+pub fn download_artifacts(
+    runner: &GhRunner,
+    cwd: &str,
+    id: u64,
+    dir: &str,
+) -> Result<String, String> {
+    let dir = dir.trim();
+    let target = format!("--dir={dir}");
+    let result = runner.run_result(cwd, &["run", "download", &id.to_string(), &target])?;
+    if result.exit_code == Some(0) {
+        return Ok(format!("Artifacts downloaded to {dir}"));
+    }
+    if result.stderr.contains("no valid artifacts") || result.stderr.contains("no artifacts") {
+        return Ok("The run published no artifacts.".into());
+    }
+    if result.stderr.contains("exists") {
+        return Err(format!(
+            "'{dir}' already holds files from an earlier download. Empty it first (for example in a Command step) or download to a new folder."
+        ));
+    }
+    OkDenied::redact(&result.stdout, result.stderr.trim())
+}
+
+/// A GitHub issue, shaped like a Ticket step's ticket so `{{ticket.*}}`
+/// variables work for issues too.
+pub fn issue_details(
+    runner: &GhRunner,
+    cwd: &str,
+    number: u64,
+) -> Result<serde_json::Value, String> {
+    let out = runner.run(
+        cwd,
+        &[
+            "issue",
+            "view",
+            &number.to_string(),
+            "--json",
+            "number,title,body,state,labels,url,author,comments",
+        ],
+    )?;
+    serde_json::from_str(out.trim()).map_err(|_| "Cannot parse `gh issue view`.".to_string())
+}
+
+pub fn list_issues(
+    runner: &GhRunner,
+    cwd: &str,
+    state: &str,
+    label: Option<&str>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut args = vec![
+        "issue",
+        "list",
+        "--state",
+        state,
+        "--limit",
+        "50",
+        "--json",
+        "number,title,state,labels,url",
+    ];
+    if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+        args.extend(["--label", label]);
+    }
+    let out = runner.run(cwd, &args)?;
+    serde_json::from_str(out.trim()).map_err(|_| "Cannot parse `gh issue list`.".to_string())
+}
+
+pub fn comment_issue(
+    runner: &GhRunner,
+    cwd: &str,
+    number: u64,
+    body: &str,
+) -> Result<String, String> {
+    if body.trim().is_empty() {
+        return Err("Comment body must not be empty.".to_string());
+    }
+    runner.run(
+        cwd,
+        &[
+            "issue",
+            "comment",
+            &number.to_string(),
+            "--body",
+            body.trim(),
+        ],
+    )
+}
+
+#[cfg(test)]
+mod ci_tests {
+    use super::*;
+
+    #[test]
+    fn check_words_map_to_buckets() {
+        assert_eq!(bucket_of("completed", "success"), "pass");
+        assert_eq!(bucket_of("completed", "failure"), "fail");
+        assert_eq!(bucket_of("completed", "cancelled"), "fail");
+        assert_eq!(bucket_of("completed", "timed_out"), "fail");
+        assert_eq!(bucket_of("completed", "skipped"), "skip");
+        assert_eq!(bucket_of("completed", "neutral"), "skip");
+        assert_eq!(bucket_of("in_progress", ""), "pending");
+        assert_eq!(bucket_of("queued", ""), "pending");
+    }
+
+    #[test]
+    fn run_ids_come_from_run_and_job_links() {
+        assert_eq!(
+            run_id_from_url("https://github.com/o/r/actions/runs/123/job/456"),
+            Some(123)
+        );
+        assert_eq!(
+            run_id_from_url("https://github.com/o/r/actions/runs/987654321"),
+            Some(987_654_321)
+        );
+        assert_eq!(run_id_from_url("https://vercel.com/o/r/abc"), None);
+        assert_eq!(
+            job_id_from_url("https://github.com/o/r/actions/runs/123/job/456"),
+            Some(456)
+        );
+        assert_eq!(
+            job_id_from_url("https://github.com/o/r/actions/runs/123"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cut_log_says_its_end_is_missing() {
+        assert_eq!(log_tail("one\ntwo\nthree", 5), "three");
+        let cut = log_tail("start of a long log\n… [truncated]", 6);
+        assert!(cut.starts_with("ng log"), "{cut}");
+        assert!(cut.contains("goes on past what Orchevia reads"), "{cut}");
+    }
+
+    #[test]
+    fn refs_and_commits_are_checked_before_gh_sees_them() {
+        assert_eq!(branch_name(" refs/heads/release/1.2 "), "release/1.2");
+        assert_eq!(branch_name("refs/tags/v1.2.0"), "v1.2.0");
+        assert_eq!(branch_name("main"), "main");
+        assert!(commit_sha_ok("0123abcdef"));
+        assert!(!commit_sha_ok("main"));
+        assert!(!commit_sha_ok("abc"));
+    }
+}

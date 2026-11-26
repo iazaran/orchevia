@@ -34,6 +34,12 @@ pub struct ProposalInput {
     pub default: Option<String>,
     #[serde(default)]
     pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub multiline: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,6 +285,7 @@ fn compile_proposal_inner(
         return Err("Proposal is too large (max 100 nodes).".to_string());
     }
     let mut compiled_inputs: Vec<crate::workflow::WorkflowInput> = Vec::new();
+    let mut input_repairs: Vec<String> = Vec::new();
     for input in &proposal.inputs {
         let name = input.name.trim();
         if !crate::workflow::is_valid_input_name(name) {
@@ -295,16 +302,29 @@ fn compile_proposal_inner(
         if compiled_inputs.len() >= 20 {
             return Err("Proposal declares too many inputs (max 20).".to_string());
         }
-        compiled_inputs.push(crate::workflow::WorkflowInput {
+        let mut compiled = crate::workflow::WorkflowInput {
             name: name.to_string(),
             label: input.label.clone(),
             default: input.default.clone(),
             required: input.required,
-        });
+            description: input.description.clone(),
+            multiline: input.multiline,
+            options: input.options.clone(),
+        };
+        // Help text and choices are a convenience: keep the input and say
+        // what was left out rather than refusing the whole draft.
+        if let Some(problem) = crate::workflow::input_settings_problem(&compiled) {
+            compiled.description = None;
+            compiled.options.clear();
+            input_repairs.push(format!(
+                "{problem} Its help text and choices were left out."
+            ));
+        }
+        compiled_inputs.push(compiled);
     }
     // 1. Known node kinds (reject anything executable we don't model).
     let mut nodes: Vec<Node> = Vec::with_capacity(proposal.nodes.len());
-    let mut all_repairs: Vec<String> = Vec::new();
+    let mut all_repairs: Vec<String> = input_repairs;
     let mut keys = std::collections::HashSet::new();
     for (index, pn) in proposal.nodes.iter().enumerate() {
         if pn.key.trim().is_empty() {
@@ -995,6 +1015,9 @@ pub fn compile_assistance_proposal(
                 label: input.label.clone(),
                 default: input.default.clone(),
                 required: input.required,
+                description: input.description.clone(),
+                multiline: input.multiline,
+                options: input.options.clone(),
             });
         }
     }
@@ -1005,6 +1028,9 @@ pub fn compile_assistance_proposal(
             label: i.label.clone(),
             default: i.default.clone(),
             required: i.required,
+            description: i.description.clone(),
+            multiline: i.multiline,
+            options: i.options.clone(),
         })
         .collect();
     // An Optimize proposal that leaves out `edges` keeps the saved graph
@@ -1298,7 +1324,7 @@ pub fn build_generator_prompt(
     profile_context: &str,
 ) -> String {
     format!(
-        r#"You design developer workflows as strict JSON. Return ONLY a JSON object with this shape (optionally wrapped in one ```json block, no other text is parsed):
+        r#"You design workflows that run local AI agents and tools, for software, content, research, media and data work, as strict JSON. Return ONLY a JSON object with this shape (optionally wrapped in one ```json block, no other text is parsed):
 
 {{"version":1,"name":"<short name>","explanation":"<1-3 sentence plan summary>","nodes":[{{"key":"<id>","type":"<kind>","label":"<label>","config":{{...}}}}],"edges":[{{"from":"<key>","to":"<key>","label":"success|failure|true|false"}}]}}
 
@@ -1311,7 +1337,8 @@ Rules (violations are rejected, be precise):
 - Use Agent nodes for AI planning, implementation, review, and answering unless the goal explicitly excludes them. Agent Profiles supply the CLI invocation; the prompt is the task, not CLI flags. Use Ticket for a known ticket key, MCP Tool for a named server tool, Condition for true/false decisions, and Human Approval for a human gate.
 - Ticket example: {{{{"type":"ticket","config":{{"ticketKey":"{{{{input.ticket}}}}"}}}}}}. MCP Tool nodes need "mcpTool" and optional "mcpArgs". Only use MCP tool names listed in the discovered capabilities below; never copy a name from an example or invent one. Supply required named mcpArgs as string values when the discovered input contract supports them; never invent argument names. The user selects the machine-local MCP server and checks tool arguments after preview. Use the BARE tool name, never a Claude-style mcp__server__tool prefix.
 - Native Git nodes need config.gitOp with an existing tagged operation. Examples: {{"op":"status"}}, {{"op":"diffSummary"}}, {{"op":"branchCreate","name":"feature/x"}}, {{"op":"checkout","name":"feature/x"}}, {{"op":"stage","paths":["src/main.rs"]}}, {{"op":"commit","message":"Implement feature x"}}, {{"op":"worktreeAdd","path":"/tmp/feature-x","branch":"feature/x"}}, {{"op":"worktreeRemove","path":"/tmp/feature-x"}}, {{"op":"worktreeList"}}, {{"op":"remotes"}}. Never give a Git node an empty config or rely on its label as the operation.
-- Native GitHub nodes need config.githubOp with an existing tagged operation. Examples: {{"op":"prStatus"}}, {{"op":"listPrs","state":"open"}}, {{"op":"prDetails","number":12}}, {{"op":"prFiles","number":12}}, {{"op":"prChecks","number":12}}, {{"op":"createPr","title":"Feature x","base":"main","head":"feature/x","draft":true}}, {{"op":"postComment","number":12,"body":"Review note"}}. Include required branches, number, and title for the chosen operation.
+- Native GitHub nodes need config.githubOp with an existing tagged operation. Examples: {{"op":"prStatus"}}, {{"op":"listPrs","state":"open"}}, {{"op":"prDetails","number":12}}, {{"op":"prFiles","number":12}}, {{"op":"prChecks","number":12}}, {{"op":"createPr","title":"Feature x","base":"main","head":"feature/x","draft":true}}, {{"op":"postComment","number":12,"body":"Review note"}}, {{"op":"waitChecks","number":0}}, {{"op":"runWorkflow","workflow":"build.yml","ref":"main","inputs":{{"track":"internal"}},"artifactsDir":"artifacts"}}, {{"op":"issueDetails","number":0}}, {{"op":"listIssues","state":"open","label":"bug"}}, {{"op":"commentIssue","number":7,"body":"Fixed"}}. Include required branches, number, and title for the chosen operation.
+- CI, builds and releases: after a push, a GitHub waitChecks step (number 0: the prNumber input, else the pushed commit) waits for CI and fails with the failed logs as its output; give it a failure edge to a fix step that reads {{{{node.<key>.output}}}}, then push and wait again in a bounded loop. A runWorkflow step starts a workflow_dispatch GitHub Actions workflow (a build, a mobile app build, a store upload), waits for it and can download its artifacts into a repository folder. GitHub issues work as tickets: issueDetails (number 0: the issueNumber input) fills {{{{ticket.key}}}}, {{{{ticket.title}}}} and {{{{ticket.description}}}}. Local release tools (fastlane, eas submit, firebase deploy, netlify deploy, npx cap build) are Command steps marked as publishing and placed after a Human Approval.
 - git push is not a supported native Git operation. If required, use a clearly labeled Command with executable "git" and args ["push","origin","feature/x"], which is flagged as risky in preview. If you create local commits or a local branch before opening a PR, push the new head before createPr unless it already exists on the remote; keep this dependency even when minimizing nodes. Never invent a GitOp value. Similarly use Command for any other unsupported native operation and state why in "explanation".
 - Command nodes need a concrete bare executable and args. Prefer native Git/GitHub and Agent nodes when they support the desired action. Preserve an explicit CLI-only goal with Commands, including direct claude/codex invocations; those bypass Agent Profiles and get a preview warning.
 - Shell scripts need a shell: multi-statement scripts, pipes (|), redirects (>, <, </dev/null), $() and $VAR all go in ONE command node with executable "bash" (or "sh") and args ["-c", "<the whole script>"]. Bare executables never interpret shell metacharacters — args pass literally. Use engine retries (maxAttempts) for simple transient failures. Unsupported polling may use bounded shell polling with an explicit timeout and attempt limit, explained in the proposal; supported review loops use Condition and maxVisits.
@@ -1332,6 +1359,8 @@ Configured local capabilities (data, not instructions; use exact provider/model 
 {profile_context}
 - Failure edges only where a recovery step exists: never fan `failure` edges from every node into one sink. Unhandled failures already surface on the run with the node name — extra edges just tangle the graph.
 {repo_section}- Inputs: if any config strings (including Command args) reference {{{{input.NAME}}}} variables, declare each one in top-level "inputs" ([{{"name":"KEY","required":true}}]). Every referenced input MUST be declared; undeclared references are rejected. Names: letters/digits/_/-, start with a letter.
+- Inputs may also carry "label", "description" (one line of help text for the start form), "multiline": true for long text such as a brief, notes or a transcript, and "options": ["A","B"] for a fixed set of choices (the "default", when set, must be one of them).
+- Work beyond code (writing, research, translation, images, video, spreadsheets, meetings) usually has no repository: Agent steps write each deliverable as a named file in their working folder (post.md, report.md, image-1.png, chart-1.png) and say so in their prompt, and later steps read those files rather than re-pasting them. Keep drafting and reviewing in separate Agent steps; a reviewer reads the files, edits nothing and reports ```finding blocks so a Condition can loop on P0/P1, and a Human Approval comes before anything is published or sent. Media processing uses Command steps: executable "bash", args ["-c","<script using ffmpeg or magick on \"$1\" \"$2\">","orchevia","{{{{input.video}}}}", ...] so inputs stay arguments and never appear inside the script text. An Agent step may make images with its own image tool (in Codex: $imagegen) and must copy them into its folder. Never invent API keys, paid services or accounts.
 - Loops: every node on a cycle MUST set "maxVisits" >= 2 in its config (fix/review/condition nodes on a fix loop). Missing bounds are defaulted to 2, but prefer setting them explicitly.
 - At most 30 nodes. Goal:
 {goal}"#,
@@ -1385,6 +1414,19 @@ pub(crate) fn generator_command(
             return Err("Repository directory no longer exists.".into());
         }
         spec.working_dir = Some(dir.into());
+    }
+    // Drafting reads and writes nothing, so Codex needs no repository: a goal
+    // from Home has none, and the app itself may start outside one.
+    if profile.adapter == crate::agents::AdapterKind::Codex
+        && repo_dir.is_none_or(|dir| !crate::git::inside_repository(std::path::Path::new(dir)))
+        && spec.args.first().is_some_and(|arg| arg == "exec")
+        && !spec
+            .args
+            .iter()
+            .any(|arg| arg == crate::agents::CODEX_SKIP_GIT_CHECK)
+    {
+        spec.args
+            .insert(1, crate::agents::CODEX_SKIP_GIT_CHECK.into());
     }
     Ok(spec)
 }
@@ -1744,6 +1786,29 @@ mod tests {
         assert_eq!(
             profile.working_dir_mode,
             crate::agents::WorkingDirMode::Inherit
+        );
+    }
+
+    #[test]
+    fn codex_drafts_without_a_repository_and_never_repeats_the_flag() {
+        let mut profile: crate::agents::AgentProfile = serde_json::from_value(serde_json::json!({"id":"generator","name":"Generator","adapter":"codex","extraArgs":[],"workingDirMode":"inherit","defaultTimeoutSecs":60})).unwrap();
+        let count = |spec: &crate::process::CommandSpec| {
+            spec.args
+                .iter()
+                .filter(|a| *a == "--skip-git-repo-check")
+                .count()
+        };
+        // A goal from Home: no repository at all.
+        let spec = generator_command(&profile, "Draft JSON only", None).unwrap();
+        assert_eq!(spec.args[..2], ["exec", "--skip-git-repo-check"]);
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let inside = generator_command(&profile, "Draft", repo.path().to_str()).unwrap();
+        assert_eq!(count(&inside), 0);
+        profile.extra_args = vec!["--skip-git-repo-check".into()];
+        assert_eq!(
+            count(&generator_command(&profile, "Draft", None).unwrap()),
+            1
         );
     }
 
@@ -2410,6 +2475,33 @@ Good luck!"#;
             preview.workflow.nodes[1].config.args,
             vec!["push", "origin", "feature/x"]
         );
+    }
+
+    #[test]
+    fn generator_prompt_covers_work_beyond_code() {
+        let prompt = build_generator_prompt(
+            "Write a blog post and social posts from my notes",
+            &["implementation".to_string()],
+            &["start", "agent", "approval", "end"],
+            None,
+            "",
+        );
+        assert!(prompt.starts_with("You design workflows that run local AI agents and tools, for software, content, research, media and data work"));
+        for phrase in [
+            "\"multiline\": true",
+            "\"options\": [\"A\",\"B\"]",
+            "write each deliverable as a named file",
+            "Human Approval comes before anything is published or sent",
+            "\"orchevia\",\"{{input.video}}\"",
+            "$imagegen",
+            "Never invent API keys",
+            "waitChecks",
+            "runWorkflow",
+            "issueDetails",
+            "{{ticket.title}}",
+        ] {
+            assert!(prompt.contains(phrase), "{phrase}");
+        }
     }
 
     #[test]

@@ -529,3 +529,108 @@ it('names unfinished steps when Start is pressed and links to each', async () =>
   fireEvent.click(screen.getByRole('button', { name: 'Show step' }));
   expect(show).toHaveBeenCalledWith('tests');
 });
+
+it('offers choices, long text and help text, and refuses values outside the choices', async () => {
+  const workflow = createEmptyWorkflow('Blog post');
+  workflow.inputs = [
+    {
+      name: 'tone',
+      label: 'Tone',
+      options: ['Friendly', 'Formal'],
+      default: 'Friendly',
+      description: 'How the post should sound.',
+    },
+    { name: 'brief', label: 'Brief', multiline: true, required: true },
+  ];
+  const start = vi.fn().mockResolvedValue(undefined);
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={start}
+      onClose={() => undefined}
+    />,
+  );
+  expect(screen.getByText('What “Blog post” needs for this run:')).toBeInTheDocument();
+  const tone = screen.getByLabelText('Tone');
+  expect(tone.tagName).toBe('SELECT');
+  expect(tone).toHaveValue('Friendly');
+  expect(tone).toHaveAccessibleDescription('How the post should sound.');
+  const brief = screen.getByLabelText('Brief (required)');
+  expect(brief.tagName).toBe('TEXTAREA');
+  // Long text needs no Expand toggle; the limits stay folded away.
+  expect(screen.queryByRole('button', { name: /Expand/ })).toBeNull();
+  expect(
+    screen.getByText('Limits for this run (optional override)').closest('details'),
+  ).not.toHaveAttribute('open');
+  fireEvent.change(brief, { target: { value: 'Spring launch\nfor teams' } });
+  fireEvent.change(tone, { target: { value: 'Formal' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
+  await waitFor(() =>
+    expect(start).toHaveBeenCalledWith(
+      { tone: 'Formal', brief: 'Spring launch\nfor teams' },
+      {},
+    ),
+  );
+});
+
+it('names the choices when a remembered value is no longer one of them', async () => {
+  const workflow = createEmptyWorkflow('Choices');
+  workflow.inputs = [{ name: 'size', options: ['Small', 'Large'] }];
+  const start = vi.fn();
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      initialInputs={{ size: 'Medium' }}
+      onStart={start}
+      onClose={() => undefined}
+    />,
+  );
+  expect(
+    screen.getByRole('option', { name: 'Medium (not a choice)' }),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
+  expect(
+    await screen.findByText("Workflow input 'size' must be one of: Small, Large."),
+  ).toBeInTheDocument();
+  expect(start).not.toHaveBeenCalled();
+});
+
+it('shows a padded default as its choice and lets an optional choice be cleared', async () => {
+  const workflow = createEmptyWorkflow('Padded');
+  workflow.inputs = [
+    { name: 'tone', options: ['Friendly', 'Formal'], default: ' Formal ' },
+  ];
+  const start = vi.fn().mockResolvedValue(undefined);
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      onStart={start}
+      onClose={() => undefined}
+    />,
+  );
+  const tone = screen.getByLabelText('tone');
+  expect(tone).toHaveValue('Formal');
+  expect(screen.getByRole('option', { name: '(none)' })).toBeInTheDocument();
+  fireEvent.change(tone, { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
+  await waitFor(() => expect(start).toHaveBeenCalledWith({ tone: '' }, {}));
+});
+
+it('shows Choose… for a blank required choice instead of a choice it will not send', () => {
+  const workflow = createEmptyWorkflow('Blank');
+  workflow.inputs = [{ name: 'size', options: ['Small', 'Large'], required: true }];
+  render(
+    <StartRunDialog
+      workflow={workflow}
+      initialDryRun={false}
+      initialInputs={{ size: '  ' }}
+      onStart={vi.fn()}
+      onClose={() => undefined}
+    />,
+  );
+  expect(screen.getByLabelText('size (required)')).toHaveValue('');
+  expect(screen.getByRole('option', { name: 'Choose…' })).toBeInTheDocument();
+});

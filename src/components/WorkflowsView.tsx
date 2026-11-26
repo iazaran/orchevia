@@ -1,5 +1,5 @@
 import { StartRunDialog, UsageLimitsDialog } from './RunControls';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ADAPTER_LABELS,
   BUILTIN_ADAPTERS,
@@ -34,7 +34,7 @@ import {
   type Workflow,
   type StoredWorkflow,
 } from '../lib/workflow';
-import { selectActiveWorkflow, useAppStore } from '../store';
+import { selectActiveWorkflow, useAppStore, type WorkflowIntent } from '../store';
 import { confirmDialog } from './ConfirmDialog';
 import { DirPicker } from './DirPicker';
 import { BranchPicker } from './BranchPicker';
@@ -119,7 +119,11 @@ export function WorkflowsView(): React.JSX.Element {
     return () => clearInterval(timer);
   }, [overlayRunId, refreshRunOverlay, setRunMessage]);
   const [starting, setStarting] = useState(false);
-  const [startMode, setStartMode] = useState<'dry' | 'live' | null>(null);
+  const [startMode, setStartMode] = useState<'dry' | 'live' | null>(() =>
+    useAppStore.getState().pendingIntent?.kind === 'run' && active !== null
+      ? 'live'
+      : null,
+  );
   const [limitsOpen, setLimitsOpen] = useState(false);
   // Dismissing the declared-tools notice hides it for that workflow this session.
   const [grantNoticeHiddenFor, setGrantNoticeHiddenFor] = useState<string | null>(null);
@@ -130,9 +134,13 @@ export function WorkflowsView(): React.JSX.Element {
     values: Record<string, string>;
   }>({ workflowId: null, values: {} });
   const inputValues = inputState.workflowId === active?.id ? inputState.values : {};
-  const [goal, setGoal] = useState('');
-  const [genRepoDir, setGenRepoDir] = useState<string>(
-    () => readLocal('orchevia.genRepo.v1') ?? '',
+  // Home and the command palette ask for one thing when they open this view.
+  const [intent] = useState(() => useAppStore.getState().pendingIntent);
+  const [goal, setGoal] = useState(intent?.kind === 'generate' ? intent.goal : '');
+  // A goal from Home may not be about code: it starts without a repository,
+  // which the dialog can still add, rather than the last one used.
+  const [genRepoDir, setGenRepoDir] = useState<string>(() =>
+    intent?.kind === 'generate' ? '' : (readLocal('orchevia.genRepo.v1') ?? ''),
   );
   const [genBranch, setGenBranch] = useState('');
   const [detectingGenBranch, setDetectingGenBranch] = useState(false);
@@ -141,7 +149,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [memoryDirectory, setMemoryDirectory] = useState<string | null>(null);
   const [memoryError, setMemoryError, , memoryErrorEvent] = useNoticeMessage('warn');
   const [memoryLoading, setMemoryLoading] = useState(false);
-  const [showGenerator, setShowGenerator] = useState(false);
+  const [showGenerator, setShowGenerator] = useState(intent?.kind === 'generate');
   const [assistanceBase, setAssistanceBase] = useState<Workflow | null>(null);
   const [assistanceMode, setAssistanceMode] = useState<AssistanceMode>('optimize');
   const [generatorChoice, setGeneratorAdapter] = useState<AdapterKind | null>(null);
@@ -432,10 +440,26 @@ export function WorkflowsView(): React.JSX.Element {
       });
   };
 
+  // The request Home or the palette made before this view opened is read by
+  // the state above; it is cleared here once (StrictMode runs effects twice).
+  const openedIntentDone = useRef(false);
+  useEffect(() => {
+    if (openedIntentDone.current) return;
+    openedIntentDone.current = true;
+    if (useAppStore.getState().pendingIntent !== null)
+      useAppStore.getState().setPendingIntent(null);
+    if (intent?.kind === 'new') createWorkflow();
+    // Once, on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // One live-start path for every run: the floating start form. Workflows
   // without inputs still open it so saved limits can be reviewed or
   // overridden before starting.
   const openStartForm = (mode: 'dry' | 'live'): void => {
+    // Read from the store: a palette request may have just selected another
+    // workflow that this render has not seen yet.
+    const active = selectActiveWorkflow(useAppStore.getState());
     if (active === null || starting) return;
     // Warm previously entered values with input defaults on first open.
     if (inputState.workflowId !== active.id) {
@@ -448,6 +472,36 @@ export function WorkflowsView(): React.JSX.Element {
     setRunMessage(null);
     setStartMode(mode);
   };
+
+  // A request made while this view is already open (the palette on
+  // Workflows) is handled as it arrives.
+  const handleIntent = (next: WorkflowIntent): void => {
+    useAppStore.getState().setPendingIntent(null);
+    if (next.kind === 'new') {
+      createWorkflow();
+    } else if (next.kind === 'run') {
+      openStartForm('live');
+    } else {
+      setAssistanceBase(null);
+      setPreview(null);
+      setGoal(next.goal);
+      setGenRepoDir('');
+      setShowGenerator(true);
+    }
+  };
+  const handleIntentRef = useRef(handleIntent);
+  useEffect(() => {
+    handleIntentRef.current = handleIntent;
+  });
+  useEffect(
+    () =>
+      useAppStore.subscribe((state, previous) => {
+        const next = state.pendingIntent;
+        if (next !== null && next !== previous.pendingIntent)
+          handleIntentRef.current(next);
+      }),
+    [],
+  );
 
   const startFromDialog = async (
     inputs: Record<string, string>,

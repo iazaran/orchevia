@@ -36,6 +36,18 @@ import {
 } from './templates';
 import { readLocal, writeLocal } from './storage';
 import {
+  canOpenFile,
+  fileKindOf,
+  MEDIA_TOOLS,
+  MAX_WORKSPACE_ROOT_BYTES,
+  validateWorkspaceRoot,
+  WORKSPACE_ROOT_SETTING,
+  workspaceFolder,
+  type RunFile,
+  type RunFilePreview,
+  type RunFiles,
+} from './outputs';
+import {
   correctionPlan,
   DEFAULT_CORRECTION_ROUNDS,
   feedbackTarget,
@@ -50,7 +62,7 @@ import {
   type FeedbackStatus,
   type RunFeedback,
 } from './feedback';
-import { isPublicationStep, type WorkflowNode } from './workflow';
+import { inputChoiceProblem, isPublicationStep, type WorkflowNode } from './workflow';
 import {
   encodeDocument,
   decodeDocument,
@@ -232,6 +244,14 @@ export interface Backend {
   getRunWorkflow(runId: string): Promise<Workflow | null>;
   listRuns(limit?: number): Promise<StoredRun[]>;
   getRunResults(runId: string): Promise<StoredNodeResult[]>;
+  /** The folder under which folderless steps run, in `<root>/<Workflow name>`. */
+  workspaceRoot(): Promise<string>;
+  /** Files the run's steps created or changed, newest first. Reads only. */
+  listRunFiles(runId: string): Promise<RunFiles>;
+  /** One of the run's files for preview: text, or base64 media. */
+  readRunFile(runId: string, path: string): Promise<RunFilePreview>;
+  /** Open one of the run's documents or media files, or (`reveal`) its folder. */
+  openRunFile(runId: string, path: string, reveal: boolean): Promise<void>;
   deleteRun(runId: string): Promise<boolean>;
   clearFinishedRuns(): Promise<{ removed: number; kept: number }>;
   previewCommand(executable: string, args: string[]): Promise<string>;
@@ -491,6 +511,19 @@ class TauriBackend implements Backend {
   getRunResults(runId: string): Promise<StoredNodeResult[]> {
     return this.invoke('get_run_results', { runId });
   }
+  workspaceRoot(): Promise<string> {
+    return this.invoke('workspace_root');
+  }
+  listRunFiles(runId: string): Promise<RunFiles> {
+    return this.invoke('list_run_files', { runId });
+  }
+  readRunFile(runId: string, path: string): Promise<RunFilePreview> {
+    return this.invoke('read_run_file', { runId, path });
+  }
+  openRunFile(runId: string, path: string, reveal: boolean): Promise<void> {
+    return this.invoke('open_run_file', { runId, path, reveal });
+  }
+
   deleteRun(runId: string): Promise<boolean> {
     return this.invoke('delete_run', { runId });
   }
@@ -783,6 +816,31 @@ function mockStepCommand(
  * Browser-only development backend. Persists workflows in localStorage and
  * simulates command execution deterministically (no processes spawned).
  */
+/** A file a mock step "wrote", with what its preview shows. */
+type MockRunFile = RunFile & { text?: string; base64?: string; mime?: string };
+
+/** Review prompts ask for these blocks; a mock review reports nothing. */
+const MOCK_REVIEW_MARK = '```finding block';
+
+/** Where the browser preview pretends folderless steps run. */
+const MOCK_WORKSPACE_ROOT = '~/Documents/Orchevia';
+
+/** File names a prompt or command mentions (`post.md`, `out/cover.png`). */
+const MOCK_FILE_PATTERN =
+  /(?<![\w/.-])(?:[\w-]+\/)*[\w][\w.-]*\.(?:md|txt|csv|json|html|png|jpe?g|webp|svg|gif|mp4|webm|mov|mp3|wav|pdf|docx)(?![\w])/gi;
+
+function mockFileText(name: string, step: string, author: string): string {
+  if (name.toLowerCase().endsWith('.csv')) return 'item,value\nexample,1\n';
+  if (name.toLowerCase().endsWith('.json')) return '{ "preview": true }\n';
+  return `# ${name}\n\nWritten by ${author} in the step **${step}** (browser preview: no agent ran, so this is placeholder text).\n\n- The desktop app shows the real file here.\n- Open it, or show it in its folder, from this panel.\n`;
+}
+
+function mockImageSvg(name: string, step: string): string {
+  const safe = (text: string): string =>
+    text.replace(/[<>&"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6d5dfc"/><stop offset="1" stop-color="#22c3a6"/></linearGradient></defs><rect width="640" height="400" fill="url(#g)"/><text x="40" y="190" font-family="sans-serif" font-size="34" fill="#fff">${safe(name)}</text><text x="40" y="236" font-family="sans-serif" font-size="18" fill="#eef">${safe(step)} (browser preview)</text></svg>`;
+}
+
 class MockBackend implements Backend {
   private preferences = new Map<string, Preference>();
   private observations = new Map<string, number>();
@@ -793,6 +851,8 @@ class MockBackend implements Backend {
   private runWorkflows = new Map<string, Workflow>();
   private recoverySeeds = new Map<string, StoredNodeResult[]>();
   private feedback = new Map<string, RunFeedback[]>();
+  /** Files mock steps "wrote", with preview content where there is one. */
+  private runFiles = new Map<string, MockRunFile[]>();
   private feedbackCounter = 1;
   private recoveryRequests = new Map<
     string,
@@ -853,6 +913,7 @@ class MockBackend implements Backend {
         runWorkflows?: [string, Workflow][];
         recoverySeeds?: [string, StoredNodeResult[]][];
         feedback?: [string, RunFeedback[]][];
+        runFiles?: [string, MockRunFile[]][];
         feedbackCounter?: number;
         recoveryRequests?: [
           string,
@@ -874,6 +935,7 @@ class MockBackend implements Backend {
       this.runWorkflows = new Map(data.runWorkflows ?? []);
       this.recoverySeeds = new Map(data.recoverySeeds ?? []);
       this.feedback = new Map(data.feedback ?? []);
+      this.runFiles = new Map(data.runFiles ?? []);
       this.feedbackCounter = data.feedbackCounter ?? 1;
       this.recoveryRequests = new Map(data.recoveryRequests ?? []);
       this.counter = data.counter ?? this.runs.length + 1;
@@ -926,6 +988,7 @@ class MockBackend implements Backend {
           runWorkflows: [...this.runWorkflows.entries()],
           recoverySeeds: [...this.recoverySeeds.entries()],
           feedback: [...this.feedback.entries()],
+          runFiles: [...this.runFiles.entries()],
           feedbackCounter: this.feedbackCounter,
           recoveryRequests: [...this.recoveryRequests.entries()],
           counter: this.counter,
@@ -1011,6 +1074,11 @@ class MockBackend implements Backend {
         displayName: ADAPTERS[id].name,
         installed: false,
       })),
+      ...MEDIA_TOOLS.map(({ id, name }) => ({
+        id,
+        displayName: name,
+        installed: false,
+      })),
     ];
   }
 
@@ -1031,6 +1099,13 @@ class MockBackend implements Backend {
     for (const input of wf.definition.inputs ?? []) {
       if (input.required && !(effectiveInputs[input.name] ?? '').trim())
         throw new Error(`Workflow input '${input.name}' is required.`);
+      const choice = inputChoiceProblem(input, effectiveInputs[input.name] ?? '');
+      if (choice !== null) throw new Error(choice);
+      // A value naming a choice is stored as that choice (mirrors the engine).
+      const named = (input.options ?? []).find(
+        (o) => o.trim() === (effectiveInputs[input.name] ?? '').trim(),
+      );
+      if (named !== undefined) effectiveInputs[input.name] = named.trim();
     }
     const contextIssues = validateWorkflowLocal(wf.definition).filter(
       (issue) =>
@@ -1052,6 +1127,11 @@ class MockBackend implements Backend {
       const errors = validateSessionProfile(profile);
       if (errors.length) throw new Error(errors.join(' '));
     }
+    // Steps without a folder share the workflow's workspace folder: one
+    // open run there at a time (mirrors the engine).
+    const workspace =
+      runOptions.dryRun === true ? null : this.mockWorkspaceOf(wf.definition);
+    if (workspace !== null) this.ensureMockWorkspaceFree(workflowId, wf.definition.name);
     const runId = `run-mock-${String(this.counter++)}`;
     const run: StoredRun = {
       id: runId,
@@ -1062,10 +1142,11 @@ class MockBackend implements Backend {
         // merged with per-run overrides, snapshotted into the run.
         resolvedLimits: resolveLimits(wf.definition.limits, runOptions),
         consumedAgentAttempts: 0,
+        ...(workspace === null ? {} : { workspace }),
       },
       status: 'running',
       startedAt: new Date().toISOString(),
-      inputs: { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) },
+      inputs: effectiveInputs,
     };
     this.runs.unshift(run);
     this.results.set(runId, []);
@@ -1374,19 +1455,67 @@ class MockBackend implements Backend {
             run.finishedAt = new Date().toISOString();
             return;
           }
+          const ticketKey = mockTicketKey(key.rendered);
           const row = this.pushResult(
             runId,
             nodeId,
             'succeeded',
-            `Mock ticket ${key.rendered} (browser mock, no remote lookup).`,
+            `Mock ticket ${ticketKey} (browser mock, no remote lookup).`,
           );
           row.structuredJson = JSON.stringify({
             simulated: true,
             ticket: {
-              key: key.rendered,
-              title: `Mock ticket ${key.rendered}`,
+              key: ticketKey,
+              title: `Mock ticket ${ticketKey}`,
               description: 'Simulated ticket details.',
               status: 'Mock',
+              url: '',
+              acceptanceCriteria: [],
+            },
+          });
+        } else if (
+          node.type === 'github' &&
+          (node.config.githubOp?.op === 'issueDetails' ||
+            node.config.githubOp?.op === 'commentIssue')
+        ) {
+          const op = node.config.githubOp;
+          // Number 0 reads the issueNumber input like the engine: leading
+          // '#' marks dropped, then a whole number above 0.
+          const raw = (run.inputs?.issueNumber ?? '').trim().replace(/^#+/, '');
+          const fromInput = /^\+?\d+$/.test(raw) ? Number(raw) : 0;
+          const value = op.number > 0 ? op.number : fromInput;
+          if (!(value > 0) || !Number.isSafeInteger(value)) {
+            const row = this.pushResult(runId, nodeId, 'failed', '');
+            row.error = 'Issue number is 0: provide inputs.issueNumber.';
+            run.status = 'failed';
+            run.finishedAt = new Date().toISOString();
+            this.persist();
+            return;
+          }
+          const number = String(value);
+          if (op.op === 'commentIssue') {
+            this.pushResult(
+              runId,
+              nodeId,
+              'succeeded',
+              `Comment on issue #${number} (browser mock, nothing posted).`,
+            );
+            continue;
+          }
+          // Shaped like a Ticket step, as in the engine: {{ticket.*}} works.
+          const row = this.pushResult(
+            runId,
+            nodeId,
+            'succeeded',
+            `#${number} Mock issue ${number} (browser mock, no remote lookup).`,
+          );
+          row.structuredJson = JSON.stringify({
+            simulated: true,
+            ticket: {
+              key: `#${number}`,
+              title: `Mock issue ${number}`,
+              description: 'Simulated issue details.',
+              status: 'open',
               url: '',
               acceptanceCriteria: [],
             },
@@ -1512,13 +1641,16 @@ class MockBackend implements Backend {
               ...resultMetadata(live),
               ...correction,
             });
+          this.recordMockFiles(runId, workflow, node, rendered.rendered, profile.name);
           this.completeResult(
             live,
             'succeeded',
             `mock-agent$ ${profile.adapter} "${prompt}"\n${
-              correction.correction === undefined
-                ? 'Hello from Orchevia'
-                : 'Applied the feedback'
+              correction.correction !== undefined
+                ? 'Applied the feedback'
+                : prompt.includes(MOCK_REVIEW_MARK)
+                  ? 'Nothing to report: no agent ran'
+                  : 'Hello from Orchevia'
             } (browser mock, profile '${profile.name}').`,
           );
         } catch (error) {
@@ -1543,6 +1675,7 @@ class MockBackend implements Backend {
           this.timers.set(runId, setTimeout(resolve, 350));
         });
         if (this.runs.find((r) => r.id === runId)?.status !== 'running') return;
+        this.recordMockFiles(runId, workflow, node, command, 'a command');
         this.completeResult(
           live,
           'succeeded',
@@ -1596,7 +1729,13 @@ class MockBackend implements Backend {
     result.stdout = stdout;
     result.finishedAt = new Date().toISOString();
     if (status === 'succeeded') result.exitCode = 0;
-    const severity = reportedSeverity(stdout);
+    // A mock reviewer echoes its prompt, which explains the severity scale
+    // ("P1 for wrong behavior"), before a one-line reply. Real agents never
+    // return the prompt, so only that reply reports a severity.
+    const review = stdout.startsWith('mock-agent$ ') && stdout.includes(MOCK_REVIEW_MARK);
+    const severity = reportedSeverity(
+      review ? (stdout.split('\n').at(-1) ?? '') : stdout,
+    );
     if (severity !== null) {
       const data: unknown = JSON.parse(result.structuredJson ?? '{}');
       result.structuredJson = JSON.stringify({
@@ -1684,10 +1823,20 @@ class MockBackend implements Backend {
     const reusedPublication = workflow.nodes.find(
       (n) => isPublicationStep(n) && choices[n.id] === 'reuse',
     );
+    // The recovery works where the failed run left its files, and waits for
+    // another open run in that folder (mirrors the engine).
+    // A run from before 0.4.0 recorded no folder and gets today's.
+    const workspace =
+      source.execution?.options.dryRun === true
+        ? undefined
+        : (source.execution?.workspace ?? this.mockWorkspaceOf(workflow) ?? undefined);
+    if (workspace !== undefined)
+      this.ensureMockWorkspaceFree(source.workflowId, workflow.name);
     const execution = {
       options: structuredClone(source.execution?.options ?? {}),
       recoveredFrom: runId,
       recoveryChoices: { ...choices },
+      ...(workspace === undefined ? {} : { workspace }),
       // Recovery is new execution under the same effective limits; reused
       // results are never re-charged.
       resolvedLimits: structuredClone(source.execution?.resolvedLimits ?? {}),
@@ -2632,6 +2781,190 @@ class MockBackend implements Backend {
     return this.results.get(runId) ?? [];
   }
 
+  async workspaceRoot(): Promise<string> {
+    const saved = (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim();
+    return saved === '' ? MOCK_WORKSPACE_ROOT : saved;
+  }
+
+  /**
+   * The browser preview writes nothing: a step "writes" the files its prompt
+   * or command names (post.md, cover.png…), in the folder the desktop app
+   * would use, so the Files panel can be tried.
+   */
+  private recordMockFiles(
+    runId: string,
+    workflow: Workflow,
+    node: WorkflowNode,
+    text: string,
+    author: string,
+  ): void {
+    const names = [...new Set(text.match(MOCK_FILE_PATTERN) ?? [])].slice(0, 12);
+    if (names.length === 0) return;
+    const recorded = this.runs.find((r) => r.id === runId)?.execution?.workspace;
+    const folder = this.mockStepFolder(workflow, node, recorded);
+    // A profile that runs in the app's own folder writes nowhere a run lists.
+    if (folder === null) return;
+    // Same name in another folder is another file.
+    const files = (this.runFiles.get(runId) ?? []).filter(
+      (f) => !names.some((name) => f.path === `${folder}/${name}`),
+    );
+    const label = node.label ?? node.id;
+    for (const name of names) {
+      const kind = fileKindOf(name);
+      const file: MockRunFile = {
+        path: `${folder}/${name}`,
+        folder,
+        relPath: name,
+        size: 0,
+        modifiedAt: new Date().toISOString(),
+        kind,
+      };
+      if (kind === 'markdown' || kind === 'text') {
+        file.text = mockFileText(name, label, author);
+        file.size = new TextEncoder().encode(file.text).length;
+      } else if (kind === 'image') {
+        const svg = mockImageSvg(name, label);
+        file.base64 = btoa(svg);
+        file.mime = 'image/svg+xml';
+        file.size = svg.length;
+      }
+      files.push(file);
+    }
+    this.runFiles.set(runId, files);
+  }
+
+  /** One open run per workspace folder (mirrors `ensure_workspace_free`). */
+  private ensureMockWorkspaceFree(workflowId: string, name: string): void {
+    if (
+      this.runs.some(
+        (r) =>
+          r.workflowId === workflowId &&
+          (r.status === 'running' || r.status === 'paused') &&
+          r.execution?.options.dryRun !== true,
+      )
+    )
+      throw new Error(
+        `'${name}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.`,
+      );
+  }
+
+  /** A folderless step that really works in the workspace (mirrors `step_uses_workspace`). */
+  private mockStepUsesWorkspace(workflow: Workflow, node: WorkflowNode): boolean {
+    if (node.type !== 'command' && node.type !== 'agent') return false;
+    if ((node.config.workingDir ?? '').trim() !== '') return false;
+    if ((workflow.defaults?.repoDir ?? '').trim() !== '') return false;
+    if (node.type !== 'agent') return true;
+    const profile = this.profiles.get(node.config.agentProfileId ?? '');
+    return profile === undefined || profile.workingDirMode === 'node';
+  }
+
+  /** The workspace folder a new run records, or null when no step uses it. */
+  private mockWorkspaceOf(workflow: Workflow): string | null {
+    const uses = workflow.nodes.some((n) => this.mockStepUsesWorkspace(workflow, n));
+    return uses
+      ? workspaceFolder(
+          (this.settings.get(WORKSPACE_ROOT_SETTING) ?? '').trim() || MOCK_WORKSPACE_ROOT,
+          workflow.name,
+          workflow.id,
+        )
+      : null;
+  }
+
+  /** Where a step runs, as the engine resolves it; null for the app's folder. */
+  private mockStepFolder(
+    workflow: Workflow,
+    node: WorkflowNode,
+    recorded?: string,
+  ): string | null {
+    const own = (node.config.workingDir ?? '').trim();
+    const project = (workflow.defaults?.repoDir ?? '').trim();
+    if (node.type === 'agent') {
+      const profile = this.profiles.get(node.config.agentProfileId ?? '');
+      if (profile?.workingDirMode === 'profile')
+        return (profile.workingDir ?? '').trim() || null;
+      if (profile?.workingDirMode === 'inherit') return null;
+    }
+    return own || project || recorded || this.mockWorkspaceOf(workflow);
+  }
+
+  /** The run's folders, as `outputs::run_folders` lists them (all assumed to exist). */
+  private mockRunFolders(runId: string): string[] {
+    const workflow = this.runWorkflows.get(runId);
+    if (workflow === undefined) return [];
+    const folders = new Set<string>();
+    const add = (dir: string | undefined): void => {
+      const trimmed = (dir ?? '').trim();
+      if (trimmed.startsWith('/')) folders.add(trimmed);
+    };
+    const project = (workflow.defaults?.repoDir ?? '').trim();
+    add(project);
+    let workspace = false;
+    for (const node of workflow.nodes) {
+      if (node.type !== 'command' && node.type !== 'agent') continue;
+      add(node.config.workingDir);
+      const profile =
+        node.type === 'agent'
+          ? this.profiles.get(node.config.agentProfileId ?? '')
+          : undefined;
+      if (profile?.workingDirMode === 'profile') add(profile.workingDir);
+      if (this.mockStepUsesWorkspace(workflow, node)) workspace = true;
+    }
+    const recorded = this.runs.find((r) => r.id === runId)?.execution?.workspace;
+    const current = workspace ? (recorded ?? this.mockWorkspaceOf(workflow)) : null;
+    if (current !== null) folders.add(current);
+    const sorted = [...folders].sort();
+    return sorted.filter(
+      (folder) =>
+        !sorted.some((other) => other !== folder && folder.startsWith(`${other}/`)),
+    );
+  }
+
+  async listRunFiles(runId: string): Promise<RunFiles> {
+    if (!this.runs.some((r) => r.id === runId)) throw new Error('Run not found.');
+    const files = [...(this.runFiles.get(runId) ?? [])].sort(
+      (a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path),
+    );
+    return {
+      folders: [
+        ...new Set([...this.mockRunFolders(runId), ...files.map((f) => f.folder)]),
+      ].sort(),
+      files: files.map(
+        ({ text: _text, base64: _base64, mime: _mime, ...file }): RunFile => file,
+      ),
+      truncated: false,
+    };
+  }
+
+  private mockRunFile(runId: string, path: string): MockRunFile {
+    if (!this.runs.some((r) => r.id === runId)) throw new Error('Run not found.');
+    const file = (this.runFiles.get(runId) ?? []).find((f) => f.path === path);
+    if (file === undefined)
+      throw new Error("Only files in this run's folders can be opened.");
+    return file;
+  }
+
+  async readRunFile(runId: string, path: string): Promise<RunFilePreview> {
+    const file = this.mockRunFile(runId, path);
+    return {
+      path: file.path,
+      kind: file.kind,
+      mime: file.mime ?? (file.kind === 'markdown' ? 'text/markdown' : 'text/plain'),
+      size: file.size,
+      ...(file.text === undefined ? {} : { text: file.text }),
+      ...(file.base64 === undefined ? {} : { base64: file.base64 }),
+      truncated: false,
+    };
+  }
+
+  async openRunFile(runId: string, path: string, reveal: boolean): Promise<void> {
+    this.mockRunFile(runId, path);
+    if (!reveal && !canOpenFile(path))
+      throw new Error(
+        'Orchevia opens documents, images, audio and video only. Use Show in folder for other files.',
+      );
+    throw new Error('Opening files is available in the desktop app.');
+  }
+
   async deleteRun(runId: string): Promise<boolean> {
     const run = this.runs.find((r) => r.id === runId);
     if (run === undefined) return false;
@@ -2648,6 +2981,7 @@ class MockBackend implements Backend {
 
   private removeRunHistory(runId: string): void {
     this.feedback.delete(runId);
+    this.runFiles.delete(runId);
     this.results.delete(runId);
     this.runWorkflows.delete(runId);
     this.recoverySeeds.delete(runId);
@@ -3127,6 +3461,7 @@ class MockBackend implements Backend {
         ABILITIES_SETTING,
         'usage.plans',
         'usage.planShare',
+        WORKSPACE_ROOT_SETTING,
       ].includes(key)
     )
       throw new Error(`Setting '${key}' is not user-configurable.`);
@@ -3140,9 +3475,18 @@ class MockBackend implements Backend {
       throw new Error(`'${value}' is not a release version.`);
     if (key === PERMISSION_DEFAULT_SETTING) parsePermissionDefault(value);
     if (key === ABILITIES_SETTING) parseAbilitiesSetting(value);
-    const maxLen = key.startsWith('usage.') || key === ABILITIES_SETTING ? 8000 : 200;
+    const maxLen =
+      key.startsWith('usage.') || key === ABILITIES_SETTING
+        ? 8000
+        : key === WORKSPACE_ROOT_SETTING
+          ? MAX_WORKSPACE_ROOT_BYTES
+          : 200;
     if (new TextEncoder().encode(value).length > maxLen)
       throw new Error('Setting value too long.');
+    if (key === WORKSPACE_ROOT_SETTING) {
+      const problem = validateWorkspaceRoot(value);
+      if (problem !== null) throw new Error(problem);
+    }
     validateUsageSetting(key, value);
     this.settings.set(key, value);
     this.persist();
@@ -3423,6 +3767,26 @@ function mockInputDefaults(workflow: Workflow): Record<string, string> {
  * variable namespaces as the backend (workflow.*, input.*, node outputs).
  * This is a browser-dev approximation — the desktop engine is authoritative.
  */
+/**
+ * The key a Ticket step records for a link, as the engine does: `sc-N` for a
+ * Shortcut story link, the Jira key inside a Jira link, else the text as typed
+ * (mirrors Rust `ticket_key` and `shortcut_story_id` for links).
+ */
+export function mockTicketKey(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed.includes('://')) return trimmed;
+  const parts = trimmed.split(/[/?#]/);
+  for (const [index, part] of parts.entries()) {
+    const next = parts[index + 1] ?? '';
+    if (part === 'story' && /^\d{1,12}$/.test(next) && Number(next) > 0)
+      return `sc-${String(Number(next))}`;
+  }
+  const keys = trimmed
+    .split(/[/?&=#]/)
+    .filter((token) => /^[A-Z][A-Z0-9_]*-\d+$/.test(token));
+  return keys.at(-1) ?? trimmed;
+}
+
 function mockVariables(
   workflow: Workflow,
   priorResults: StoredNodeResult[],

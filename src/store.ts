@@ -32,6 +32,7 @@ import type {
 } from './lib/workflow';
 import { errorMessage } from './lib/errors';
 import type { UpdateCheck } from './lib/updates';
+import type { TemplateDomain } from './lib/template-domains';
 
 /** One CLI's detection: running, its result, or why it failed. */
 export type HostAbilitiesState =
@@ -59,7 +60,11 @@ export interface UiNotice {
   revision?: number;
 }
 
+export type WorkflowIntent =
+  { kind: 'generate'; goal: string } | { kind: 'run' } | { kind: 'new' };
+
 export type View =
+  | 'home'
   | 'workflows'
   | 'runs'
   | 'inbox'
@@ -98,6 +103,21 @@ interface AppState {
   /** Last detection of each CLI's own setup, this session. */
   hostAbilities: Partial<Record<'claude' | 'codex', HostAbilitiesState>>;
   knownFolders: string[];
+  /** Where folderless steps run (`<root>/<Workflow name>`); null until known. */
+  workspaceRoot: string | null;
+  /** The Templates filter, so Home's use-case tiles can open a domain. */
+  templateDomain: TemplateDomain | 'all';
+  setTemplateDomain: (domain: TemplateDomain | 'all') => void;
+  /** The Templates search, so the command palette can open a template. */
+  templateQuery: string;
+  setTemplateQuery: (query: string) => void;
+  /**
+   * Something asked for from Home or the command palette that the Workflows
+   * view does once when it opens: draft a goal, start the selected
+   * workflow, or create a new one.
+   */
+  pendingIntent: WorkflowIntent | null;
+  setPendingIntent: (intent: WorkflowIntent | null) => void;
   mcpServers: McpServerConfig[];
   githubState: GitHubState | null;
   schedules: Schedule[];
@@ -130,6 +150,8 @@ interface AppState {
   refreshWorkflows: () => Promise<void>;
   refreshRuns: () => Promise<void>;
   refreshTools: () => Promise<void>;
+  /** Read the workspace root again (after Environment changes it). */
+  refreshWorkspaceRoot: () => Promise<void>;
   refreshProfiles: () => Promise<void>;
   /**
    * Switch `profiles` (their own level) back to following the app-wide agent
@@ -189,7 +211,7 @@ const workflowSaves = new Map<
 const workflowSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const deletingWorkflows = new Set<string>();
 export const useAppStore = create<AppState>()((set, get) => ({
-  view: 'workflows',
+  view: 'home',
   workflows: [],
   activeWorkflowId: null,
   selectedNodeId: null,
@@ -206,6 +228,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
   agentAbilities: NO_ABILITIES,
   hostAbilities: {},
   knownFolders: [],
+  workspaceRoot: null,
+  templateDomain: 'all',
+  setTemplateDomain: (templateDomain) => {
+    set({ templateDomain });
+  },
+  templateQuery: '',
+  setTemplateQuery: (templateQuery) => {
+    set({ templateQuery });
+  },
+  pendingIntent: null,
+  setPendingIntent: (pendingIntent) => {
+    set({ pendingIntent });
+  },
   mcpServers: [],
   githubState: null,
   schedules: [],
@@ -267,7 +302,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   setView: (view) => {
     navigationSequence++;
-    set({ view });
+    // A search the palette filled in lasts for that visit to Templates.
+    set(
+      get().view === 'templates' && view !== 'templates'
+        ? { view, templateQuery: '' }
+        : { view },
+    );
   },
 
   refreshAll: async () => {
@@ -277,6 +317,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         get().refreshWorkflows(),
         get().refreshRuns(),
         get().refreshTools(),
+        get().refreshWorkspaceRoot(),
         get().refreshProfiles(),
         get().refreshIntegrations(),
         get().refreshAutomations(),
@@ -357,6 +398,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const backend = getBackend();
     const tools = await backend.detectTools();
     set({ tools });
+  },
+
+  refreshWorkspaceRoot: async () => {
+    // Only shown as a hint: a backend without a home folder leaves it unknown.
+    try {
+      set({ workspaceRoot: await getBackend().workspaceRoot() });
+    } catch {
+      set({ workspaceRoot: null });
+    }
   },
 
   refreshProfiles: async () => {
@@ -565,6 +615,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (request !== navigationSequence) return false;
     set({
       view: 'workflows',
+      templateQuery: '',
       activeRunId: runId,
       activeWorkflowId: run.workflowId,
       overlayRunId: runId,
@@ -614,6 +665,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     runsRefreshSequence++;
     set({
       view: 'runs',
+      templateQuery: '',
       activeRunId: runId,
       runs: [run, ...get().runs.filter((existing) => existing.id !== runId)],
       runResults:

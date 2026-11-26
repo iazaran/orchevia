@@ -86,13 +86,74 @@ export type GitHubOp =
       head: string;
       draft?: boolean | undefined;
     }
-  | { op: 'postComment'; number: number; body: string };
+  | { op: 'postComment'; number: number; body: string }
+  /** Wait for CI: a PR's checks (0: the run's prNumber input, else the current commit). */
+  | { op: 'waitChecks'; number?: number }
+  /** Run a GitHub Actions workflow, wait for it, optionally download artifacts. */
+  | {
+      op: 'runWorkflow';
+      workflow: string;
+      ref?: string | undefined;
+      inputs?: Record<string, string> | undefined;
+      artifactsDir?: string | undefined;
+    }
+  /** A GitHub issue (0: the run's issueNumber input), also as ticket.* variables. */
+  | { op: 'issueDetails'; number: number }
+  | { op: 'listIssues'; state?: string | undefined; label?: string | undefined }
+  | { op: 'commentIssue'; number: number; body: string };
 
 export interface WorkflowInput {
   name: string;
   label?: string | undefined;
   default?: string | undefined;
   required?: boolean | undefined;
+  /** Help shown under the field when a run starts (v0.4.0). */
+  description?: string | undefined;
+  /** A long value: the start form shows a text area. */
+  multiline?: boolean | undefined;
+  /** The values a run may use; anything else is refused at run start. */
+  options?: string[] | undefined;
+}
+
+/** Bounds mirror Rust `MAX_INPUT_*`. */
+export const MAX_INPUT_DESCRIPTION_CHARS = 500;
+export const MAX_INPUT_OPTIONS = 50;
+export const MAX_INPUT_OPTION_CHARS = 200;
+
+/** Why an input's help text or choices cannot be saved (mirrors Rust). */
+export function inputSettingsProblem(input: WorkflowInput): string | null {
+  const name = input.name;
+  if (Array.from(input.description ?? '').length > MAX_INPUT_DESCRIPTION_CHARS)
+    return `Input '${name}' help text must be at most ${String(MAX_INPUT_DESCRIPTION_CHARS)} characters.`;
+  const options = input.options ?? [];
+  if (options.length > MAX_INPUT_OPTIONS)
+    return `Input '${name}' can offer at most ${String(MAX_INPUT_OPTIONS)} choices.`;
+  const seen = new Set<string>();
+  for (const option of options) {
+    const trimmed = option.trim();
+    if (trimmed === '') return `Input '${name}' has a blank choice.`;
+    if (Array.from(option).length > MAX_INPUT_OPTION_CHARS)
+      return `Input '${name}' choices must be at most ${String(MAX_INPUT_OPTION_CHARS)} characters.`;
+    if (seen.has(trimmed)) return `Input '${name}' lists the choice '${trimmed}' twice.`;
+    seen.add(trimmed);
+  }
+  const fallback = (input.default ?? '').trim();
+  if (
+    fallback !== '' &&
+    options.length > 0 &&
+    !options.some((o) => o.trim() === fallback)
+  )
+    return `Input '${name}' defaults to '${fallback}', which is not one of its choices.`;
+  return null;
+}
+
+/** A value outside an input's choices, as the message a run start shows. */
+export function inputChoiceProblem(input: WorkflowInput, value: string): string | null {
+  const options = input.options ?? [];
+  const trimmed = value.trim();
+  if (options.length === 0 || trimmed === '') return null;
+  if (options.some((o) => o.trim() === trimmed)) return null;
+  return `Workflow input '${input.name}' must be one of: ${options.map((o) => o.trim()).join(', ')}.`;
 }
 
 export interface NodeConfig {
@@ -655,7 +716,13 @@ export function isPublicationStep(node: WorkflowNode): boolean {
   const explicit = node.config.publishes;
   if (explicit !== undefined) return explicit && !ROUTING_KINDS.has(node.type);
   const op = node.config.githubOp?.op;
-  return node.type === 'github' && (op === 'createPr' || op === 'postComment');
+  return (
+    node.type === 'github' &&
+    (op === 'createPr' ||
+      op === 'postComment' ||
+      op === 'commentIssue' ||
+      op === 'runWorkflow')
+  );
 }
 
 const PUBLISHING = [
@@ -673,8 +740,26 @@ const PUBLISHING = [
   'cargo publish',
   'twine upload',
   'docker push',
+  // Releases, store uploads and deploys (v0.4.0).
+  'gh workflow run',
+  'gh release upload',
+  'fastlane deliver',
+  'fastlane supply',
+  'fastlane pilot',
+  'fastlane upload_to_play_store',
+  'fastlane upload_to_app_store',
+  'fastlane upload_to_testflight',
+  'eas submit',
+  'eas-cli submit',
+  'firebase deploy',
+  'netlify deploy',
+  'vercel deploy',
+  // `vercel` with no command deploys; `--prod` makes it production.
+  'vercel --prod',
 ];
 const WITH_VALUE = ['-c', '-r', '--repo', '--git-dir', '--work-tree'];
+/** How far ahead a phrase's option may come (mirrors Rust `OPTION_REACH`). */
+const OPTION_REACH = 6;
 
 /**
  * Commands that plainly publish, read from the program and its arguments as
@@ -691,7 +776,17 @@ export function commandPublishes(executable: string, args: string[]): boolean {
   const phraseAt = (start: number, parts: string[]): boolean => {
     let at = start;
     for (const [index, part] of parts.entries()) {
-      if (index > 0)
+      // A phrase's option (`vercel --prod`) may come a few words later, past
+      // other options and their values (`vercel --yes --token t --prod`).
+      if (index > 0 && part.startsWith('-')) {
+        const found = words
+          .slice(at, at + OPTION_REACH)
+          .findIndex((word) => word === part);
+        if (found === -1) return false;
+        at += found;
+      }
+      // Options are skipped between words, unless the phrase names one.
+      if (index > 0 && !part.startsWith('-'))
         while (words[at]?.startsWith('-') === true)
           at += WITH_VALUE.includes(words[at] ?? '') ? 2 : 1;
       if (words[at] !== part) return false;
@@ -757,6 +852,8 @@ export const VALIDATION_CODES = [
   'github-title-required',
   'github-branches-required',
   'github-body-required',
+  'github-workflow-required',
+  'github-artifacts-dir-invalid',
   'ticket-key-required',
   'ticket-server-required',
   'mcp-server-required',
@@ -766,6 +863,7 @@ export const VALIDATION_CODES = [
   'loop-limit-invalid',
   'input-name-invalid',
   'input-duplicate',
+  'input-settings-invalid',
   'workflow-limits-invalid',
   'edge-label-unknown',
   'edge-label-misplaced',
@@ -1149,9 +1247,52 @@ function githubOpIssues(op: GitHubOp, defaultBranch: string | undefined): GitIss
       ]);
     return found;
   }
-  if (op.op === 'postComment' && op.body.trim() === '')
+  if ((op.op === 'postComment' || op.op === 'commentIssue') && op.body.trim() === '')
     return [['github-body-required', 'Comments need an explicit body.']];
+  if (op.op === 'runWorkflow') {
+    const found: GitIssue[] = [];
+    if (op.workflow.trim() === '')
+      found.push([
+        'github-workflow-required',
+        'Running a GitHub Actions workflow needs its file name or name (e.g. build.yml).',
+      ]);
+    else if (!workflowNameOk(op.workflow))
+      found.push([
+        'github-workflow-required',
+        "A workflow name must not start with '-' or hold line breaks.",
+      ]);
+    if (op.artifactsDir !== undefined && !artifactsDirOk(op.artifactsDir))
+      found.push([
+        'github-artifacts-dir-invalid',
+        "The artifacts folder must be a relative folder inside the repository (no '..', not absolute).",
+      ]);
+    return found;
+  }
   return [];
+}
+
+/** An artifacts folder stays inside the repository (mirrors Rust `artifacts_dir_ok`). */
+export function artifactsDirOk(dir: string): boolean {
+  const value = dir.trim();
+  return (
+    value !== '' &&
+    !value.startsWith('/') &&
+    !value.startsWith('~') &&
+    !value.startsWith('\\') &&
+    !value.startsWith('-') &&
+    !/[\0\n\r]/.test(value) &&
+    !value
+      .split(/[/\\]/)
+      .some((part) => part === '..' || part.toLowerCase() === '.git') &&
+    // A drive letter (`C:`), counted in characters like the Rust twin.
+    Array.from(value)[1] !== ':'
+  );
+}
+
+/** One `gh workflow run` argument: never an option or several lines (mirrors Rust `workflow_name_ok`). */
+export function workflowNameOk(workflow: string): boolean {
+  const value = workflow.trim();
+  return !value.startsWith('-') && !/[\0\n\r]/.test(value);
 }
 
 /**
@@ -1497,7 +1638,7 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
         if ((config.mcpServerId ?? '').trim() === '')
           error(
             'ticket-server-required',
-            'Ticket node requires an MCP server (Jira source).',
+            'Ticket node requires an MCP server (Jira or Shortcut).',
             at,
           );
         break;
@@ -1548,6 +1689,8 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
     if (seenInputs.has(input.name))
       error('input-duplicate', `Duplicate workflow input '${input.name}'.`);
     seenInputs.add(input.name);
+    const settings = inputSettingsProblem(input);
+    if (settings !== null) error('input-settings-invalid', settings);
   }
 
   if (wf.limits !== undefined) {

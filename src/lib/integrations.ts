@@ -14,11 +14,23 @@ export const MCP_SETUP_GUIDE =
   'https://github.com/iazaran/orchevia/blob/main/docs/integrations.md#connection-recipes';
 
 export type McpCategory =
-  'Work & docs' | 'Code & tickets' | 'Web & research' | 'Data & cloud' | 'Local';
+  | 'Work & docs'
+  | 'Code & tickets'
+  | 'Apps & releases'
+  | 'Web & research'
+  | 'Data & cloud'
+  | 'Local';
+
+/**
+ * The tools a Ticket step reads a ticket with, whichever its server lists:
+ * Jira's and Shortcut's (mirrors Rust `ticket::TICKET_TOOLS`).
+ */
+export const TICKET_TOOLS = ['jira_get_issue', 'stories-get-by-id'] as const;
 
 export const MCP_CATEGORIES: McpCategory[] = [
   'Work & docs',
   'Code & tickets',
+  'Apps & releases',
   'Web & research',
   'Data & cloud',
   'Local',
@@ -56,7 +68,7 @@ export interface McpPreset {
   tools: { name: string; args: string }[];
   /** An argument you must replace before saving. */
   placeholder?: string;
-  /** Works with Ticket steps (`jira_get_issue`). */
+  /** Works with Ticket steps (one of `TICKET_TOOLS`). */
   ticket?: boolean;
   source: string;
   /**
@@ -306,6 +318,31 @@ export const MCP_PRESETS: McpPreset[] = [
       { name: 'list_issues', args: 'filters' },
     ],
     source: 'https://linear.app/docs/mcp',
+  },
+  {
+    id: 'shortcut',
+    name: 'Shortcut',
+    category: 'Code & tickets',
+    summary:
+      'Load stories for Ticket steps; search, create and update stories, epics and docs.',
+    command: 'npx',
+    args: ['-y', 'mcp-remote', 'https://mcp.shortcut.com/mcp'],
+    env: [],
+    auth: 'oauth',
+    readOnly: false,
+    needs: 'Node.js',
+    steps: [
+      'The first connection opens Shortcut sign-in in your browser; run Check once to sign in before a run needs it.',
+      'Ticket steps call stories-get-by-id on this server: give them a story number, sc-123 or a story link.',
+      'Shortcut grants what your account can do. MCP Tool steps can also comment (stories-create-comment) or move a story (stories-update).',
+    ],
+    tools: [
+      { name: 'stories-get-by-id', args: 'storyPublicId' },
+      { name: 'stories-search', args: 'filters' },
+      { name: 'stories-create-comment', args: 'storyPublicId, text' },
+    ],
+    ticket: true,
+    source: 'https://www.shortcut.com/help/integrations/mcp-server',
   },
   {
     id: 'sentry',
@@ -600,6 +637,133 @@ export const MCP_PRESETS: McpPreset[] = [
       { name: 'get_screenshot', args: 'node id' },
     ],
     source: 'https://developers.figma.com/docs/figma-mcp-server/',
+  },
+  {
+    id: 'firebase',
+    name: 'Firebase',
+    category: 'Apps & releases',
+    summary:
+      'Firebase projects, Crashlytics issues and app data through the official server.',
+    command: 'npx',
+    args: ['-y', 'firebase-tools@latest', 'mcp'],
+    env: [],
+    auth: 'login',
+    readOnly: false,
+    needs: 'Node.js 20+',
+    steps: [
+      'Run npx firebase-tools login once in a terminal (or set up Application Default Credentials).',
+      'Add --only crashlytics (or another feature) to the arguments to keep the tool list short.',
+    ],
+    tools: [
+      { name: 'crashlytics_list_events', args: 'appId, issueId' },
+      { name: 'crashlytics_get_issue', args: 'appId, issueId' },
+    ],
+    source: 'https://firebase.google.com/docs/ai-assistance/mcp-server',
+  },
+  {
+    id: 'netlify',
+    name: 'Netlify',
+    category: 'Apps & releases',
+    summary: 'Deploy sites and read projects and deploys through the official server.',
+    command: 'npx',
+    args: ['-y', '@netlify/mcp'],
+    env: [],
+    envOptional: ['NETLIFY_PERSONAL_ACCESS_TOKEN'],
+    auth: 'login',
+    readOnly: false,
+    needs: 'Node.js 22+',
+    steps: [
+      'Sign in once with npx netlify login, or export NETLIFY_PERSONAL_ACCESS_TOKEN for unattended runs.',
+      'Deploying is publishing: put a Human Approval before the step that deploys.',
+    ],
+    tools: [
+      {
+        name: 'netlify-deploy-services-updater',
+        args: 'operation (deploy-site), params',
+      },
+      { name: 'netlify-deploy-services-reader', args: 'operation, params' },
+    ],
+    source: 'https://docs.netlify.com/build/build-with-ai/netlify-mcp-server/',
+  },
+  {
+    id: 'lovable',
+    name: 'Lovable',
+    category: 'Apps & releases',
+    summary:
+      'Lovable projects: read files and diffs, send changes and publish, through the official server.',
+    command: 'npx',
+    args: [
+      '-y',
+      'mcp-remote',
+      'https://mcp.lovable.dev',
+      '--header',
+      'Lovable-API-Key:${LOVABLE_API_KEY}',
+    ],
+    env: ['LOVABLE_API_KEY'],
+    auth: 'env',
+    readOnly: false,
+    needs: 'Node.js; an API key needs a Lovable Business or Enterprise plan',
+    steps: [
+      'With a Business or Enterprise plan, create an API key in Lovable and export LOVABLE_API_KEY. The header holds only the variable name.',
+      'On other plans, remove the two --header lines and sign in with OAuth in the browser the first time the server starts.',
+      'Lovable syncs with GitHub on its active branch; a push there reaches the project, and publishing stays a separate step.',
+    ],
+    tools: [
+      { name: 'list_projects', args: '' },
+      { name: 'deploy_project', args: 'project id' },
+    ],
+    source: 'https://docs.lovable.dev/integrations/lovable-mcp-server',
+  },
+  {
+    id: 'mobile-mcp',
+    name: 'Mobile devices',
+    category: 'Apps & releases',
+    summary:
+      'Drive iOS simulators, Android emulators and devices to test an app: tap, type, swipe, screenshots.',
+    command: 'npx',
+    args: ['-y', '@mobilenext/mobile-mcp@latest'],
+    env: [],
+    envOptional: ['MOBILEMCP_DISABLE_TELEMETRY'],
+    auth: 'none',
+    readOnly: false,
+    needs: 'Node.js 20+, Android SDK (adb) and/or Xcode, a booted simulator or emulator',
+    steps: [
+      'Start an emulator or simulator (or connect a device) before the run.',
+      'It sends usage telemetry by default; export MOBILEMCP_DISABLE_TELEMETRY=1 to turn that off.',
+    ],
+    tools: [
+      { name: 'mobile_list_available_devices', args: '' },
+      { name: 'mobile_launch_app', args: 'packageName' },
+      { name: 'mobile_take_screenshot', args: '' },
+      { name: 'mobile_list_elements_on_screen', args: '' },
+    ],
+    source: 'https://github.com/mobile-next/mobile-mcp',
+  },
+  {
+    id: 'maestro',
+    name: 'Maestro',
+    category: 'Apps & releases',
+    summary:
+      'Run Maestro UI flows and inspect screens on mobile simulators and emulators.',
+    command: 'maestro',
+    args: ['mcp'],
+    env: [],
+    envOptional: ['MAESTRO_CLOUD_API_KEY'],
+    auth: 'none',
+    readOnly: false,
+    needs: 'Maestro CLI (and Java); a booted simulator or emulator',
+    steps: [
+      'Install the Maestro CLI (curl -fsSL "https://get.maestro.mobile.dev" | bash) and boot a simulator or emulator.',
+      'Export MAESTRO_CLOUD_API_KEY only to run flows on Maestro Cloud devices.',
+    ],
+    tools: [
+      { name: 'list_devices', args: '' },
+      { name: 'run', args: 'flow' },
+      { name: 'inspect_screen', args: 'device' },
+      { name: 'take_screenshot', args: 'device' },
+    ],
+    source:
+      'https://github.com/mobile-dev-inc/maestro-docs/blob/main/introduction/get-started/maestro-mcp.md',
   },
 ];
 

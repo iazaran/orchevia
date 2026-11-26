@@ -6,6 +6,141 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26
+
+Orchevia now runs more than coding work: content, research, media and data
+workflows use the same agents, reviews and approvals, and every run shows the
+files it made.
+
+### Added
+
+- **Home.** Orchevia opens on a page where you describe what you want done:
+  **Draft a workflow** hands it to your own AI CLI through the generator, which
+  drafts a graph you review before anything runs. Example goals fill the box in
+  one click. Below: **Needs you** (runs waiting for an approval, runs that
+  failed today), the setup steps left (connect an agent, a first run, an
+  automation), **Start from a kind of work**, recent runs with this week's
+  success rate, and your workflows with **Run** buttons.
+- **Command palette.** Ctrl/⌘ + K, or **Search** at the top of the sidebar,
+  finds a view, opens or runs a workflow, finds a template, opens a recent run,
+  and drafts a workflow from a longer query. Arrow keys and Enter work as
+  expected; it never opens over another dialog.
+- **Files on every run.** Runs lists what a run's steps created or changed in
+  the folders they ran in, newest first, with thumbnails for images. A preview
+  shows Markdown, text, images, audio, video and PDFs; **Open** hands documents
+  and media to their default app (never scripts, programs or web pages), **Show in
+  folder** reveals the file and **Copy path** copies it. Hidden files and
+  dependency, build and cache folders are never listed, and nothing outside the
+  run's folders can be read.
+- **Workspace folders.** A Command or Agent step with no folder of its own, in
+  a workflow without a project folder, now runs in that workflow's own folder,
+  `~/Documents/Orchevia/<Workflow name> (<id>)` (created on the first run; dry
+  runs create nothing), instead of wherever the app happened to start. The short
+  id keeps two workflows with the same name apart, the folder is recorded when
+  a run starts (changing the root later never moves a waiting run), a workflow
+  that works there takes one open run at a time (schedules and watchers wait
+  for it, and a recovery waits too), and a folder that cannot be
+  created fails the step with its path. A workflow that relied on the folder
+  the app was launched from (a relative `bash scripts/check.sh`) now needs its
+  **Project folder** set. Environment →
+  **Workspace** chooses another root. The workflow panel and the step folder
+  fields show the folder in use.
+- **Eight templates beyond code**, each replayed end to end in the engine:
+  **Blog Post from a Brief** (outline, draft, an editor's fact-check with up to
+  two revision rounds, your approval, social posts), **Product Launch Kit**
+  (positioning, then landing copy, email, social posts and ad variants in
+  parallel, then a consistency check), **Research Report with Sources** (a cited
+  report, then a second agent opens every source), **Translate a Document**,
+  **Images from a Brief** (prompts you approve, then Codex's built-in image tool
+  on a ChatGPT plan with no API key, or SVG illustrations from other agents),
+  **Social Video Cuts** (9:16, 1:1 and 16:9 cuts and a thumbnail with FFmpeg in
+  parallel, then captions), **Spreadsheet Insights** (figures and charts, with
+  the numbers rechecked) and **Meeting Notes to Actions**.
+- **Inputs that explain themselves.** A workflow input can carry help text, be
+  marked as long text, or list its choices. The start form shows a choice list,
+  a text area or the help under the field, a value naming a choice is stored as
+  that choice (without stray spaces), and a run with a value outside an input's
+  choices is refused. Edit them under **Details** beside each input in
+  the workflow panel; the generator and the Simple JSON editor carry them too.
+- **Wait for CI, run GitHub Actions, and work from GitHub issues.** Three new
+  kinds of GitHub step:
+  - **waitChecks** waits until CI finishes, on a pull request or on the commit
+    you just pushed (check runs and commit statuses). It counts Actions runs
+    that are still queued, waits for GitHub to show a just-pushed commit on the
+    pull request (and fails rather than passing on the old commit's checks),
+    and finishes only when two looks in a row find everything done; a commit
+    GitHub does not have is refused with "push it first", while one pushed
+    only with a tag counts. A failed check
+    fails the step, with the end of each failed job's log as its output for a
+    step that fixes it, so a workflow can push, wait, fix and push again in a
+    bounded loop.
+  - **runWorkflow** starts a GitHub Actions workflow (a build, a mobile app
+    build, a release or store upload), waits for it and can download its
+    artifacts into a folder of the repository, within the step's time. A
+    passed run whose download fails fails the step and keeps the run's report.
+  - **issueDetails**, **listIssues** and **commentIssue** work with GitHub
+    issues; an issue fills `{{ticket.key}}`, `{{ticket.title}}` and the other
+    ticket variables, as a Jira ticket does.
+
+  The generator knows all of them, and n8n export turns them into `gh` commands.
+
+- **Shortcut tickets.** A Ticket step now reads a Shortcut story as well as a
+  Jira issue, using whichever tool its server lists (`stories-get-by-id` or
+  `jira_get_issue`). Give it the story number, `sc-123` or the story's link; the
+  story fills `{{ticket.key}}` (`sc-123`), `{{ticket.title}}`,
+  `{{ticket.status}}` (its workflow state), `{{ticket.url}}` and the other
+  ticket variables, its tasks become the acceptance criteria (finished ones
+  marked done), and **Check server** accepts either tool for a Ticket step. A
+  server that cannot list its tools is read as a Jira server, as before. A new **Shortcut** setup
+  connects Shortcut's hosted server with browser sign-in.
+- **Six more MCP setups (28 in all):** Shortcut under **Code & tickets**, and
+  under a new **Apps & releases** group Firebase (official), Netlify (official),
+  Lovable (official), Mobile devices (drive iOS simulators and Android emulators
+  to test an app) and Maestro (UI test flows).
+- **Release and deploy commands count as publishing:** `gh workflow run`,
+  `gh release upload`, `fastlane supply`, `fastlane pilot`, `fastlane deliver`
+  and the `upload_to_*` actions, `eas submit` (or `eas-cli submit`),
+  `firebase deploy`, `netlify deploy`, `vercel deploy` and `vercel … --prod`, so
+  feedback is handled before them and an unmarked one is flagged.
+- **Media and document tools.** Environment → Local tools detects FFmpeg,
+  ImageMagick, Pandoc and Python under **Media and documents**, with what each
+  is for and how to install it. Template cards say what they need: ✓ FFmpeg when
+  it is installed, ✕ FFmpeg when it is not, web search, an MCP server or a Git
+  repository.
+
+### Changed
+
+- **Templates** has a search box and kind filters (Software, Content &
+  marketing, Research, Media & design, Data & operations, Getting started),
+  groups built-ins by kind, and content, research, media and data templates no
+  longer borrow a code repository: their project folder is optional and blank
+  uses the workflow's workspace folder.
+- **The start form asks for inputs first** and folds the limit overrides away;
+  the Expand toggle for long values sits beside the field label.
+- **The generator designs work beyond code:** deliverables as named files,
+  drafting and reviewing in separate steps with a review loop and an approval
+  before publishing, media processing in Command steps with inputs passed as
+  arguments, and inputs with help text, long text and choices.
+- The workflow panel calls `defaults.repoDir` the **Project folder**: a
+  repository for code work or any folder for documents and media.
+- **README and website.** The site's What's new covers 0.4 (CI and Actions
+  steps, Home, Files, the new templates, Shortcut tickets, workspace folders),
+  its setups list has all six groups including **Apps & releases**, its
+  template list shows all 21 with "New" only on 0.4 ones, and the Templates and
+  MCP setup screenshots show 0.4. `pnpm version:check` now also
+  checks the version in the site's structured data, which had stayed at 0.3.2.
+- Dependencies refreshed within their ranges.
+
+### Fixed
+
+- **Codex steps outside a Git repository** no longer stop at Codex's own
+  repository check: a step whose folder is outside any repository, and drafting
+  a workflow without a repository, run with `--skip-git-repo-check` (once, even
+  when a profile already passes it). Repository folders keep the check.
+- **Review loops in the browser preview** (`pnpm dev`) ended at their loop
+  limit because the mock read the severity scale in the echoed prompt as a
+  finding; a mock review now reports nothing, as a clean real review would.
+
 ## [0.3.3] - 2026-11-25
 
 ### Added

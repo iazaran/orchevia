@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __setMockBackendForTests } from './backend';
+import { __setMockBackendForTests, mockTicketKey } from './backend';
 import { createDefaultProfile } from './agents';
 import { createEmptyWorkflow } from './workflow';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
@@ -1550,4 +1550,22 @@ describe('mock setup check', () => {
     ]);
     expect(report.items[0]?.detail).toContain("'codex'");
   });
+});
+
+it('records a ticket link as the key the engine records', () => {
+  // The same links as the Rust ticket_key and shortcut_story_id tests.
+  for (const [input, key] of [
+    ['DEV-1234', 'DEV-1234'],
+    ['  sc-77 ', 'sc-77'],
+    ['https://acme.atlassian.net/browse/OPS_2-77?focusedCommentId=9', 'OPS_2-77'],
+    [
+      'https://acme.atlassian.net/jira/software/projects/DEV/boards/1?selectedIssue=DEV-42',
+      'DEV-42',
+    ],
+    ['https://app.shortcut.com/acme/story/4567/dark-mode', 'sc-4567'],
+    ['https://app.shortcut.com/story/story/12/a-title', 'sc-12'],
+    ['https://example.com/no-key-here', 'https://example.com/no-key-here'],
+  ] as const) {
+    expect(mockTicketKey(input), input).toBe(key);
+  }
 });

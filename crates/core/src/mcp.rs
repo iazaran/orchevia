@@ -154,6 +154,65 @@ pub fn call_tool(
     })
 }
 
+/// Call the first of `candidates` the server lists, in one session: start,
+/// list tools, pick, call. `arguments` builds the call's arguments for the
+/// tool picked. A server that cannot list its tools (or lists none) gets the
+/// `fallback` tool called anyway, if given; one that lists tools without any
+/// candidate gets an error naming them. Ticket steps use it to read Jira and
+/// Shortcut servers alike.
+pub fn call_first_listed(
+    config: &McpServerConfig,
+    candidates: &[&str],
+    fallback: Option<&str>,
+    arguments: impl FnOnce(&str) -> Result<serde_json::Value, String> + Send + 'static,
+    timeout: Duration,
+    cancel: &Arc<AtomicBool>,
+) -> Result<McpCallResult, String> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Cancelled.".to_string());
+    }
+    let SpawnedServer {
+        mut child,
+        group,
+        pipes,
+        stderr_log,
+    } = spawn_server(config)?;
+    let wanted: Vec<String> = candidates.iter().map(|c| (*c).to_string()).collect();
+    let fallback = fallback.map(str::to_string);
+    let server_name = config.name.clone();
+    let result = run_bounded(&mut child, &group, pipes, timeout, cancel, move |pipes| {
+        pipes.initialize()?;
+        let listed = pipes.list_tools().unwrap_or_default();
+        let picked = wanted
+            .iter()
+            .find(|name| listed.iter().any(|t| &t.name == *name))
+            .cloned()
+            .or_else(|| fallback.filter(|_| listed.is_empty()));
+        let Some(tool) = picked else {
+            return Ok(Err(format!(
+                "Server '{server_name}' has none of these tools: {}.",
+                wanted.join(", ")
+            )));
+        };
+        let args = match arguments(&tool) {
+            Ok(args) => args,
+            Err(e) => return Ok(Err(e)),
+        };
+        let (is_error, text) = pipes.call_tool(&tool, &args)?;
+        Ok(Ok((tool, is_error, text)))
+    });
+    shutdown(child, group);
+    let (tool, is_error, text) =
+        result.map_err(|e| format!("{} Server stderr: {}", e, stderr_tail_wait(&stderr_log)))??;
+    Ok(McpCallResult {
+        server_id: config.id.clone(),
+        server_name: config.name.clone(),
+        tool,
+        is_error,
+        text,
+    })
+}
+
 /// Spawn the server child (own process group on Unix), returning ownership of
 /// the process, its group and pipes. The caller keeps the [`Child`] so
 /// timeouts can stop it even while a worker thread blocks on stdio. Server
@@ -386,26 +445,45 @@ impl McpPipes {
     }
 
     fn list_tools(&mut self) -> Result<Vec<McpToolInfo>, String> {
-        let result = self.request("tools/list", serde_json::json!({}))?;
-        let tools = result
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(tools
-            .iter()
-            .filter_map(|t| {
-                Some(McpToolInfo {
-                    name: t.get("name")?.as_str()?.to_string(),
-                    description: t
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    input_schema: t.get("inputSchema").cloned(),
-                })
-            })
-            .collect())
+        // Servers may page the list (`nextCursor`); a bound keeps a server
+        // that never stops paging from holding the call.
+        const MAX_PAGES: usize = 20;
+        let mut listed = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let params = match &cursor {
+                Some(cursor) => serde_json::json!({ "cursor": cursor }),
+                None => serde_json::json!({}),
+            };
+            let result = self.request("tools/list", params)?;
+            for t in result
+                .get("tools")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(name) = t.get("name").and_then(|v| v.as_str()) {
+                    listed.push(McpToolInfo {
+                        name: name.to_string(),
+                        description: t
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        input_schema: t.get("inputSchema").cloned(),
+                    });
+                }
+            }
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .filter(|c| !c.is_empty())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(listed)
     }
 
     fn call_tool(
@@ -468,6 +546,17 @@ pub struct McpCheckReport {
 
 /// The tools saved workflows call on `server_id`: MCP steps' tools, and the
 /// issue lookup Ticket steps use.
+/// Joins tools of which a server needs only one (Ticket steps).
+pub const ANY_OF: &str = " or ";
+
+/// Whether the listed tools satisfy one required entry (a name, or names
+/// joined by [`ANY_OF`]).
+fn requirement_met(required: &str, tools: &[McpToolInfo]) -> bool {
+    required
+        .split(ANY_OF)
+        .any(|name| tools.iter().any(|t| t.name == name))
+}
+
 pub fn required_tools(workflows: &[crate::workflow::Workflow], server_id: &str) -> Vec<String> {
     use crate::workflow::NodeKind;
     let mut tools: Vec<String> = Vec::new();
@@ -481,7 +570,8 @@ pub fn required_tools(workflows: &[crate::workflow::Workflow], server_id: &str) 
                 .mcp_tool
                 .clone()
                 .filter(|t| !t.trim().is_empty()),
-            NodeKind::Ticket => Some(crate::ticket::DEFAULT_TICKET_TOOL.to_string()),
+            // Any one of the ticket tools will do (Jira or Shortcut).
+            NodeKind::Ticket => Some(crate::ticket::TICKET_TOOLS.join(ANY_OF)),
             _ => None,
         };
         if let Some(tool) = tool {
@@ -637,7 +727,7 @@ pub fn check_server(
                 }
                 let missing: Vec<&String> = required
                     .iter()
-                    .filter(|name| !tools.iter().any(|t| &t.name == *name))
+                    .filter(|name| !requirement_met(name, &tools))
                     .collect();
                 items.push(if required.is_empty() {
                     check_item("required", REQUIRED, "skipped", "No saved workflow uses a tool from this server.", None)
@@ -646,7 +736,7 @@ pub fn check_server(
                         "required",
                         REQUIRED,
                         "passed",
-                        format!("All {} tool{} your workflows use: {}.", required.len(), if required.len() == 1 { "" } else { "s" }, required.join(", ")),
+                        format!("Every tool your workflows use is listed: {}.", required.join("; ")),
                         None,
                     )
                 } else {
@@ -824,6 +914,101 @@ done
 
     #[cfg(unix)]
     #[test]
+    fn one_session_calls_the_first_tool_the_server_lists() {
+        let (_dir, config) = fixture_config();
+        // Ticket steps need one of these; this server only has the Jira one.
+        let report = check_server(
+            &config,
+            &["jira_get_issue or stories-get-by-id".into()],
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert_eq!(report.status, "passed", "{report:#?}");
+        let result = call_first_listed(
+            &config,
+            &["stories-get-by-id", "jira_get_issue"],
+            None,
+            |tool| Ok(serde_json::json!({ "tool": tool })),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        )
+        .expect("call");
+        assert_eq!(result.tool, "jira_get_issue");
+        assert!(result.text.contains("Cart bug"), "{}", result.text);
+        let none = call_first_listed(
+            &config,
+            &["stories-get-by-id"],
+            None,
+            |_| Ok(serde_json::json!({})),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert_eq!(
+            none.expect_err("no such tool"),
+            "Server 'Jira MCP' has none of these tools: stories-get-by-id."
+        );
+        // Listing tools without a candidate is an error even with a
+        // fallback: the server answered, and the names say what is missing.
+        let listed = call_first_listed(
+            &config,
+            &["stories-get-by-id"],
+            Some("jira_get_issue"),
+            |_| Ok(serde_json::json!({})),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        );
+        assert!(listed.is_err());
+        // A server that cannot list still gets the fallback call, as Ticket
+        // steps called the Jira tool before they listed tools.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let unlisted = script_config(
+            &dir,
+            "unlisted",
+            r#"while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}\n' "$n" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$n" ;;
+    *'"method":"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"called"}]}}\n' "$n" ;;
+  esac
+done"#,
+        );
+        let fallback = call_first_listed(
+            &unlisted,
+            &["stories-get-by-id"],
+            Some("jira_get_issue"),
+            |tool| Ok(serde_json::json!({ "tool": tool })),
+            Duration::from_secs(10),
+            &cancel_flag(),
+        )
+        .expect("fallback");
+        assert_eq!(fallback.tool, "jira_get_issue");
+        assert_eq!(fallback.text, "called");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_paged_tool_list_is_read_to_the_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = script_config(
+            &dir,
+            "paged",
+            r#"while IFS= read -r line; do
+  n=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}\n' "$n" ;;
+    *'"cursor":"p2"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"stories-get-by-id"}]}}\n' "$n" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"stories-search"}],"nextCursor":"p2"}}\n' "$n" ;;
+  esac
+done"#,
+        );
+        let tools = list_tools(&config, Duration::from_secs(10), &cancel_flag()).expect("tools");
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["stories-search", "stories-get-by-id"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_working_server_passes_and_names_missing_workflow_tools() {
         let (_dir, config) = fixture_config();
         let report = check_server(
@@ -932,7 +1117,7 @@ done
         .expect("workflow");
         assert_eq!(
             required_tools(&[workflow], "jira"),
-            ["jira_get_issue", "jira_search"]
+            ["jira_get_issue or stories-get-by-id", "jira_search"]
         );
     }
 
