@@ -56,6 +56,7 @@
     "loop-limit-invalid",
     "input-name-invalid",
     "input-duplicate",
+    "input-settings-invalid",
     "workflow-limits-invalid",
     "edge-label-unknown",
     "edge-label-misplaced",
@@ -2140,6 +2141,71 @@
         },
         {
           "code": "workflow-limits-invalid",
+          "severity": "error"
+        }
+      ]
+    },
+    {
+      "name": "input help text and choices",
+      "workflow": {
+        "inputs": [
+          {
+            "name": "tone",
+            "options": ["Friendly", "Formal"],
+            "default": "Formal",
+            "description": "How it should sound."
+          },
+          {
+            "name": "blank",
+            "options": ["A", " "]
+          },
+          {
+            "name": "twice",
+            "options": ["A", " A"]
+          },
+          {
+            "name": "stray",
+            "options": ["A"],
+            "default": "B"
+          },
+          {
+            "name": "long",
+            "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        ],
+        "nodes": [
+          {
+            "id": "start",
+            "type": "start"
+          },
+          {
+            "id": "end",
+            "type": "end"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e1",
+            "source": "start",
+            "target": "end"
+          }
+        ]
+      },
+      "issues": [
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        },
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        },
+        {
+          "code": "input-settings-invalid",
+          "severity": "error"
+        },
+        {
+          "code": "input-settings-invalid",
           "severity": "error"
         }
       ]

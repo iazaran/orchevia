@@ -4659,3 +4659,25 @@ details[open] > .gen-summary::after {
   outline-offset: 4px;
   border-radius: var(--radius-m);
 }
+
+/* Workflow inputs in the inspector (v0.4.0): a row plus folded details. */
+.input-row {
+  margin-bottom: 8px;
+}
+.input-details {
+  margin: 4px 0 0;
+  padding: 0 0 4px 8px;
+  border-left: 2px solid var(--border-soft);
+}
+.input-details summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+.input-details[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.start-run-intro {
+  margin: 0 0 8px;
+}

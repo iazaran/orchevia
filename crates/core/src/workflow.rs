@@ -52,7 +52,7 @@ pub struct WorkflowDefaults {
 }
 
 /// A declared workflow input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowInput {
     pub name: String,
@@ -62,6 +62,89 @@ pub struct WorkflowInput {
     pub default: Option<String>,
     #[serde(default)]
     pub required: bool,
+    /// Help shown under the field when a run starts (v0.4.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A long value (a brief, notes, a list): the start form shows a text area.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multiline: bool,
+    /// The values a run may use: the start form offers a choice, and a run
+    /// with any other value is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+/// Bounds for input help text and choices (mirrored in `workflow.ts`).
+pub const MAX_INPUT_DESCRIPTION_CHARS: usize = 500;
+pub const MAX_INPUT_OPTIONS: usize = 50;
+pub const MAX_INPUT_OPTION_CHARS: usize = 200;
+
+/// Why an input's help text or choices cannot be saved, if they cannot.
+pub fn input_settings_problem(input: &WorkflowInput) -> Option<String> {
+    let name = &input.name;
+    if input
+        .description
+        .as_deref()
+        .is_some_and(|d| d.chars().count() > MAX_INPUT_DESCRIPTION_CHARS)
+    {
+        return Some(format!(
+            "Input '{name}' help text must be at most {MAX_INPUT_DESCRIPTION_CHARS} characters."
+        ));
+    }
+    if input.options.len() > MAX_INPUT_OPTIONS {
+        return Some(format!(
+            "Input '{name}' can offer at most {MAX_INPUT_OPTIONS} choices."
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for option in &input.options {
+        let trimmed = option.trim();
+        if trimmed.is_empty() {
+            return Some(format!("Input '{name}' has a blank choice."));
+        }
+        if option.chars().count() > MAX_INPUT_OPTION_CHARS {
+            return Some(format!(
+                "Input '{name}' choices must be at most {MAX_INPUT_OPTION_CHARS} characters."
+            ));
+        }
+        if !seen.insert(trimmed) {
+            return Some(format!(
+                "Input '{name}' lists the choice '{trimmed}' twice."
+            ));
+        }
+    }
+    if let Some(default) = input.default.as_deref().map(str::trim) {
+        if !default.is_empty()
+            && !input.options.is_empty()
+            && !input.options.iter().any(|o| o.trim() == default)
+        {
+            return Some(format!(
+                "Input '{name}' defaults to '{default}', which is not one of its choices."
+            ));
+        }
+    }
+    None
+}
+
+/// A value outside an input's choices, as the message a run start shows.
+pub fn input_choice_problem(input: &WorkflowInput, value: &str) -> Option<String> {
+    let value = value.trim();
+    if input.options.is_empty() || value.is_empty() {
+        return None;
+    }
+    if input.options.iter().any(|o| o.trim() == value) {
+        return None;
+    }
+    Some(format!(
+        "Workflow input '{}' must be one of: {}.",
+        input.name,
+        input
+            .options
+            .iter()
+            .map(|o| o.trim())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// A single node in the workflow graph.
@@ -453,6 +536,7 @@ pub const VALIDATION_CODES: &[&str] = &[
     "loop-limit-invalid",
     "input-name-invalid",
     "input-duplicate",
+    "input-settings-invalid",
     "workflow-limits-invalid",
     "edge-label-unknown",
     "edge-label-misplaced",
@@ -1371,6 +1455,9 @@ pub fn validate_workflow(wf: &Workflow) -> Vec<ValidationIssue> {
                     format!("Duplicate workflow input '{}'.", input.name),
                     None,
                 );
+            }
+            if let Some(problem) = input_settings_problem(input) {
+                push_error(&mut issues, "input-settings-invalid", problem, None);
             }
         }
     }
@@ -2313,6 +2400,7 @@ mod tests {
             label: None,
             default: Some("fast".into()),
             required: false,
+            ..Default::default()
         });
         let issues = validate_workflow(&wf);
         let errors: Vec<&ValidationIssue> = issues
@@ -2526,6 +2614,88 @@ mod tests {
     }
 
     #[test]
+    fn input_help_text_and_choices_stay_bounded() {
+        let check = |input: WorkflowInput| {
+            let mut wf = linear_workflow();
+            wf.inputs.push(input);
+            validate_workflow(&wf)
+                .into_iter()
+                .filter(|i| i.code == "input-settings-invalid")
+                .map(|i| i.message)
+                .collect::<Vec<_>>()
+        };
+        let base = || WorkflowInput {
+            name: "tone".into(),
+            ..Default::default()
+        };
+        assert!(check(WorkflowInput {
+            options: vec!["Friendly".into(), "Formal".into()],
+            default: Some("Formal".into()),
+            description: Some("How the post should sound.".into()),
+            multiline: false,
+            ..base()
+        })
+        .is_empty());
+        let cases = [
+            (
+                WorkflowInput {
+                    options: vec!["A".into(), " ".into()],
+                    ..base()
+                },
+                "Input 'tone' has a blank choice.",
+            ),
+            (
+                WorkflowInput {
+                    options: vec!["A".into(), " A".into()],
+                    ..base()
+                },
+                "Input 'tone' lists the choice 'A' twice.",
+            ),
+            (
+                WorkflowInput {
+                    options: vec!["A".into()],
+                    default: Some("B".into()),
+                    ..base()
+                },
+                "Input 'tone' defaults to 'B', which is not one of its choices.",
+            ),
+            (
+                WorkflowInput {
+                    description: Some("x".repeat(MAX_INPUT_DESCRIPTION_CHARS + 1)),
+                    ..base()
+                },
+                "Input 'tone' help text must be at most 500 characters.",
+            ),
+            (
+                WorkflowInput {
+                    options: (0..=MAX_INPUT_OPTIONS).map(|i| i.to_string()).collect(),
+                    ..base()
+                },
+                "Input 'tone' can offer at most 50 choices.",
+            ),
+            (
+                WorkflowInput {
+                    options: vec!["x".repeat(MAX_INPUT_OPTION_CHARS + 1)],
+                    ..base()
+                },
+                "Input 'tone' choices must be at most 200 characters.",
+            ),
+        ];
+        for (input, message) in cases {
+            assert_eq!(check(input), [message]);
+        }
+        // New fields stay out of saved JSON until used.
+        let json = serde_json::to_string(&base()).unwrap();
+        assert_eq!(json, r#"{"name":"tone","required":false}"#);
+        let full: WorkflowInput = serde_json::from_str(
+            r#"{"name":"tone","multiline":true,"options":["A"],"description":"Help"}"#,
+        )
+        .unwrap();
+        assert!(full.multiline);
+        assert_eq!(full.options, ["A"]);
+    }
+
+    #[test]
     fn duplicate_inputs_rejected() {
         let mut wf = linear_workflow();
         for _ in 0..2 {
@@ -2534,6 +2704,7 @@ mod tests {
                 label: None,
                 default: None,
                 required: false,
+                ..Default::default()
             });
         }
         assert!(validate_workflow(&wf)

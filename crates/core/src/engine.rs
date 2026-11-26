@@ -873,6 +873,19 @@ impl Engine {
                     edge_id: None,
                 });
             }
+            // An input with choices takes only one of them (v0.4.0).
+            if let Some(message) = merged
+                .get(&input.name)
+                .and_then(|value| crate::workflow::input_choice_problem(input, value))
+            {
+                issues.push(crate::workflow::ValidationIssue {
+                    code: "input-choice-invalid".to_string(),
+                    message,
+                    severity: ValidationSeverity::Error,
+                    node_id: None,
+                    edge_id: None,
+                });
+            }
         }
         if !options.dry_run {
             // Availability checks that need the DB: every Agent node must
@@ -6951,6 +6964,36 @@ mod tests {
         assert_eq!(agent.stdout.trim(), repo.to_string_lossy());
     }
 
+    #[test]
+    fn inputs_with_choices_refuse_other_values_at_run_start() {
+        let (db, engine) = harness();
+        let mut wf = agent_workflow("missing-profile");
+        wf.nodes.retain(|n| n.kind != NodeKind::Agent);
+        wf.edges = vec![edge("e0", "start", "end", None)];
+        wf.inputs.push(WorkflowInput {
+            name: "tone".into(),
+            options: vec!["Friendly".into(), "Formal".into()],
+            default: Some("Friendly".into()),
+            ..Default::default()
+        });
+        db.upsert_workflow(&wf).unwrap();
+        let mut inputs = empty_inputs();
+        inputs.insert("tone".into(), "Sarcastic".into());
+        let err = engine.start_run(&wf, "tone-bad", &inputs).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Workflow input 'tone' must be one of: Friendly, Formal."),
+            "{err}"
+        );
+        inputs.insert("tone".into(), " Formal ".into());
+        engine
+            .start_run(&wf, "tone-ok", &inputs)
+            .expect("a listed choice starts");
+        engine
+            .start_run(&wf, "tone-default", &empty_inputs())
+            .expect("the default is a choice");
+    }
+
     #[tokio::test]
     async fn folderless_steps_run_in_the_workflow_workspace() {
         let root = tempfile::tempdir().unwrap();
@@ -7876,6 +7919,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                 label: None,
                 default: Some("fast".into()),
                 required: false,
+                ..Default::default()
             }],
             defaults: None,
             limits: None,
@@ -8152,6 +8196,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                     label: None,
                     default: Some("yes".into()),
                     required: false,
+                    ..Default::default()
                 }]
             } else {
                 Vec::new()
@@ -9599,6 +9644,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
                 label: None,
                 default: Some("you".into()),
                 required: false,
+                ..Default::default()
             }],
             nodes: vec![
                 simple_node("start", NodeKind::Start, 0.0),
@@ -9758,6 +9804,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             label: None,
             default: Some("printf REAL_TEST".into()),
             required: true,
+            ..Default::default()
         });
         db.upsert_workflow(&wf).unwrap();
         for (i, value) in ["", "  "].iter().enumerate() {
@@ -9794,6 +9841,7 @@ printf '{"type":"result","is_error":false,"result":"FINAL","usage":{"input_token
             label: None,
             default: None,
             required: true,
+            ..Default::default()
         });
         let err = engine
             .start_run(&wf, "run-input", &empty_inputs())

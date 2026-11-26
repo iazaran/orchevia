@@ -34,6 +34,12 @@ pub struct ProposalInput {
     pub default: Option<String>,
     #[serde(default)]
     pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub multiline: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,6 +285,7 @@ fn compile_proposal_inner(
         return Err("Proposal is too large (max 100 nodes).".to_string());
     }
     let mut compiled_inputs: Vec<crate::workflow::WorkflowInput> = Vec::new();
+    let mut input_repairs: Vec<String> = Vec::new();
     for input in &proposal.inputs {
         let name = input.name.trim();
         if !crate::workflow::is_valid_input_name(name) {
@@ -295,16 +302,29 @@ fn compile_proposal_inner(
         if compiled_inputs.len() >= 20 {
             return Err("Proposal declares too many inputs (max 20).".to_string());
         }
-        compiled_inputs.push(crate::workflow::WorkflowInput {
+        let mut compiled = crate::workflow::WorkflowInput {
             name: name.to_string(),
             label: input.label.clone(),
             default: input.default.clone(),
             required: input.required,
-        });
+            description: input.description.clone(),
+            multiline: input.multiline,
+            options: input.options.clone(),
+        };
+        // Help text and choices are a convenience: keep the input and say
+        // what was left out rather than refusing the whole draft.
+        if let Some(problem) = crate::workflow::input_settings_problem(&compiled) {
+            compiled.description = None;
+            compiled.options.clear();
+            input_repairs.push(format!(
+                "{problem} Its help text and choices were left out."
+            ));
+        }
+        compiled_inputs.push(compiled);
     }
     // 1. Known node kinds (reject anything executable we don't model).
     let mut nodes: Vec<Node> = Vec::with_capacity(proposal.nodes.len());
-    let mut all_repairs: Vec<String> = Vec::new();
+    let mut all_repairs: Vec<String> = input_repairs;
     let mut keys = std::collections::HashSet::new();
     for (index, pn) in proposal.nodes.iter().enumerate() {
         if pn.key.trim().is_empty() {
@@ -995,6 +1015,9 @@ pub fn compile_assistance_proposal(
                 label: input.label.clone(),
                 default: input.default.clone(),
                 required: input.required,
+                description: input.description.clone(),
+                multiline: input.multiline,
+                options: input.options.clone(),
             });
         }
     }
@@ -1005,6 +1028,9 @@ pub fn compile_assistance_proposal(
             label: i.label.clone(),
             default: i.default.clone(),
             required: i.required,
+            description: i.description.clone(),
+            multiline: i.multiline,
+            options: i.options.clone(),
         })
         .collect();
     // An Optimize proposal that leaves out `edges` keeps the saved graph

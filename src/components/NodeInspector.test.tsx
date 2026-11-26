@@ -631,3 +631,49 @@ it('marks a step as publishing, and keeps GitHub writes publishing by default', 
   fireEvent.click(box());
   expect(config('pr')?.publishes).toBeUndefined();
 });
+
+it('edits an input’s label, help text, long-text flag and choices', async () => {
+  const user = (await import('@testing-library/user-event')).default.setup();
+  const backend = __setMockBackendForTests();
+  const workflow = createEmptyWorkflow('Details');
+  workflow.inputs = [{ name: 'tone', default: '' }];
+  const stored = await backend.saveWorkflow(workflow);
+  useAppStore.setState({
+    workflows: [stored],
+    activeWorkflowId: stored.id,
+    selectedNodeId: null,
+    selectedEdgeId: null,
+    overlayRunId: null,
+    workspaceRoot: '/home/me/Documents/Orchevia',
+  });
+  render(<NodeInspector />);
+  // No project folder: the workspace folder is named.
+  expect(screen.getByTestId('workspace-hint')).toHaveTextContent(
+    '/home/me/Documents/Orchevia/Details',
+  );
+  await user.click(screen.getByText('Details'));
+  await user.type(screen.getByLabelText('Label in the start form'), 'Tone');
+  await user.type(screen.getByLabelText('Help text'), 'How it should sound');
+  await user.click(screen.getByLabelText('Required'));
+  await user.click(screen.getByLabelText('Long text (a brief, notes, a list)'));
+  const current = (): Record<string, unknown> | undefined =>
+    useAppStore.getState().workflows.find((w) => w.id === stored.id)?.definition
+      .inputs?.[0] as Record<string, unknown> | undefined;
+  expect(current()).toMatchObject({
+    name: 'tone',
+    label: 'Tone',
+    description: 'How it should sound',
+    required: true,
+    multiline: true,
+  });
+  await user.click(screen.getByLabelText('Long text (a brief, notes, a list)'));
+  await user.type(
+    screen.getByLabelText('Choices (one per line; blank allows any value)'),
+    'Friendly{enter}Formal',
+  );
+  expect(current()?.options).toEqual(['Friendly', 'Formal']);
+  expect(current()).not.toHaveProperty('multiline');
+  // Clearing the help text removes the field rather than saving a blank.
+  await user.clear(screen.getByLabelText('Help text'));
+  expect(current()).not.toHaveProperty('description');
+});

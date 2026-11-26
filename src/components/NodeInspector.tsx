@@ -14,6 +14,7 @@ import {
   toScriptMode,
   type NodeConfig,
   type Workflow,
+  type WorkflowInput,
 } from '../lib/workflow';
 import { profileGrants } from '../lib/permissions';
 import { DirPicker } from './DirPicker';
@@ -1124,54 +1125,149 @@ export function NodeInspector(): React.JSX.Element | null {
           <span className="field-label">Workflow inputs (as {'{{input.name}}'})</span>
           {/* Rows go by position: a name changes while it is typed and two
               rows may briefly share one. */}
-          {(workflow.inputs ?? []).map((input, index) => (
-            <div key={index} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-              <input
-                className="input"
-                value={input.name}
-                aria-label="Input name"
-                onChange={(e) => {
-                  updateActiveWorkflow({
-                    ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x, i) =>
-                      i === index ? { ...x, name: e.target.value } : x,
-                    ),
-                  });
-                }}
-              />
-              <input
-                className="input"
-                value={input.default ?? ''}
-                placeholder="default"
-                aria-label="Input default"
-                onChange={(e) => {
-                  updateActiveWorkflow({
-                    ...workflow,
-                    inputs: (workflow.inputs ?? []).map((x, i) =>
-                      i === index
-                        ? {
-                            ...x,
-                            default: e.target.value === '' ? undefined : e.target.value,
-                          }
-                        : x,
-                    ),
-                  });
-                }}
-              />
-              <button
-                className="btn btn-ghost"
-                aria-label={`Remove input ${input.name}`}
-                onClick={() => {
-                  updateActiveWorkflow({
-                    ...workflow,
-                    inputs: (workflow.inputs ?? []).filter((_, i) => i !== index),
-                  });
-                }}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+          {(workflow.inputs ?? []).map((input, index) => {
+            const setInput = (next: WorkflowInput): void => {
+              updateActiveWorkflow({
+                ...workflow,
+                inputs: (workflow.inputs ?? []).map((x, i) => (i === index ? next : x)),
+              });
+            };
+            const without = (
+              key:
+                | 'default'
+                | 'label'
+                | 'description'
+                | 'required'
+                | 'multiline'
+                | 'options',
+            ): WorkflowInput =>
+              Object.fromEntries(
+                Object.entries(input).filter(([k]) => k !== key),
+              ) as unknown as WorkflowInput;
+            const text = (key: 'label' | 'description', value: string): WorkflowInput =>
+              value.trim() === '' ? without(key) : { ...input, [key]: value };
+            return (
+              <div key={index} className="input-row">
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    className="input"
+                    value={input.name}
+                    aria-label="Input name"
+                    onChange={(e) => {
+                      setInput({ ...input, name: e.target.value });
+                    }}
+                  />
+                  <input
+                    className="input"
+                    value={input.default ?? ''}
+                    placeholder="default"
+                    aria-label="Input default"
+                    onChange={(e) => {
+                      setInput(
+                        e.target.value === ''
+                          ? without('default')
+                          : { ...input, default: e.target.value },
+                      );
+                    }}
+                  />
+                  <button
+                    className="btn btn-ghost"
+                    aria-label={`Remove input ${input.name}`}
+                    onClick={() => {
+                      updateActiveWorkflow({
+                        ...workflow,
+                        inputs: (workflow.inputs ?? []).filter((_, i) => i !== index),
+                      });
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <details className="input-details">
+                  <summary className="field-hint">
+                    Details
+                    {input.options !== undefined && input.options.length > 0
+                      ? ` · ${String(input.options.length)} choices`
+                      : ''}
+                    {input.multiline === true ? ' · long text' : ''}
+                    {input.required === true ? ' · required' : ''}
+                  </summary>
+                  <label className="field-label" htmlFor={`input-label-${String(index)}`}>
+                    Label in the start form
+                  </label>
+                  <input
+                    id={`input-label-${String(index)}`}
+                    className="input"
+                    value={input.label ?? ''}
+                    placeholder={input.name}
+                    onChange={(e) => {
+                      setInput(text('label', e.target.value));
+                    }}
+                  />
+                  <label className="field-label" htmlFor={`input-help-${String(index)}`}>
+                    Help text
+                  </label>
+                  <input
+                    id={`input-help-${String(index)}`}
+                    className="input"
+                    value={input.description ?? ''}
+                    placeholder="What to enter, with an example"
+                    onChange={(e) => {
+                      setInput(text('description', e.target.value));
+                    }}
+                  />
+                  <label className="field-hint" style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={input.required === true}
+                      onChange={(e) => {
+                        setInput(
+                          e.target.checked
+                            ? { ...input, required: true }
+                            : without('required'),
+                        );
+                      }}
+                    />
+                    Required
+                  </label>
+                  <label className="field-hint" style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={input.multiline === true}
+                      disabled={(input.options ?? []).length > 0}
+                      onChange={(e) => {
+                        setInput(
+                          e.target.checked
+                            ? { ...input, multiline: true }
+                            : without('multiline'),
+                        );
+                      }}
+                    />
+                    Long text (a brief, notes, a list)
+                  </label>
+                  <label
+                    className="field-label"
+                    htmlFor={`input-options-${String(index)}`}
+                  >
+                    Choices (one per line; blank allows any value)
+                  </label>
+                  <LinesTextarea
+                    id={`input-options-${String(index)}`}
+                    className="textarea"
+                    rows={3}
+                    value={input.options ?? []}
+                    onChange={(lines) => {
+                      setInput(
+                        lines.length === 0
+                          ? without('options')
+                          : { ...input, options: lines },
+                      );
+                    }}
+                  />
+                </details>
+              </div>
+            );
+          })}
           <button
             className="btn btn-ghost"
             onClick={() => {
@@ -1188,7 +1284,8 @@ export function NodeInspector(): React.JSX.Element | null {
             + Add input
           </button>
           <span className="field-hint">
-            Required inputs without defaults must be supplied at ▶ Run time.
+            The start form asks for these at ▶ Run time: a choice list for inputs with
+            choices, a text area for long text, and your help text under each field.
           </span>
         </div>
       </aside>

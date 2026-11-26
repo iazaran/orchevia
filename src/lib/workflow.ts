@@ -93,6 +93,53 @@ export interface WorkflowInput {
   label?: string | undefined;
   default?: string | undefined;
   required?: boolean | undefined;
+  /** Help shown under the field when a run starts (v0.4.0). */
+  description?: string | undefined;
+  /** A long value: the start form shows a text area. */
+  multiline?: boolean | undefined;
+  /** The values a run may use; anything else is refused at run start. */
+  options?: string[] | undefined;
+}
+
+/** Bounds mirror Rust `MAX_INPUT_*`. */
+export const MAX_INPUT_DESCRIPTION_CHARS = 500;
+export const MAX_INPUT_OPTIONS = 50;
+export const MAX_INPUT_OPTION_CHARS = 200;
+
+/** Why an input's help text or choices cannot be saved (mirrors Rust). */
+export function inputSettingsProblem(input: WorkflowInput): string | null {
+  const name = input.name;
+  if (Array.from(input.description ?? '').length > MAX_INPUT_DESCRIPTION_CHARS)
+    return `Input '${name}' help text must be at most ${String(MAX_INPUT_DESCRIPTION_CHARS)} characters.`;
+  const options = input.options ?? [];
+  if (options.length > MAX_INPUT_OPTIONS)
+    return `Input '${name}' can offer at most ${String(MAX_INPUT_OPTIONS)} choices.`;
+  const seen = new Set<string>();
+  for (const option of options) {
+    const trimmed = option.trim();
+    if (trimmed === '') return `Input '${name}' has a blank choice.`;
+    if (Array.from(option).length > MAX_INPUT_OPTION_CHARS)
+      return `Input '${name}' choices must be at most ${String(MAX_INPUT_OPTION_CHARS)} characters.`;
+    if (seen.has(trimmed)) return `Input '${name}' lists the choice '${trimmed}' twice.`;
+    seen.add(trimmed);
+  }
+  const fallback = (input.default ?? '').trim();
+  if (
+    fallback !== '' &&
+    options.length > 0 &&
+    !options.some((o) => o.trim() === fallback)
+  )
+    return `Input '${name}' defaults to '${fallback}', which is not one of its choices.`;
+  return null;
+}
+
+/** A value outside an input's choices, as the message a run start shows. */
+export function inputChoiceProblem(input: WorkflowInput, value: string): string | null {
+  const options = input.options ?? [];
+  const trimmed = value.trim();
+  if (options.length === 0 || trimmed === '') return null;
+  if (options.some((o) => o.trim() === trimmed)) return null;
+  return `Workflow input '${input.name}' must be one of: ${options.map((o) => o.trim()).join(', ')}.`;
 }
 
 export interface NodeConfig {
@@ -766,6 +813,7 @@ export const VALIDATION_CODES = [
   'loop-limit-invalid',
   'input-name-invalid',
   'input-duplicate',
+  'input-settings-invalid',
   'workflow-limits-invalid',
   'edge-label-unknown',
   'edge-label-misplaced',
@@ -1548,6 +1596,8 @@ export function validateWorkflowLocal(wf: Workflow): ValidationIssue[] {
     if (seenInputs.has(input.name))
       error('input-duplicate', `Duplicate workflow input '${input.name}'.`);
     seenInputs.add(input.name);
+    const settings = inputSettingsProblem(input);
+    if (settings !== null) error('input-settings-invalid', settings);
   }
 
   if (wf.limits !== undefined) {

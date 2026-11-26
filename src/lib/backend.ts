@@ -62,7 +62,7 @@ import {
   type FeedbackStatus,
   type RunFeedback,
 } from './feedback';
-import { isPublicationStep, type WorkflowNode } from './workflow';
+import { inputChoiceProblem, isPublicationStep, type WorkflowNode } from './workflow';
 import {
   encodeDocument,
   decodeDocument,
@@ -1096,6 +1096,8 @@ class MockBackend implements Backend {
     for (const input of wf.definition.inputs ?? []) {
       if (input.required && !(effectiveInputs[input.name] ?? '').trim())
         throw new Error(`Workflow input '${input.name}' is required.`);
+      const choice = inputChoiceProblem(input, effectiveInputs[input.name] ?? '');
+      if (choice !== null) throw new Error(choice);
     }
     const contextIssues = validateWorkflowLocal(wf.definition).filter(
       (issue) =>

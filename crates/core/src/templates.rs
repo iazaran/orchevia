@@ -328,6 +328,7 @@ fn input(name: &str, label: &str, default: Option<&str>) -> crate::workflow::Wor
         label: Some(label.into()),
         default: default.map(str::to_string),
         required: default.is_none(),
+        ..Default::default()
     }
 }
 

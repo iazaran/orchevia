@@ -260,6 +260,9 @@ function workflowFieldsShape(value: Record<string, unknown>): void {
       stringField(item, 'label');
       stringField(item, 'default');
       boolField(item, 'required');
+      stringField(item, 'description');
+      boolField(item, 'multiline');
+      stringsField(item, 'options');
     }
   }
 }
