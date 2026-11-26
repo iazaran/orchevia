@@ -36,8 +36,12 @@ files it made.
   a workflow without a project folder, now runs in that workflow's own folder,
   `~/Documents/Orchevia/<Workflow name> (<id>)` (created on the first run; dry
   runs create nothing), instead of wherever the app happened to start. The short
-  id keeps two workflows with the same name apart, and a folder that cannot be
-  created fails the step with its path. Environment →
+  id keeps two workflows with the same name apart, the folder is recorded when
+  a run starts (changing the root later never moves a waiting run), a workflow
+  that works there takes one open run at a time, and a folder that cannot be
+  created fails the step with its path. A workflow that relied on the folder
+  the app was launched from (a relative `bash scripts/check.sh`) now needs its
+  **Project folder** set. Environment →
   **Workspace** chooses another root. The workflow panel and the step folder
   fields show the folder in use.
 - **Eight templates beyond code**, each replayed end to end in the engine:
@@ -82,8 +86,9 @@ files it made.
 ### Fixed
 
 - **Codex steps outside a Git repository** no longer stop at Codex's own
-  repository check: a step whose folder is outside any repository runs with
-  `--skip-git-repo-check`. Repository folders keep the check.
+  repository check: a step whose folder is outside any repository, and drafting
+  a workflow without a repository, run with `--skip-git-repo-check` (once, even
+  when a profile already passes it). Repository folders keep the check.
 - **Review loops in the browser preview** (`pnpm dev`) ended at their loop
   limit because the mock read the severity scale in the echoed prompt as a
   finding; a mock review now reports nothing, as a clean real review would.

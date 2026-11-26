@@ -80,6 +80,24 @@ the mock lists run folders like the desktop app; the palette's template search
 no longer sticks. Kept: previews read any listed-folder file (not only ones in
 the run's window), since a file edited after a run should still open.
 
+## Review round 2 (Fable) and the Codex review
+
+Fixed: a file counts when its modification or status change time is in the
+window (the max of both hid renamed files), SVG is never opened, the palette's
+"Run" reads the active workflow from the store, the template search resets in
+`setView` (an effect cleanup ran under StrictMode), the spreadsheet checker
+creates no files, and Files has a Refresh button. From the Codex review: the
+workspace folder is recorded on the run (`RunExecution.workspace`) and a
+workflow working there takes one open run at a time; copy-in stages under
+`inputs/` without replacing or following anything; Codex drafts without a
+repository and never get the flag twice; previews read through the opened
+file's real path (`/proc/self/fd`, `F_GETPATH`) re-checked against the run's
+folders; video templates need a local file; padded choice defaults show as
+their choice and optional choices can be cleared; Home refreshes runs; the
+mock keys files by path. Kept: folderless commands that relied on the app's
+launch folder need a project folder (documented), and Open still hands a path
+to the system opener after a late check.
+
 ## Left for later
 
 - Media MCP presets (see above) once real accounts confirm their tools.

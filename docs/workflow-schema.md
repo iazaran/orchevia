@@ -55,13 +55,27 @@ at 80 characters; `(<id>)` is the last six letters or digits of the workflow id,
 so two workflows with the same name (two uses of one template) never share a
 folder. Before 0.4.0 such steps ran in the app's own folder. Codex
 steps whose folder is outside any Git repository get `--skip-git-repo-check`.
-Git and GitHub steps always need a repository.
+Git and GitHub steps always need a repository. The folder is recorded when a
+run starts (a recovery keeps the failed run's), so changing the root or renaming
+the workflow never moves a run that is waiting. While a run of a workflow is open
+in its workspace folder (running or paused), another run of it is refused; dry
+runs are not. A workflow that relied on the folder the app was launched from needs
+its project folder set.
+
+Templates that take a file (Translate a Document, Spreadsheet Insights) first copy
+it into `inputs/` in the step's folder, print the copy's absolute path for the
+agents, and never replace a different file already there: the copy takes a new
+name (`inputs/2-sales.csv`), is created exclusively, and links are not followed.
+Video templates accept a local file only.
 
 Runs → **Files** lists what a run's steps created or changed in these folders
 (modified, or on Unix copied in, between its start and end, newest first, at most
 300, skipping hidden entries and `node_modules`, `target`, `dist`, `build`,
-`vendor`, virtual environments and caches). A run waiting for an approval keeps
-listing edits made while it waits. Previews show text and Markdown up to 512 KB
+`vendor`, virtual environments and caches). A paused run (waiting for an
+approval, feedback or a limit) keeps listing edits made while it waits, including
+your own edits in a repository folder; **Refresh** on the panel lists them again.
+A file counts when its modification time or its status change time falls inside
+the window, so a later rename never hides it. Previews show text and Markdown up to 512 KB
 and images, audio, video and PDFs up to 20 MB; **Open** hands documents and media
 to the default app (never scripts, programs, web pages or XML), and **Show in
 folder** reveals the file.
