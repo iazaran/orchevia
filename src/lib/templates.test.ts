@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { builtinTemplates, instantiateTemplateLocal } from './templates';
 import { __setMockBackendForTests } from './backend';
 import { createDefaultProfile } from './agents';
@@ -353,4 +353,39 @@ it('ships MCP templates that need a server but no repository', () => {
     expect(agent?.config.requiredTools ?? []).toEqual([]);
     expect(agent?.config.prompt).toMatch(/Do not edit any files/);
   }
+});
+
+it('runs a content template in the browser preview to the files it writes', async () => {
+  localStorage.clear();
+  const backend = __setMockBackendForTests();
+  const profile = await backend.saveAgentProfile(createDefaultProfile('claude'));
+  const blog = builtinTemplates().find((t) => t.id === 'blog-post')!;
+  const roles = Object.fromEntries(
+    ['planning', 'implementation', 'deepReview'].map((role) => [role, profile.id]),
+  );
+  const { workflow } = instantiateTemplateLocal(blog, roles);
+  await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow(workflow.id, { topic: 'Weekly reports' });
+  // The mock editor reports nothing, so the loop ends and the approval waits.
+  await vi.waitFor(
+    async () => expect((await backend.getRun(runId))?.status).toBe('paused'),
+    { timeout: 4000 },
+  );
+  await backend.approveRun(runId, true);
+  await vi.waitFor(
+    async () => expect((await backend.getRun(runId))?.status).toBe('succeeded'),
+    { timeout: 4000 },
+  );
+  const files = await backend.listRunFiles(runId);
+  expect(files.files.map((f) => f.relPath).sort()).toEqual([
+    'outline.md',
+    'post.md',
+    'social-posts.md',
+  ]);
+  expect(files.folders).toEqual(['~/Documents/Orchevia/Blog Post from a Brief']);
+  const revise = workflow.nodes.find((n) => n.label === 'Revise the draft')!;
+  const rows = await backend.getRunResults(runId);
+  expect(rows.filter((r) => r.nodeId === revise.id).map((r) => r.status)).toEqual([
+    'skipped',
+  ]);
 });

@@ -119,7 +119,11 @@ export function WorkflowsView(): React.JSX.Element {
     return () => clearInterval(timer);
   }, [overlayRunId, refreshRunOverlay, setRunMessage]);
   const [starting, setStarting] = useState(false);
-  const [startMode, setStartMode] = useState<'dry' | 'live' | null>(null);
+  const [startMode, setStartMode] = useState<'dry' | 'live' | null>(() =>
+    useAppStore.getState().pendingIntent?.kind === 'run' && active !== null
+      ? 'live'
+      : null,
+  );
   const [limitsOpen, setLimitsOpen] = useState(false);
   // Dismissing the declared-tools notice hides it for that workflow this session.
   const [grantNoticeHiddenFor, setGrantNoticeHiddenFor] = useState<string | null>(null);
@@ -130,7 +134,9 @@ export function WorkflowsView(): React.JSX.Element {
     values: Record<string, string>;
   }>({ workflowId: null, values: {} });
   const inputValues = inputState.workflowId === active?.id ? inputState.values : {};
-  const [goal, setGoal] = useState('');
+  // Home and the command palette ask for one thing when they open this view.
+  const [intent] = useState(() => useAppStore.getState().pendingIntent);
+  const [goal, setGoal] = useState(intent?.kind === 'generate' ? intent.goal : '');
   const [genRepoDir, setGenRepoDir] = useState<string>(
     () => readLocal('orchevia.genRepo.v1') ?? '',
   );
@@ -141,7 +147,7 @@ export function WorkflowsView(): React.JSX.Element {
   const [memoryDirectory, setMemoryDirectory] = useState<string | null>(null);
   const [memoryError, setMemoryError, , memoryErrorEvent] = useNoticeMessage('warn');
   const [memoryLoading, setMemoryLoading] = useState(false);
-  const [showGenerator, setShowGenerator] = useState(false);
+  const [showGenerator, setShowGenerator] = useState(intent?.kind === 'generate');
   const [assistanceBase, setAssistanceBase] = useState<Workflow | null>(null);
   const [assistanceMode, setAssistanceMode] = useState<AssistanceMode>('optimize');
   const [generatorChoice, setGeneratorAdapter] = useState<AdapterKind | null>(null);
@@ -431,6 +437,14 @@ export function WorkflowsView(): React.JSX.Element {
         setRunMessage(errorMessage(err), 'error');
       });
   };
+
+  useEffect(() => {
+    if (useAppStore.getState().pendingIntent !== null)
+      useAppStore.getState().setPendingIntent(null);
+    if (intent?.kind === 'new') createWorkflow();
+    // Once, on open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // One live-start path for every run: the floating start form. Workflows
   // without inputs still open it so saved limits can be reviewed or

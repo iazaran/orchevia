@@ -89,7 +89,8 @@ export function TemplatesView(): React.JSX.Element {
   const setDomain = useAppStore((s) => s.setTemplateDomain);
   const tools = useAppStore((s) => s.tools);
   const workspaceRoot = useAppStore((s) => s.workspaceRoot);
-  const [query, setQuery] = useState('');
+  const query = useAppStore((s) => s.templateQuery);
+  const setQuery = useAppStore((s) => s.setTemplateQuery);
   const userTemplates = useAppStore((s) => s.userTemplates);
   const refreshLibrary = useAppStore((s) => s.refreshLibrary);
   const refreshWorkflows = useAppStore((s) => s.refreshWorkflows);
@@ -643,7 +644,13 @@ export function TemplatesView(): React.JSX.Element {
                   {useTarget.template.workflow.inputs?.map((input) => (
                     <li key={input.name}>
                       {input.label ?? input.name}
-                      {input.default !== undefined && ` (default: ${input.default})`}
+                      {(input.options ?? []).length > 0
+                        ? ` (choose: ${(input.options ?? []).join(', ')})`
+                        : input.default !== undefined && input.default.trim() !== ''
+                          ? ` (default: ${input.default})`
+                          : input.required === true
+                            ? ''
+                            : ' (optional)'}
                     </li>
                   ))}
                 </ul>

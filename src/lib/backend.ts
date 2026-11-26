@@ -819,6 +819,9 @@ function mockStepCommand(
 /** A file a mock step "wrote", with what its preview shows. */
 type MockRunFile = RunFile & { text?: string; base64?: string; mime?: string };
 
+/** Review prompts ask for these blocks; a mock review reports nothing. */
+const MOCK_REVIEW_MARK = '```finding block';
+
 /** Where the browser preview pretends folderless steps run. */
 const MOCK_WORKSPACE_ROOT = '~/Documents/Orchevia';
 
@@ -1584,9 +1587,11 @@ class MockBackend implements Backend {
             live,
             'succeeded',
             `mock-agent$ ${profile.adapter} "${prompt}"\n${
-              correction.correction === undefined
-                ? 'Hello from Orchevia'
-                : 'Applied the feedback'
+              correction.correction !== undefined
+                ? 'Applied the feedback'
+                : prompt.includes(MOCK_REVIEW_MARK)
+                  ? 'Nothing to report: no agent ran'
+                  : 'Hello from Orchevia'
             } (browser mock, profile '${profile.name}').`,
           );
         } catch (error) {
@@ -1665,7 +1670,13 @@ class MockBackend implements Backend {
     result.stdout = stdout;
     result.finishedAt = new Date().toISOString();
     if (status === 'succeeded') result.exitCode = 0;
-    const severity = reportedSeverity(stdout);
+    // A mock reviewer echoes its prompt, which explains the severity scale
+    // ("P1 for wrong behavior"), before a one-line reply. Real agents never
+    // return the prompt, so only that reply reports a severity.
+    const review = stdout.startsWith('mock-agent$ ') && stdout.includes(MOCK_REVIEW_MARK);
+    const severity = reportedSeverity(
+      review ? (stdout.split('\n').at(-1) ?? '') : stdout,
+    );
     if (severity !== null) {
       const data: unknown = JSON.parse(result.structuredJson ?? '{}');
       result.structuredJson = JSON.stringify({

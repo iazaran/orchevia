@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { builtinTemplates } from './templates';
+import type { WorkflowTemplate } from './generation';
 import {
   matchesTemplateSearch,
   TEMPLATE_DOMAINS,
@@ -37,7 +38,7 @@ it('searches names, descriptions, kinds and inputs with every word', () => {
 });
 
 it('names what a template needs and checks local tools against detection', () => {
-  const find = (id: string) => {
+  const find = (id: string): WorkflowTemplate => {
     const template = builtinTemplates().find((t) => t.id === id);
     if (template === undefined) throw new Error(id);
     return template;

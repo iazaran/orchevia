@@ -182,10 +182,28 @@ export function StartRunDialog({
             : {};
         return (
           <div className="field" key={input.name}>
-            <label className="field-label" htmlFor={id}>
-              {input.label ?? input.name}
-              {input.required ? ' (required)' : ''}
-            </label>
+            <div className="field-label-row">
+              <label className="field-label" htmlFor={id}>
+                {input.label ?? input.name}
+                {input.required ? ' (required)' : ''}
+              </label>
+              {options.length === 0 && input.multiline !== true && (
+                <button
+                  className="btn btn-ghost btn-inline"
+                  aria-expanded={isExpanded}
+                  aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${input.label ?? input.name}`}
+                  disabled={busy}
+                  title={
+                    isExpanded ? 'Collapse to a single line' : 'Expand for long text'
+                  }
+                  onClick={() => {
+                    setExpanded((current) => ({ ...current, [input.name]: !isExpanded }));
+                  }}
+                >
+                  {isExpanded ? 'Collapse ▲' : 'Expand ▼'}
+                </button>
+              )}
+            </div>
             {options.length > 0 ? (
               <select
                 id={id}
@@ -232,20 +250,6 @@ export function StartRunDialog({
               <span className="field-hint" id={hintId}>
                 {input.description}
               </span>
-            )}
-            {options.length === 0 && input.multiline !== true && (
-              <button
-                className="btn btn-ghost"
-                style={{ alignSelf: 'flex-start', padding: '2px 8px', fontSize: 12 }}
-                aria-expanded={isExpanded}
-                disabled={busy}
-                title={isExpanded ? 'Collapse to a single line' : 'Expand for long text'}
-                onClick={() => {
-                  setExpanded((current) => ({ ...current, [input.name]: !isExpanded }));
-                }}
-              >
-                {isExpanded ? 'Collapse ▲' : 'Expand ▼'}
-              </button>
             )}
           </div>
         );

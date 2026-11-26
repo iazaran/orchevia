@@ -60,7 +60,11 @@ export interface UiNotice {
   revision?: number;
 }
 
+export type WorkflowIntent =
+  { kind: 'generate'; goal: string } | { kind: 'run' } | { kind: 'new' };
+
 export type View =
+  | 'home'
   | 'workflows'
   | 'runs'
   | 'inbox'
@@ -104,9 +108,16 @@ interface AppState {
   /** The Templates filter, so Home's use-case tiles can open a domain. */
   templateDomain: TemplateDomain | 'all';
   setTemplateDomain: (domain: TemplateDomain | 'all') => void;
-  /** A goal typed on Home, picked up once by the Workflows generator. */
-  pendingGoal: string | null;
-  setPendingGoal: (goal: string | null) => void;
+  /** The Templates search, so the command palette can open a template. */
+  templateQuery: string;
+  setTemplateQuery: (query: string) => void;
+  /**
+   * Something asked for from Home or the command palette that the Workflows
+   * view does once when it opens: draft a goal, start the selected
+   * workflow, or create a new one.
+   */
+  pendingIntent: WorkflowIntent | null;
+  setPendingIntent: (intent: WorkflowIntent | null) => void;
   mcpServers: McpServerConfig[];
   githubState: GitHubState | null;
   schedules: Schedule[];
@@ -200,7 +211,7 @@ const workflowSaves = new Map<
 const workflowSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const deletingWorkflows = new Set<string>();
 export const useAppStore = create<AppState>()((set, get) => ({
-  view: 'workflows',
+  view: 'home',
   workflows: [],
   activeWorkflowId: null,
   selectedNodeId: null,
@@ -222,9 +233,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setTemplateDomain: (templateDomain) => {
     set({ templateDomain });
   },
-  pendingGoal: null,
-  setPendingGoal: (pendingGoal) => {
-    set({ pendingGoal });
+  templateQuery: '',
+  setTemplateQuery: (templateQuery) => {
+    set({ templateQuery });
+  },
+  pendingIntent: null,
+  setPendingIntent: (pendingIntent) => {
+    set({ pendingIntent });
   },
   mcpServers: [],
   githubState: null,
