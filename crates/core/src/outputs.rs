@@ -230,7 +230,8 @@ pub fn run_folders(db: &SqliteDb, run_id: &str) -> Result<Vec<PathBuf>, String> 
                 add(profile.working_dir.as_deref());
             }
         }
-        workspace |= crate::workspace::uses_workspace(node, workflow.defaults.as_ref());
+        workspace |=
+            crate::workspace::step_uses_workspace(node, workflow.defaults.as_ref(), &profiles);
     }
     if workspace {
         if let Some(folder) = recorded {

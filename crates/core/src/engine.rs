@@ -666,11 +666,33 @@ impl Engine {
                 ..crate::feedback::FeedbackState::default()
             },
         };
+        let _starting = WORKSPACE_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+        if execution.workspace.is_some() && !execution.options.dry_run {
+            self.ensure_workspace_free(&workflow)?;
+        }
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
         self.db
             .create_recovery_run(new_id, &source, &workflow, &execution, &seeds, request_id)
             .map_err(EngineError::from)
+    }
+
+    /// Steps without a folder share the workflow's workspace folder: two open
+    /// runs there would overwrite each other's files (a second run replacing
+    /// prompts the first is waiting to have approved). Dry runs do not count.
+    fn ensure_workspace_free(&self, workflow: &Workflow) -> Result<(), EngineError> {
+        if self
+            .db
+            .list_active_runs()?
+            .iter()
+            .any(|r| r.workflow_id == workflow.id && !r.execution.options.dry_run)
+        {
+            return Err(EngineError::Validation(format!(
+                "'{}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.",
+                workflow.name
+            )));
+        }
+        Ok(())
     }
 
     pub async fn continue_spend_run(
@@ -1030,25 +1052,15 @@ impl Engine {
                 .collect();
             return Err(EngineError::Validation(msgs.join("; ")));
         }
-        // Steps without a folder share the workflow's workspace folder: two
-        // open runs there would overwrite each other's files (a second run
-        // replacing prompts the first is waiting to have approved).
         let workspace = if options.dry_run {
             None
         } else {
             run_workspace(&self.db, workflow)
         };
-        if workspace.is_some()
-            && self
-                .db
-                .list_active_runs()?
-                .iter()
-                .any(|r| r.workflow_id == workflow.id && !r.execution.options.dry_run)
-        {
-            return Err(EngineError::Validation(format!(
-                "'{}' already has a run open in its workspace folder. Let it finish, or cancel it, before starting another, or give the workflow a project folder.",
-                workflow.name
-            )));
+        // Checked and created together, so two starts at once cannot both pass.
+        let _starting = WORKSPACE_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+        if workspace.is_some() {
+            self.ensure_workspace_free(workflow)?;
         }
         let _admitting = self.cancel.flags();
         self.cancel.admit()?;
@@ -3030,6 +3042,9 @@ enum RunOutcome {
     FeedbackPaused(String),
 }
 
+/// Serializes the one-open-run check with the insert that follows it.
+static WORKSPACE_STARTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Owned inputs for a spawned node task.
 struct TaskInput {
     session_locks: SessionLocks,
@@ -3972,11 +3987,8 @@ fn command_working_dir(task: &TaskInput) -> Option<&str> {
 /// The workspace folder of a new run: set when a Command or Agent step has
 /// no folder of its own and the workflow has no project folder.
 fn run_workspace(db: &SqliteDb, workflow: &Workflow) -> Option<String> {
-    if !workflow
-        .nodes
-        .iter()
-        .any(|n| crate::workspace::uses_workspace(n, workflow.defaults.as_ref()))
-    {
+    let profiles = db.list_agent_profiles().unwrap_or_default();
+    if !crate::workspace::workflow_uses_workspace(workflow, &profiles) {
         return None;
     }
     let root = crate::workspace::root(db)?;
@@ -4000,7 +4012,11 @@ fn task_workspace(
     execution: &RunExecution,
 ) -> Option<String> {
     if execution.options.dry_run
-        || !crate::workspace::uses_workspace(node, workflow.defaults.as_ref())
+        || !crate::workspace::step_uses_workspace(
+            node,
+            workflow.defaults.as_ref(),
+            &db.list_agent_profiles().unwrap_or_default(),
+        )
     {
         return None;
     }
@@ -7127,7 +7143,8 @@ mod tests {
             &root.path().to_string_lossy(),
         )
         .unwrap();
-        let profile = echo_profile("one-open");
+        let mut profile = echo_profile("one-open");
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
         db.upsert_agent_profile(&profile).unwrap();
         let wf = agent_workflow(&profile.id);
         db.upsert_workflow(&wf).unwrap();
@@ -7175,6 +7192,26 @@ mod tests {
         engine
             .start_run(&wf, "third", &empty_inputs())
             .expect("starts once the first is done");
+    }
+
+    #[test]
+    fn agents_in_their_profiles_folder_never_use_the_workspace() {
+        let elsewhere = tempfile::tempdir().unwrap();
+        let (db, engine) = harness();
+        let mut profile = echo_profile("own-folder");
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Profile;
+        profile.working_dir = Some(elsewhere.path().to_string_lossy().into_owned());
+        db.upsert_agent_profile(&profile).unwrap();
+        let wf = agent_workflow(&profile.id);
+        db.upsert_workflow(&wf).unwrap();
+        engine.start_run(&wf, "own-1", &empty_inputs()).unwrap();
+        engine
+            .start_run(&wf, "own-2", &empty_inputs())
+            .expect("no shared workspace folder, so no limit");
+        assert_eq!(
+            db.get_run("own-1").unwrap().unwrap().execution.workspace,
+            None
+        );
     }
 
     #[tokio::test]

@@ -138,6 +138,39 @@ pub fn uses_workspace(node: &Node, defaults: Option<&WorkflowDefaults>) -> bool 
     blank(node.config.working_dir.as_deref()) && blank(defaults.and_then(|d| d.repo_dir.as_deref()))
 }
 
+/// Whether a step really works in the workspace: a folderless Command step,
+/// or a folderless Agent step whose profile follows the step's folder. A
+/// profile that sets its own folder or keeps the app's never uses it; an
+/// unknown profile counts as following.
+pub fn step_uses_workspace(
+    node: &Node,
+    defaults: Option<&WorkflowDefaults>,
+    profiles: &[crate::agents::AgentProfile],
+) -> bool {
+    if !uses_workspace(node, defaults) {
+        return false;
+    }
+    if node.kind != NodeKind::Agent {
+        return true;
+    }
+    node.config
+        .agent_profile_id
+        .as_deref()
+        .and_then(|id| profiles.iter().find(|p| p.id == id))
+        .is_none_or(|p| p.working_dir_mode == crate::agents::WorkingDirMode::Node)
+}
+
+/// Whether any of a workflow's steps works in its workspace folder.
+pub fn workflow_uses_workspace(
+    workflow: &crate::workflow::Workflow,
+    profiles: &[crate::agents::AgentProfile],
+) -> bool {
+    workflow
+        .nodes
+        .iter()
+        .any(|n| step_uses_workspace(n, workflow.defaults.as_ref(), profiles))
+}
+
 /// Create the folder and its parents; returns it as a string.
 pub fn prepare(folder: &Path) -> Result<String, String> {
     std::fs::create_dir_all(folder).map_err(|e| {

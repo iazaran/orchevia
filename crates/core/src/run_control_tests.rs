@@ -960,3 +960,50 @@ async fn recovery_waits_while_an_update_holds_admission() {
         "after"
     );
 }
+
+#[test]
+fn recovery_waits_for_an_open_run_in_the_same_workspace_folder() {
+    let (db, engine, wf) = setup();
+    let execution = crate::run_controls::RunExecution {
+        workspace: Some("/tmp/orchevia-recovery-workspace".into()),
+        ..crate::run_controls::RunExecution::default()
+    };
+    db.create_run_with_execution("ws-source", &wf, &HashMap::new(), &execution)
+        .unwrap();
+    for (id, status) in [("s", "succeeded"), ("a", "succeeded"), ("b", "failed")] {
+        db.record_node_result(crate::db::NewNodeResult::simple(
+            "ws-source",
+            id,
+            status,
+            None,
+            None,
+        ))
+        .unwrap();
+    }
+    db.finish_run("ws-source", RunStatus::Failed).unwrap();
+    // Another run of the workflow is open in the same folder.
+    db.create_run_with_execution("ws-open", &wf, &HashMap::new(), &execution)
+        .unwrap();
+    let plan = engine.preview_recovery("ws-source").unwrap();
+    let choices = HashMap::from([
+        ("a".into(), RecoveryChoice::Reuse),
+        ("b".into(), RecoveryChoice::Skip),
+    ]);
+    let err = engine
+        .recover_run("ws-source", "ws-child", &choices, &plan.fingerprint, "ws-1")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("already has a run open in its workspace folder"),
+        "{err}"
+    );
+    db.finish_run("ws-open", RunStatus::Cancelled).unwrap();
+    engine
+        .recover_run("ws-source", "ws-child", &choices, &plan.fingerprint, "ws-2")
+        .unwrap();
+    // The recovery works where the failed run left its files.
+    assert_eq!(
+        db.get_run("ws-child").unwrap().unwrap().execution.workspace,
+        execution.workspace
+    );
+}

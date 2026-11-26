@@ -759,6 +759,20 @@ impl Scheduler {
 
     fn overlaps(&self, workflow_id: &str, pr_number: Option<u64>) -> Result<bool, String> {
         let runs = self.db.list_active_runs().map_err(|e| e.to_string())?;
+        // A workflow working in its workspace folder takes one open run at a
+        // time, whatever PR it is for: wait for it instead of failing.
+        let shared_folder = self
+            .db
+            .get_workflow(workflow_id)
+            .ok()
+            .flatten()
+            .is_some_and(|stored| {
+                crate::workspace::workflow_uses_workspace(
+                    &stored.definition,
+                    &self.db.list_agent_profiles().unwrap_or_default(),
+                )
+            });
+        let pr_number = if shared_folder { None } else { pr_number };
         Ok(runs.iter().any(|run| {
             run.workflow_id == workflow_id
                 && match pr_number {
