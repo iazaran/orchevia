@@ -98,6 +98,20 @@ mock keys files by path. Kept: folderless commands that relied on the app's
 launch folder need a project folder (documented), and Open still hands a path
 to the system opener after a late check.
 
+## Second Codex review (asked for by the maintainer)
+
+No P0. Fixed: recovering a run from before 0.4.0 takes today's workspace folder
+and waits like a new run; a repeated recovery request returns its run before
+the open-run check; a schedule or watcher that loses the folder to a run started
+by hand waits instead of failing; a value naming a choice is stored trimmed in
+the engine and the mock; Git detection for Codex uses the resolved folder;
+Files keeps Refresh on a waiting run with no files yet and after an error;
+Home's clock moves with its polling; the video templates treat `-` as a file and
+refuse a `cuts` link; the copy step compares only regular files. Kept as
+documented limits: an old run's folders follow a later profile folder change,
+and Open hands the system a path after the last check (a step runs as the user
+and can already read what Files could show).
+
 ## Left for later
 
 - Media MCP presets (see above) once real accounts confirm their tools.

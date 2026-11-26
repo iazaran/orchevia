@@ -97,6 +97,13 @@ it('shows nothing for a run that made no files, and refuses other paths', async 
   };
   await backend.saveWorkflow(workflow);
   const { runId } = await backend.runWorkflow('wf-none');
+  // A finished run that made nothing shows nothing.
+  await waitFor(
+    async () => {
+      expect((await backend.getRun(runId))?.status).toBe('succeeded');
+    },
+    { timeout: 5000 },
+  );
   const run = await backend.getRun(runId);
   if (run === null) throw new Error('run missing');
   const { container } = render(<RunFilesPanel key={run.id} run={run} refreshKey="0" />);
@@ -229,4 +236,45 @@ it('recovers in the failed run’s folder once no other run is open there', asyn
   expect((await backend.getRun(recovered))?.execution?.workspace).toBe(
     (await backend.getRun(first))?.execution?.workspace,
   );
+});
+
+it('keeps Refresh on a waiting run with no files yet, and stores choices trimmed', async () => {
+  const backend = __setMockBackendForTests();
+  const workflow: Workflow = {
+    schemaVersion: 6,
+    id: 'wf-wait',
+    name: 'Wait',
+    inputs: [{ name: 'tone', options: ['Friendly', 'Formal'] }],
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      { id: 'gate', type: 'approval', position: { x: 0, y: 100 }, config: {} },
+      { id: 'end', type: 'end', position: { x: 0, y: 200 }, config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'gate' },
+      { id: 'e2', source: 'gate', target: 'end' },
+    ],
+  };
+  await backend.saveWorkflow(workflow);
+  const { runId } = await backend.runWorkflow('wf-wait', { tone: ' Formal ' });
+  await waitFor(
+    async () => {
+      expect((await backend.getRun(runId))?.status).toBe('paused');
+    },
+    { timeout: 5000 },
+  );
+  const run = await backend.getRun(runId);
+  if (run === null) throw new Error('run missing');
+  expect(run.inputs?.tone).toBe('Formal');
+  const list = vi.spyOn(backend, 'listRunFiles');
+  render(<RunFilesPanel key={run.id} run={run} refreshKey="0" />);
+  const panel = await screen.findByRole('region', { name: 'Run files' });
+  expect(
+    within(panel).getByText('Nothing written in this run’s folders yet.'),
+  ).toBeInTheDocument();
+  const calls = list.mock.calls.length;
+  await userEvent
+    .setup()
+    .click(within(panel).getByRole('button', { name: 'Refresh files' }));
+  await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(calls));
 });

@@ -1101,6 +1101,11 @@ class MockBackend implements Backend {
         throw new Error(`Workflow input '${input.name}' is required.`);
       const choice = inputChoiceProblem(input, effectiveInputs[input.name] ?? '');
       if (choice !== null) throw new Error(choice);
+      // A value naming a choice is stored as that choice (mirrors the engine).
+      const named = (input.options ?? []).find(
+        (o) => o.trim() === (effectiveInputs[input.name] ?? '').trim(),
+      );
+      if (named !== undefined) effectiveInputs[input.name] = named.trim();
     }
     const contextIssues = validateWorkflowLocal(wf.definition).filter(
       (issue) =>
@@ -1141,7 +1146,7 @@ class MockBackend implements Backend {
       },
       status: 'running',
       startedAt: new Date().toISOString(),
-      inputs: { ...mockInputDefaults(wf.definition), ...(inputs ?? {}) },
+      inputs: effectiveInputs,
     };
     this.runs.unshift(run);
     this.results.set(runId, []);
@@ -1772,8 +1777,12 @@ class MockBackend implements Backend {
     );
     // The recovery works where the failed run left its files, and waits for
     // another open run in that folder (mirrors the engine).
-    const workspace = source.execution?.workspace;
-    if (workspace !== undefined && source.execution?.options.dryRun !== true)
+    // A run from before 0.4.0 recorded no folder and gets today's.
+    const workspace =
+      source.execution?.options.dryRun === true
+        ? undefined
+        : (source.execution?.workspace ?? this.mockWorkspaceOf(workflow) ?? undefined);
+    if (workspace !== undefined)
       this.ensureMockWorkspaceFree(source.workflowId, workflow.name);
     const execution = {
       options: structuredClone(source.execution?.options ?? {}),

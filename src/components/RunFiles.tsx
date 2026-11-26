@@ -129,16 +129,45 @@ export function RunFilesPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [images, run.id]);
 
+  const refresh = (
+    <button
+      type="button"
+      className="btn btn-ghost btn-inline run-files-refresh"
+      aria-label="Refresh files"
+      onClick={() => {
+        setReload((n) => n + 1);
+      }}
+    >
+      Refresh
+    </button>
+  );
   if (error !== null)
     return (
       <section aria-label="Run files" className="tool-card run-files">
-        <h3>Files</h3>
+        <div className="run-files-head">
+          <h3>Files</h3>
+          {refresh}
+        </div>
         <Notice inline variant="warn">
           Could not list this run’s files: {error}
         </Notice>
       </section>
     );
-  if (listing === null || listing.files.length === 0) return null;
+  if (listing === null) return null;
+  if (listing.files.length === 0) {
+    // A finished run that made nothing shows nothing; a run still going (or
+    // waiting) may write files, so it keeps a way to look again.
+    if (run.status !== 'running' && run.status !== 'paused') return null;
+    return (
+      <section aria-label="Run files" className="tool-card run-files">
+        <div className="run-files-head">
+          <h3>Files</h3>
+          <span className="field-hint">Nothing written in this run’s folders yet.</span>
+          {refresh}
+        </div>
+      </section>
+    );
+  }
 
   const act = (file: RunFile, reveal: boolean): void => {
     setActionError(null);
@@ -168,15 +197,7 @@ export function RunFilesPanel({
           )}
           {listing.truncated && ' (newest shown)'}
         </span>
-        <button
-          type="button"
-          className="btn btn-ghost btn-inline run-files-refresh"
-          onClick={() => {
-            setReload((n) => n + 1);
-          }}
-        >
-          Refresh
-        </button>
+        {refresh}
       </div>
       {actionError !== null && (
         <Notice

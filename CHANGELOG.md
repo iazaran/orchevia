@@ -58,8 +58,9 @@ files it made.
   the numbers rechecked) and **Meeting Notes to Actions**.
 - **Inputs that explain themselves.** A workflow input can carry help text, be
   marked as long text, or list its choices. The start form shows a choice list,
-  a text area or the help under the field, and a run with a value outside an
-  input's choices is refused. Edit them under **Details** beside each input in
+  a text area or the help under the field, a value naming a choice is stored as
+  that choice (without stray spaces), and a run with a value outside an input's
+  choices is refused. Edit them under **Details** beside each input in
   the workflow panel; the generator and the Simple JSON editor carry them too.
 - **Media and document tools.** Environment → Local tools detects FFmpeg,
   ImageMagick, Pandoc and Python under **Media and documents**, with what each

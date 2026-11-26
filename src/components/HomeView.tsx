@@ -55,10 +55,12 @@ export function HomeView(): React.JSX.Element {
   const setTemplateQuery = useAppStore((s) => s.setTemplateQuery);
   const setPendingIntent = useAppStore((s) => s.setPendingIntent);
   const [goal, setGoal] = useState('');
-  const [now] = useState(() => Date.now());
-  // Scheduled and watcher runs start on their own: keep the lists current.
+  const [now, setNow] = useState(() => Date.now());
+  // Scheduled and watcher runs start on their own: keep the lists (and the
+  // clock that decides "today" and "this week") current.
   useEffect(() => {
     const timer = setInterval(() => {
+      setNow(Date.now());
       void useAppStore
         .getState()
         .refreshRuns()
