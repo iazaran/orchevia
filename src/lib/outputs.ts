@@ -115,7 +115,8 @@ export function canOpenFile(path: string): boolean {
   if (kind === 'other') return false;
   if (kind !== 'text') return true;
   const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-  return 'txt csv tsv json yaml yml xml html htm srt vtt log'.split(' ').includes(ext);
+  // Web pages and XML would open in a browser running their scripts.
+  return 'txt csv tsv json yaml yml srt vtt log'.split(' ').includes(ext);
 }
 
 /** `1.2 MB`-style size. */
@@ -138,26 +139,25 @@ export function previewDataUrl(preview: RunFilePreview): string | null {
 }
 
 const FOLDER_NAME_MAX = 80;
+const ID_SUFFIX_CHARS = 6;
 
 /**
  * The folder name a workflow gets under the workspace root (mirrors Rust
  * `workspace::folder_name`): separators and control characters become `-`,
- * no leading dots, at most 80 characters, the id when nothing is left.
+ * no leading dots, at most 80 characters, then the last six letters or
+ * digits of its id in brackets so same-named workflows never share a folder.
  */
 export function workspaceFolderName(name: string, id: string): string {
-  const clean = (text: string): string => {
-    const mapped = Array.from(text)
-      .map((c) => (/^[\p{Alphabetic}\p{N} \-_.()+]$/u.test(c) ? c : '-'))
-      .join('');
-    const collapsed = mapped.split(' ').filter(Boolean).join(' ');
-    const trimmed = collapsed.replace(/^[. -]+/, '');
-    const truncated = Array.from(trimmed).slice(0, FOLDER_NAME_MAX).join('');
-    return truncated.replace(/[. ]+$/, '');
-  };
-  const fromName = clean(name);
-  if (fromName !== '') return fromName;
-  const fromId = clean(id);
-  return fromId === '' ? 'Workflow' : fromId;
+  const mapped = Array.from(name)
+    .map((c) => (/^[\p{Alphabetic}\p{N} \-_.()+]$/u.test(c) ? c : '-'))
+    .join('');
+  const collapsed = mapped.split(' ').filter(Boolean).join(' ');
+  const trimmed = collapsed.replace(/^[. -]+/, '');
+  const truncated = Array.from(trimmed).slice(0, FOLDER_NAME_MAX).join('');
+  const base = truncated.replace(/[. ]+$/, '') || 'Workflow';
+  const alnum = id.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+  const suffix = alnum.slice(Math.max(0, alnum.length - ID_SUFFIX_CHARS));
+  return suffix === '' ? base : `${base} (${suffix})`;
 }
 
 /** `<root>/<Workflow name>`, the folder folderless steps run in. */

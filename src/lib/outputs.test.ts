@@ -33,7 +33,16 @@ describe('run files', () => {
   it('never offers to open scripts or programs', () => {
     expect(canOpenFile('x.mp4')).toBe(true);
     expect(canOpenFile('x.csv')).toBe(true);
-    for (const name of ['run.sh', 'tool.py', 'app.js', 'x.desktop', 'x.command', 'x.exe'])
+    for (const name of [
+      'run.sh',
+      'tool.py',
+      'app.js',
+      'x.desktop',
+      'x.command',
+      'x.exe',
+      'page.html',
+      'feed.xml',
+    ])
       expect(canOpenFile(name), name).toBe(false);
   });
 
@@ -66,23 +75,28 @@ describe('run files', () => {
 describe('workspace folders', () => {
   // Shared with `folder_names_are_readable_and_safe` in crates/core/src/workspace.rs.
   it('names folders like the desktop app', () => {
-    expect(workspaceFolderName('Blog Post from a Brief', 'wf-1')).toBe(
-      'Blog Post from a Brief',
+    const cases: [string, string, string][] = [
+      ['Blog Post from a Brief', 'wf-mwxtc6717ulqfo', 'Blog Post from a Brief (7ulqfo)'],
+      ['a/b\\c:d', 'wf-1', 'a-b-c-d (wf1)'],
+      ['../escape', 'x', 'escape (x)'],
+      ['  ..hidden  ', 'ABCdef123', 'hidden (def123)'],
+      ['Tabs\tand\nnewlines', 'wf', 'Tabs-and-newlines (wf)'],
+      ['Résumé ✨ kit', 'wf', 'Résumé - kit (wf)'],
+      ['///', 'wf-7', 'Workflow (wf7)'],
+      ['...', '..', 'Workflow'],
+      ['trailing dots...', 'wf', 'trailing dots (wf)'],
+    ];
+    for (const [name, id, expected] of cases)
+      expect(workspaceFolderName(name, id), name).toBe(expected);
+    expect(Array.from(workspaceFolderName('x'.repeat(200), 'abc'))).toHaveLength(86);
+    expect(workspaceFolderName('Same', 'wf-aaaaaa')).not.toBe(
+      workspaceFolderName('Same', 'wf-bbbbbb'),
     );
-    expect(workspaceFolderName('a/b\\c:d', 'wf-1')).toBe('a-b-c-d');
-    expect(workspaceFolderName('../escape', 'wf-1')).toBe('escape');
-    expect(workspaceFolderName('  ..hidden  ', 'wf-1')).toBe('hidden');
-    expect(workspaceFolderName('Tabs\tand\nnewlines', 'wf')).toBe('Tabs-and-newlines');
-    expect(workspaceFolderName('Résumé ✨ kit', 'wf')).toBe('Résumé - kit');
-    expect(workspaceFolderName('///', 'wf-7')).toBe('wf-7');
-    expect(workspaceFolderName('...', '..')).toBe('Workflow');
-    expect(workspaceFolderName('trailing dots...', 'wf')).toBe('trailing dots');
-    expect(Array.from(workspaceFolderName('x'.repeat(200), 'wf'))).toHaveLength(80);
   });
 
   it('joins the root and the folder name', () => {
     expect(
       workspaceFolder('/home/me/Documents/Orchevia/', 'Launch kit / spring', 'w'),
-    ).toBe('/home/me/Documents/Orchevia/Launch kit - spring');
+    ).toBe('/home/me/Documents/Orchevia/Launch kit - spring (w)');
   });
 });

@@ -4,7 +4,7 @@
 //! Before 0.4.0 such steps ran in whatever folder the app was started from
 //! (`/` for a desktop launch, `src-tauri` for `pnpm tauri dev`). Now each
 //! workflow gets a readable folder under one workspace root:
-//! `~/Documents/Orchevia/<Workflow name>` by default, or the root saved in
+//! `~/Documents/Orchevia/<Workflow name> (<id>)` by default, or the root saved in
 //! Environment. A node folder or the workflow's repository folder still wins.
 
 use crate::db::SqliteDb;
@@ -29,6 +29,9 @@ pub fn validate_root_setting(value: &str) -> Result<(), String> {
     }
     if !Path::new(trimmed).is_absolute() {
         return Err("The workspace folder must be an absolute path.".into());
+    }
+    if Path::new(trimmed).exists() && !Path::new(trimmed).is_dir() {
+        return Err("The workspace folder must be a folder, not a file.".into());
     }
     Ok(())
 }
@@ -79,35 +82,44 @@ pub fn root(db: &SqliteDb) -> Option<PathBuf> {
     configured_root(saved.as_deref()).or_else(|| home_dir().map(|home| default_root(&home)))
 }
 
+/// Characters of the workflow id that keep two workflows with the same name
+/// (two uses of one template, a copy) in separate folders.
+const ID_SUFFIX_CHARS: usize = 6;
+
 /// A readable, file-system-safe folder name for a workflow: its name with
 /// separators and control characters replaced, no leading dots, at most 80
-/// characters. A name with nothing usable left falls back to the id.
+/// characters, then the last six letters or digits of its id in brackets, so
+/// two workflows with the same name never share a folder:
+/// `Blog Post from a Brief (k3f9a2)`. Mirrors `workspaceFolderName` in
+/// `src/lib/outputs.ts`.
 pub fn folder_name(workflow_name: &str, workflow_id: &str) -> String {
-    let clean = |text: &str| -> String {
-        let mapped: String = text
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '(' | ')' | '+') {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        let collapsed = mapped.split_whitespace().collect::<Vec<_>>().join(" ");
-        let trimmed = collapsed.trim_start_matches(['.', ' ', '-']);
-        let truncated: String = trimmed.chars().take(FOLDER_NAME_MAX).collect();
-        truncated.trim_end_matches(['.', ' ']).to_string()
-    };
-    let from_name = clean(workflow_name);
-    if !from_name.is_empty() {
-        return from_name;
-    }
-    let from_id = clean(workflow_id);
-    if from_id.is_empty() {
-        "Workflow".to_string()
+    let mapped: String = workflow_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '(' | ')' | '+') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let collapsed = mapped.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim_start_matches(['.', ' ', '-']);
+    let truncated: String = trimmed.chars().take(FOLDER_NAME_MAX).collect();
+    let base = truncated.trim_end_matches(['.', ' ']);
+    let base = if base.is_empty() { "Workflow" } else { base };
+    let id: Vec<char> = workflow_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let suffix: String = id[id.len().saturating_sub(ID_SUFFIX_CHARS)..]
+        .iter()
+        .collect();
+    if suffix.is_empty() {
+        base.to_string()
     } else {
-        from_id
+        format!("{base} ({suffix})")
     }
 }
 
@@ -155,25 +167,37 @@ mod tests {
         }
     }
 
+    /// Shared with `src/lib/outputs.test.ts`.
     #[test]
     fn folder_names_are_readable_and_safe() {
-        assert_eq!(
-            folder_name("Blog Post from a Brief", "wf-1"),
-            "Blog Post from a Brief"
-        );
-        assert_eq!(folder_name("a/b\\c:d", "wf-1"), "a-b-c-d");
-        assert_eq!(folder_name("../escape", "wf-1"), "escape");
-        assert_eq!(folder_name("  ..hidden  ", "wf-1"), "hidden");
-        assert_eq!(
-            folder_name("Tabs\tand\nnewlines", "wf"),
-            "Tabs-and-newlines"
-        );
-        assert_eq!(folder_name("Résumé ✨ kit", "wf"), "Résumé - kit");
-        assert_eq!(folder_name("///", "wf-7"), "wf-7");
-        assert_eq!(folder_name("...", ".."), "Workflow");
-        assert_eq!(folder_name("trailing dots...", "wf"), "trailing dots");
+        let cases = [
+            (
+                "Blog Post from a Brief",
+                "wf-mwxtc6717ulqfo",
+                "Blog Post from a Brief (7ulqfo)",
+            ),
+            ("a/b\\c:d", "wf-1", "a-b-c-d (wf1)"),
+            ("../escape", "x", "escape (x)"),
+            ("  ..hidden  ", "ABCdef123", "hidden (def123)"),
+            ("Tabs\tand\nnewlines", "wf", "Tabs-and-newlines (wf)"),
+            ("Résumé ✨ kit", "wf", "Résumé - kit (wf)"),
+            ("///", "wf-7", "Workflow (wf7)"),
+            ("...", "..", "Workflow"),
+            ("trailing dots...", "wf", "trailing dots (wf)"),
+        ];
+        for (name, id, expected) in cases {
+            assert_eq!(folder_name(name, id), expected, "{name}");
+        }
         let long = "x".repeat(200);
-        assert_eq!(folder_name(&long, "wf").chars().count(), FOLDER_NAME_MAX);
+        assert_eq!(
+            folder_name(&long, "abc").chars().count(),
+            FOLDER_NAME_MAX + " (abc)".len()
+        );
+        // Two workflows with one name get two folders.
+        assert_ne!(
+            folder_name("Same", "wf-aaaaaa"),
+            folder_name("Same", "wf-bbbbbb")
+        );
     }
 
     #[test]
@@ -221,7 +245,7 @@ mod tests {
         let folder = workflow_folder(&default_root(home.path()), "Launch kit", "wf");
         let made = prepare(&folder).unwrap();
         assert!(Path::new(&made).is_dir());
-        assert!(made.ends_with("Documents/Orchevia/Launch kit"));
+        assert!(made.ends_with("Documents/Orchevia/Launch kit (wf)"));
     }
 
     #[test]

@@ -3471,7 +3471,7 @@ fn command_invocation(
         .map(std::path::PathBuf::from)
         .filter(|home| home.is_absolute());
     let path =
-        crate::workflow::resolve_script_file(script, command_working_dir(task), home.as_deref())?;
+        crate::workflow::resolve_script_file(script, explicit_working_dir(task), home.as_deref())?;
     // A relative working folder leaves the path relative too, but the
     // interpreter starts inside that folder: anchor it where the app runs, as
     // the process's own working folder is.
@@ -3947,8 +3947,9 @@ fn command_working_dir(task: &TaskInput) -> Option<&str> {
 }
 
 /// The workspace folder for a step that has no folder of its own, created
-/// before it runs. Dry runs execute nothing and create nothing; a folder that
-/// cannot be created leaves the step where steps ran before 0.4.0.
+/// before it runs. Dry runs execute nothing and create nothing. A folder that
+/// cannot be created is still the step's folder, so the step fails with
+/// "Working directory does not exist" instead of running somewhere else.
 fn task_workspace(
     db: &SqliteDb,
     workflow: &Workflow,
@@ -3959,12 +3960,30 @@ fn task_workspace(
         return None;
     }
     let root = crate::workspace::root(db)?;
-    crate::workspace::prepare(&crate::workspace::workflow_folder(
-        &root,
-        &workflow.name,
-        &workflow.id,
-    ))
-    .ok()
+    let folder = crate::workspace::workflow_folder(&root, &workflow.name, &workflow.id);
+    match crate::workspace::prepare(&folder) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("orchevia: {error}");
+            Some(folder.to_string_lossy().into_owned())
+        }
+    }
+}
+
+/// The folder a step names itself or inherits from the project folder,
+/// without the workspace fallback: relative script files resolve only
+/// against a folder the author chose, as dry runs and validation do.
+fn explicit_working_dir(task: &TaskInput) -> Option<&str> {
+    let node_dir = task.node.config.working_dir.as_deref().unwrap_or("").trim();
+    if node_dir.is_empty() {
+        task.workflow_defaults
+            .as_ref()
+            .and_then(|d| d.repo_dir.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    } else {
+        Some(node_dir)
+    }
 }
 
 /// Workflow default branch, when set and non-blank.
@@ -7016,9 +7035,43 @@ mod tests {
         let rows = db.list_node_results("agent-workspace").unwrap();
         let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
         assert_eq!(agent.status, "succeeded", "{:?}", agent.error);
-        let expected = root_path.join("Launch kit - spring");
+        let expected = root_path.join("Launch kit - spring (fagent)");
         assert!(expected.is_dir());
         assert_eq!(agent.stdout.trim(), expected.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_workspace_that_cannot_be_made_fails_the_step_clearly() {
+        let blocker = tempfile::tempdir().unwrap();
+        // A file where the root folder should be: nothing can be created in it.
+        let root = blocker.path().join("not-a-folder");
+        std::fs::write(&root, "x").unwrap();
+        let (db, engine) = harness();
+        db.set_setting(
+            crate::workspace::WORKSPACE_ROOT_SETTING,
+            &root.to_string_lossy(),
+        )
+        .unwrap();
+        let mut profile = echo_profile("pwd-blocked");
+        profile.adapter = crate::agents::AdapterKind::Custom;
+        profile.executable = Some("sh".into());
+        profile.extra_args = vec!["-c".into(), "pwd".into()];
+        profile.working_dir_mode = crate::agents::WorkingDirMode::Node;
+        db.upsert_agent_profile(&profile).unwrap();
+        run_to_end(&db, &engine, agent_workflow(&profile.id), "blocked").await;
+        let rows = db.list_node_results("blocked").unwrap();
+        let agent = rows.iter().rev().find(|r| r.node_id == "agent1").unwrap();
+        assert_eq!(agent.status, "failed");
+        assert!(
+            agent
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Working directory does not exist"),
+            "{:?}",
+            agent.error
+        );
     }
 
     #[tokio::test]

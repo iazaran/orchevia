@@ -32,7 +32,8 @@ const SKIPPED_DIRS: &[&str] = &[
 ];
 /// How deep below a run folder files are looked for.
 const MAX_DEPTH: usize = 8;
-/// Entries visited per listing, so a home-folder repository stays quick.
+/// Entries visited in each run folder, so a home-folder repository stays
+/// quick and one large folder cannot hide the others.
 const MAX_VISITED: usize = 50_000;
 /// Files returned, newest first.
 const MAX_FILES: usize = 300;
@@ -167,20 +168,11 @@ fn safe_to_open(path: &Path) -> bool {
         | RunFileKind::Pdf
         | RunFileKind::Markdown
         | RunFileKind::Document => true,
+        // Web pages and XML open in a browser that runs their scripts from a
+        // local file, so they are only shown (and revealed), never opened.
         RunFileKind::Text => matches!(
             extension(path).as_str(),
-            "txt"
-                | "csv"
-                | "tsv"
-                | "json"
-                | "yaml"
-                | "yml"
-                | "xml"
-                | "html"
-                | "htm"
-                | "srt"
-                | "vtt"
-                | "log"
+            "txt" | "csv" | "tsv" | "json" | "yaml" | "yml" | "srt" | "vtt" | "log"
         ),
         RunFileKind::Other => false,
     }
@@ -263,12 +255,35 @@ fn system_time(at: DateTime<Utc>) -> SystemTime {
     SystemTime::from(at)
 }
 
+/// When a file last changed: its modification time, or on Unix its status
+/// change time when later. A copy that keeps the original modification time
+/// (`cp -p`, `tar`, `curl -R`) still counts as made by the run.
+fn changed_at(meta: &std::fs::Metadata) -> Option<SystemTime> {
+    let modified = meta.modified().ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let ctime = u64::try_from(meta.ctime())
+            .ok()
+            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+            .and_then(|at| {
+                at.checked_add(Duration::from_nanos(
+                    u64::try_from(meta.ctime_nsec()).unwrap_or(0),
+                ))
+            });
+        if let Some(ctime) = ctime {
+            return Some(modified.max(ctime));
+        }
+    }
+    Some(modified)
+}
+
 /// Files under `folders` modified in `[since, until]`, newest first.
 pub fn scan(folders: &[PathBuf], since: SystemTime, until: Option<SystemTime>) -> RunFiles {
     let mut files: Vec<RunFile> = Vec::new();
-    let mut visited = 0usize;
     let mut truncated = false;
     for folder in folders {
+        let mut visited = 0usize;
         let mut stack: Vec<(PathBuf, usize)> = vec![(folder.clone(), 0)];
         while let Some((dir, depth)) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -298,7 +313,7 @@ pub fn scan(folders: &[PathBuf], since: SystemTime, until: Option<SystemTime>) -
                 let Ok(meta) = entry.metadata() else {
                     continue;
                 };
-                let Ok(modified) = meta.modified() else {
+                let Some(modified) = changed_at(&meta) else {
                     continue;
                 };
                 if modified < since || until.is_some_and(|end| modified > end) {
@@ -352,7 +367,19 @@ pub fn list_run_files(db: &SqliteDb, run_id: &str) -> Result<RunFiles, String> {
     let since = system_time(run.started_at)
         .checked_sub(CLOCK_SLACK)
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    let until = run.finished_at.map(|at| system_time(at) + FINISH_SLACK);
+    // A run waiting for an approval or for feedback has a finish time too;
+    // edits made while it waits (a prompt file reviewed before approving)
+    // still belong to it, so only a finished run closes the window.
+    let finished = matches!(
+        run.status,
+        crate::db::RunStatus::Succeeded
+            | crate::db::RunStatus::Failed
+            | crate::db::RunStatus::Cancelled
+    );
+    let until = run
+        .finished_at
+        .filter(|_| finished)
+        .map(|at| system_time(at) + FINISH_SLACK);
     Ok(scan(&folders, since, until))
 }
 
@@ -508,6 +535,8 @@ mod tests {
             "x.desktop",
             "x.command",
             "x.exe",
+            "page.html",
+            "feed.xml",
         ] {
             assert!(!safe_to_open(Path::new(unsafe_name)), "{unsafe_name}");
         }
@@ -554,13 +583,8 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let old = repo.path().join("old.md");
         std::fs::write(&old, "before the run").unwrap();
-        let earlier = SystemTime::now() - Duration::from_secs(3600);
-        std::fs::File::options()
-            .write(true)
-            .open(&old)
-            .unwrap()
-            .set_modified(earlier)
-            .unwrap();
+        // Written well before the run starts (past the clock slack).
+        std::thread::sleep(CLOCK_SLACK + Duration::from_millis(300));
         let wf = workflow(
             vec![step("a", NodeKind::Agent, None)],
             Some(&repo.path().to_string_lossy()),
@@ -679,6 +703,50 @@ mod tests {
         let preview = read_run_file(&db, "run-ws", &big.to_string_lossy()).unwrap();
         assert!(preview.truncated);
         assert_eq!(preview.text.unwrap().len(), MAX_TEXT_BYTES as usize);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_keeps_an_old_modification_time_still_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kept.mp4");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(86_400))
+            .unwrap();
+        let since = SystemTime::now() - Duration::from_secs(60);
+        let listed = scan(&[dir.path().to_path_buf()], since, None);
+        assert_eq!(listed.files.len(), 1);
+    }
+
+    #[test]
+    fn a_paused_run_keeps_listing_edits_made_while_it_waits() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let wf = workflow(
+            vec![step("a", NodeKind::Agent, None)],
+            Some(&repo.path().to_string_lossy()),
+        );
+        record_run(&db, &wf, "run-paused");
+        db.finish_run("run-paused", crate::db::RunStatus::Paused)
+            .unwrap();
+        // Long after the pause began: past the finished-run slack.
+        let later = SystemTime::now() + FINISH_SLACK + Duration::from_secs(60);
+        let file = repo.path().join("prompts.md");
+        std::fs::write(&file, "edited while waiting").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(list_run_files(&db, "run-paused").unwrap().files.len(), 1);
+        db.finish_run("run-paused", crate::db::RunStatus::Succeeded)
+            .unwrap();
+        assert!(list_run_files(&db, "run-paused").unwrap().files.is_empty());
     }
 
     #[test]
