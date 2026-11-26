@@ -4,7 +4,7 @@
 
 # Orchevia
 
-**Your coding agents, one reviewable workflow — on your machine.**
+**Your AI agents, one reviewable workflow — on your machine.**
 
 [![CI](https://github.com/iazaran/orchevia/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/iazaran/orchevia/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/iazaran/orchevia?sort=semver&color=6ea8fe)](https://github.com/iazaran/orchevia/releases/latest)
@@ -25,8 +25,11 @@
 Orchevia is a free desktop app for running **Claude Code, Codex, Gemini CLI, GitHub
 Copilot CLI, Cursor CLI, OpenCode, Qwen Code, Google Antigravity CLI, Muse Code** and
 more on your machine. Build a visual workflow that plans a change, pauses for your
-approval, runs your tests and asks two independent reviewers to check the diff. Open
-Runs to see what each step did and which findings survived the fix round.
+approval, runs your tests and asks two independent reviewers to check the diff, or one
+that drafts a blog post and has a second agent fact-check it, researches a question
+with sources, makes a set of images or cuts a video for every platform. Open Runs to
+see what each step did, which findings survived the fix round and every file the run
+made.
 
 - **Bring your own tools.** Sign in through the CLIs you already use. Orchevia needs
   no account and keeps workflows and run history in local SQLite.
@@ -35,13 +38,19 @@ Runs to see what each step did and which findings survived the fix round.
   that Orchevia can see your credentials, which never enter the app.
 - **Approve and give feedback.** Pause at an Approval step or give a running step
   feedback before a push or PR comment.
+- **Beyond code.** Templates for content, research, media and data work run in their
+  own workspace folder, and each run shows the documents, images, audio and video it
+  made, with previews.
 - **Reuse and share.** Templates, Playbooks that detect your repository's commands, and
   **n8n import and export**.
 
-**New in 0.3:** n8n import and export · 22 MCP setups in the server form · MCP
-templates · Playbooks that detect your test, lint and build commands · seven more
-coding CLIs in one click · a JSON editor that points at errors · one consistent layout
-on every screen. [Changelog](./CHANGELOG.md)
+**New in 0.4:** a Home screen where you describe what you want done · a command
+palette (Ctrl/⌘ + K) · **Files** on every run with previews · eight templates for
+content, research, media and data (blog posts, launch kits, research reports,
+translations, images, social video cuts, spreadsheet insights, meeting actions) ·
+workspace folders for work without a repository · run inputs with help text, long text
+and choices · FFmpeg, ImageMagick, Pandoc and Python detection.
+[Changelog](./CHANGELOG.md)
 
 ## Download
 
@@ -236,8 +245,9 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 - **Local automation.** Durable schedules, PR review and feedback watchers with bot-loop
   guards, a notification inbox, and opt-in background mode. Schedules that write need a
   per-schedule trust opt-in.
-- **Templates and Playbooks.** Thirteen built-in templates (three use MCP), versioned
-  JSON import and export, and per-repository test, lint and build commands, conventions
+- **Templates and Playbooks.** Twenty-one built-in templates for code, content,
+  research, media and data (three use MCP), searchable by kind, versioned JSON import
+  and export, and per-repository test, lint and build commands, conventions
   and reviewer choices that **Detect commands** fills from package.json, Cargo.toml,
   Makefile, go.mod, pyproject.toml and more.
 - **Run controls.** Dry runs with fixtures, agent-attempt budgets, an optional guard on
@@ -252,6 +262,9 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
 | An existing PR            | Read PR → Independent reviews → Summarize → Human decision | Authenticated `gh`, PR input, reviewer profiles      |
 | A nightly sweep           | Schedule or watcher → Review → Inbox notification          | Trusted schedule, read-only scope, reviewer profiles |
 | A page, docs or a channel | MCP tool (Fetch, AWS Knowledge, Slack) → Brief             | The MCP setup, a planning profile                    |
+| A blog post or launch     | Outline → Draft → Fact-check loop → Approve → Social posts | A topic and notes; files land in the workspace       |
+| A research question       | Research with sources → Second agent checks every source   | Agent web search allowed                             |
+| Images or a video         | Prompts → Approve → Images · or FFmpeg cuts → Captions     | Codex for images (ChatGPT plan), FFmpeg for video    |
 
 Keep commits, pushes, comments and PR creation explicit in the graph. A review or a
 passing test never merges anything unless you add that write step.

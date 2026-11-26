@@ -42,6 +42,26 @@ depends only on nodes + edges.
 Future milestones extend this enum (`test`, `review`, `schedule`, …) with a
 schema bump + migration. Full integration guide: [integrations.md](./integrations.md).
 
+### Where steps run
+
+A Command or Agent step runs in its own `workingDir` when set, else in the
+workflow's `defaults.repoDir` (the project folder). With neither, it runs in the
+workflow's **workspace folder**, `<workspace root>/<Workflow name>`, created on
+the first run (never by a dry run). The workspace root is `~/Documents/Orchevia`
+(or `~/Orchevia` without a Documents folder) unless Environment → Workspace saves
+another absolute path (`workspace.root`). The folder name keeps letters, digits,
+spaces and `-_.()+`, turns anything else into `-`, drops leading dots and is cut
+at 80 characters. Before 0.4.0 such steps ran in the app's own folder. Codex
+steps whose folder is outside any Git repository get `--skip-git-repo-check`.
+Git and GitHub steps always need a repository.
+
+Runs → **Files** lists what a run's steps created or changed in these folders
+(between its start and end, newest first, at most 300, skipping hidden entries
+and `node_modules`, `target`, `dist`, `build`, `vendor`, virtual environments and
+caches). Previews show text and Markdown up to 512 KB and images, audio, video and
+PDFs up to 20 MB; **Open** hands documents and media to the default app (never
+scripts or programs), and **Show in folder** reveals the file.
+
 ### Script files
 
 A Command step can run a script file instead of a long `bash -c '…'` argument:
@@ -127,6 +147,11 @@ Errors block execution; warnings don't. Current rules:
 - prompt/condition/session-group variable refs must resolve (`workflow.*`,
   declared `input.*`, `ticket.*`, existing `node.*`); inputs need valid unique
   names
+- inputs may carry `description` (help text, ≤ 500 characters), `multiline: true`
+  (a text area in the start form) and `options` (≤ 50 distinct, non-blank choices of
+  ≤ 200 characters; a `default` must be one of them), otherwise
+  `input-settings-invalid`; a run started with a value outside an input's `options`
+  is refused (`input-choice-invalid`)
 - runs additionally require the referenced profile to exist and its CLI to be on
   `PATH` (checked at start; missing tools fail with `agent-cli-unavailable`)
 - unreachable-from-start nodes → warning; dead-end non-`end` nodes → warning

@@ -19,6 +19,28 @@ into a new workflow's **JSON** editor.
 Contributors can use `pnpm dev` to explore the UI. That browser demo simulates
 commands; `pnpm tauri dev` and the installed desktop app execute them.
 
+Orchevia opens on **Home**: type what you want done and choose **Draft a
+workflow**, or pick a kind of work. **Ctrl/⌘ + K** finds any view, workflow,
+template or recent run from anywhere.
+
+## Work beyond code
+
+Content, research, media and data templates need no repository. Open
+**Templates**, filter by kind, and use one such as **Blog Post from a Brief**,
+**Research Report with Sources**, **Images from a Brief** or **Social Video
+Cuts**. Leave **Project folder** empty: the workflow then works in its own
+folder, `~/Documents/Orchevia/<Workflow name>` (change the root in Environment →
+**Workspace**). Each run lists what it made under **Files**, with previews, and
+**Open** hands a document, image or video to its usual app.
+
+- Images use your agent's own image tool: Codex makes real images on a ChatGPT
+  plan with no API key; other agents draw SVG illustrations instead.
+- Video templates run FFmpeg on your machine. Environment → Local tools → **Media
+  and documents** shows whether FFmpeg, ImageMagick, Pandoc and Python are
+  installed, and template cards show ✕ for anything missing.
+- The research template allows your agent's web search; check that your profile
+  permits it, or let Orchevia add the rule when it asks.
+
 ## Add the tools you need
 
 The setup wizard detects Git, GitHub CLI and the
@@ -92,8 +114,9 @@ Cancellation stops the active child; it does not undo file edits or external wri
 
 ## Draft a workflow from a goal
 
-Choose **Generate**, select your CLI, and provide the repository and inputs.
-A concrete goal works better than a general request:
+Choose **Generate** (or **Draft a workflow** on Home), select your CLI, and
+provide the repository and inputs when the work needs one. A concrete goal works
+better than a general request:
 
 > Plan a change for {{input.task}} with my planning profile. Pause for approval,
 > implement it, run this repository's test command, and request one independent

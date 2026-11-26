@@ -6,6 +6,86 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26
+
+Orchevia now runs more than coding work: content, research, media and data
+workflows use the same agents, reviews and approvals, and every run shows the
+files it made.
+
+### Added
+
+- **Home.** Orchevia opens on a page where you describe what you want done:
+  **Draft a workflow** hands it to your own AI CLI through the generator, which
+  drafts a graph you review before anything runs. Example goals fill the box in
+  one click. Below: **Needs you** (runs waiting for an approval, runs that
+  failed today), the setup steps left (connect an agent, a first run, an
+  automation), **Start from a kind of work**, recent runs with this week's
+  success rate, and your workflows with **Run** buttons.
+- **Command palette.** Ctrl/⌘ + K, or **Search** at the top of the sidebar,
+  finds a view, opens or runs a workflow, finds a template, opens a recent run,
+  and drafts a workflow from a longer query. Arrow keys and Enter work as
+  expected; it never opens over another dialog.
+- **Files on every run.** Runs lists what a run's steps created or changed in
+  the folders they ran in, newest first, with thumbnails for images. A preview
+  shows Markdown, text, images, audio, video and PDFs; **Open** hands documents
+  and media to their default app (never scripts or programs), **Show in
+  folder** reveals the file and **Copy path** copies it. Hidden files and
+  dependency, build and cache folders are never listed, and nothing outside the
+  run's folders can be read.
+- **Workspace folders.** A Command or Agent step with no folder of its own, in
+  a workflow without a project folder, now runs in that workflow's own folder,
+  `~/Documents/Orchevia/<Workflow name>` (created on the first run; dry runs
+  create nothing), instead of wherever the app happened to start. Environment →
+  **Workspace** chooses another root. The workflow panel and the step folder
+  fields show the folder in use.
+- **Eight templates beyond code**, each replayed end to end in the engine:
+  **Blog Post from a Brief** (outline, draft, an editor's fact-check with up to
+  two revision rounds, your approval, social posts), **Product Launch Kit**
+  (positioning, then landing copy, email, social posts and ad variants in
+  parallel, then a consistency check), **Research Report with Sources** (a cited
+  report, then a second agent opens every source), **Translate a Document**,
+  **Images from a Brief** (prompts you approve, then Codex's built-in image tool
+  on a ChatGPT plan with no API key, or SVG illustrations from other agents),
+  **Social Video Cuts** (9:16, 1:1 and 16:9 cuts and a thumbnail with FFmpeg in
+  parallel, then captions), **Spreadsheet Insights** (figures and charts, with
+  the numbers rechecked) and **Meeting Notes to Actions**.
+- **Inputs that explain themselves.** A workflow input can carry help text, be
+  marked as long text, or list its choices. The start form shows a choice list,
+  a text area or the help under the field, and a run with a value outside an
+  input's choices is refused. Edit them under **Details** beside each input in
+  the workflow panel; the generator and the Simple JSON editor carry them too.
+- **Media and document tools.** Environment → Local tools detects FFmpeg,
+  ImageMagick, Pandoc and Python under **Media and documents**, with what each
+  is for and how to install it. Template cards say what they need: ✓ FFmpeg when
+  it is installed, ✕ FFmpeg when it is not, web search, an MCP server or a Git
+  repository.
+
+### Changed
+
+- **Templates** has a search box and kind filters (Software, Content &
+  marketing, Research, Media & design, Data & operations, Getting started),
+  groups built-ins by kind, and content, research, media and data templates no
+  longer borrow a code repository: their project folder is optional and blank
+  uses the workflow's workspace folder.
+- **The start form asks for inputs first** and folds the limit overrides away;
+  the Expand toggle for long values sits beside the field label.
+- **The generator designs work beyond code:** deliverables as named files,
+  drafting and reviewing in separate steps with a review loop and an approval
+  before publishing, media processing in Command steps with inputs passed as
+  arguments, and inputs with help text, long text and choices.
+- The workflow panel calls `defaults.repoDir` the **Project folder**: a
+  repository for code work or any folder for documents and media.
+- Dependencies refreshed within their ranges.
+
+### Fixed
+
+- **Codex steps outside a Git repository** no longer stop at Codex's own
+  repository check: a step whose folder is outside any repository runs with
+  `--skip-git-repo-check`. Repository folders keep the check.
+- **Review loops in the browser preview** (`pnpm dev`) ended at their loop
+  limit because the mock read the severity scale in the echoed prompt as a
+  finding; a mock review now reports nothing, as a clean real review would.
+
 ## [0.3.3] - 2026-11-25
 
 ### Added
