@@ -5064,3 +5064,11 @@ details[open] > .gen-summary::after {
   font-size: 12px;
   padding: 1px 8px;
 }
+
+[data-theme='light'] .filter-chip,
+[data-theme='light'] .nav-search {
+  border-color: var(--border);
+}
+[data-theme='light'] .filter-chip.active {
+  border-color: var(--tab-selected-border);
+}
