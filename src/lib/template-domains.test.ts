@@ -60,4 +60,9 @@ it('names what a template needs and checks local tools against detection', () =>
     'Git repository',
   );
   expect(templateNeeds(find('blog-post'), [])).toEqual([]);
+  expect(
+    templateNeeds(find('spreadsheet-insights'), [
+      { id: 'python', displayName: 'Python', installed: true },
+    ]),
+  ).toEqual([expect.objectContaining({ label: 'Python', ready: true })]);
 });

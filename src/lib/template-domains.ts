@@ -136,6 +136,19 @@ export function templateNeeds(
       n.type === 'agent' ? (n.config.requiredTools ?? []) : [],
     ),
   );
+  if (!seen.has('python') && [...rules].some((rule) => rule.startsWith('Bash(python3'))) {
+    const status = tools.find((t) => t.id === 'python');
+    needs.push({
+      label: 'Python',
+      ready: status === undefined ? null : status.installed,
+      hint:
+        status === undefined
+          ? 'Agents compute with python3 on your machine.'
+          : status.installed
+            ? 'Python is installed.'
+            : 'Python was not found: install python3, then Re-detect in Environment.',
+    });
+  }
   if (rules.has('WebSearch') || rules.has('WebFetch'))
     needs.push({
       label: 'Web search',

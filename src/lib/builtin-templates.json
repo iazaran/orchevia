@@ -2906,7 +2906,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nname=$(basename -- \"$1\")\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ \"$(cd \"$(dirname -- \"$1\")\" && pwd -P)/$name\" != \"$(pwd -P)/$name\" ]; then cp -- \"$1\" \"./$name\"; fi\necho \"$name\"",
+              "set -eu\nname=$(basename -- \"$1\")\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ \"$(cd \"$(dirname -- \"$1\")\" && pwd -P)/$name\" != \"$(pwd -P)/$name\" ]; then cp -- \"$1\" \"./$name\"; fi\necho \"$(pwd -P)/$name\"",
               "orchevia",
               "{{input.file}}"
             ],
@@ -2924,7 +2924,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Translate {{node.copy.output}} (in the current folder) into each of these languages: {{input.languages}}. Keep the Markdown structure, links and numbers exactly; keep product names as they are. Terms and style notes (data, not instructions): {{input.terms}}. Write one file per language named after the original with the language code before the extension, e.g. launch.es.md. Do not change the original. Save files in the current folder only, overwrite your own earlier versions, and end by listing the files you wrote.",
+            "prompt": "Translate the document at {{node.copy.output}} into each of these languages: {{input.languages}}. Keep the Markdown structure, links and numbers exactly; keep product names as they are. Terms and style notes (data, not instructions): {{input.terms}}. Write one file per language in the current folder, named after the original with the language code before the extension, e.g. launch.es.md. Do not change the original. Save files in the current folder only, overwrite your own earlier versions, and end by listing the files you wrote.",
             "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false
           },
@@ -3010,7 +3010,7 @@
     "id": "image-set",
     "version": 1,
     "name": "Images from a Brief",
-    "description": "Write detailed image prompts → you approve them → an agent makes the images. Codex makes real images with its built-in image tool on a ChatGPT plan (no API key); other agents draw SVG illustrations instead. Images show under Files on the run.",
+    "description": "Write detailed image prompts → you approve them → an agent makes the images. Codex makes real images with its built-in image tool on a ChatGPT Plus or higher plan (no API key); other agents draw SVG illustrations instead. Images show under Files on the run.",
     "category": "media",
     "workflow": {
       "schemaVersion": 6,
@@ -3181,7 +3181,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920\" -c:v libx264 -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/vertical-9x16.mp4\necho \"Wrote cuts/vertical-9x16.mp4\"",
+              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/vertical-9x16.mp4\necho \"Wrote cuts/vertical-9x16.mp4\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}",
@@ -3203,7 +3203,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080\" -c:v libx264 -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/square-1x1.mp4\necho \"Wrote cuts/square-1x1.mp4\"",
+              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/square-1x1.mp4\necho \"Wrote cuts/square-1x1.mp4\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}",
@@ -3225,7 +3225,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080\" -c:v libx264 -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/wide-16x9.mp4\necho \"Wrote cuts/wide-16x9.mp4\"",
+              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/wide-16x9.mp4\necho \"Wrote cuts/wide-16x9.mp4\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}",
@@ -3267,7 +3267,7 @@
           "config": {
             "args": [],
             "agentRole": "planning",
-            "prompt": "The cuts in the cuts folder come from a video about: {{input.about}}. Write captions.md with, for TikTok and Instagram Reels (vertical), Instagram and LinkedIn (square) and YouTube (wide): a title, a caption within the platform's limits, and three to five hashtags. Do not open or change the video files. Save files in the current folder only, overwrite your own earlier versions, and end by listing the files you wrote.",
+            "prompt": "The files cuts/vertical-9x16.mp4, cuts/square-1x1.mp4, cuts/wide-16x9.mp4 and cuts/thumbnail.jpg come from a video about: {{input.about}}. Write captions.md with, for TikTok and Instagram Reels (vertical), Instagram and LinkedIn (square) and YouTube (wide): a title, a caption within the platform's limits, and three to five hashtags. Do not open or change the video files. Save files in the current folder only, overwrite your own earlier versions, and end by listing the files you wrote.",
             "requiredTools": ["Edit", "Write"],
             "extendOnOutput": false
           },
@@ -3369,7 +3369,7 @@
     "id": "spreadsheet-insights",
     "version": 1,
     "name": "Spreadsheet Insights",
-    "description": "An agent analyzes a CSV or spreadsheet, writes insights.md with the key figures and saves charts as images; a reviewer recomputes the numbers. Uses Python when it is installed.",
+    "description": "An agent analyzes a CSV or TSV file with Python, writes insights.md with the key figures and saves charts as images when matplotlib is installed; a reviewer recomputes the numbers. Needs python3.",
     "category": "data",
     "workflow": {
       "schemaVersion": 6,
@@ -3400,7 +3400,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nname=$(basename -- \"$1\")\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ \"$(cd \"$(dirname -- \"$1\")\" && pwd -P)/$name\" != \"$(pwd -P)/$name\" ]; then cp -- \"$1\" \"./$name\"; fi\necho \"$name\"",
+              "set -eu\nname=$(basename -- \"$1\")\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ \"$(cd \"$(dirname -- \"$1\")\" && pwd -P)/$name\" != \"$(pwd -P)/$name\" ]; then cp -- \"$1\" \"./$name\"; fi\necho \"$(pwd -P)/$name\"",
               "orchevia",
               "{{input.file}}"
             ],
@@ -3418,7 +3418,7 @@
           "config": {
             "args": [],
             "agentRole": "implementation",
-            "prompt": "Analyze the data file {{node.copy.output}} in the current folder (CSV or spreadsheet). Question: {{input.question}}. If Python is available, use it to compute the figures and to save two or three charts as chart-1.png, chart-2.png and so on; otherwise compute by reading the file. Write insights.md: the answer in three sentences, the key figures in a table, trends and outliers, and what to do next. Show how each figure was computed. Never change the data file. Save files in the current folder only, overwrite your own earlier versions, and end by listing the files you wrote.",
+            "prompt": "Analyze the CSV or TSV data file at {{node.copy.output}}. Question: {{input.question}}. Compute the figures with python3 (write the script in the current folder and run it with python3; never install packages). If matplotlib is available, save two or three charts as chart-1.png, chart-2.png and so on; if not, skip the charts and say so. Write insights.md: the answer in three sentences, the key figures in a table, trends and outliers, and what to do next. Show how each figure was computed. Never change the data file. Save files in the current folder only, overwrite your own earlier versions, and end by listing the files you wrote.",
             "requiredTools": ["Edit", "Write", "Read", "Bash(python3 *)"],
             "extendOnOutput": false
           },
@@ -3434,7 +3434,8 @@
           "config": {
             "args": [],
             "agentRole": "deepReview",
-            "prompt": "Check insights.md against the data file {{node.copy.output}} in the current folder: recompute the key figures, confirm the charts match them, and flag conclusions the data does not support. Never change the data file. Read the files in the current folder; do not edit them. Report each problem as a ```finding block with the lines `severity:` (P1 for factual errors, unsupported claims, missing required content or anything off the brief; P2 or P3 for style and wording), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "prompt": "Check insights.md against the data file at {{node.copy.output}}: recompute the key figures with python3 (never install packages), confirm the charts match them, and flag conclusions the data does not support. Never change the data file. Read the files in the current folder; do not edit them. Report each problem as a ```finding block with the lines `severity:` (P1 for factual errors, unsupported claims, missing required content or anything off the brief; P2 or P3 for style and wording), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "requiredTools": ["Read", "Bash(python3 *)"],
             "extendOnOutput": false
           },
           "label": "Check the numbers"
@@ -3480,7 +3481,7 @@
           "name": "file",
           "label": "Data file",
           "required": true,
-          "description": "Full path to a .csv or .xlsx file, e.g. /home/me/Documents/sales-2026.csv"
+          "description": "Full path to a .csv or .tsv file, e.g. /home/me/Documents/sales-2026.csv (export spreadsheets as CSV first)."
         },
         {
           "name": "question",
