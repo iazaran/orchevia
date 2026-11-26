@@ -1935,8 +1935,8 @@
             "extendOnOutput": false,
             "mcpTool": "fetch",
             "mcpArgs": {
-              "url": "{{input.url}}",
-              "max_length": "20000"
+              "max_length": "20000",
+              "url": "{{input.url}}"
             }
           },
           "label": "Fetch the page"
@@ -2138,8 +2138,8 @@
             "extendOnOutput": false,
             "mcpTool": "conversations_history",
             "mcpArgs": {
-              "channel_id": "{{input.channel}}",
-              "limit": "{{input.period}}"
+              "limit": "{{input.period}}",
+              "channel_id": "{{input.channel}}"
             }
           },
           "label": "Read the channel"
@@ -2906,7 +2906,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nname=$(basename -- \"$1\")\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ \"$(cd \"$(dirname -- \"$1\")\" && pwd -P)/$name\" != \"$(pwd -P)/$name\" ]; then cp -- \"$1\" \"./$name\"; fi\necho \"$(pwd -P)/$name\"",
+              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ -L inputs ]; then echo \"inputs is a link; refusing to copy through it\" >&2; exit 1; fi\nmkdir -p inputs\nname=$(basename -- \"$1\")\ndest=\"inputs/$name\"\nn=1\nwhile [ -e \"$dest\" ] || [ -L \"$dest\" ]; do\n  if [ ! -L \"$dest\" ] && cmp -s -- \"$1\" \"$dest\"; then break; fi\n  n=$((n+1))\n  dest=\"inputs/$n-$name\"\ndone\nif [ ! -e \"$dest\" ]; then (set -C; cat -- \"$1\" > \"$dest\"); fi\necho \"$(pwd -P)/$dest\"",
               "orchevia",
               "{{input.file}}"
             ],
@@ -3181,7 +3181,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/vertical-9x16.mp4\necho \"Wrote cuts/vertical-9x16.mp4\"",
+              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No video file at $1\" >&2; exit 1; fi\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/vertical-9x16.mp4\necho \"Wrote cuts/vertical-9x16.mp4\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}",
@@ -3203,7 +3203,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/square-1x1.mp4\necho \"Wrote cuts/square-1x1.mp4\"",
+              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No video file at $1\" >&2; exit 1; fi\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/square-1x1.mp4\necho \"Wrote cuts/square-1x1.mp4\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}",
@@ -3225,7 +3225,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/wide-16x9.mp4\necho \"Wrote cuts/wide-16x9.mp4\"",
+              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No video file at $1\" >&2; exit 1; fi\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -t \"$3\" -i \"$1\" -vf \"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080\" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/wide-16x9.mp4\necho \"Wrote cuts/wide-16x9.mp4\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}",
@@ -3247,7 +3247,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -i \"$1\" -frames:v 1 -q:v 2 cuts/thumbnail.jpg\necho \"Wrote cuts/thumbnail.jpg\"",
+              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No video file at $1\" >&2; exit 1; fi\nmkdir -p cuts\nffmpeg -hide_banner -loglevel error -y -ss \"$2\" -i \"$1\" -frames:v 1 -q:v 2 cuts/thumbnail.jpg\necho \"Wrote cuts/thumbnail.jpg\"",
               "orchevia",
               "{{input.video}}",
               "{{input.start}}"
@@ -3400,7 +3400,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nname=$(basename -- \"$1\")\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ \"$(cd \"$(dirname -- \"$1\")\" && pwd -P)/$name\" != \"$(pwd -P)/$name\" ]; then cp -- \"$1\" \"./$name\"; fi\necho \"$(pwd -P)/$name\"",
+              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ -L inputs ]; then echo \"inputs is a link; refusing to copy through it\" >&2; exit 1; fi\nmkdir -p inputs\nname=$(basename -- \"$1\")\ndest=\"inputs/$name\"\nn=1\nwhile [ -e \"$dest\" ] || [ -L \"$dest\" ]; do\n  if [ ! -L \"$dest\" ] && cmp -s -- \"$1\" \"$dest\"; then break; fi\n  n=$((n+1))\n  dest=\"inputs/$n-$name\"\ndone\nif [ ! -e \"$dest\" ]; then (set -C; cat -- \"$1\" > \"$dest\"); fi\necho \"$(pwd -P)/$dest\"",
               "orchevia",
               "{{input.file}}"
             ],
@@ -3434,7 +3434,7 @@
           "config": {
             "args": [],
             "agentRole": "deepReview",
-            "prompt": "Check insights.md against the data file at {{node.copy.output}}: recompute the key figures with python3 (never install packages), confirm the charts match them, and flag conclusions the data does not support. Never change the data file. Read the files in the current folder; do not edit them. Report each problem as a ```finding block with the lines `severity:` (P1 for factual errors, unsupported claims, missing required content or anything off the brief; P2 or P3 for style and wording), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
+            "prompt": "Check insights.md against the data file at {{node.copy.output}}: recompute the key figures with python3 -c or by running the analyst's script again (create no files, never install packages), confirm the charts match them, and flag conclusions the data does not support. Never change the data file. Read the files in the current folder; do not edit them. Report each problem as a ```finding block with the lines `severity:` (P1 for factual errors, unsupported claims, missing required content or anything off the brief; P2 or P3 for style and wording), `file:`, `line:`, `title:`, `explanation:` and `fix:`. If there is nothing to report, say so in one sentence without severity labels.",
             "requiredTools": ["Read", "Bash(python3 *)"],
             "extendOnOutput": false
           },

@@ -893,11 +893,13 @@ fn research_report() -> Template {
     )
 }
 
-/// Copies the file named by `{{input.file}}` into the step's folder and
-/// prints the copy's absolute path, so the agents that follow work on a file
-/// in their own folder (Claude Code below full access may refuse a path
-/// elsewhere) and still find it if a profile runs them in another folder.
-/// The path stays an argument, never part of the script.
+/// Copies the file named by `{{input.file}}` into `inputs/` in the step's
+/// folder and prints the copy's absolute path, so the agents that follow work
+/// on a file in their own folder (Claude Code below full access may refuse a
+/// path elsewhere) and still find it if a profile runs them in another folder.
+/// A different file already there is never replaced: the copy takes a new
+/// name (`inputs/2-sales.csv`), is created exclusively, and links are never
+/// followed. The path stays an argument, never part of the script.
 fn copy_input_file(y: f64) -> Node {
     command(
         "copy",
@@ -908,10 +910,19 @@ fn copy_input_file(y: f64) -> Node {
         &[
             "-c",
             r#"set -eu
-name=$(basename -- "$1")
 if [ ! -f "$1" ]; then echo "No file at $1" >&2; exit 1; fi
-if [ "$(cd "$(dirname -- "$1")" && pwd -P)/$name" != "$(pwd -P)/$name" ]; then cp -- "$1" "./$name"; fi
-echo "$(pwd -P)/$name""#,
+if [ -L inputs ]; then echo "inputs is a link; refusing to copy through it" >&2; exit 1; fi
+mkdir -p inputs
+name=$(basename -- "$1")
+dest="inputs/$name"
+n=1
+while [ -e "$dest" ] || [ -L "$dest" ]; do
+  if [ ! -L "$dest" ] && cmp -s -- "$1" "$dest"; then break; fi
+  n=$((n+1))
+  dest="inputs/$n-$name"
+done
+if [ ! -e "$dest" ]; then (set -C; cat -- "$1" > "$dest"); fi
+echo "$(pwd -P)/$dest""#,
             "orchevia",
             "{{input.file}}",
         ],
@@ -1008,10 +1019,12 @@ fn image_set() -> Template {
 
 /// An ffmpeg cut of `{{input.video}}` from `{{input.start}}` for
 /// `{{input.duration}}` seconds, scaled to cover `w`×`h` and cropped to it.
-/// Inputs reach the script as arguments, never inside its text.
+/// Inputs reach the script as arguments, never inside its text, and the
+/// video must be a local file (a pasted URL would make FFmpeg connect to it).
 fn video_cut(id: &str, x: f64, label: &str, w: u32, h: u32, file: &str) -> Node {
     let script = format!(
         r#"set -eu
+if [ ! -f "$1" ]; then echo "No video file at $1" >&2; exit 1; fi
 mkdir -p cuts
 ffmpeg -hide_banner -loglevel error -y -ss "$2" -t "$3" -i "$1" -vf "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}" -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac -movflags +faststart cuts/{file}
 echo "Wrote cuts/{file}""#
@@ -1046,6 +1059,7 @@ fn social_video_cuts() -> Template {
             &[
                 "-c",
                 r#"set -eu
+if [ ! -f "$1" ]; then echo "No video file at $1" >&2; exit 1; fi
 mkdir -p cuts
 ffmpeg -hide_banner -loglevel error -y -ss "$2" -i "$1" -frames:v 1 -q:v 2 cuts/thumbnail.jpg
 echo "Wrote cuts/thumbnail.jpg""#,
@@ -1145,7 +1159,7 @@ fn spreadsheet_check() -> Node {
                 "check",
                 row(3),
                 "Check the numbers",
-                "Check insights.md against the data file at {{node.copy.output}}: recompute the key figures with python3 (never install packages), confirm the charts match them, and flag conclusions the data does not support. Never change the data file.",
+                "Check insights.md against the data file at {{node.copy.output}}: recompute the key figures with python3 -c or by running the analyst's script again (create no files, never install packages), confirm the charts match them, and flag conclusions the data does not support. Never change the data file.",
                 &[],
             );
     // Recomputing needs Python; a denied call would fail the step.
@@ -2411,6 +2425,9 @@ done
             std::fs::create_dir_all(data_file.parent().unwrap()).unwrap();
             std::fs::write(&data_file, "month,total\nJan,10\n").unwrap();
             let data_file = data_file.to_string_lossy().into_owned();
+            let video_file = case.join("input").join("talk.mp4");
+            std::fs::write(&video_file, "video").unwrap();
+            let video_file = video_file.to_string_lossy().into_owned();
             let inputs: HashMap<String, String> = [
                 ("task", "Add a cart total"),
                 ("testCommand", "true"),
@@ -2438,7 +2455,7 @@ done
                 ("product", "Orchevia Teams"),
                 ("benefits", "Runs on your machine\nNo API keys"),
                 ("subject", "A cozy home office at sunrise"),
-                ("video", "/videos/talk.mp4"),
+                ("video", video_file.as_str()),
                 ("about", "A talk about local AI workflows"),
                 ("file", data_file.as_str()),
                 ("notes", "Ana: ship Friday. Bo owns the release notes."),
@@ -2576,7 +2593,7 @@ done
                 "spreadsheet-insights" | "translate-document" => {
                     // The file is copied in under its own name, spaces and all.
                     assert_eq!(
-                        std::fs::read_to_string(repo.join("sales report.csv")).unwrap(),
+                        std::fs::read_to_string(repo.join("inputs/sales report.csv")).unwrap(),
                         "month,total\nJan,10\n"
                     );
                     let prompts = std::fs::read_to_string(state.join("prompts")).unwrap();
@@ -2598,7 +2615,7 @@ done
                         let made = std::fs::read_to_string(repo.join("cuts").join(file))
                             .unwrap_or_else(|e| panic!("{file}: {e}"));
                         // The path arrives as one argument, never inside the script.
-                        assert!(made.contains("-i /videos/talk.mp4"), "{file}: {made}");
+                        assert!(made.contains(&format!("-i {video_file}")), "{file}: {made}");
                     }
                 }
                 "web-page-brief" | "aws-docs-answer" | "slack-digest" => {
@@ -2653,6 +2670,49 @@ done
                 template.id
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_step_never_replaces_or_writes_through_existing_files() {
+        let script = copy_input_file(0.0).config.args[1].clone();
+        let source_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("sales.csv");
+        std::fs::write(&source, "new").unwrap();
+        let copy = || {
+            let out = std::process::Command::new("bash")
+                .args(["-c", &script, "orchevia", &source.to_string_lossy()])
+                .current_dir(work.path())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let inputs = work.path().join("inputs");
+        std::fs::create_dir(&inputs).unwrap();
+        // A different file of the same name stays as it is.
+        std::fs::write(inputs.join("sales.csv"), "mine").unwrap();
+        // A link where the next name would go is skipped, never written through.
+        let target = outside.path().join("target.csv");
+        std::fs::write(&target, "outside").unwrap();
+        std::os::unix::fs::symlink(&target, inputs.join("2-sales.csv")).unwrap();
+        let first = copy();
+        assert!(first.ends_with("inputs/3-sales.csv"), "{first}");
+        assert_eq!(
+            std::fs::read_to_string(inputs.join("sales.csv")).unwrap(),
+            "mine"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "new");
+        // Running again with the same file reuses the identical copy.
+        std::fs::write(inputs.join("sales.csv"), "new").unwrap();
+        assert!(copy().ends_with("inputs/sales.csv"));
     }
 
     #[test]
