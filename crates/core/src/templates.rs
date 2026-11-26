@@ -910,18 +910,19 @@ fn copy_input_file(y: f64) -> Node {
         &[
             "-c",
             r#"set -eu
-if [ ! -f "$1" ]; then echo "No file at $1" >&2; exit 1; fi
+case "$1" in /*) src=$1 ;; *) src=./$1 ;; esac
+if [ ! -f "$src" ]; then echo "No file at $1" >&2; exit 1; fi
 if [ -L inputs ]; then echo "inputs is a link; refusing to copy through it" >&2; exit 1; fi
 mkdir -p inputs
 name=$(basename -- "$1")
 dest="inputs/$name"
 n=1
 while [ -e "$dest" ] || [ -L "$dest" ]; do
-  if [ ! -L "$dest" ] && cmp -s -- "$1" "$dest"; then break; fi
+  if [ ! -L "$dest" ] && cmp -s -- "$src" "$dest"; then break; fi
   n=$((n+1))
   dest="inputs/$n-$name"
 done
-if [ ! -e "$dest" ]; then (set -C; cat -- "$1" > "$dest"); fi
+if [ ! -e "$dest" ]; then (set -C; cat -- "$src" > "$dest"); fi
 echo "$(pwd -P)/$dest""#,
             "orchevia",
             "{{input.file}}",
@@ -2713,6 +2714,17 @@ done
         // Running again with the same file reuses the identical copy.
         std::fs::write(inputs.join("sales.csv"), "new").unwrap();
         assert!(copy().ends_with("inputs/sales.csv"));
+        // A file named "-" is a file, never standard input.
+        std::fs::write(work.path().join("-"), "dash").unwrap();
+        let out = std::process::Command::new("bash")
+            .args(["-c", &script, "orchevia", "-"])
+            .current_dir(work.path())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let copied = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(std::fs::read_to_string(copied).unwrap(), "dash");
     }
 
     #[test]

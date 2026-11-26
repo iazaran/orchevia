@@ -2906,7 +2906,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ -L inputs ]; then echo \"inputs is a link; refusing to copy through it\" >&2; exit 1; fi\nmkdir -p inputs\nname=$(basename -- \"$1\")\ndest=\"inputs/$name\"\nn=1\nwhile [ -e \"$dest\" ] || [ -L \"$dest\" ]; do\n  if [ ! -L \"$dest\" ] && cmp -s -- \"$1\" \"$dest\"; then break; fi\n  n=$((n+1))\n  dest=\"inputs/$n-$name\"\ndone\nif [ ! -e \"$dest\" ]; then (set -C; cat -- \"$1\" > \"$dest\"); fi\necho \"$(pwd -P)/$dest\"",
+              "set -eu\ncase \"$1\" in /*) src=$1 ;; *) src=./$1 ;; esac\nif [ ! -f \"$src\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ -L inputs ]; then echo \"inputs is a link; refusing to copy through it\" >&2; exit 1; fi\nmkdir -p inputs\nname=$(basename -- \"$1\")\ndest=\"inputs/$name\"\nn=1\nwhile [ -e \"$dest\" ] || [ -L \"$dest\" ]; do\n  if [ ! -L \"$dest\" ] && cmp -s -- \"$src\" \"$dest\"; then break; fi\n  n=$((n+1))\n  dest=\"inputs/$n-$name\"\ndone\nif [ ! -e \"$dest\" ]; then (set -C; cat -- \"$src\" > \"$dest\"); fi\necho \"$(pwd -P)/$dest\"",
               "orchevia",
               "{{input.file}}"
             ],
@@ -3400,7 +3400,7 @@
             "executable": "bash",
             "args": [
               "-c",
-              "set -eu\nif [ ! -f \"$1\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ -L inputs ]; then echo \"inputs is a link; refusing to copy through it\" >&2; exit 1; fi\nmkdir -p inputs\nname=$(basename -- \"$1\")\ndest=\"inputs/$name\"\nn=1\nwhile [ -e \"$dest\" ] || [ -L \"$dest\" ]; do\n  if [ ! -L \"$dest\" ] && cmp -s -- \"$1\" \"$dest\"; then break; fi\n  n=$((n+1))\n  dest=\"inputs/$n-$name\"\ndone\nif [ ! -e \"$dest\" ]; then (set -C; cat -- \"$1\" > \"$dest\"); fi\necho \"$(pwd -P)/$dest\"",
+              "set -eu\ncase \"$1\" in /*) src=$1 ;; *) src=./$1 ;; esac\nif [ ! -f \"$src\" ]; then echo \"No file at $1\" >&2; exit 1; fi\nif [ -L inputs ]; then echo \"inputs is a link; refusing to copy through it\" >&2; exit 1; fi\nmkdir -p inputs\nname=$(basename -- \"$1\")\ndest=\"inputs/$name\"\nn=1\nwhile [ -e \"$dest\" ] || [ -L \"$dest\" ]; do\n  if [ ! -L \"$dest\" ] && cmp -s -- \"$src\" \"$dest\"; then break; fi\n  n=$((n+1))\n  dest=\"inputs/$n-$name\"\ndone\nif [ ! -e \"$dest\" ]; then (set -C; cat -- \"$src\" > \"$dest\"); fi\necho \"$(pwd -P)/$dest\"",
               "orchevia",
               "{{input.file}}"
             ],
