@@ -6,6 +6,12 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+### Fixed
+
+- **Website:** the two screenshots above the templates are the same size, line
+  up at the top and keep a gap before the template cards (they used the
+  text-and-image layout, so one was larger and touched the cards).
+
 ## [0.4.0] - 2026-11-26
 
 Orchevia now runs more than coding work: content, research, media and data

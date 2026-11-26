@@ -1022,6 +1022,21 @@
       .shot {
         margin: 0;
       }
+      /* Two screenshots side by side: equal widths, tops aligned, and room
+         before what follows. */
+      .shot-pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+        align-items: start;
+        margin-bottom: 48px;
+      }
+      @media (max-width: 760px) {
+        .shot-pair {
+          grid-template-columns: 1fr;
+          margin-bottom: 32px;
+        }
+      }
       .shot img {
         border-radius: 14px;
         border: 1px solid var(--line-strong);
@@ -2321,7 +2336,7 @@ Press ▶ Run demo to start.</pre>
             repository or let it work in its own folder, and run it. Every template asks
             for what it needs when it runs, and every run lists the files it made.
           </p>
-          <div class="split">
+          <div class="shot-pair">
             <figure class="shot reveal">
               <img
                 src="./images/home.webp"
