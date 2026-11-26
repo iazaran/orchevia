@@ -51,6 +51,33 @@ empty conclusion for pending checks and a lowercase terminal state otherwise.
 Reading checks does not wait for CI, enforce an approval gate, or merge the PR;
 route on the result explicitly when the workflow needs that decision.
 
+**Wait for CI (`waitChecks`):** waits until CI finishes. With a PR number (or 0
+and a `prNumber` run input) it reads the PR's checks; with no number it reads the
+check runs and commit statuses (deploy previews and other services) on the
+repository folder's current commit, so it works right after a push without a PR.
+It asks every 15 seconds, waits two minutes for checks to appear, and waits up to
+the step's timeout (an hour by default). When a check fails the step fails, and
+its output lists the checks and the end of the failed jobs' logs (`gh run view
+--log-failed`, up to two runs): give it a failure edge to an Agent step that reads
+`{{node.<id>.output}}`, fixes, commits and pushes, then wait again in a bounded
+loop.
+
+**Run a GitHub Actions workflow (`runWorkflow`):** starts a workflow with a
+`workflow_dispatch` trigger (`gh workflow run <workflow> --ref <ref> -f key=value`),
+finds its run, waits for it, and with **Download artifacts to** saves its
+artifacts into a folder of the repository (`gh run download`). Use it for builds
+that need CI machines (mobile app builds, signed bundles), releases and store
+uploads that run in Actions. The step publishes by default, so feedback is handled
+first; put a Human Approval before it when it releases anything. A failed run
+fails the step with its failed jobs and log end as output. Stopping the Orchevia
+run stops waiting; the GitHub run keeps going.
+
+**Issues as tickets:** `issueDetails` reads an issue (0: the `issueNumber` run
+input) and fills `{{ticket.key}}` (`#7`), `{{ticket.title}}`,
+`{{ticket.description}}`, `{{ticket.status}}` and `{{ticket.url}}`, as a Jira
+Ticket step does. `listIssues` lists issues by state and label, and `commentIssue`
+posts a comment (a publishing step).
+
 **PR creation safety:** title/base/head are required in node config; the run
 shows repository, branch/base, title, draft flag, and body preview in history.
 Nothing pushes or comments unless the workflow explicitly contains that node.
@@ -124,30 +151,35 @@ browser and keeps its tokens in `~/.mcp-auth`; a header such as
 `mcp-remote` expands it. Setups with a placeholder (a folder, a repository or a
 project reference) cannot be saved until you replace it.
 
-| Category       | Setup              | Command                                                                                                   | Sign-in                                                |
-| -------------- | ------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Work & docs    | Google Workspace   | `uvx workspace-mcp --tools gmail drive calendar docs sheets --read-only`                                  | `GOOGLE_OAUTH_CLIENT_ID`/`SECRET`, `USER_GOOGLE_EMAIL` |
-|                | Microsoft 365      | `npx -y @softeria/ms-365-mcp-server --read-only`                                                          | One-time `--login` in a terminal                       |
-|                | Slack              | `npx -y slack-mcp-server@latest --transport stdio --enabled-tools …`                                      | `SLACK_MCP_XOXP_TOKEN` or `SLACK_MCP_XOXB_TOKEN`       |
-|                | Notion             | `npx -y @notionhq/notion-mcp-server`                                                                      | `NOTION_TOKEN`                                         |
-| Code & tickets | Jira & Confluence  | `uvx mcp-atlassian --read-only`                                                                           | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`          |
-|                | GitHub             | `docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server stdio --read-only …` | `GITHUB_PERSONAL_ACCESS_TOKEN`                         |
-|                | GitLab             | `npx -y mcp-remote https://gitlab.com/api/v4/mcp`                                                         | Browser                                                |
-|                | Linear             | `npx -y mcp-remote https://mcp.linear.app/mcp/readonly`                                                   | Browser                                                |
-|                | Sentry             | `npx -y @sentry/mcp-server@latest --skills=inspect`                                                       | `SENTRY_AUTH_TOKEN`                                    |
-| Web & research | Fetch web pages    | `uvx mcp-server-fetch`                                                                                    | None                                                   |
-|                | AWS Knowledge      | `uvx fastmcp run https://knowledge-mcp.global.api.aws`                                                    | None                                                   |
-|                | Context7           | `npx -y @upstash/context7-mcp`                                                                            | Optional `CONTEXT7_API_KEY`                            |
-|                | Brave Search       | `npx -y @brave/brave-search-mcp-server --transport stdio`                                                 | `BRAVE_API_KEY`                                        |
-|                | Cloudflare Docs    | `npx -y mcp-remote https://docs.mcp.cloudflare.com/mcp`                                                   | None                                                   |
-|                | Playwright browser | `npx -y @playwright/mcp@latest --headless --isolated`                                                     | None                                                   |
-| Data & cloud   | Supabase           | `npx -y @supabase/mcp-server-supabase@latest --read-only --project-ref=…`                                 | `SUPABASE_ACCESS_TOKEN`                                |
-|                | PostgreSQL         | `uvx postgres-mcp --access-mode=restricted`                                                               | `DATABASE_URI`                                         |
-|                | Stripe             | `npx -y mcp-remote https://mcp.stripe.com --header Authorization:Bearer ${STRIPE_AGENT_API_KEY}`          | `STRIPE_AGENT_API_KEY`                                 |
-| Local          | Filesystem         | `npx -y @modelcontextprotocol/server-filesystem --read-only /path/to/folder`                              | None                                                   |
-|                | Git                | `uvx mcp-server-git --repository /path/to/repo`                                                           | None                                                   |
-|                | Memory graph       | `npx -y @modelcontextprotocol/server-memory`                                                              | Optional `MEMORY_FILE_PATH`                            |
-|                | Figma              | `npx -y mcp-remote http://127.0.0.1:3845/mcp`                                                             | Figma desktop app with Dev Mode                        |
+| Category        | Setup              | Command                                                                                                   | Sign-in                                                |
+| --------------- | ------------------ | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Work & docs     | Google Workspace   | `uvx workspace-mcp --tools gmail drive calendar docs sheets --read-only`                                  | `GOOGLE_OAUTH_CLIENT_ID`/`SECRET`, `USER_GOOGLE_EMAIL` |
+|                 | Microsoft 365      | `npx -y @softeria/ms-365-mcp-server --read-only`                                                          | One-time `--login` in a terminal                       |
+|                 | Slack              | `npx -y slack-mcp-server@latest --transport stdio --enabled-tools …`                                      | `SLACK_MCP_XOXP_TOKEN` or `SLACK_MCP_XOXB_TOKEN`       |
+|                 | Notion             | `npx -y @notionhq/notion-mcp-server`                                                                      | `NOTION_TOKEN`                                         |
+| Code & tickets  | Jira & Confluence  | `uvx mcp-atlassian --read-only`                                                                           | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`          |
+|                 | GitHub             | `docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server stdio --read-only …` | `GITHUB_PERSONAL_ACCESS_TOKEN`                         |
+|                 | GitLab             | `npx -y mcp-remote https://gitlab.com/api/v4/mcp`                                                         | Browser                                                |
+|                 | Linear             | `npx -y mcp-remote https://mcp.linear.app/mcp/readonly`                                                   | Browser                                                |
+|                 | Sentry             | `npx -y @sentry/mcp-server@latest --skills=inspect`                                                       | `SENTRY_AUTH_TOKEN`                                    |
+| Web & research  | Fetch web pages    | `uvx mcp-server-fetch`                                                                                    | None                                                   |
+|                 | AWS Knowledge      | `uvx fastmcp run https://knowledge-mcp.global.api.aws`                                                    | None                                                   |
+|                 | Context7           | `npx -y @upstash/context7-mcp`                                                                            | Optional `CONTEXT7_API_KEY`                            |
+|                 | Brave Search       | `npx -y @brave/brave-search-mcp-server --transport stdio`                                                 | `BRAVE_API_KEY`                                        |
+|                 | Cloudflare Docs    | `npx -y mcp-remote https://docs.mcp.cloudflare.com/mcp`                                                   | None                                                   |
+|                 | Playwright browser | `npx -y @playwright/mcp@latest --headless --isolated`                                                     | None                                                   |
+| Data & cloud    | Supabase           | `npx -y @supabase/mcp-server-supabase@latest --read-only --project-ref=…`                                 | `SUPABASE_ACCESS_TOKEN`                                |
+|                 | PostgreSQL         | `uvx postgres-mcp --access-mode=restricted`                                                               | `DATABASE_URI`                                         |
+|                 | Stripe             | `npx -y mcp-remote https://mcp.stripe.com --header Authorization:Bearer ${STRIPE_AGENT_API_KEY}`          | `STRIPE_AGENT_API_KEY`                                 |
+| Local           | Filesystem         | `npx -y @modelcontextprotocol/server-filesystem --read-only /path/to/folder`                              | None                                                   |
+|                 | Git                | `uvx mcp-server-git --repository /path/to/repo`                                                           | None                                                   |
+|                 | Memory graph       | `npx -y @modelcontextprotocol/server-memory`                                                              | Optional `MEMORY_FILE_PATH`                            |
+|                 | Figma              | `npx -y mcp-remote http://127.0.0.1:3845/mcp`                                                             | Figma desktop app with Dev Mode                        |
+| Apps & releases | Firebase           | `npx -y firebase-tools@latest mcp`                                                                        | `firebase login` once                                  |
+|                 | Netlify            | `npx -y @netlify/mcp`                                                                                     | `netlify login`, or `NETLIFY_PERSONAL_ACCESS_TOKEN`    |
+|                 | Lovable            | `npx -y mcp-remote https://mcp.lovable.dev --header Lovable-API-Key:${LOVABLE_API_KEY}`                   | `LOVABLE_API_KEY` (Business plan) or browser           |
+|                 | Mobile devices     | `npx -y @mobilenext/mobile-mcp@latest`                                                                    | None (a booted simulator or emulator)                  |
+|                 | Maestro            | `maestro mcp`                                                                                             | None; `MAESTRO_CLOUD_API_KEY` for cloud devices        |
 
 The commands, flags, variables and tool names were checked against each project's
 README or registry entry in November 2026. The earlier Google Docs and Gmail
@@ -159,6 +191,30 @@ Use the provider's own setup for agent-managed MCP, such as the [Slack MCP
 server for coding agents](https://docs.slack.dev/ai/slack-mcp-server/connect-to-harnesses/)
 or [Google Workspace remote MCP](https://developers.google.com/workspace/guides/configure-mcp-servers).
 Environment registers the local servers used by workflow nodes.
+
+### Apps, releases and app stores
+
+Build, test and ship from workflows with the pieces above:
+
+- **Build** locally with Command steps (`npx cap sync`, `npx cap build android`,
+  `./gradlew bundleRelease`, `xcodebuild`), or on CI with a GitHub **runWorkflow**
+  step that downloads the artifacts.
+- **Test** with an Agent step that has the **Mobile devices** or **Maestro** server
+  (in Claude Code or as an Orchevia MCP server) to install, open and drive the app
+  on a simulator or emulator and take screenshots, or with Playwright or Claude in
+  Chrome for web apps. A `waitChecks` step waits for the tests in CI.
+- **Publish** with Command steps that run your release tools: `fastlane supply`
+  (Google Play, with a service-account JSON key), `fastlane pilot upload` or
+  `fastlane deliver` (TestFlight and the App Store, with an App Store Connect API
+  key file), `eas submit`, `firebase deploy`, `netlify deploy`. They count as
+  publishing steps; put a Human Approval before them. Keys stay in files or
+  environment variables your tools read: Orchevia never stores them, and steps
+  launched from the desktop see the variables of your desktop session (use
+  `bash -lc '…'` to load a login shell's profile).
+
+There is no official MCP server for App Store Connect or Google Play yet;
+community servers exist (for example `@mgcrea/mcp-appstore-connect` and
+`@w3wide/play-console-mcp`) and can be added as blank servers at your own risk.
 
 ### MCP templates
 

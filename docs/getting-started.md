@@ -73,7 +73,7 @@ fails the step. If you skip it, the first run or template asks once. See
 More CLIs (GitHub Copilot CLI, Cursor CLI, Qwen Code, Amp, Aider, Goose and Kiro
 CLI) set up in one click under **Agents → More coding CLIs**.
 
-Open **Environment → + New MCP server** and pick one of 22 setups, such as Google
+Open **Environment → + New MCP server** and pick one of 27 setups, such as Google
 Workspace (Gmail, Drive, Docs, Calendar and Sheets), Microsoft 365, Slack, Notion,
 Jira, GitHub, Linear or Sentry. Each one shows how to sign in and which variables
 to export, and checks that Orchevia can see them. Follow

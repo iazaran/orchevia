@@ -62,6 +62,30 @@ files it made.
   that choice (without stray spaces), and a run with a value outside an input's
   choices is refused. Edit them under **Details** beside each input in
   the workflow panel; the generator and the Simple JSON editor carry them too.
+- **Wait for CI, run GitHub Actions, and work from GitHub issues.** Three new
+  kinds of GitHub step:
+  - **waitChecks** waits until CI finishes, on a pull request or on the commit
+    you just pushed (check runs and commit statuses). A failed check fails the
+    step, with the end of the failed jobs' logs as its output for a step that
+    fixes it, so a workflow can push, wait, fix and push again in a bounded loop.
+  - **runWorkflow** starts a GitHub Actions workflow (a build, a mobile app
+    build, a release or store upload), waits for it and can download its
+    artifacts into a folder of the repository.
+  - **issueDetails**, **listIssues** and **commentIssue** work with GitHub
+    issues; an issue fills `{{ticket.key}}`, `{{ticket.title}}` and the other
+    ticket variables, as a Jira ticket does.
+
+  The generator knows all of them, and n8n export turns them into `gh` commands.
+
+- **Five more MCP setups (27 in all)** under a new **Apps & releases** group:
+  Firebase (official), Netlify (official), Lovable (official), Mobile devices
+  (drive iOS simulators and Android emulators to test an app) and Maestro (UI
+  test flows).
+- **Release and deploy commands count as publishing:** `gh workflow run`,
+  `gh release upload`, `fastlane supply`, `fastlane pilot`, `fastlane deliver`
+  and the `upload_to_*` actions, `eas submit`, `firebase deploy`,
+  `netlify deploy` and `vercel deploy`, so feedback is handled before them and an
+  unmarked one is flagged.
 - **Media and document tools.** Environment → Local tools detects FFmpeg,
   ImageMagick, Pandoc and Python under **Media and documents**, with what each
   is for and how to install it. Template cards say what they need: ✓ FFmpeg when

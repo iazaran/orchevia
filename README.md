@@ -33,7 +33,7 @@ made.
 
 - **Bring your own tools.** Sign in through the CLIs you already use. Orchevia needs
   no account and keeps workflows and run history in local SQLite.
-- **Connect your stack.** 22 ready-made MCP setups — Google Workspace, Microsoft 365,
+- **Connect your stack.** 27 ready-made MCP setups — Google Workspace, Microsoft 365,
   Slack, Notion, Jira, GitHub, Linear, Sentry and more — with sign-in steps and a check
   that Orchevia can see your credentials, which never enter the app.
 - **Approve and give feedback.** Pause at an Approval step or give a running step
@@ -172,7 +172,7 @@ CLI, model, effort and permission level. Missing CLIs show their install command
 <tr>
 <td width="50%" valign="top">
 
-**Connect tools in one form.** Pick one of 22 MCP setups: it fills in the command, shows
+**Connect tools in one form.** Pick one of 27 MCP setups: it fills in the command, shows
 how to sign in, writes the `export` lines for your shell and lists the tools to call.
 
 <img src="./docs/images/mcp-setups.webp" alt="The Add an MCP server picker: a search field, category filters and tiles for Google Workspace, Microsoft 365, Slack, Notion, Jira and Confluence, GitHub, GitLab, Linear and Sentry with sign-in and read-only badges." />
@@ -239,7 +239,8 @@ Command nodes cover your own tools. Explicit instructions such as "CLI only" win
   if a change is needed it reruns with your note, and the steps that use its work
   rerun after it. Feedback that arrives after publishing is recorded, never applied.
 - **Integrations.** Safe Git operations (dirty or lossy states refused), GitHub through
-  your own `gh` (draft PRs, checks, comments), and 22 ready-made MCP setups for Jira,
+  your own `gh` (draft PRs, waiting for CI, Actions runs with their artifacts, issues as
+  tickets, comments), and 27 ready-made MCP setups for Jira,
   Slack, Google Workspace, Microsoft 365, Notion, GitHub, Linear, Sentry, docs and data
   tools, with **Check server** to test one before a workflow depends on it. Steps that
   push, open pull requests or comment are marked as publishing.

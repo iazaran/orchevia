@@ -34,7 +34,7 @@ depends only on nodes + edges.
 | `agent`     | `agentProfileId` (required), `prompt` (required), `workingDir?`, `timeoutSecs?`, `inputRefs[]?`, `retry?`, `maxVisits?` | Run a local AI CLI via an Agent Profile; prompt is a `{{variable}}` template                 |
 | `condition` | `condition` (required: `logic` + `clauses[]`), `maxVisits?`                                                             | Branch on a constrained expression; needs `true` + `false` labeled edges                     |
 | `git`       | `gitOp` (required), `workingDir` (required repo dir)                                                                    | Safe repo ops; lossy states refused                                                          |
-| `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs/checks/comments via local `gh`                                                           |
+| `github`    | `githubOp` (required), `workingDir` (required repo dir)                                                                 | PRs, checks, waiting for CI, Actions runs, issues and comments via local `gh`                |
 | `ticket`    | `ticketKey` (required, templates ok), `mcpServerId` (required)                                                          | Load Jira ticket via MCP → `ticket.*` vars                                                   |
 | `mcp`       | `mcpServerId` + `mcpTool` (required), `mcpArgs` (templates ok)                                                          | Call one MCP tool with provenance                                                            |
 | `end`       | —                                                                                                                       | Terminal node; at least one required                                                         |
@@ -159,6 +159,9 @@ Errors block execution; warnings don't. Current rules:
 - Git/GitHub nodes need an operation and a folder (node `workingDir` or
   `defaults.repoDir`); branch, path, message, title and body fields must be
   filled, and a blank branch or PR head uses `defaults.branch` when it is set
+- a GitHub `runWorkflow` step needs a workflow (`github-workflow-required`), and its
+  artifacts folder must be relative and inside the repository
+  (`github-artifacts-dir-invalid`); a blank `ref` uses `defaults.branch`
 - `retry.maxAttempts` 1–10, `retry.delayMs` ≤ 60000 (Command and Agent nodes);
   `timeoutSecs` 1–43200; `maxVisits` 1–100
 - cycles need a `condition` on the loop and `maxVisits >= 2` on cycle nodes

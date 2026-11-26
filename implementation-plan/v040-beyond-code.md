@@ -112,6 +112,31 @@ documented limits: an old run's folders follow a later profile folder change,
 and Open hands the system a path after the last check (a step runs as the user
 and can already read what Files could show).
 
+## CI, releases and app stores
+
+Asked as a general need: build an app from tickets with agents, push, watch CI,
+build mobile apps on CI or locally, test them with AI, and publish to hosting and
+app stores. Most of it already worked (tickets, agents, Git, PRs, approvals,
+Command steps for Capacitor, Gradle and fastlane, Claude in Chrome, Playwright).
+Missing, now added:
+
+- `waitChecks`: no step could wait for CI, and a PR made earlier in a run had no
+  number a later step could use. It polls `gh pr checks --json name,bucket,link`
+  or, without a PR, `gh api repos/{owner}/{repo}/commits/<sha>/check-runs` plus the
+  commit status, every 15 s (two minutes for checks to appear), up to the step
+  timeout (an hour by default). A failure keeps the report and up to two
+  `gh run view --log-failed` tails as the step's output.
+- `runWorkflow`: `gh workflow run` now prints the run URL (gh 2.106); older
+  output is covered by `gh run list --event workflow_dispatch` after the dispatch
+  time. Artifacts go to a validated relative folder (`gh run download -D`).
+- GitHub issues: `issueDetails` stores a `ticket` object, so the existing
+  `ticket.*` variables work.
+- MCP setups verified in November 2026: Firebase (`firebase-tools mcp`), Netlify
+  (`@netlify/mcp`), Lovable (`https://mcp.lovable.dev`, API-key header on
+  Business plans, else OAuth), mobile-mcp and Maestro (`maestro mcp`). App Store
+  Connect and Google Play have only small community servers, so they are named in
+  the docs, not shipped as setups; fastlane covers both stores as Command steps.
+
 ## Left for later
 
 - Media MCP presets (see above) once real accounts confirm their tools.
