@@ -120,7 +120,7 @@ function WorkspaceSection(): React.JSX.Element {
           {message}
         </Notice>
       )}
-      <div className="section-panel">
+      <div>
         <DirPicker
           id="workspace-root"
           label="Workspace folder (blank = Documents/Orchevia in your home folder)"
@@ -322,7 +322,7 @@ export function EnvironmentView(): React.JSX.Element {
             Headless Claude Code and Codex cannot ask for permission while a step runs.
             Other agents use their own CLI settings.
           </p>
-          <div className="section-panel">
+          <div>
             <AgentPermissionsSettings />
           </div>
 

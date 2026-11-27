@@ -43,6 +43,7 @@ import { MarkdownText } from './Markdown';
 import { Modal } from './Modal';
 import { confirmDialog } from './ConfirmDialog';
 import { CloseButton } from './CloseButton';
+import { Icon } from './Icon';
 import { Notice, useNoticeMessage } from './Notice';
 import { PermissionDenials } from './PermissionDenials';
 import { permissionDeniedFrom } from '../lib/permissions';
@@ -1211,7 +1212,25 @@ export function RunsView(): React.JSX.Element {
             tabIndex={0}
           >
             {activeRun === null && runs.length > 0 && (
-              <p className="field-hint">Select a run to inspect node results.</p>
+              <div className="run-details-empty">
+                <span className="run-details-empty-icon" aria-hidden="true">
+                  <Icon name="runs" size={26} />
+                </span>
+                <h2>Pick a run</h2>
+                <p className="field-hint">
+                  Each run shows its steps, what they said, the files they made and what
+                  they cost.
+                </p>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const latest = runs[0];
+                    if (latest !== undefined) void selectRun(latest.id);
+                  }}
+                >
+                  Open the latest run
+                </button>
+              </div>
             )}
             {activeRun !== null && (
               <section className="run-detail">

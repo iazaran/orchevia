@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { Notice } from './Notice';
 import { errorMessage } from '../lib/errors';
 import { getBackend } from '../lib/backend';
-import { formatDate, formatTime } from '../lib/time';
+import { formatRelative, formatTime } from '../lib/time';
 import { useAppStore } from '../store';
 
 export function InboxView(): React.JSX.Element {
@@ -150,7 +150,7 @@ export function InboxView(): React.JSX.Element {
                     </div>
                   )}
                   <div className="wf-card-meta" title={formatTime(n.createdAt)}>
-                    {formatDate(n.createdAt)}
+                    {formatRelative(n.createdAt)}
                   </div>
                 </span>
                 <span className="inbox-actions">

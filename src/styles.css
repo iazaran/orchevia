@@ -297,6 +297,8 @@ textarea {
 }
 
 .main {
+  /* The page column's side padding (see .view). */
+  --page-gutter: max(24px, calc((100% - var(--page-max)) / 2));
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -309,7 +311,7 @@ textarea {
   align-items: center;
   gap: 12px;
   min-height: 60px;
-  padding: 12px 20px;
+  padding: 12px var(--page-gutter);
   border-bottom: 1px solid var(--border-soft);
   background: linear-gradient(
     180deg,
@@ -483,21 +485,21 @@ textarea {
    corner buttons) stay inside the view's scroll area instead of stretching
    the window below the app. */
 /*
- * One layout for every view: content starts at the same left edge. Prose and
- * single panels share one readable width (--measure); card grids, tables and
- * forms use the full width.
+ * One layout for every view (v0.4.1): the page title and the page body share
+ * one column. It fills the window up to --page-max and is centred beyond it,
+ * so no page sits against the left edge with empty space on the right. Cards,
+ * panels, lists and tables use the column's full width; only running text
+ * keeps a readable line length (--measure).
  */
 :root {
   --measure: 760px;
+  --page-max: 1360px;
 }
 .view {
   position: relative;
   flex: 1;
   overflow: auto;
-  padding: 20px;
-}
-.section-panel {
-  max-width: var(--measure);
+  padding: 24px var(--page-gutter) 32px;
 }
 
 .workflows-layout {
@@ -799,7 +801,6 @@ button.setup-issue:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 1100px;
 }
 
 .run-row {
@@ -930,7 +931,6 @@ button.setup-issue:focus-visible {
   padding: 32px 24px;
   text-align: center;
   color: var(--text-1);
-  max-width: var(--measure);
   margin: 12px 0;
 }
 
@@ -951,7 +951,6 @@ button.setup-issue:focus-visible {
   border-radius: var(--radius-m);
   padding: 10px 14px;
   margin-bottom: 14px;
-  max-width: 1200px;
 }
 
 .notice.warn {
@@ -971,19 +970,10 @@ button.setup-issue:focus-visible {
   }
 }
 
-/* Wide monitors: breathe instead of stretching full-bleed. */
+/* Wide monitors: roomier cards. */
 @media (min-width: 1600px) {
-  .view {
-    padding: 24px 32px;
-  }
   .tool-grid {
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  }
-  .notice {
-    max-width: 1400px;
-  }
-  .run-list {
-    max-width: 1280px;
   }
 }
 
@@ -2548,8 +2538,8 @@ details[open] > .gen-summary::after {
   padding: 0;
   margin: 10px 0 0;
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
   gap: 6px;
-  max-width: var(--measure);
 }
 .setup-check-profiles:empty {
   display: none;
@@ -2796,7 +2786,7 @@ details[open] > .gen-summary::after {
 
 /* App-wide "new version ready" banner above the current view. */
 .update-banner {
-  margin: 12px 24px 0;
+  margin: 12px var(--page-gutter) 0;
 }
 
 /* Overdue/held-back slot hint on schedule cards. */
@@ -2804,6 +2794,13 @@ details[open] > .gen-summary::after {
   display: block;
   color: var(--warning);
   font-size: 11.5px;
+}
+
+/* The editor below is full-bleed, so its title bar keeps the plain gutter
+   instead of the centred page column. */
+.topbar.workflow-topbar {
+  padding-left: 24px;
+  padding-right: 24px;
 }
 
 /* Editor actions retain their right edge when the header wraps. */
@@ -3064,6 +3061,37 @@ details[open] > .gen-summary::after {
   scrollbar-gutter: stable;
   padding: 4px;
 }
+/* No run picked yet: a centred invitation instead of a lone line of text. */
+.run-details-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: min(420px, 100%);
+  padding: 32px 24px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-l);
+  text-align: center;
+}
+.run-details-empty h2 {
+  margin: 4px 0 0;
+  font-size: 17px;
+}
+.run-details-empty p {
+  margin: 0 0 8px;
+  max-width: 44ch;
+}
+.run-details-empty-icon {
+  display: inline-flex;
+  width: 52px;
+  height: 52px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
 .runs-layout > :focus-visible {
   outline-offset: -2px;
 }
@@ -3301,19 +3329,26 @@ details[open] > .gen-summary::after {
 }
 .usage-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
+/* Same tile as Home's figures. */
 .usage-card {
   border: 1px solid var(--border-card);
-  border-radius: var(--radius-m);
-  background: var(--bg-1);
-  padding: 12px 14px;
+  border-radius: var(--radius-l);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-2) 35%, var(--bg-1)),
+    var(--bg-1)
+  );
+  box-shadow: var(--shadow-s);
+  padding: 14px 16px;
   min-width: 0;
 }
 .usage-card-value {
-  font-size: 1.4em;
-  font-weight: 700;
+  font-size: 1.3em;
+  font-weight: 750;
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
@@ -3353,7 +3388,6 @@ details[open] > .gen-summary::after {
   border-radius: var(--radius-m);
   background: var(--bg-1);
   padding: 12px 12px 4px;
-  max-width: var(--measure);
 }
 .usage-chart {
   display: block;
@@ -3520,7 +3554,6 @@ details[open] > .gen-summary::after {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 1100px;
 }
 .inbox-card {
   border: 1px solid var(--border-soft);
@@ -3586,7 +3619,7 @@ details[open] > .gen-summary::after {
 .inbox-actions {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 94px 94px;
+  grid-template-columns: 110px 110px;
   gap: 8px;
   align-items: center;
   margin-left: auto;
@@ -3594,6 +3627,9 @@ details[open] > .gen-summary::after {
 }
 .inbox-actions .btn-ghost {
   grid-column: 2;
+}
+.inbox-actions .btn {
+  white-space: nowrap;
 }
 @media (max-width: 700px) {
   .usage-cards {
@@ -3608,6 +3644,10 @@ details[open] > .gen-summary::after {
   .usage-form-grid .field-action {
     justify-self: start;
   }
+}
+/* Inbox: below this width the fixed kind and action columns would squeeze
+   the message, so the card stacks (the sidebar takes 232 px of the window). */
+@media (max-width: 1000px) {
   .inbox-card {
     flex-wrap: wrap;
   }
@@ -3675,6 +3715,10 @@ details[open] > .gen-summary::after {
 .access-options {
   display: grid;
   gap: 8px;
+}
+/* On a page the two app-wide levels sit side by side. */
+.environment-view .access-options {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
 }
 /* Command step: "Command" or "Script file", side by side. */
 .command-mode {
@@ -4600,8 +4644,15 @@ details[open] > .gen-summary::after {
   display: grid;
   gap: 14px;
 }
-.ability-cli {
-  max-width: 980px;
+/* Claude Code and Codex side by side once the page is wide enough. */
+@media (min-width: 1340px) {
+  .abilities {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+  .abilities > :not(.ability-cli) {
+    grid-column: 1 / -1;
+  }
 }
 .ability-list {
   list-style: none;
