@@ -88,6 +88,12 @@ interface AppState {
   validation: ValidationIssue[];
   workflowSaveStates: Record<string, WorkflowSaveState>;
   runs: StoredRun[];
+  /**
+   * Runs still pending, running or waiting, however old. `runs` is the newest
+   * 100; these keep Home and the sidebar count right when an older run still
+   * works or waits. Merge with `mergeActiveRuns` (lib/dashboard).
+   */
+  activeRuns: StoredRun[];
   activeRunId: string | null;
   runResults: Record<string, StoredNodeResult[]>;
   /** Run status seen when each cached result list was requested. A terminal
@@ -149,6 +155,7 @@ interface AppState {
   refreshAll: () => Promise<void>;
   refreshWorkflows: () => Promise<void>;
   refreshRuns: () => Promise<void>;
+  refreshActiveRuns: () => Promise<void>;
   refreshTools: () => Promise<void>;
   /** Read the workspace root again (after Environment changes it). */
   refreshWorkspaceRoot: () => Promise<void>;
@@ -218,6 +225,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   validation: [],
   workflowSaveStates: {},
   runs: [],
+  activeRuns: [],
   activeRunId: null,
   runResults: {},
   runResultStatus: {},
@@ -392,6 +400,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     set({ runs });
+  },
+
+  refreshActiveRuns: async () => {
+    const activeRuns = await getBackend().listActiveRuns();
+    set({ activeRuns });
   },
 
   refreshTools: async () => {

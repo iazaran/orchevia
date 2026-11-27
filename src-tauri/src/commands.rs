@@ -308,6 +308,14 @@ pub fn usage_summary(
 }
 
 #[tauri::command]
+pub fn run_stamps(
+    state: State<AppState>,
+    since: String,
+) -> Result<Vec<orchevia_core::db::RunStamp>, String> {
+    orchevia_core::usage::run_stamps(&state.db, &since)
+}
+
+#[tauri::command]
 pub fn adapter_capabilities(
     state: State<AppState>,
 ) -> Result<Vec<orchevia_core::usage::AdapterCapabilities>, String> {
@@ -1153,6 +1161,13 @@ pub fn list_runs(state: State<AppState>, limit: Option<i64>) -> Result<Vec<Store
         .db
         .list_runs(limit.unwrap_or(50).clamp(1, 500))
         .map_err(|e| e.to_string())
+}
+
+/// Runs still pending, running or waiting, however old: they stay on Home and
+/// in the sidebar count when many newer runs push them out of `list_runs`.
+#[tauri::command]
+pub fn list_active_runs(state: State<AppState>) -> Result<Vec<StoredRun>, String> {
+    state.db.list_active_runs().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

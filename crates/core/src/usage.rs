@@ -9,7 +9,7 @@
 //! API-equivalent estimates, and optional labeled allocation between them.
 
 use crate::agents::AdapterKind;
-use crate::db::{SqliteDb, StoredNodeResult, StoredRun};
+use crate::db::{RunStamp, SqliteDb, StoredNodeResult, StoredRun};
 use crate::run_controls::ResolvedLimits;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -407,6 +407,15 @@ fn is_agent_result(row: &StoredNodeResult, agent_ids: &std::collections::HashSet
 /// reused outputs contribute no new consumption. Missing fields, malformed
 /// records, legacy history and unsupported adapters stay "unknown", never
 /// zero-filled into a false precision.
+/// Every run started at or after `since` (RFC 3339), newest first: the whole
+/// window Home's weekly and 14-day figures count, never a capped list.
+pub fn run_stamps(db: &SqliteDb, since: &str) -> Result<Vec<RunStamp>, String> {
+    let since = chrono::DateTime::parse_from_rfc3339(since)
+        .map_err(|_| "Invalid 'since' date; use RFC 3339.".to_string())?
+        .with_timezone(&chrono::Utc);
+    db.list_run_stamps(since).map_err(|e| e.to_string())
+}
+
 pub fn usage_summary(db: &SqliteDb, filter: &UsageFilter) -> Result<UsageSummary, String> {
     let runs: Vec<StoredRun> = db.list_all_runs().map_err(|e| e.to_string())?;
     let from = filter
@@ -874,6 +883,20 @@ mod tests {
             ..crate::db::NewNodeResult::simple("r", "a", status, Some(0), None)
         })
         .unwrap();
+    }
+
+    #[test]
+    fn run_stamps_reads_rfc3339_and_rejects_anything_else() {
+        let db = analytics_db();
+        let all = run_stamps(&db, "2000-01-01T00:00:00Z").unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(run_stamps(&db, "2999-01-01T00:00:00+02:00")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            run_stamps(&db, "last week").unwrap_err(),
+            "Invalid 'since' date; use RFC 3339."
+        );
     }
 
     #[test]

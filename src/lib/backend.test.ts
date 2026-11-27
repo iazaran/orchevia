@@ -1569,3 +1569,123 @@ it('records a ticket link as the key the engine records', () => {
     expect(mockTicketKey(input), input).toBe(key);
   }
 });
+
+it('mock Inbox lists entries newest first and marks them read like the core', async () => {
+  localStorage.clear();
+  const entry = (id: number, read: boolean): Record<string, unknown> => ({
+    id,
+    kind: 'failure',
+    title: `Entry ${String(id)}`,
+    body: '',
+    createdAt: '2026-11-27T10:00:00.000Z',
+    read,
+  });
+  localStorage.setItem(
+    'orchevia.mock-backend.v1',
+    JSON.stringify({
+      workflows: [],
+      notifications: [entry(1, true), entry(3, false), entry(2, false)],
+    }),
+  );
+  const backend = __setMockBackendForTests();
+  expect((await backend.listNotifications()).map((n) => n.id)).toEqual([3, 2, 1]);
+  expect((await backend.listNotifications(50, true)).map((n) => n.id)).toEqual([3, 2]);
+  expect(await backend.listNotifications(0)).toHaveLength(1);
+  await backend.markNotificationRead(3);
+  expect((await backend.listNotifications(50, true)).map((n) => n.id)).toEqual([2]);
+  // A missing id changes nothing, as in the core.
+  await backend.markNotificationRead(99);
+  await backend.markAllNotificationsRead();
+  expect(await backend.listNotifications(50, true)).toEqual([]);
+  // Read state survives a restart of the mock.
+  const again = __setMockBackendForTests();
+  expect((await again.listNotifications()).map((n) => [n.id, n.read])).toEqual([
+    [3, true],
+    [2, true],
+    [1, true],
+  ]);
+});
+
+it('mock Inbox keeps the newest 500 after a listing, like the core', async () => {
+  localStorage.clear();
+  const notifications = Array.from({ length: 501 }, (_, i) => ({
+    id: i + 1,
+    kind: 'failure',
+    title: `Entry ${String(i + 1)}`,
+    body: '',
+    createdAt: '2026-11-27T10:00:00.000Z',
+    // Only the oldest is unread.
+    read: i !== 0,
+  }));
+  localStorage.setItem(
+    'orchevia.mock-backend.v1',
+    JSON.stringify({ workflows: [], notifications }),
+  );
+  const backend = __setMockBackendForTests();
+  // The listing still sees the oldest entry, then retention drops it.
+  expect((await backend.listNotifications(200, true)).map((n) => n.id)).toEqual([1]);
+  expect(await backend.listNotifications(200, true)).toEqual([]);
+  const all = await __setMockBackendForTests().listNotifications(200);
+  expect(all).toHaveLength(200);
+  expect(all.at(-1)?.id).toBe(302);
+});
+
+it('mock active runs include old waiting runs the recent list no longer reaches', async () => {
+  localStorage.clear();
+  const at = (minutesAgo: number): string =>
+    new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const runs: StoredRun[] = [
+    ...Array.from({ length: 120 }, (_, i) => ({
+      id: `new${String(i)}`,
+      workflowId: 'w',
+      status: 'succeeded' as const,
+      startedAt: at(i + 1),
+      finishedAt: at(i),
+    })),
+    { id: 'waiting', workflowId: 'w', status: 'paused', startedAt: at(600) },
+  ];
+  localStorage.setItem(
+    'orchevia.mock-backend.v1',
+    JSON.stringify({ workflows: [], runs }),
+  );
+  const backend = __setMockBackendForTests();
+  expect((await backend.listRuns(100)).some((run) => run.id === 'waiting')).toBe(false);
+  expect((await backend.listActiveRuns()).map((run) => run.id)).toEqual(['waiting']);
+});
+
+it('mock run stamps list every run in the window, newest first, like the core', async () => {
+  localStorage.clear();
+  const at = (daysAgo: number): string =>
+    new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+  const runs: StoredRun[] = Array.from({ length: 150 }, (_, i) => ({
+    id: `r${String(i)}`,
+    workflowId: 'w',
+    status: i % 10 === 0 ? 'failed' : 'succeeded',
+    startedAt: at(i / 20),
+    finishedAt: at(i / 20 - 0.001),
+  }));
+  runs.push({ id: 'old', workflowId: 'w', status: 'succeeded', startedAt: at(30) });
+  localStorage.setItem(
+    'orchevia.mock-backend.v1',
+    JSON.stringify({ workflows: [], runs: [...runs].reverse() }),
+  );
+  const backend = __setMockBackendForTests();
+  // The recent list stops at its cap; the window does not.
+  expect(await backend.listRuns(100)).toHaveLength(100);
+  const stamps = await backend.runStamps(at(14));
+  expect(stamps).toHaveLength(150);
+  expect(stamps[0]).toEqual({
+    status: 'failed',
+    startedAt: runs[0]?.startedAt,
+    finishedAt: runs[0]?.finishedAt,
+  });
+  expect(
+    stamps.every(
+      (s, i) =>
+        i === 0 || Date.parse(s.startedAt) <= Date.parse(stamps[i - 1]!.startedAt),
+    ),
+  ).toBe(true);
+  await expect(backend.runStamps('last week')).rejects.toThrow(
+    "Invalid 'since' date; use RFC 3339.",
+  );
+});
