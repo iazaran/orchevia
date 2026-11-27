@@ -20,8 +20,11 @@ Contributors can use `pnpm dev` to explore the UI. That browser demo simulates
 commands; `pnpm tauri dev` and the installed desktop app execute them.
 
 Orchevia opens on **Home**: type what you want done and choose **Draft a
-workflow**, or pick a kind of work. **Ctrl/⌘ + K** finds any view, workflow,
-template or recent run from anywhere.
+workflow**, or pick a kind of work. Home also shows what is running (with each
+run's current step), what needs you (approvals, failures, findings), what runs
+next, the last two weeks of runs and this month's usage; every figure opens the
+page it comes from. **Ctrl/⌘ + K** finds any view, workflow, template or recent
+run from anywhere.
 
 ## Work beyond code
 
