@@ -178,6 +178,7 @@ import {
   MAX_ATTEMPTS_LIMIT,
 } from './workflow';
 import type { UsageFilter, UsageProviderDay, UsageSummary } from './usage';
+import type { RunStamp } from './dashboard';
 import {
   emptyUsageSummary,
   emptyUsageCoverage,
@@ -232,6 +233,12 @@ export interface Backend {
     extension?: number,
   ): Promise<void>;
   usageSummary(filter?: UsageFilter): Promise<UsageSummary>;
+  /**
+   * Status and times of every run started at or after `since` (RFC 3339),
+   * newest first: Home's figures count the whole window, never the capped
+   * recent list.
+   */
+  runStamps(since: string): Promise<RunStamp[]>;
   adapterCapabilities(): Promise<AdapterCapabilities[]>;
   cancelRun(runId: string): Promise<boolean>;
   approveRun(
@@ -243,6 +250,8 @@ export interface Backend {
   getRun(runId: string): Promise<StoredRun | null>;
   getRunWorkflow(runId: string): Promise<Workflow | null>;
   listRuns(limit?: number): Promise<StoredRun[]>;
+  /** Runs still pending, running or waiting, however old, newest first. */
+  listActiveRuns(): Promise<StoredRun[]>;
   getRunResults(runId: string): Promise<StoredNodeResult[]>;
   /** The folder under which folderless steps run, in `<root>/<Workflow name>`. */
   workspaceRoot(): Promise<string>;
@@ -480,6 +489,9 @@ class TauriBackend implements Backend {
   usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
     return this.invoke('usage_summary', { filter: filter ?? null });
   }
+  runStamps(since: string): Promise<RunStamp[]> {
+    return this.invoke('run_stamps', { since });
+  }
   adapterCapabilities(): Promise<AdapterCapabilities[]> {
     return this.invoke('adapter_capabilities');
   }
@@ -507,6 +519,9 @@ class TauriBackend implements Backend {
   }
   listRuns(limit = 50): Promise<StoredRun[]> {
     return this.invoke('list_runs', { limit });
+  }
+  listActiveRuns(): Promise<StoredRun[]> {
+    return this.invoke('list_active_runs');
   }
   getRunResults(runId: string): Promise<StoredNodeResult[]> {
     return this.invoke('get_run_results', { runId });
@@ -863,6 +878,8 @@ class MockBackend implements Backend {
   private schedules = new Map<string, Schedule>();
   private watchers = new Map<string, Watcher>();
   private notificationPrefs: NotificationPrefs | null = null;
+  /** Inbox entries (newest id last); dev data and tests can seed them. */
+  private notifications: Notification[] = [];
   private counter = 1;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -929,6 +946,7 @@ class MockBackend implements Backend {
         schedules?: Schedule[];
         watchers?: Watcher[];
         notificationPrefs?: NotificationPrefs;
+        notifications?: Notification[];
       };
       this.runs = data.runs ?? [];
       this.results = new Map(data.results ?? []);
@@ -973,6 +991,7 @@ class MockBackend implements Backend {
       for (const s of data.schedules ?? []) this.schedules.set(s.id, s);
       for (const w of data.watchers ?? []) this.watchers.set(w.id, w);
       this.notificationPrefs = data.notificationPrefs ?? null;
+      this.notifications = data.notifications ?? [];
     } catch {
       // Corrupt dev storage: start fresh.
     }
@@ -1004,6 +1023,9 @@ class MockBackend implements Backend {
           ...(this.notificationPrefs === null
             ? {}
             : { notificationPrefs: this.notificationPrefs }),
+          ...(this.notifications.length === 0
+            ? {}
+            : { notifications: this.notifications }),
         }),
       );
     } catch {
@@ -2367,6 +2389,36 @@ class MockBackend implements Backend {
     return 'continue';
   }
 
+  async runStamps(since: string): Promise<RunStamp[]> {
+    // Same acceptance as the core's RFC 3339 parse (and usageSummary here).
+    const parts =
+      /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(
+        since,
+      );
+    const from = Date.parse(since);
+    const lastDay = parts
+      ? new Date(Date.UTC(Number(parts[1]), Number(parts[2]), 0)).getUTCDate()
+      : 0;
+    if (
+      !parts ||
+      !Number.isFinite(from) ||
+      Number(parts[3]) < 1 ||
+      Number(parts[3]) > lastDay
+    )
+      throw new Error("Invalid 'since' date; use RFC 3339.");
+    return this.runs
+      .filter((run) => {
+        const started = Date.parse(run.startedAt);
+        return Number.isFinite(started) && started >= from;
+      })
+      .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
+      .map((run) => ({
+        status: run.status,
+        startedAt: run.startedAt,
+        ...(run.finishedAt === undefined ? {} : { finishedAt: run.finishedAt }),
+      }));
+  }
+
   async usageSummary(filter?: UsageFilter): Promise<UsageSummary> {
     const summary = emptyUsageSummary();
     const applied = filter ?? {};
@@ -2775,6 +2827,13 @@ class MockBackend implements Backend {
   }
   async listRuns(limit = 50): Promise<StoredRun[]> {
     return this.runs.slice(0, limit);
+  }
+
+  async listActiveRuns(): Promise<StoredRun[]> {
+    return this.runs
+      .filter((run) => ['pending', 'running', 'paused'].includes(run.status))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .map((run) => ({ ...run }));
   }
 
   async getRunResults(runId: string): Promise<StoredNodeResult[]> {
@@ -3417,13 +3476,36 @@ class MockBackend implements Backend {
     );
   }
 
-  async listNotifications(): Promise<Notification[]> {
-    return [];
+  /** Same as the core: newest first, `limit` clamped to 1–200. */
+  async listNotifications(limit = 50, unreadOnly = false): Promise<Notification[]> {
+    const capped = Math.min(200, Math.max(1, Math.trunc(limit)));
+    const listed = this.notifications
+      .filter((n) => !unreadOnly || !n.read)
+      .sort((a, b) => b.id - a.id)
+      .slice(0, capped)
+      .map((n) => ({ ...n }));
+    // Retention after the read, as in the core: only the newest 500 stay.
+    if (this.notifications.length > 500) {
+      this.notifications = [...this.notifications]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 500);
+      this.persist();
+    }
+    return listed;
   }
 
-  async markNotificationRead(): Promise<void> {}
+  async markNotificationRead(id: number): Promise<void> {
+    const entry = this.notifications.find((n) => n.id === id);
+    if (entry === undefined || entry.read) return;
+    entry.read = true;
+    this.persist();
+  }
 
-  async markAllNotificationsRead(): Promise<void> {}
+  async markAllNotificationsRead(): Promise<void> {
+    if (this.notifications.every((n) => n.read)) return;
+    for (const entry of this.notifications) entry.read = true;
+    this.persist();
+  }
 
   async getNotificationPrefs(): Promise<NotificationPrefs> {
     return {

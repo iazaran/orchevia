@@ -90,6 +90,16 @@ impl RunStatus {
     }
 }
 
+/// A run's outcome and times, without its inputs or execution settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStamp {
+    pub status: RunStatus,
+    pub started_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredRun {
@@ -1112,6 +1122,44 @@ impl SqliteDb {
     /// never be built from a capped recent list.
     pub fn list_all_runs(&self) -> DbResult<Vec<StoredRun>> {
         self.list_run_rows(i64::MAX, false, None)
+    }
+
+    /// Status and times of every run started at or after `since`, newest
+    /// first. Reads three columns only, so Home can count a whole window
+    /// (never the capped recent list) cheaply.
+    pub fn list_run_stamps(&self, since: DateTime<Utc>) -> DbResult<Vec<RunStamp>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DbError::Io("Database lock is poisoned.".to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT status, started_at, finished_at FROM runs ORDER BY started_at DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (status, started_at, finished_at) = row?;
+            // An unreadable start belongs to no window; skip it rather than
+            // guess, and keep scanning (no early stop on text order).
+            let Ok(started_at) = started_at.parse::<DateTime<Utc>>() else {
+                continue;
+            };
+            if started_at < since {
+                continue;
+            }
+            out.push(RunStamp {
+                status: RunStatus::parse_status(&status),
+                started_at,
+                finished_at: finished_at.and_then(|s| s.parse().ok()),
+            });
+        }
+        out.sort_by_key(|stamp| std::cmp::Reverse(stamp.started_at));
+        Ok(out)
     }
 
     pub fn list_active_runs(&self) -> DbResult<Vec<StoredRun>> {
@@ -3411,6 +3459,64 @@ mod corruption_tests {
         let list = db.list_workflows().expect("list tolerates corruption");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "good");
+    }
+}
+
+#[cfg(test)]
+mod run_stamp_tests {
+    use super::*;
+
+    #[test]
+    fn stamps_cover_the_whole_window_newest_first() {
+        let db = SqliteDb::open_in_memory().expect("open");
+        let now = Utc::now();
+        let conn = db.conn.lock().expect("lock");
+        conn.execute(
+            "INSERT INTO workflows (id, name, definition, created_at, updated_at) VALUES ('w', 'W', '{}', ?1, ?1)",
+            params![now.to_rfc3339()],
+        )
+        .expect("insert workflow");
+        // More runs than any recent-list cap, plus one before the window and
+        // one whose start cannot be read.
+        for i in 0..150i64 {
+            let started = now - chrono::Duration::minutes(i * 30);
+            let finished = started + chrono::Duration::minutes(5);
+            let status = if i % 10 == 0 { "failed" } else { "succeeded" };
+            conn.execute(
+                "INSERT INTO runs (id, workflow_id, status, started_at, finished_at, execution_json) VALUES (?1, 'w', ?2, ?3, ?4, '{}')",
+                params![format!("r{i}"), status, started.to_rfc3339(), finished.to_rfc3339()],
+            )
+            .expect("insert");
+        }
+        conn.execute(
+            "INSERT INTO runs (id, workflow_id, status, started_at, execution_json) VALUES ('old', 'w', 'succeeded', ?1, '{}')",
+            params![(now - chrono::Duration::days(30)).to_rfc3339()],
+        )
+        .expect("insert old");
+        conn.execute(
+            "INSERT INTO runs (id, workflow_id, status, started_at, execution_json) VALUES ('odd', 'w', 'running', 'not a date', '{}')",
+            [],
+        )
+        .expect("insert odd");
+        drop(conn);
+        let since = now - chrono::Duration::days(14);
+        let stamps = db.list_run_stamps(since).expect("stamps");
+        assert_eq!(stamps.len(), 150);
+        assert!(stamps
+            .windows(2)
+            .all(|w| w[0].started_at >= w[1].started_at));
+        assert_eq!(
+            stamps
+                .iter()
+                .filter(|s| s.status == RunStatus::Failed)
+                .count(),
+            15
+        );
+        assert!(stamps.iter().all(|s| s.finished_at.is_some()));
+        let json = serde_json::to_value(&stamps[0]).expect("json");
+        assert_eq!(json["status"], "failed");
+        assert!(json["startedAt"].is_string() && json["finishedAt"].is_string());
+        assert_eq!(json.as_object().map(|o| o.len()), Some(3));
     }
 }
 

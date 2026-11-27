@@ -6,11 +6,61 @@ All notable changes are recorded here, following
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-27
+
+Home becomes a dashboard, and every page uses the same layout.
+
+### Added
+
+- **Home dashboard.** Under the goal box, a line says what is running, what
+  waits for you and what starts next. Four figures follow: runs over the last 7
+  days (against the 7 before, with a small chart), success rate, run time and
+  this month's estimated cost on your plans (without plans it says so; the API
+  value never stands in for a cost); each opens the page it comes from. They
+  count every run in the window, however many there are. **Running now** shows
+  each run in progress with its current step and a progress bar, and runs that
+  still work or wait stay on Home however many newer runs there are. **Needs you**
+  puts runs waiting for a decision first, then unread Inbox entries that ask for
+  something, then failures from the last 24 hours that were not run again, each
+  run listed once, with links to the rest in the Inbox or Runs. **Up next**
+  lists the next schedules and watcher checks (a slot that has passed reads
+  "due now"). **Activity** charts the last 14
+  days of runs by outcome, and **Usage this month** (UTC, as on Usage & costs)
+  shows the estimated cost, the API value the CLIs reported, agent attempts,
+  tokens (unknown or partly reported when CLIs do not report them) and the
+  workflows with the most agent attempts. Opening a run that no longer exists
+  says so. Your workflows are cards with
+  their last run and a **Run** button. A fresh install shows the setup steps
+  instead of empty figures.
+- **Running count in the sidebar.** Runs shows how many runs are running now,
+  on every page (a pulsing dot when the sidebar is collapsed), older runs
+  included.
+- **Runs:** with no run open, the detail pane offers **Open the latest run**.
+
+### Changed
+
+- **One layout on every page.** The page title and the page body share one
+  column: it fills the window up to 1,360 px and is centred beyond that. Cards,
+  panels, lists, tables and charts use the column's full width; only running
+  text keeps a readable line length. Before, some pages stopped at 760, 980 or
+  1,100 px and others filled the window.
+- **Environment:** the two permission levels sit side by side, and Claude Code
+  and Codex abilities do too on wide windows. Setup check rows use the width.
+- **Usage & costs:** the daily chart is drawn at the panel's width (labels keep
+  their size), and the figures use the same tiles as Home.
+- **Inbox:** entries say how long ago they arrived (the exact time is in the
+  tooltip), their buttons no longer wrap, and cards stack on narrower windows
+  instead of squeezing the message.
+- **Automations:** the background-mode card spans the page.
+
 ### Fixed
 
 - **Website:** the two screenshots above the templates are the same size, line
   up at the top and keep a gap before the template cards (they used the
-  text-and-image layout, so one was larger and touched the cards).
+  text-and-image layout, so one was larger and touched the cards). The Home
+  screenshot shows the new dashboard.
+- **Browser demo (`pnpm dev`):** the Inbox keeps entries and their read state
+  (newest 500, as in the app) instead of always being empty.
 
 ## [0.4.0] - 2026-11-26
 

@@ -124,22 +124,26 @@ it('fills the sidebar theme switch with three equal options', () => {
   }
 });
 
-it('starts every view at the same left edge and keeps section actions by their text', () => {
-  // v0.3.1 centred Playbooks in a narrower column and pushed Environment's MCP
-  // buttons to the far right of the window.
+it('lines every page title and body up in one column, full width up to the page cap', () => {
+  // v0.4.0 capped some panels at 760, 980 or 1100 px and left others full
+  // width, so pages looked left-aligned on one screen and stretched on the next.
   const { container } = render(
     <div className="view playbooks-view">
       <p className="section-hint">Why</p>
       <div className="section-actions" />
-      <div className="section-panel" />
       <div className="empty-state" />
     </div>,
   );
   const view = container.firstElementChild as HTMLElement;
-  expect(getComputedStyle(view).paddingLeft).toBe('20px');
-  expect(getComputedStyle(view).paddingRight).toBe('20px');
-  // No view centres itself with inline padding (jsdom does not map logical
-  // padding onto left and right, so read the rules themselves).
+  // The title bar and the view use the same gutter, worked out once on .main:
+  // 24 px, or whatever centres a --page-max column on a wide window.
+  expect(rule('.main')).toContain(
+    '--page-gutter: max(24px, calc((100% - var(--page-max)) / 2))',
+  );
+  expect(rule('.view')).toMatch(/padding: 24px var\(--page-gutter\) 32px/);
+  expect(rule('.topbar')).toMatch(/padding: 12px var\(--page-gutter\)/);
+  expect(rule('.update-banner')).toContain('var(--page-gutter)');
+  // No view centres itself with inline padding of its own.
   expect(css).not.toMatch(/\.[a-z-]*view[^{]*\{[^}]*padding-inline/);
   const actions = view.querySelector('.section-actions') as HTMLElement;
   expect(['normal', 'flex-start', 'start', '']).toContain(
@@ -148,11 +152,22 @@ it('starts every view at the same left edge and keeps section actions by their t
   expect(rule('.section-actions')).not.toMatch(/margin-left|margin-inline|auto/);
   const empty = view.querySelector('.empty-state') as HTMLElement;
   expect(getComputedStyle(empty).marginLeft).toBe('0px');
-  // Prose, single panels and empty states share one reading width.
-  const widths = ['.section-hint', '.section-panel', '.empty-state'].map(
-    (selector) => getComputedStyle(view.querySelector(selector) as HTMLElement).maxWidth,
-  );
-  expect(new Set(widths)).toEqual(new Set(['var(--measure)']));
+  // Only running text keeps a reading width; boxes use the whole column.
+  expect(
+    getComputedStyle(view.querySelector('.section-hint') as HTMLElement).maxWidth,
+  ).toBe('var(--measure)');
+  for (const selector of [
+    '.empty-state',
+    '.notice',
+    '.run-list',
+    '.inbox-list',
+    '.usage-chart-panel',
+    '.home-view',
+    '.setup-check-profiles',
+  ])
+    expect(rule(selector), selector).not.toMatch(/max-width/);
+  expect(css).not.toMatch(/\.section-panel\b/);
+  expect(css).not.toMatch(/\.ability-cli \{[^}]*max-width/);
 });
 
 it('styles section headings in one place instead of per view', () => {

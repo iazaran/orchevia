@@ -16,6 +16,7 @@ import { WorkflowsView } from './components/WorkflowsView';
 import { HomeView } from './components/HomeView';
 import { CommandPalette } from './components/CommandPalette';
 import { useAppStore, type View } from './store';
+import { mergeActiveRuns } from './lib/dashboard';
 import { errorMessage } from './lib/errors';
 import { readLocal, writeLocal } from './lib/storage';
 import { getBackend } from './lib/backend';
@@ -44,6 +45,11 @@ export function App(): React.JSX.Element {
   const setError = useAppStore((s) => s.setError);
   const notifications = useAppStore((s) => s.notifications);
   const unread = notifications.filter((n) => !n.read).length;
+  const runningCount = useAppStore(
+    (s) =>
+      mergeActiveRuns(s.runs, s.activeRuns).filter((run) => run.status === 'running')
+        .length,
+  );
   const { theme, setTheme } = useTheme();
   const [wizardOpen, setWizardOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -96,12 +102,23 @@ export function App(): React.JSX.Element {
     void refreshAll().catch((err: unknown) => {
       setError(errorMessage(err));
     });
+    void useAppStore
+      .getState()
+      .refreshActiveRuns()
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
-      void useAppStore.getState().refreshNotifications();
+      const state = useAppStore.getState();
+      void state.refreshNotifications();
+      // Scheduled and watcher runs start on their own: keep the sidebar's
+      // running count true on every page while the window is in view.
+      if (document.visibilityState === 'visible') {
+        void state.refreshRuns().catch(() => undefined);
+        void state.refreshActiveRuns().catch(() => undefined);
+      }
     }, 5000);
     return () => clearInterval(timer);
   }, []);
@@ -153,23 +170,41 @@ export function App(): React.JSX.Element {
             {/mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl K'}
           </kbd>
         </button>
-        {NAV.map((item) => (
-          <button
-            key={item.id}
-            className={`nav-btn${view === item.id ? ' active' : ''}`}
-            onClick={() => {
-              setView(item.id);
-            }}
-            aria-label={item.label}
-            title={collapsed ? item.label : undefined}
-            aria-current={view === item.id ? 'page' : undefined}
-          >
-            <span className="nav-icon" aria-hidden="true">
-              <Icon name={item.icon} />
-            </span>
-            <span className="nav-btn-label">{item.label}</span>
-          </button>
-        ))}
+        {NAV.map((item) => {
+          const live = item.id === 'runs' && runningCount > 0;
+          return (
+            <button
+              key={item.id}
+              className={`nav-btn${view === item.id ? ' active' : ''}`}
+              onClick={() => {
+                setView(item.id);
+              }}
+              // The button's own label hides its content, so the count goes in it.
+              aria-label={
+                live ? `${item.label}, ${String(runningCount)} running` : item.label
+              }
+              title={
+                collapsed
+                  ? live
+                    ? `${item.label}, ${String(runningCount)} running`
+                    : item.label
+                  : undefined
+              }
+              aria-current={view === item.id ? 'page' : undefined}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <Icon name={item.icon} />
+              </span>
+              <span className="nav-btn-label">{item.label}</span>
+              {live && (
+                <span className="nav-live" aria-hidden="true">
+                  <span className="live-dot" />
+                  {runningCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
         <div className="sidebar-foot">
           {loading ? 'Loading…' : 'No accounts · no telemetry'}
         </div>

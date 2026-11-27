@@ -179,7 +179,7 @@ export function UpdatesSection(): React.JSX.Element {
     }
   };
   return (
-    <section aria-label="Updates" className="tool-card section-panel">
+    <section aria-label="Updates" className="tool-card">
       {message !== null && (
         <Notice
           variant={messageVariant}

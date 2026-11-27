@@ -2094,3 +2094,32 @@ it('keeps feedback on a step whose latest row is a feedback check', async () => 
     screen.queryByRole('button', { name: /Send feedback on Implement, step 2/ }),
   ).toBeNull();
 });
+
+it('invites a pick when no run is open and opens the latest one', async () => {
+  const backend = __setMockBackendForTests();
+  vi.spyOn(backend, 'listRuns').mockImplementation(() =>
+    Promise.resolve(useAppStore.getState().runs),
+  );
+  const startedAt = new Date().toISOString();
+  useAppStore.setState({
+    runs: [
+      { id: 'newest', workflowId: 'wf', status: 'succeeded', startedAt },
+      { id: 'older', workflowId: 'wf', status: 'failed', startedAt },
+    ],
+    activeRunId: null,
+    runResults: { newest: [], older: [] },
+    workflows: [],
+    profiles: [],
+  });
+  render(<RunsView />);
+  const details = screen.getByRole('region', { name: 'Run details' });
+  expect(
+    within(details).getByRole('heading', { name: 'Pick a run' }),
+  ).toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(within(details).getByRole('button', { name: 'Open the latest run' }));
+  await waitFor(() => {
+    expect(useAppStore.getState().activeRunId).toBe('newest');
+  });
+});

@@ -341,7 +341,7 @@ export function AutomationsView(): React.JSX.Element {
           </Notice>
         )}
 
-        <section aria-label="Background mode" className="tool-card section-panel">
+        <section aria-label="Background mode" className="tool-card">
           <div className="background-card-head">
             <h2 className="card-title">Background mode</h2>
             <Switch
@@ -1303,7 +1303,7 @@ function NotificationPrefsEditor({
       });
   };
   return (
-    <section aria-label="Notification preferences" className="tool-card section-panel">
+    <section aria-label="Notification preferences" className="tool-card">
       <div className="background-card-head">
         <h3 className="card-title">Notification preferences</h3>
         <Switch

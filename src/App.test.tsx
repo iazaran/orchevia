@@ -57,3 +57,32 @@ it('opens the command palette with Ctrl+K, never over another dialog', async () 
   });
   expect(screen.getAllByRole('dialog', { name: 'Command palette' })).toHaveLength(1);
 });
+
+it('shows how many runs are running next to Runs in the sidebar', async () => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+  const backend = __setMockBackendForTests();
+  await backend.setSetting('onboarding.completed', '1');
+  useAppStore.setState({ view: 'home' });
+  render(<App />);
+  await screen.findByRole('heading', { name: /What do you want done/ });
+  expect(screen.getByRole('button', { name: 'Runs' })).toBeInTheDocument();
+  const startedAt = new Date().toISOString();
+  act(() => {
+    useAppStore.setState({
+      runs: [
+        { id: 'a', workflowId: 'w', status: 'running', startedAt },
+        { id: 'b', workflowId: 'w', status: 'running', startedAt },
+        { id: 'c', workflowId: 'w', status: 'paused', startedAt },
+      ],
+    });
+  });
+  const runs = screen.getByRole('button', { name: 'Runs, 2 running' });
+  expect(runs.querySelector('.nav-live')).toHaveTextContent('2');
+});

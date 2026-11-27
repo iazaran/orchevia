@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Notice, useNoticeMessage } from './Notice';
 import { FormError, useSubmitValidation } from './FormValidation';
 import { getBackend } from '../lib/backend';
@@ -192,7 +199,32 @@ function attemptTicks(maxValue: number): number[] {
   return ticks;
 }
 
+/** Chart coordinate widths: the panel's width, within readable bounds. */
+const CHART_MIN_WIDTH = 480;
+const CHART_MAX_WIDTH = 1600;
+
 function DailyChart({ days }: { days: UsageDay[] }): React.JSX.Element {
+  const panel = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState(760);
+  // Draw at the panel's own width (one coordinate per pixel), so the chart
+  // fills the page column while its labels keep their size.
+  useLayoutEffect(() => {
+    const element = panel.current;
+    if (element === null || typeof ResizeObserver === 'undefined') return;
+    const update = (): void => {
+      const inner = element.clientWidth - 24;
+      if (inner > 0)
+        setMeasured(
+          Math.round(Math.min(CHART_MAX_WIDTH, Math.max(CHART_MIN_WIDTH, inner))),
+        );
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
   const height = 240;
   const padLeft = 60;
   const padTop = 10;
@@ -201,7 +233,7 @@ function DailyChart({ days }: { days: UsageDay[] }): React.JSX.Element {
   const count = days.length;
   // Keep axis text and plot height independent of the date span. More days
   // produce narrower bars, not a huge viewBox scaled into unreadable labels.
-  const width = 760;
+  const width = measured;
   const plotWidth = width - padLeft - padRight;
   const slot = Math.min(96, plotWidth / Math.max(1, count));
   const barWidth = Math.min(34, slot * 0.62);
@@ -218,14 +250,14 @@ function DailyChart({ days }: { days: UsageDay[] }): React.JSX.Element {
   const lastDay = days[days.length - 1]?.day ?? '';
 
   return (
-    <div className="usage-chart-panel">
+    <div className="usage-chart-panel" ref={panel}>
       <svg
         className="usage-chart"
         viewBox={`0 0 ${String(width)} ${String(height)}`}
         preserveAspectRatio="xMidYMid meet"
         role="img"
         aria-label={`Agent attempts per UTC day from ${firstDay} to ${lastDay}`}
-        style={{ width: '100%', height: 240, maxWidth: 760 }}
+        style={{ width: '100%', height: 240 }}
       >
         {ticks.map((tick) => (
           <g key={tick}>

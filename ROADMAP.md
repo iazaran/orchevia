@@ -12,7 +12,8 @@ already have: your browser through Claude in Chrome, and the connectors and MCP 
 you set up in Claude Code and Codex, chosen once. 0.4 takes the same agents, reviews and
 approvals beyond code: content, research, media and data templates that work in their
 own workspace folder, a Files panel on every run, a Home page that starts from a goal,
-and a command palette.
+and a command palette. 0.4.1 turns Home into a dashboard (live runs, what needs you,
+what runs next, activity and usage) and gives every page one layout.
 
 ## Implemented
 

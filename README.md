@@ -44,7 +44,7 @@ made.
 - **Reuse and share.** Templates, Playbooks that detect your repository's commands, and
   **n8n import and export**.
 
-**New in 0.4:** a Home screen where you describe what you want done · a command
+**New in 0.4:** a Home dashboard where you describe what you want done and see what is running, what needs you and this month's usage · a command
 palette (Ctrl/⌘ + K) · **Files** on every run with previews · eight templates for
 content, research, media and data (blog posts, launch kits, research reports,
 translations, images, social video cuts, spreadsheet insights, meeting actions) ·

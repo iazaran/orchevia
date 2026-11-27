@@ -31,7 +31,13 @@ export type IconName =
   | 'video'
   | 'audio'
   | 'folder'
-  | 'command';
+  | 'command'
+  | 'clock'
+  | 'eye'
+  | 'pulse'
+  | 'arrowRight'
+  | 'alert'
+  | 'checkCircle';
 
 const PATHS: Record<IconName, React.JSX.Element> = {
   workflows: (
@@ -178,6 +184,32 @@ const PATHS: Record<IconName, React.JSX.Element> = {
   ),
   folder: (
     <path d="M3.5 7a1.5 1.5 0 0 1 1.5-1.5h4.5l2 2.5H19a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18z" />
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </>
+  ),
+  pulse: <path d="M3 12h4l2.5-6 4 12 2.5-6H21" />,
+  arrowRight: <path d="M5 12h14M13 6l6 6-6 6" />,
+  alert: (
+    <>
+      <path d="M12 4 2.8 19.5h18.4z" />
+      <path d="M12 10v4M12 16.8v.2" />
+    </>
+  ),
+  checkCircle: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.2 12.3l2.6 2.6 5-5.4" />
+    </>
   ),
   command: (
     <path d="M9 9V6.5A2.5 2.5 0 1 0 6.5 9H9zm0 0h6m-6 0v6m6-6V6.5A2.5 2.5 0 1 1 17.5 9H15zm0 0v6m0 0h-6m6 0v2.5a2.5 2.5 0 1 0 2.5-2.5H15zm-6 0v2.5A2.5 2.5 0 1 1 6.5 15H9z" />
